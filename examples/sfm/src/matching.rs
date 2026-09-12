@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use kornia_algebra::Vec2F64;
 use kornia_calib::TrackEdge;
-use kornia_imgproc::features::{match_descriptors, sift_match_descriptors};
+use kornia_imgproc::features::{match_orb_descriptors, sift_match_descriptors, OrbMatchConfig};
 use rayon::prelude::*;
 
 use crate::features::FrameFeatures;
@@ -118,18 +118,28 @@ pub fn match_pairs_parallel(
 
 /// Match a single frame pair; returns `(idx_in_a, idx_in_b)` pairs.
 fn match_pair(a: &FrameFeatures, b: &FrameFeatures, ratio: f32) -> Vec<(usize, usize)> {
-    match (&a.descriptors_orb, &b.descriptors_orb) {
-        (Some(d1), Some(d2)) => match_descriptors::<32>(d1, d2, None, true, Some(ratio)),
-        _ => match (&a.descriptors_sift, &b.descriptors_sift) {
-            (Some(d1), Some(d2)) => {
-                sift_match_descriptors(d1, a.n_keypoints(), d2, b.n_keypoints(), ratio, true)
-                    .into_iter()
-                    .map(|[q, t]| (q as usize, t as usize))
-                    .collect()
-            }
-            _ => Vec::new(),
-        },
+    // ORB path: ORB-SLAM3 style matcher with orientation-histogram filtering
+    // (more robust than plain Hamming + ratio test).
+    if let (Some(d1), Some(o1), Some(d2), Some(o2)) = (
+        &a.descriptors_orb,
+        &a.orientations_orb,
+        &b.descriptors_orb,
+        &b.orientations_orb,
+    ) {
+        let config = OrbMatchConfig {
+            nn_ratio: ratio,
+            ..OrbMatchConfig::default()
+        };
+        return match_orb_descriptors(o1, d1, o2, d2, config);
     }
+    // SIFT path: L2 matching with Lowe's ratio test.
+    if let (Some(d1), Some(d2)) = (&a.descriptors_sift, &b.descriptors_sift) {
+        return sift_match_descriptors(d1, a.n_keypoints(), d2, b.n_keypoints(), ratio, true)
+            .into_iter()
+            .map(|[q, t]| (q as usize, t as usize))
+            .collect();
+    }
+    Vec::new()
 }
 
 #[cfg(test)]
@@ -150,6 +160,7 @@ mod tests {
         FrameFeatures {
             keypoints,
             descriptors_orb: Some(descriptors),
+            orientations_orb: Some(vec![0.0; ids.len()]),
             descriptors_sift: None,
         }
     }
@@ -163,6 +174,7 @@ mod tests {
         FrameFeatures {
             keypoints,
             descriptors_orb: None,
+            orientations_orb: None,
             descriptors_sift: Some(descriptors),
         }
     }
@@ -224,6 +236,7 @@ mod tests {
         let empty = FrameFeatures {
             keypoints: Vec::new(),
             descriptors_orb: Some(Vec::new()),
+            orientations_orb: Some(Vec::new()),
             descriptors_sift: None,
         };
         let edges = match_sequential_pairs(&[empty.clone(), empty], 1, 0.8);
