@@ -10,7 +10,7 @@
 
 use std::error::Error;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use kornia_image::Image;
@@ -204,6 +204,106 @@ pub fn read_frames(path: &Path, frame_step: usize) -> Result<VideoFrames, Box<dy
     stats.summary();
 
     Ok((rgb_frames, gray_frames))
+}
+
+/// Read a video file asynchronously into a sequence of RGB and grayscale
+/// frames.
+///
+/// Same contract as [`read_frames`], but the decode runs on a tokio task that
+/// streams frames through an `mpsc` channel with a configurable buffer. This
+/// lets the caller overlap decoding with downstream work and provides natural
+/// backpressure (the reader task waits when the buffer is full).
+///
+/// # Arguments
+///
+/// * `path` - Path to the input video file.
+/// * `frame_step` - Keep every Nth frame. Must be `>= 1`.
+/// * `buffer_size` - Channel buffer capacity in frames (clamped to `>= 1`).
+///
+/// # Returns
+///
+/// A [`VideoFrames`] tuple, as in [`read_frames`].
+///
+/// # Errors
+///
+/// Returns an error if the video cannot be opened or decoded, or if any frame
+/// cannot be converted to grayscale.
+pub async fn read_frames_async(
+    path: &Path,
+    frame_step: usize,
+    buffer_size: usize,
+) -> Result<VideoFrames, Box<dyn Error + Send + Sync>> {
+    assert!(frame_step >= 1, "frame_step must be >= 1");
+
+    let (tx, mut rx) =
+        tokio::sync::mpsc::channel::<(Image<u8, 3>, Image<u8, 1>)>(buffer_size.max(1));
+    let handle = tokio::spawn(read_frames_sender(path.to_path_buf(), frame_step, tx));
+
+    let mut rgb_frames = Vec::new();
+    let mut gray_frames = Vec::new();
+    while let Some((rgb, gray)) = rx.recv().await {
+        rgb_frames.push(rgb);
+        gray_frames.push(gray);
+    }
+
+    // Propagate any error from the reader task.
+    handle.await.map_err(|e| -> Box<dyn Error + Send + Sync> {
+        format!("video reader task panicked: {e}").into()
+    })??;
+
+    Ok((rgb_frames, gray_frames))
+}
+
+/// The tokio task half of [`read_frames_async`]: decode the video and push
+/// owned RGB + gray frames through the channel.
+async fn read_frames_sender(
+    path: PathBuf,
+    frame_step: usize,
+    tx: tokio::sync::mpsc::Sender<(Image<u8, 3>, Image<u8, 1>)>,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let mut reader = VideoReader::new(&path, ImageFormat::Rgb8)?;
+    reader.start()?;
+
+    let mut frame_idx: usize = 0;
+    let mut seen_any = false;
+    let mut consecutive_none: usize = 0;
+
+    loop {
+        match reader.grab_rgb8()? {
+            Some(frame) => {
+                seen_any = true;
+                consecutive_none = 0;
+                if frame_idx.is_multiple_of(frame_step) {
+                    // Copy the zero-copy GStreamer frame so it outlives the reader.
+                    let owned_rgb =
+                        Image::<u8, 3>::from_size_slice(frame.size(), frame.as_slice())?;
+                    let mut gray = Image::<u8, 1>::from_size_val(frame.size(), 0)?;
+                    gray_from_rgb_u8(&owned_rgb, &mut gray)?;
+                    if tx.send((owned_rgb, gray)).await.is_err() {
+                        // Receiver dropped (e.g. we errored on the other side).
+                        break;
+                    }
+                }
+                frame_idx += 1;
+            }
+            None => {
+                consecutive_none += 1;
+                if let (Some(pos), Some(dur)) = (reader.get_pos(), reader.get_duration()) {
+                    if pos >= dur {
+                        break;
+                    }
+                }
+                if seen_any && consecutive_none > 30 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+    }
+
+    reader.close()?;
+
+    Ok(())
 }
 
 #[cfg(test)]
