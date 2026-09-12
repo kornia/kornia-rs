@@ -90,13 +90,28 @@ struct Args {
     view: bool,
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
     let args: Args = argh::from_env();
 
-    // 1. Decode frames.
-    eprintln!("[1/6] reading video: {}", args.video.display());
+    // 1. Decode frames (async or sync).
+    if args.async_video {
+        eprintln!(
+            "[1/6] reading video (async, buffer={}): {}",
+            args.buffer_size,
+            args.video.display()
+        );
+    } else {
+        eprintln!("[1/6] reading video (sync): {}", args.video.display());
+    }
     let t = Instant::now();
-    let (rgb_frames, gray_frames) = video::read_frames(&args.video, args.frame_step)?;
+    let (rgb_frames, gray_frames) = if args.async_video {
+        video::read_frames_async(&args.video, args.frame_step, args.buffer_size)
+            .await
+            .map_err(|e| -> Box<dyn Error> { e })?
+    } else {
+        video::read_frames(&args.video, args.frame_step)?
+    };
     eprintln!(
         "[1/6] decoded {} frames in {:.1}s",
         gray_frames.len(),
