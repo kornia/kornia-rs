@@ -440,6 +440,7 @@ mod tests {
             test_util::CX,
             test_util::CY,
             test_util::N_FRAMES,
+            None,
         )
         .expect("synthetic scene must reconstruct");
 
