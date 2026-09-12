@@ -6,6 +6,7 @@
 //! [`ScaleSource::UpToScale`]: correct shape, arbitrary units.
 
 use std::error::Error;
+use std::sync::Arc;
 
 use kornia_3d::camera::PinholeCamera;
 use kornia_calib::{reconstruct, FeatureTrack, Reconstruction, ReconstructionConfig};
@@ -49,11 +50,14 @@ pub fn run_sfm(
     cx: f64,
     cy: f64,
     n_frames: usize,
+    progress: Option<Arc<dyn Fn(usize, usize) + Send + Sync>>,
 ) -> Result<Reconstruction, Box<dyn Error>> {
     let cameras = vec![make_camera(fx, fy, cx, cy); n_frames];
     // `.sequential()` tunes the config for video walkthroughs (smaller
     // parallax threshold, more BA iterations).
     let config = ReconstructionConfig::new(0.0).sequential();
+    let mut config = config;
+    config.progress = progress;
     Ok(reconstruct(&cameras, &[], tracks, &config, None)?)
 }
 
@@ -87,6 +91,7 @@ mod tests {
             test_util::CX,
             test_util::CY,
             test_util::N_FRAMES,
+            None,
         )
         .expect("synthetic scene must reconstruct");
 
@@ -112,6 +117,7 @@ mod tests {
             test_util::CX,
             test_util::CY,
             test_util::N_FRAMES,
+            None,
         )
         .expect("synthetic scene must reconstruct");
         assert_eq!(recon.scale, ScaleSource::UpToScale);
