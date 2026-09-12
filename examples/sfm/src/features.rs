@@ -7,6 +7,7 @@
 
 use std::error::Error;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use kornia_image::Image;
 use kornia_imgproc::features::{
@@ -184,10 +185,22 @@ pub fn extract_features_parallel(
     frames: &[Image<u8, 1>],
     extractor: &dyn FeatureExtractor,
 ) -> Result<Vec<FrameFeatures>, String> {
-    frames
+    let total = frames.len();
+    let done = AtomicUsize::new(0);
+    let report = |n: usize| {
+        if n.is_multiple_of(50) || n == total {
+            eprintln!("  features: {n}/{total} frames");
+        }
+    };
+    let result: Result<Vec<_>, String> = frames
         .par_iter()
-        .map(|frame| extractor.extract(frame).map_err(|e| e.to_string()))
-        .collect()
+        .map(|frame| {
+            let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+            report(n);
+            extractor.extract(frame).map_err(|e| e.to_string())
+        })
+        .collect();
+    result
 }
 
 #[cfg(test)]
