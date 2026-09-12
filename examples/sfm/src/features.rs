@@ -12,6 +12,7 @@ use kornia_image::Image;
 use kornia_imgproc::features::{
     sift_detect_and_compute, FirstOctave, OrbDetector, SiftConfig, SiftWorkspace,
 };
+use rayon::prelude::*;
 
 /// The feature detector/descriptor to use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,7 +60,9 @@ impl FrameFeatures {
 }
 
 /// Extracts keypoints and descriptors from a single grayscale frame.
-pub trait FeatureExtractor {
+///
+/// `Send + Sync` so extractors can be shared across rayon worker threads.
+pub trait FeatureExtractor: Send + Sync {
     /// Extract features from a grayscale image.
     ///
     /// # Errors
@@ -139,6 +142,52 @@ pub fn make_extractor(kind: DetectorKind, n_features: usize) -> Box<dyn FeatureE
         DetectorKind::Orb => Box::new(OrbExtractor { n_features }),
         DetectorKind::Sift => Box::new(SiftExtractor { n_features }),
     }
+}
+
+/// Configure the rayon global thread pool.
+///
+/// `threads == 0` leaves the pool at its auto-detected size (number of logical
+/// CPUs). Call before any parallel work; building the global pool more than
+/// once is an error.
+///
+/// # Errors
+///
+/// Returns an error if the pool is already initialized.
+pub fn configure_thread_pool(threads: usize) -> Result<(), Box<dyn Error>> {
+    if threads > 0 {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build_global()?;
+    }
+    Ok(())
+}
+
+/// Extract features from every frame in parallel using rayon.
+///
+/// Each frame is independent, so this scales roughly with CPU cores. Results
+/// are in the same order as the input frames.
+///
+/// # Arguments
+///
+/// * `frames` - Grayscale frames, indexed by frame number.
+/// * `extractor` - The detector to run per frame.
+///
+/// # Returns
+///
+/// One [`FrameFeatures`] per frame, in input order.
+///
+/// # Errors
+///
+/// Returns the first extraction error encountered as a message string (errors
+/// are flattened to strings so the result is `Send`, which rayon requires).
+pub fn extract_features_parallel(
+    frames: &[Image<u8, 1>],
+    extractor: &dyn FeatureExtractor,
+) -> Result<Vec<FrameFeatures>, String> {
+    frames
+        .par_iter()
+        .map(|frame| extractor.extract(frame).map_err(|e| e.to_string()))
+        .collect()
 }
 
 #[cfg(test)]
