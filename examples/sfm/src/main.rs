@@ -72,6 +72,22 @@ struct Args {
     /// process every Nth frame (1 = all frames)
     #[argh(option, default = "1")]
     frame_step: usize,
+
+    /// read the video asynchronously (overlaps decode with downstream work)
+    #[argh(switch)]
+    async_video: bool,
+
+    /// worker threads for parallel feature extraction/matching (0 = auto)
+    #[argh(option, default = "0")]
+    threads: usize,
+
+    /// channel buffer size for async video reading
+    #[argh(option, default = "32")]
+    buffer_size: usize,
+
+    /// open the output PLY in the rerun viewer after writing
+    #[argh(switch)]
+    view: bool,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
