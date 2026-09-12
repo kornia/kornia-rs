@@ -14851,13 +14851,17 @@ version = "0.1.15-rc.5"
 dependencies = [
  "argh",
  "kiddo",
+ "kornia",
  "kornia-3d",
  "kornia-algebra",
  "kornia-calib",
  "kornia-image",
  "kornia-imgproc",
  "kornia-io",
+ "rayon",
+ "rerun",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]
