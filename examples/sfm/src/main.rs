@@ -157,10 +157,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
         t.elapsed().as_secs_f64()
     );
 
-    // 3. Match frames in a sliding window.
-    eprintln!("[3/6] matching frames (window={})", args.match_window);
+    // 3. Match frames in a sliding window (parallel in async mode).
+    if args.async_video {
+        eprintln!(
+            "[3/6] matching frames (window={}, parallel)",
+            args.match_window
+        );
+    } else {
+        eprintln!("[3/6] matching frames (window={})", args.match_window);
+    }
     let t = Instant::now();
-    let edges = matching::match_sequential_pairs(&all_features, args.match_window, args.ratio);
+    let edges = if args.async_video {
+        matching::match_pairs_parallel(&all_features, args.match_window, args.ratio)
+    } else {
+        matching::match_sequential_pairs(&all_features, args.match_window, args.ratio)
+    };
     eprintln!(
         "[3/6] found {} matched correspondences in {:.1}s",
         edges.len(),
