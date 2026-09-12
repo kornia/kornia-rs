@@ -223,6 +223,3 @@ fmt-all = { depends-on = [
   "toml-fmt",
   "cpp-fmt",
 ], description = "Format all code" }
-
-[feature.dev.dependencies]
-pre-commit = "*"
