@@ -441,6 +441,7 @@ mod tests {
             test_util::CY,
             test_util::N_FRAMES,
             None,
+            crate::reconstruction::ReconstructionOverrides::default(),
         )
         .expect("synthetic scene must reconstruct");
 
