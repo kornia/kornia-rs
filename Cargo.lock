@@ -14850,6 +14850,7 @@ name = "sfm"
 version = "0.1.15-rc.5"
 dependencies = [
  "argh",
+ "cudarc 0.19.8",
  "kiddo",
  "kornia",
  "kornia-3d",
