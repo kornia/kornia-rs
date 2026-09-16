@@ -9,6 +9,7 @@ use std::error::Error;
 use std::sync::Arc;
 
 use kornia_3d::camera::PinholeCamera;
+use kornia_3d::ransac::SPRTConfig;
 use kornia_calib::{reconstruct, FeatureTrack, Reconstruction, ReconstructionConfig};
 
 /// Tunable overrides for [`ReconstructionConfig`].
@@ -29,6 +30,9 @@ pub struct ReconstructionOverrides {
     pub up_prior_sigma: Option<f64>,
     /// Maximum reprojection error (normalized units) for triangulation.
     pub max_reprojection_error: Option<f64>,
+    /// Enable Wald's SPRT for the per-view PnP-RANSAC registration, with the
+    /// given expected-inlier ratio and Type-I error. `None` keeps it disabled.
+    pub sprt: Option<SPRTConfig>,
 }
 
 /// Build a pinhole camera from intrinsics, with zero distortion.
@@ -93,6 +97,9 @@ pub fn run_sfm(
     }
     if let Some(v) = overrides.max_reprojection_error {
         config.max_reprojection_error = v;
+    }
+    if let Some(s) = overrides.sprt {
+        config.sprt = Some(s);
     }
     Ok(reconstruct(&cameras, &[], tracks, &config, None)?)
 }
