@@ -8,8 +8,11 @@
 use std::error::Error;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
+use cudarc::driver::CudaContext;
 use kornia_image::Image;
+use kornia_imgproc::cuda::sift::{SiftCuda, SiftCudaConfig};
 use kornia_imgproc::features::{
     sift_detect_and_compute, FirstOctave, OrbDetector, SiftConfig, SiftWorkspace,
 };
@@ -142,11 +145,96 @@ impl FeatureExtractor for SiftExtractor {
     }
 }
 
+/// SIFT feature extractor running on a CUDA device (via `kornia_imgproc::cuda::sift`).
+///
+/// Creates a fresh [`SiftCuda`] plan per frame (the plan owns the scratch
+/// buffers; building one per call keeps the extractor `Send + Sync` so it can
+/// be shared across rayon threads). NVRTC kernels are JIT-compiled on the first
+/// call and cached by cudarc, so warm frames are fast. Run extraction
+/// *sequentially* when using this extractor: sharing one CUDA stream across
+/// concurrent `extract` calls is not safe.
+pub struct SiftCudaExtractor {
+    /// Maximum number of keypoints to retain per frame (`0` = unlimited).
+    pub n_features: usize,
+    ctx: Arc<CudaContext>,
+}
+
+impl SiftCudaExtractor {
+    /// Create the extractor and a CUDA context on device 0.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no CUDA device is available or the context cannot
+    /// be created.
+    pub fn new(n_features: usize) -> Result<Self, Box<dyn Error>> {
+        let ctx = CudaContext::new(0)?;
+        Ok(Self { n_features, ctx })
+    }
+}
+
+impl FeatureExtractor for SiftCudaExtractor {
+    fn extract(&self, gray: &Image<u8, 1>) -> Result<FrameFeatures, Box<dyn Error>> {
+        let (w, h) = (gray.width(), gray.height());
+        let stream = self.ctx.default_stream();
+
+        // SIFT's pipeline scales input by 1/255 internally, so feed the raw
+        // 0..255 pixel values (not normalized to 0..1).
+        let buf: Vec<f32> = gray.as_slice().iter().map(|&v| v as f32).collect();
+        let gray_f32 = Image::<f32, 1>::from_size_slice(gray.size(), &buf)?;
+        let dev = gray_f32.to_cuda(&stream)?;
+
+        let cfg = SiftCudaConfig {
+            n_features: self.n_features,
+            ..SiftCudaConfig::default()
+        };
+        let mut sift = SiftCuda::new(&self.ctx, &stream, w, h, cfg, FirstOctave::Native, 8)?;
+        let feats = sift.detect_and_compute(&self.ctx, &stream, &dev)?;
+
+        // Download the descriptor block to host.
+        let mut descriptors = vec![0f32; feats.descriptors.len()];
+        stream
+            .memcpy_dtoh(&feats.descriptors, &mut descriptors)
+            .map_err(|e| -> Box<dyn Error> { e.to_string().into() })?;
+        stream
+            .synchronize()
+            .map_err(|e| -> Box<dyn Error> { e.to_string().into() })?;
+
+        let keypoints: Vec<[f32; 2]> = feats
+            .keypoints
+            .iter()
+            .map(|kp| [kp.x, kp.y]) // x = col, y = row
+            .collect();
+
+        Ok(FrameFeatures {
+            keypoints,
+            descriptors_orb: None,
+            orientations_orb: None,
+            descriptors_sift: Some(descriptors),
+        })
+    }
+}
+
 /// Build an extractor for the given detector kind.
-pub fn make_extractor(kind: DetectorKind, n_features: usize) -> Box<dyn FeatureExtractor> {
+///
+/// `use_cuda` only affects SIFT; ORB always runs on the host.
+///
+/// # Errors
+///
+/// Returns an error if `use_cuda` is set but a CUDA context cannot be created.
+pub fn make_extractor(
+    kind: DetectorKind,
+    n_features: usize,
+    use_cuda: bool,
+) -> Result<Box<dyn FeatureExtractor>, Box<dyn Error>> {
     match kind {
-        DetectorKind::Orb => Box::new(OrbExtractor { n_features }),
-        DetectorKind::Sift => Box::new(SiftExtractor { n_features }),
+        DetectorKind::Orb => Ok(Box::new(OrbExtractor { n_features })),
+        DetectorKind::Sift => {
+            if use_cuda {
+                Ok(Box::new(SiftCudaExtractor::new(n_features)?))
+            } else {
+                Ok(Box::new(SiftExtractor { n_features }))
+            }
+        }
     }
 }
 
@@ -278,8 +366,8 @@ mod tests {
 
     #[test]
     fn make_extractor_dispatches_on_kind() {
-        let orb = make_extractor(DetectorKind::Orb, 100);
-        let sift = make_extractor(DetectorKind::Sift, 0);
+        let orb = make_extractor(DetectorKind::Orb, 100, false).unwrap();
+        let sift = make_extractor(DetectorKind::Sift, 0, false).unwrap();
         // Smoke-check the extractors run on a tiny checkerboard without panicking.
         let img = make_checkerboard(64, 64, 16);
         assert!(orb.extract(&img).is_ok());
