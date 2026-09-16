@@ -59,6 +59,25 @@ cargo run -p sfm -- sample.mp4 out.ply \
 | `--threads` | `0` | Worker threads for parallel stages (`0` = auto-detect CPU count). |
 | `--buffer-size` | `32` | Channel buffer (frames) for async video reading; larger = less backpressure, more memory. |
 | `--view` | off | Open the output PLY in the rerun viewer after writing. |
+| `--orb-no-orientation-check` | off | Disable ORB-SLAM3 orientation-histogram filtering. Helps on orbit/turntable captures where the camera rotates systematically. |
+| `--max-ba-iterations` | `100` | Bundle-adjustment LM iterations. Lower = faster but less accurate. |
+| `--min-registration-inliers` | `30` | Min PnP inliers to register a view. Lower admits more cameras (looser). |
+| `--motion-prior-sigma` | `0.0` | Constant-velocity motion prior (`0.0` = off). Use for smooth walkthroughs. |
+| `--up-prior-sigma` | `0.0` | Camera-up prior (`0.0` = off). Use for handheld upright capture. |
+| `--max-reprojection-error` | `0.01` | Reprojection-error threshold (normalized units). |
+| `--geo-verify` | off | Verify matches with epipolar RANSAC after matching (rejects false matches). |
+| `--geo-threshold` | `3.0` | Epipolar RANSAC inlier threshold (pixels). |
+| `--geo-min-inliers` | `8` | Min inliers for a pair's fundamental matrix to be trusted. |
+| `--cuda` | off | Use CUDA for SIFT extraction (requires an NVIDIA GPU). |
+
+### Recommended flags by capture type
+
+- **Orbit/turntable captures** (camera circles a static object): add
+  `--orb-no-orientation-check` for ORB.
+- **SIFT speed**: add `--cuda` to run SIFT on the GPU (needs the CUDA runtime
+  on `LD_LIBRARY_PATH`). NVRTC kernels are JIT-compiled on the first frame.
+- **Noisy matches / poor ORB reconstruction**: add `--geo-verify`.
+- **Long videos**: raise `--frame-step` (fewer cameras to register).
 
 ### Performance notes
 

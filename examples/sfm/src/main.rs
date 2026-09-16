@@ -113,6 +113,22 @@ struct Args {
     /// max reprojection error in normalized units (default: 0.01)
     #[argh(option, default = "0.01")]
     max_reprojection_error: f64,
+
+    /// verify matches with epipolar RANSAC (rejects false matches)
+    #[argh(switch)]
+    geo_verify: bool,
+
+    /// epipolar RANSAC inlier threshold in pixels (default: 3.0)
+    #[argh(option, default = "3.0")]
+    geo_threshold: f64,
+
+    /// min inliers for a pair's fundamental matrix to be trusted (default: 8)
+    #[argh(option, default = "8")]
+    geo_min_inliers: usize,
+
+    /// use CUDA for SIFT extraction (requires an NVIDIA GPU)
+    #[argh(switch)]
+    cuda: bool,
 }
 
 #[tokio::main]
@@ -155,7 +171,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         );
     }
 
-    // 2. Extract features per frame (parallel via rayon).
+    // 2. Extract features per frame (parallel via rayon; sequential for CUDA).
     if args.async_video {
         eprintln!(
             "[2/6] extracting features with {:?} (parallel)",
@@ -164,9 +180,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
     } else {
         eprintln!("[2/6] extracting features with {:?}", args.detector);
     }
+    if args.cuda {
+        eprintln!("[2/6] CUDA SIFT extraction (device 0)");
+    }
     let t = Instant::now();
-    let extractor = features::make_extractor(args.detector, args.n_features);
-    let all_features = if args.async_video {
+    let extractor = features::make_extractor(args.detector, args.n_features, args.cuda)?;
+    // CUDA shares one device stream, so extraction must be sequential.
+    let all_features = if args.cuda {
+        gray_frames
+            .iter()
+            .map(|frame| extractor.extract(frame))
+            .collect::<Result<_, _>>()?
+    } else if args.async_video {
         features::extract_features_parallel(&gray_frames, extractor.as_ref())
             .map_err(|e| -> Box<dyn Error> { e.into() })?
     } else {
@@ -212,6 +237,29 @@ async fn main() -> Result<(), Box<dyn Error>> {
         edges.len(),
         t.elapsed().as_secs_f64()
     );
+
+    // 3.5. Optional: geometric verification (epipolar RANSAC) to reject false matches.
+    let edges = if args.geo_verify {
+        eprintln!(
+            "[3.5/6] geometric verification (threshold={} px, min_inliers={})",
+            args.geo_threshold, args.geo_min_inliers
+        );
+        let t = Instant::now();
+        let before = edges.len();
+        let edges = matching::verify_matches_geometrically(
+            &edges,
+            args.geo_threshold,
+            args.geo_min_inliers,
+        );
+        eprintln!(
+            "[3.5/6] filtered {before} -> {} matches in {:.1}s",
+            edges.len(),
+            t.elapsed().as_secs_f64()
+        );
+        edges
+    } else {
+        edges
+    };
 
     // 4. Chain matches into multi-view tracks.
     eprintln!("[4/6] building tracks");

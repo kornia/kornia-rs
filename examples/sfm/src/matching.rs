@@ -4,8 +4,10 @@
 //! emits the correspondences as [`TrackEdge`]s, ready for `kornia_calib`'s
 //! `build_tracks` to chain into multi-view tracks.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use kornia_3d::pose::{ransac_fundamental, RansacParams};
 use kornia_algebra::Vec2F64;
 use kornia_calib::TrackEdge;
 use kornia_imgproc::features::{match_orb_descriptors, sift_match_descriptors, OrbMatchConfig};
@@ -121,6 +123,62 @@ pub fn match_pairs_parallel(
             pair_edges.into_par_iter()
         })
         .collect()
+}
+
+/// Filter [`TrackEdge`]s per camera pair using epipolar-geometry RANSAC.
+///
+/// For each pair of cameras, fits a fundamental matrix to the raw descriptor
+/// matches and keeps only the geometrically consistent (inlier) ones. This
+/// rejects false matches that a descriptor ratio test alone cannot catch —
+/// which is the dominant source of bad tracks for binary (ORB) descriptors.
+///
+/// # Arguments
+///
+/// * `edges` - Raw descriptor matches from a matcher.
+/// * `threshold` - RANSAC inlier threshold in pixels.
+/// * `min_inliers` - Minimum inlier count for a pair's fundamental matrix to
+///   be trusted. Pairs with fewer raw matches than this (or than 8, the
+///   minimum for the 8-point algorithm) are dropped entirely.
+///
+/// # Returns
+///
+/// The subset of `edges` that are inliers of a verified fundamental matrix.
+pub fn verify_matches_geometrically(
+    edges: &[TrackEdge],
+    threshold: f64,
+    min_inliers: usize,
+) -> Vec<TrackEdge> {
+    // Group edge indices by camera pair.
+    let mut pairs: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
+    for (i, e) in edges.iter().enumerate() {
+        pairs.entry((e.cam_a, e.cam_b)).or_default().push(i);
+    }
+
+    let min_inliers = min_inliers.max(8);
+    let mut verified = Vec::new();
+    for indices in pairs.into_values() {
+        if indices.len() < min_inliers {
+            continue;
+        }
+        let x1: Vec<Vec2F64> = indices.iter().map(|&i| edges[i].uv_a).collect();
+        let x2: Vec<Vec2F64> = indices.iter().map(|&i| edges[i].uv_b).collect();
+        let params = RansacParams {
+            max_iterations: 2000,
+            threshold,
+            min_inliers,
+            random_seed: Some(0),
+            refit: true,
+        };
+        let Ok(result) = ransac_fundamental(&x1, &x2, &params) else {
+            continue;
+        };
+        for (&idx, &is_inlier) in indices.iter().zip(result.inliers.iter()) {
+            if is_inlier {
+                verified.push(edges[idx].clone());
+            }
+        }
+    }
+    verified
 }
 
 /// Match a single frame pair; returns `(idx_in_a, idx_in_b)` pairs.
@@ -278,5 +336,75 @@ mod tests {
         let loose = match_sequential_pairs(&[a, b], 1, 1.5, true);
         assert_eq!(loose.len(), 1);
         assert_eq!((loose[0].kpt_a, loose[0].kpt_b), (0, 0));
+    }
+
+    #[test]
+    fn geometric_verification_keeps_inliers_drops_outliers() {
+        use crate::reconstruction::make_camera;
+        use crate::test_util;
+        use kornia_3d::pose::Pose3d;
+        use kornia_algebra::Vec3F64;
+
+        // Two cameras with a proper baseline and converging rotation, viewing a
+        // plane of 3D points — a well-conditioned epipolar geometry.
+        let k = make_camera(500.0, 500.0, 320.0, 240.0);
+        let pose_a = Pose3d::IDENTITY;
+        let pose_b = Pose3d::new(test_util::rot(0.4, 0.05), Vec3F64::new(-0.6, 0.0, 0.1));
+
+        let mut edges = Vec::new();
+        // 40 inliers: an 8x5 grid of points with depth variation (NOT planar,
+        // so the fundamental matrix is well-constrained), projected into both views.
+        let mut proj_a = Vec::new();
+        let mut proj_b = Vec::new();
+        for i in 0..8 {
+            for j in 0..5 {
+                let z = 1.4 + 0.3 * ((i * 5 + j) % 3) as f64;
+                let p = Vec3F64::new(-0.4 + 0.1 * i as f64, -0.3 + 0.15 * j as f64, z);
+                proj_a.push(test_util::project(p, &pose_a, &k));
+                proj_b.push(test_util::project(p, &pose_b, &k));
+                let idx = (i * 5 + j) as u32;
+                edges.push(TrackEdge {
+                    cam_a: 0,
+                    kpt_a: idx,
+                    uv_a: proj_a[idx as usize],
+                    cam_b: 1,
+                    kpt_b: idx,
+                    uv_b: proj_b[idx as usize],
+                });
+            }
+        }
+        // 10 outliers: the correct correspondence, corrupted by a large pixel
+        // offset — far outside any epipolar constraint.
+        for i in 0..10 {
+            edges.push(TrackEdge {
+                cam_a: 0,
+                kpt_a: (40 + i) as u32,
+                uv_a: proj_a[i],
+                cam_b: 1,
+                kpt_b: (40 + i) as u32,
+                uv_b: Vec2F64::new(proj_b[i].x + 400.0, proj_b[i].y + 300.0),
+            });
+        }
+
+        let verified = verify_matches_geometrically(&edges, 3.0, 8);
+        assert_eq!(verified.len(), 40, "all inliers kept, all outliers dropped");
+        assert!(verified.iter().all(|e| e.kpt_a < 40));
+    }
+
+    #[test]
+    fn geometric_verification_drops_pairs_with_few_matches() {
+        // Fewer than 8 raw matches: not enough for the 8-point algorithm.
+        let mut edges = Vec::new();
+        for i in 0..5 {
+            edges.push(TrackEdge {
+                cam_a: 0,
+                kpt_a: i as u32,
+                uv_a: Vec2F64::new(i as f64, 0.0),
+                cam_b: 1,
+                kpt_b: i as u32,
+                uv_b: Vec2F64::new(i as f64, 0.0),
+            });
+        }
+        assert!(verify_matches_geometrically(&edges, 3.0, 8).is_empty());
     }
 }
