@@ -89,6 +89,30 @@ struct Args {
     /// open the output PLY in the rerun viewer after writing
     #[argh(switch)]
     view: bool,
+
+    /// disable ORB orientation-histogram filtering (helps for orbit captures)
+    #[argh(switch)]
+    orb_no_orientation_check: bool,
+
+    /// max bundle adjustment iterations (default: 100)
+    #[argh(option, default = "100")]
+    max_ba_iterations: usize,
+
+    /// min PnP inliers to register a view (default: 30)
+    #[argh(option, default = "30")]
+    min_registration_inliers: usize,
+
+    /// motion prior sigma (0.0 = disabled)
+    #[argh(option, default = "0.0")]
+    motion_prior_sigma: f64,
+
+    /// up prior sigma (0.0 = disabled)
+    #[argh(option, default = "0.0")]
+    up_prior_sigma: f64,
+
+    /// max reprojection error in normalized units (default: 0.01)
+    #[argh(option, default = "0.01")]
+    max_reprojection_error: f64,
 }
 
 #[tokio::main]
@@ -169,9 +193,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     let t = Instant::now();
     let edges = if args.async_video {
-        matching::match_pairs_parallel(&all_features, args.match_window, args.ratio)
+        matching::match_pairs_parallel(
+            &all_features,
+            args.match_window,
+            args.ratio,
+            !args.orb_no_orientation_check,
+        )
     } else {
-        matching::match_sequential_pairs(&all_features, args.match_window, args.ratio)
+        matching::match_sequential_pairs(
+            &all_features,
+            args.match_window,
+            args.ratio,
+            !args.orb_no_orientation_check,
+        )
     };
     eprintln!(
         "[3/6] found {} matched correspondences in {:.1}s",
@@ -200,6 +234,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
             progress_start.elapsed().as_secs_f64()
         );
     });
+    let overrides = reconstruction::ReconstructionOverrides {
+        max_iterations: Some(args.max_ba_iterations),
+        min_registration_inliers: Some(args.min_registration_inliers),
+        motion_prior_sigma: Some(args.motion_prior_sigma),
+        up_prior_sigma: Some(args.up_prior_sigma),
+        max_reprojection_error: Some(args.max_reprojection_error),
+    };
     let reconstruction = reconstruction::run_sfm(
         &tracks,
         args.fx,
@@ -208,6 +249,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         args.cy,
         n_frames,
         Some(progress),
+        overrides,
     )?;
     let registered = reconstruction.views.iter().filter(|v| v.is_some()).count();
     eprintln!(
