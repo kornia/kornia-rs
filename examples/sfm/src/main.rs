@@ -129,6 +129,18 @@ struct Args {
     /// use CUDA for SIFT extraction (requires an NVIDIA GPU)
     #[argh(switch)]
     cuda: bool,
+
+    /// enable Wald's SPRT for PnP registration (rejects bad poses early)
+    #[argh(switch)]
+    sprt: bool,
+
+    /// SPRT expected inlier ratio (default: 0.5)
+    #[argh(option, default = "0.5")]
+    sprt_epsilon: f64,
+
+    /// SPRT Type-I error delta, probability of rejecting a good pose (default: 0.05)
+    #[argh(option, default = "0.05")]
+    sprt_delta: f64,
 }
 
 #[tokio::main]
@@ -288,6 +300,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         motion_prior_sigma: Some(args.motion_prior_sigma),
         up_prior_sigma: Some(args.up_prior_sigma),
         max_reprojection_error: Some(args.max_reprojection_error),
+        sprt: args.sprt.then(|| kornia_3d::ransac::SPRTConfig {
+            epsilon: args.sprt_epsilon,
+            delta: args.sprt_delta,
+            ..Default::default()
+        }),
     };
     let reconstruction = reconstruction::run_sfm(
         &tracks,
