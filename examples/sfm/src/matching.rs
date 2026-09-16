@@ -26,10 +26,14 @@ use crate::features::FrameFeatures;
 ///   Frames `i` and `j` are only matched when `0 < j - i <= window`.
 /// * `ratio` - Lowe's ratio-test threshold (e.g. `0.8`). Matches whose best
 ///   distance is not comfortably below the second-best are rejected.
+/// * `orb_check_orientation` - Apply ORB-SLAM3's orientation-histogram
+///   consistency filtering. Disable for orbit/turntable captures where the
+///   camera rotates systematically (e.g. `swiss_knife.mp4`).
 pub fn match_sequential_pairs(
     features: &[FrameFeatures],
     window: usize,
     ratio: f32,
+    orb_check_orientation: bool,
 ) -> Vec<TrackEdge> {
     if features.len() < 2 {
         return Vec::new();
@@ -39,7 +43,7 @@ pub fn match_sequential_pairs(
     for i in 0..features.len() {
         let end = (i + 1 + window).min(features.len());
         for j in (i + 1)..end {
-            let matches = match_pair(&features[i], &features[j], ratio);
+            let matches = match_pair(&features[i], &features[j], ratio, orb_check_orientation);
             for (kpt_a, kpt_b) in matches {
                 edges.push(TrackEdge {
                     cam_a: i,
@@ -72,10 +76,13 @@ fn keypoint_to_uv(kp: [f32; 2]) -> Vec2F64 {
 /// * `features` - Per-frame features, indexed by frame number.
 /// * `window` - How many following frames each frame is matched against.
 /// * `ratio` - Lowe's ratio-test threshold.
+/// * `orb_check_orientation` - Apply ORB-SLAM3 orientation-histogram
+///   consistency filtering (see [`match_sequential_pairs`]).
 pub fn match_pairs_parallel(
     features: &[FrameFeatures],
     window: usize,
     ratio: f32,
+    orb_check_orientation: bool,
 ) -> Vec<TrackEdge> {
     if features.len() < 2 {
         return Vec::new();
@@ -99,7 +106,7 @@ pub fn match_pairs_parallel(
             if n.is_multiple_of(100) || n == total_pairs {
                 eprintln!("  matching: {n}/{total_pairs} pairs");
             }
-            let matches = match_pair(&features[i], &features[j], ratio);
+            let matches = match_pair(&features[i], &features[j], ratio, orb_check_orientation);
             let pair_edges: Vec<TrackEdge> = matches
                 .into_iter()
                 .map(|(kpt_a, kpt_b)| TrackEdge {
@@ -117,9 +124,15 @@ pub fn match_pairs_parallel(
 }
 
 /// Match a single frame pair; returns `(idx_in_a, idx_in_b)` pairs.
-fn match_pair(a: &FrameFeatures, b: &FrameFeatures, ratio: f32) -> Vec<(usize, usize)> {
-    // ORB path: ORB-SLAM3 style matcher with orientation-histogram filtering
-    // (more robust than plain Hamming + ratio test).
+fn match_pair(
+    a: &FrameFeatures,
+    b: &FrameFeatures,
+    ratio: f32,
+    orb_check_orientation: bool,
+) -> Vec<(usize, usize)> {
+    // ORB path: ORB-SLAM3 style matcher with optional orientation-histogram
+    // filtering. Filtering assumes the camera rotates (features rotate
+    // together); disable it for orbit/turntable captures where that breaks.
     if let (Some(d1), Some(o1), Some(d2), Some(o2)) = (
         &a.descriptors_orb,
         &a.orientations_orb,
@@ -128,6 +141,7 @@ fn match_pair(a: &FrameFeatures, b: &FrameFeatures, ratio: f32) -> Vec<(usize, u
     ) {
         let config = OrbMatchConfig {
             nn_ratio: ratio,
+            check_orientation: orb_check_orientation,
             ..OrbMatchConfig::default()
         };
         return match_orb_descriptors(o1, d1, o2, d2, config);
@@ -194,7 +208,7 @@ mod tests {
     fn matches_identical_orb_descriptors_between_consecutive_frames() {
         let a = orb_features(keypoints(3), &[1, 2, 4]);
         let b = orb_features(keypoints(3), &[1, 2, 4]);
-        let edges = match_sequential_pairs(&[a, b], 1, 0.8);
+        let edges = match_sequential_pairs(&[a, b], 1, 0.8, true);
 
         assert_eq!(edges.len(), 3);
         let mut kpts: Vec<(u32, u32)> = edges.iter().map(|e| (e.kpt_a, e.kpt_b)).collect();
@@ -210,7 +224,7 @@ mod tests {
     fn matches_identical_sift_descriptors_between_consecutive_frames() {
         let a = sift_features(keypoints(2), &[1, 2]);
         let b = sift_features(keypoints(2), &[1, 2]);
-        let edges = match_sequential_pairs(&[a, b], 1, 0.8);
+        let edges = match_sequential_pairs(&[a, b], 1, 0.8, true);
 
         assert_eq!(edges.len(), 2);
         let mut kpts: Vec<(u32, u32)> = edges.iter().map(|e| (e.kpt_a, e.kpt_b)).collect();
@@ -224,10 +238,10 @@ mod tests {
         let f1 = orb_features(keypoints(3), &[1, 2, 4]);
         let f2 = orb_features(keypoints(3), &[1, 2, 4]);
 
-        let edges_w1 = match_sequential_pairs(&[f0.clone(), f1.clone(), f2.clone()], 1, 0.8);
+        let edges_w1 = match_sequential_pairs(&[f0.clone(), f1.clone(), f2.clone()], 1, 0.8, true);
         assert_eq!(pair_set(&edges_w1), vec![(0, 1), (1, 2)]);
 
-        let edges_w2 = match_sequential_pairs(&[f0, f1, f2], 2, 0.8);
+        let edges_w2 = match_sequential_pairs(&[f0, f1, f2], 2, 0.8, true);
         assert_eq!(pair_set(&edges_w2), vec![(0, 1), (0, 2), (1, 2)]);
     }
 
@@ -239,14 +253,14 @@ mod tests {
             orientations_orb: Some(Vec::new()),
             descriptors_sift: None,
         };
-        let edges = match_sequential_pairs(&[empty.clone(), empty], 1, 0.8);
+        let edges = match_sequential_pairs(&[empty.clone(), empty], 1, 0.8, true);
         assert!(edges.is_empty());
     }
 
     #[test]
     fn returns_empty_for_single_frame() {
         let f = orb_features(keypoints(3), &[1, 2, 4]);
-        let edges = match_sequential_pairs(&[f], 5, 0.8);
+        let edges = match_sequential_pairs(&[f], 5, 0.8, true);
         assert!(edges.is_empty());
     }
 
@@ -258,10 +272,10 @@ mod tests {
         let a = orb_features(vec![[0.0, 0.0]], &[1]);
         let b = orb_features(vec![[0.0, 0.0], [0.0, 0.0]], &[2, 4]);
 
-        let strict = match_sequential_pairs(&[a.clone(), b.clone()], 1, 0.8);
+        let strict = match_sequential_pairs(&[a.clone(), b.clone()], 1, 0.8, true);
         assert!(strict.is_empty(), "ambiguous match must be rejected");
 
-        let loose = match_sequential_pairs(&[a, b], 1, 1.5);
+        let loose = match_sequential_pairs(&[a, b], 1, 1.5, true);
         assert_eq!(loose.len(), 1);
         assert_eq!((loose[0].kpt_a, loose[0].kpt_b), (0, 0));
     }
