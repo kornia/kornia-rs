@@ -759,3 +759,125 @@ python crates/kornia-imgproc/benches/bench_opencv_sift.py
 The CUDA path is 5.1x–6.8x faster than OpenCV's CPU SIFT end to end, transfers
 included. The host path is slower than OpenCV on x86 — OpenCV's CPU SIFT is
 IPP/TBB-accelerated and the kornia-rs CPU SIFT is not yet vectorized.
+
+---
+
+## Ecosystem sweep: kornia vs OpenCV 5 vs PyTorch vs VPI - 2026-08-24
+
+Run after all four GPU PRs merged (`upstream/main` at `f8b45b84`). The point of
+this section is to compare against the wider CV ecosystem rather than OpenCV
+alone.
+
+Reproduce with:
+
+```sh
+# kornia CPU + CUDA, 58 ops
+cargo bench --bench bench_cuda_imgproc --features cuda
+
+# OpenCV 5 CPU + CUDA, PyTorch, VPI, same op matrix
+export OPENCV5_PATH=$HOME/.local/opencv5-cuda/lib/python3.10/dist-packages
+python3 crates/kornia-imgproc/benches/bench_ecosystem_sweep.py --iters 50 --warmup 20
+```
+
+Both harnesses report the **minimum** per-call time, which is the sample least
+disturbed by other work on the host. All times in milliseconds. The desktop was
+idle for these runs: a browser left open doubles both the CPU baseline and the
+H2D time on this machine.
+
+### Desktop - GTX 1650 (sm_75), OpenCV 5.0.0 CUDA, PyTorch 2.9.1+cu128
+
+kornia CUDA is the CUDA-event kernel time from `bench_cuda_imgproc`; the other
+three columns are wall-clock around a synchronize, from the Python harness.
+
+`n/a` means the backend does not implement that operation, not that it failed.
+PyTorch has no morphology, Sobel, integral or colour-conversion equivalents.
+
+| Operation | Interp | Resolution | kornia CUDA | OpenCV 5 CUDA | OpenCV 5 CPU | PyTorch | kornia vs cv5 CUDA |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| bgr_from_rgb (u8) |  | 1920x1080 | 0.08 | 0.193 | 0.387 | n/a | 2.4x |
+| bgr_from_rgb (u8) |  | 3840x2160 | 0.30 | 0.627 | 5.233 | n/a | 2.1x |
+| box_blur (3x3, u8) |  | 1920x1080 | 0.29 | n/a | 1.120 | n/a | n/a |
+| box_blur (3x3, u8) |  | 3840x2160 | 1.06 | n/a | 5.259 | n/a | n/a |
+| dilate (3x3, u8) |  | 1920x1080 | 0.29 | n/a | 0.976 | n/a | n/a |
+| dilate (3x3, u8) |  | 3840x2160 | 0.93 | n/a | 6.024 | n/a | n/a |
+| erode (3x3, u8) |  | 1920x1080 | 0.28 | n/a | 0.947 | n/a | n/a |
+| erode (3x3, u8) |  | 3840x2160 | 0.94 | n/a | 6.298 | n/a | n/a |
+| gaussian_blur (3x3, u8) |  | 1920x1080 | 0.27 | 0.584 | 0.707 | n/a | 2.2x |
+| gaussian_blur (3x3, u8) |  | 3840x2160 | 1.01 | 2.263 | 8.214 | n/a | 2.2x |
+| gaussian_blur (5x5, f32) |  | 1920x1080 | 0.72 | 0.901 | 6.627 | n/a | 1.3x |
+| gaussian_blur (5x5, f32) |  | 3840x2160 | 2.46 | 3.448 | 96.717 | n/a | 1.4x |
+| gray_from_rgb (f32) |  | 1920x1080 | 0.19 | 0.296 | 2.344 | n/a | 1.6x |
+| gray_from_rgb (f32) |  | 3840x2160 | 0.75 | 1.021 | 10.803 | n/a | 1.4x |
+| gray_from_rgb (u8) |  | 1920x1080 | 0.05 | 0.192 | 0.117 | n/a | 3.8x |
+| gray_from_rgb (u8) |  | 3840x2160 | 0.19 | 0.459 | 2.179 | n/a | 2.4x |
+| hsv_from_rgb (f32) |  | 1920x1080 | 0.30 | 0.498 | 5.080 | n/a | 1.7x |
+| hsv_from_rgb (f32) |  | 3840x2160 | 1.16 | 1.650 | 64.939 | n/a | 1.4x |
+| integral (u8) |  | 1920x1080 | 1.24 | 0.622 | 0.536 | n/a | 0.5x |
+| integral (u8) |  | 3840x2160 | 3.57 | 1.967 | 4.420 | n/a | 0.6x |
+| laplacian (3x3, u8) |  | 1920x1080 | 0.10 | 0.559 | 0.744 | n/a | 5.6x |
+| laplacian (3x3, u8) |  | 3840x2160 | 0.39 | 2.005 | 4.876 | n/a | 5.1x |
+| remap (f32) | bilinear | 1920x1080 | 0.47 | 0.605 | 6.787 | n/a | 1.3x |
+| remap (f32) | bilinear | 3840x2160 | 1.91 | 2.134 | 74.928 | n/a | 1.1x |
+| resize (f32) | bicubic | 1920x1080->960x540 | 0.24 | 0.483 | 1.959 | 1.548 | 2.0x |
+| resize (f32) | bilinear | 1920x1080->960x540 | 0.22 | 0.284 | 1.794 | 0.193 | 1.3x |
+| resize (f32) | nearest | 1920x1080->960x540 | 0.14 | 0.219 | 1.301 | 0.681 | 1.6x |
+| resize (f32) | bicubic | 3840x2160->1920x1080 | 0.93 | 1.657 | 8.656 | 6.295 | 1.8x |
+| resize (f32) | bilinear | 3840x2160->1920x1080 | 0.86 | 0.927 | 8.500 | 0.717 | 1.1x |
+| resize (f32) | nearest | 3840x2160->1920x1080 | 0.52 | 0.642 | 6.613 | 2.638 | 1.2x |
+| resize (u8) | bicubic | 1920x1080->960x540 | n/a | 0.311 | 0.351 | 1.550 | n/a |
+| resize (u8) | bilinear | 1920x1080->960x540 | 0.07 | 0.126 | 0.150 | 0.193 | 1.8x |
+| resize (u8) | nearest | 1920x1080->960x540 | 0.04 | 0.109 | 0.113 | 0.679 | 2.7x |
+| resize (u8) | bicubic | 3840x2160->1920x1080 | n/a | 1.018 | 1.910 | 6.292 | n/a |
+| resize (u8) | bilinear | 3840x2160->1920x1080 | 0.26 | 0.293 | 1.996 | 0.719 | 1.1x |
+| resize (u8) | nearest | 3840x2160->1920x1080 | 0.14 | 0.225 | 1.240 | 2.664 | 1.6x |
+| sobel (3x3, f32) |  | 1920x1080 | 1.60 | 0.337 | 1.654 | n/a | 0.2x |
+| sobel (3x3, f32) |  | 3840x2160 | 6.42 | 1.176 | 8.209 | n/a | 0.2x |
+| warp_affine (30deg, f32) | bilinear | 1920x1080 | 0.53 | 0.646 | 6.775 | 3.135 | 1.2x |
+| warp_affine (30deg, f32) | bilinear | 3840x2160 | 2.21 | 2.577 | 76.633 | 12.696 | 1.2x |
+| warp_affine (30deg, u8) | bilinear | 1920x1080 | 0.56 | 0.594 | 1.996 | 3.136 | 1.1x |
+| warp_affine (30deg, u8) | bilinear | 3840x2160 | 2.22 | 1.977 | 9.758 | 12.669 | 0.9x |
+| warp_perspective (30deg, f32) | bilinear | 1920x1080 | 0.52 | 0.569 | 5.162 | n/a | 1.1x |
+| warp_perspective (30deg, f32) | bilinear | 3840x2160 | 2.17 | 2.067 | 72.846 | n/a | 1.0x |
+| ycc_from_rgb (u8) |  | 1920x1080 | 0.08 | 0.196 | 0.375 | n/a | 2.5x |
+| ycc_from_rgb (u8) |  | 3840x2160 | 0.30 | 0.562 | 5.074 | n/a | 1.9x |
+
+### Embedded - Jetson Orin Nano (sm_87), NVIDIA VPI 3.2.4
+
+VPI is not distributed for x86 through the CUDA repo, so these were measured on
+the Jetson, where VPI ships with JetPack. Only the 16 operations VPI actually
+implements are listed.
+
+Notes on VPI's coverage, found by probing the 3.2.4 API directly:
+
+- no cubic interpolation, so bicubic resize is absent
+- filters and morphology take single-channel `u8`, not RGB, and morphology wants
+  a 2D kernel array rather than a size
+- no `laplacian_filter` at all
+- no f32 RGB support for these operations
+
+The Jetson has OpenCV 4.8 without CUDA and no PyTorch, so the comparison there is
+against the CPU only.
+
+| Operation | Interp | Resolution | VPI 3.2.4 | OpenCV 4.8 CPU | VPI vs OpenCV CPU |
+| --- | --- | --- | ---: | ---: | ---: |
+| box_blur (3x3, u8) |  | 1920x1080 | 0.880 | 6.476 | 7.4x |
+| box_blur (3x3, u8) |  | 3840x2160 | 1.915 | 25.689 | 13.4x |
+| dilate (3x3, u8) |  | 1920x1080 | 0.976 | 2.197 | 2.3x |
+| dilate (3x3, u8) |  | 3840x2160 | 1.895 | 8.402 | 4.4x |
+| erode (3x3, u8) |  | 1920x1080 | 1.120 | 2.193 | 2.0x |
+| erode (3x3, u8) |  | 3840x2160 | 1.884 | 8.716 | 4.6x |
+| gaussian_blur (3x3, u8) |  | 1920x1080 | 0.785 | 1.057 | 1.3x |
+| gaussian_blur (3x3, u8) |  | 3840x2160 | 1.721 | 4.335 | 2.5x |
+| gray_from_rgb (u8) |  | 1920x1080 | 1.059 | 0.347 | 0.3x |
+| gray_from_rgb (u8) |  | 3840x2160 | 2.753 | 1.616 | 0.6x |
+| resize (u8) | bilinear | 1920x1080->960x540 | 0.757 | 0.639 | 0.8x |
+| resize (u8) | nearest | 1920x1080->960x540 | 0.616 | 0.345 | 0.6x |
+| resize (u8) | bilinear | 3840x2160->1920x1080 | 1.631 | 1.708 | 1.0x |
+| resize (u8) | nearest | 3840x2160->1920x1080 | 1.051 | 1.210 | 1.2x |
+| warp_affine (30deg, u8) | bilinear | 1920x1080 | 3.256 | 13.004 | 4.0x |
+| warp_affine (30deg, u8) | bilinear | 3840x2160 | 5.611 | 51.511 | 9.2x |
+
+VPI is strong exactly where you would expect a fixed-function vision library to
+be: box blur is 13.4x the OpenCV CPU path at 4K, and warp-affine 9.2x. It is
+narrow, though. Sixteen of the forty-six operations in this matrix exist in VPI
+at all.

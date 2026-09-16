@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Pixel-level correctness check: kornia-rs GPU kernels vs OpenCV reference.
 
-Runs the dump_cuda_resize and dump_cuda_warp_affine Rust examples, then
-compares their output against cv2 pixel-by-pixel.
+Runs the CUDA dump examples, then compares their output against cv2
+pixel-by-pixel.
 
 Build first:
     cargo build --features cuda --release \
         --example dump_cuda_resize \
-        --example dump_cuda_warp_affine
+        --example dump_cuda_warp_affine \
+        --example dump_cuda_morphology
 
 Run from repo root:
     python3 crates/kornia-imgproc/examples/check_correctness_cuda.py
@@ -58,6 +59,7 @@ import numpy as np
 
 RESIZE_BIN = "./target/release/examples/dump_cuda_resize"
 WARP_BIN   = "./target/release/examples/dump_cuda_warp_affine"
+MORPH_BIN  = "./target/release/examples/dump_cuda_morphology"
 
 PASS = "\033[32m✅ PASS\033[0m"
 FAIL = "\033[31m❌ FAIL\033[0m"
@@ -91,6 +93,14 @@ def run_rust_warp(mode: str, w: int, h: int, angle: float) -> tuple[np.ndarray, 
     pixels = np.array(d["pixels"], dtype=np.float32).reshape(h, w, 3)
     m = np.array(d["m"], dtype=np.float64).reshape(2, 3)
     return pixels, m
+
+
+def run_rust_morphology(operation: str, w: int, h: int) -> dict:
+    out = subprocess.run(
+        [MORPH_BIN, operation, str(w), str(h)],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    return json.loads(out)
 
 
 def rotation_matrix_cv(w: int, h: int, angle_deg: float) -> np.ndarray:
@@ -235,18 +245,55 @@ def check_warp() -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Morphology checks
+# ---------------------------------------------------------------------------
+
+def check_morphology() -> bool:
+    print("\n=== morphology vs cv2 ===")
+    all_ok = True
+    kernel = np.ones((3, 3), dtype=np.uint8)
+
+    for operation in ("dilate", "erode"):
+        width, height = 65, 43
+        result = run_rust_morphology(operation, width, height)
+        source = np.array(result["source"], dtype=np.uint8).reshape(height, width)
+        cpu = np.array(result["cpu"], dtype=np.uint8).reshape(height, width)
+        gpu = np.array(result["gpu"], dtype=np.uint8).reshape(height, width)
+
+        op = cv2.dilate if operation == "dilate" else cv2.erode
+        reference = op(source, kernel, borderType=cv2.BORDER_REPLICATE)
+        cpu_equal = np.array_equal(cpu, reference)
+        gpu_equal = np.array_equal(gpu, reference)
+        cpu_gpu_equal = np.array_equal(cpu, gpu)
+        print(
+            f"  {operation:7} {width}x{height}: "
+            f"CPU==CUDA {cpu_gpu_equal}  CPU==OpenCV {cpu_equal}  "
+            f"CUDA==OpenCV {gpu_equal}"
+        )
+        if not (cpu_equal and gpu_equal and cpu_gpu_equal):
+            all_ok = False
+            print(
+                f"    mismatches: CPU/OpenCV={np.count_nonzero(cpu != reference)} "
+                f"CUDA/OpenCV={np.count_nonzero(gpu != reference)}"
+            )
+
+    return all_ok
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 def check_bins() -> bool:
     ok = True
-    for path in (RESIZE_BIN, WARP_BIN):
+    for path in (RESIZE_BIN, WARP_BIN, MORPH_BIN):
         try:
             subprocess.run([path, "--help"], capture_output=True)
         except FileNotFoundError:
             print(f"Binary not found: {path}")
             print("Build with: cargo build --features cuda --release "
-                  "--example dump_cuda_resize --example dump_cuda_warp_affine")
+                "--example dump_cuda_resize --example dump_cuda_warp_affine "
+                "--example dump_cuda_morphology")
             ok = False
     return ok
 
@@ -257,10 +304,11 @@ if __name__ == "__main__":
 
     r_ok = check_resize()
     w_ok = check_warp()
+    m_ok = check_morphology()
 
     print()
-    if r_ok and w_ok:
+    if r_ok and w_ok and m_ok:
         print("✅  ALL CHECKS PASSED")
     else:
         print("❌  SOME CHECKS FAILED — see above")
-    sys.exit(0 if (r_ok and w_ok) else 1)
+    sys.exit(0 if (r_ok and w_ok and m_ok) else 1)
