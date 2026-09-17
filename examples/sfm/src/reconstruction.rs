@@ -33,6 +33,9 @@ pub struct ReconstructionOverrides {
     /// Enable Wald's SPRT for the per-view PnP-RANSAC registration, with the
     /// given expected-inlier ratio and Type-I error. `None` keeps it disabled.
     pub sprt: Option<SPRTConfig>,
+    /// Fit a global focal scale plus radial/tangential distortion against the
+    /// reconstruction (COLMAP-style alternating intrinsics refinement).
+    pub refine_intrinsics: Option<bool>,
 }
 
 /// Build a pinhole camera from intrinsics, with zero distortion.
@@ -100,6 +103,9 @@ pub fn run_sfm(
     }
     if let Some(s) = overrides.sprt {
         config.sprt = Some(s);
+    }
+    if let Some(v) = overrides.refine_intrinsics {
+        config.refine_intrinsics = v;
     }
     Ok(reconstruct(&cameras, &[], tracks, &config, None)?)
 }
