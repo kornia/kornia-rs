@@ -9,14 +9,14 @@ rustflags = ["-Copt-level=2", "-Ctarget-feature=+fp16,+fhm"]
 # those capabilities — lets us exercise the x86 SIMD paths without native
 # hardware. Needs `qemu-user-static` installed and binfmt_misc registered.
 [target.x86_64-unknown-linux-gnu]
-# Cross-linking from aarch64 via the x86_64 cross-gcc wrapper. It knows
-# where the amd64 sysroot lives (`/usr/x86_64-linux-gnu`) so libc/libm/libpthread
-# resolve without extra flags. rust-lld doesn't have this sysroot knowledge.
-linker = "x86_64-linux-gnu-gcc"
 # binfmt_misc runs the binary transparently under the tonistiigi-registered
 # qemu (8.x, supports AVX2/AVX-512 TCG). `QEMU_LD_PREFIX` points it at the
 # amd64 cross-sysroot for the dynamic loader.
 runner = ["env", "QEMU_LD_PREFIX=/usr/x86_64-linux-gnu"]
+# Cross-linking from aarch64 via the x86_64 cross-gcc wrapper. It knows
+# where the amd64 sysroot lives (`/usr/x86_64-linux-gnu`) so libc/libm/libpthread
+# resolve without extra flags. rust-lld doesn't have this sysroot knowledge.
+linker = "x86_64-linux-gnu-gcc"
 # Build with a portable x86_64 baseline so Linux wheels run on older CPUs
 # such as Sandy Bridge. AVX2/FMA kernels are still compiled with
 # `#[target_feature]` and selected through runtime CPU dispatch.
