@@ -181,6 +181,49 @@ pub fn verify_matches_geometrically(
     verified
 }
 
+/// Append wide-baseline matches to `edges`: for every frame `i`, also match it
+/// against `i+K, i+2K, ...` where `K` is the stride, skipping pairs already
+/// covered by the sliding window (`j - i <= window`).
+///
+/// Wide-baseline pairs give large-parallax triangulation and long tracks,
+/// which let more cameras register via PnP. They are harder to match (more
+/// outliers), so run `--geo-verify` after enabling this.
+///
+/// Returns the number of edges appended.
+pub fn append_wide_baseline_edges(
+    features: &[FrameFeatures],
+    window: usize,
+    stride: usize,
+    ratio: f32,
+    orb_check_orientation: bool,
+    edges: &mut Vec<TrackEdge>,
+) -> usize {
+    if stride == 0 || features.len() <= window + 1 {
+        return 0;
+    }
+    let mut added = 0;
+    for i in 0..features.len() {
+        // First j > i + window with (j - i) % stride == 0.
+        let start = i + window + 1;
+        let first = start + ((stride - (start - i) % stride) % stride);
+        for j in (first..features.len()).step_by(stride) {
+            let matches = match_pair(&features[i], &features[j], ratio, orb_check_orientation);
+            for (kpt_a, kpt_b) in matches {
+                edges.push(TrackEdge {
+                    cam_a: i,
+                    kpt_a: kpt_a as u32,
+                    uv_a: keypoint_to_uv(features[i].keypoints[kpt_a]),
+                    cam_b: j,
+                    kpt_b: kpt_b as u32,
+                    uv_b: keypoint_to_uv(features[j].keypoints[kpt_b]),
+                });
+                added += 1;
+            }
+        }
+    }
+    added
+}
+
 /// Match a single frame pair; returns `(idx_in_a, idx_in_b)` pairs.
 fn match_pair(
     a: &FrameFeatures,
@@ -406,5 +449,35 @@ mod tests {
             });
         }
         assert!(verify_matches_geometrically(&edges, 3.0, 8).is_empty());
+    }
+
+    #[test]
+    fn wide_baseline_skips_window_pairs_and_steps_by_stride() {
+        // 5 frames, all sharing the same 2 descriptors, so every pair matches.
+        let f = || orb_features(keypoints(2), &[1, 2]);
+        let frames: Vec<FrameFeatures> = (0..5).map(|_| f()).collect();
+
+        let mut edges = Vec::new();
+        let added = append_wide_baseline_edges(&frames, 1, 2, 0.8, true, &mut edges);
+        assert_eq!(added, 4 * 2, "pairs (0,2),(0,4),(1,3),(2,4) x 2 matches");
+        let pairs: Vec<(usize, usize)> = edges.iter().map(|e| (e.cam_a, e.cam_b)).collect();
+        for (a, b) in &pairs {
+            assert!(
+                b - a > 1 && (b - a) % 2 == 0,
+                "pair ({a},{b}) must be wide-baseline (dist > window, multiple of stride)"
+            );
+        }
+    }
+
+    #[test]
+    fn wide_baseline_zero_stride_is_noop() {
+        let f = orb_features(keypoints(2), &[1, 2]);
+        let frames = vec![f.clone(), f];
+        let mut edges = Vec::new();
+        assert_eq!(
+            append_wide_baseline_edges(&frames, 1, 0, 0.8, true, &mut edges),
+            0
+        );
+        assert!(edges.is_empty());
     }
 }
