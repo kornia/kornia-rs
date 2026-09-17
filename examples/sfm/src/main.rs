@@ -141,6 +141,16 @@ struct Args {
     /// SPRT Type-I error delta, probability of rejecting a good pose (default: 0.05)
     #[argh(option, default = "0.05")]
     sprt_delta: f64,
+
+    /// refine focal length + radial/tangential distortion against the
+    /// reconstruction (helps when intrinsics are guessed)
+    #[argh(switch)]
+    refine_intrinsics: bool,
+
+    /// also match frame i against i+K, i+2K, ... (wide baseline, longer
+    /// tracks, more registered views; 0 = off)
+    #[argh(option, default = "0")]
+    wide_baseline: usize,
 }
 
 #[tokio::main]
@@ -229,7 +239,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         eprintln!("[3/6] matching frames (window={})", args.match_window);
     }
     let t = Instant::now();
-    let edges = if args.async_video {
+    let mut edges = if args.async_video {
         matching::match_pairs_parallel(
             &all_features,
             args.match_window,
@@ -249,6 +259,27 @@ async fn main() -> Result<(), Box<dyn Error>> {
         edges.len(),
         t.elapsed().as_secs_f64()
     );
+
+    // 3.25. Optional: wide-baseline matching (long jumps beyond the window).
+    if args.wide_baseline > 0 {
+        eprintln!(
+            "[3/6] wide-baseline matching (stride={})",
+            args.wide_baseline
+        );
+        let t = Instant::now();
+        let added = matching::append_wide_baseline_edges(
+            &all_features,
+            args.match_window,
+            args.wide_baseline,
+            args.ratio,
+            !args.orb_no_orientation_check,
+            &mut edges,
+        );
+        eprintln!(
+            "[3/6] added {added} wide-baseline matches in {:.1}s",
+            t.elapsed().as_secs_f64()
+        );
+    }
 
     // 3.5. Optional: geometric verification (epipolar RANSAC) to reject false matches.
     let edges = if args.geo_verify {
@@ -305,6 +336,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             delta: args.sprt_delta,
             ..Default::default()
         }),
+        refine_intrinsics: args.refine_intrinsics.then_some(true),
     };
     let reconstruction = reconstruction::run_sfm(
         &tracks,
@@ -318,10 +350,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     )?;
     let registered = reconstruction.views.iter().filter(|v| v.is_some()).count();
     eprintln!(
-        "[5/6] reconstructed {} points across {} registered views (scale: {:?}) in {:.1}s",
+        "[5/6] reconstructed {} points across {} registered views (scale: {:?}, rmse {:.3} px) in {:.1}s",
         reconstruction.points.len(),
         registered,
         reconstruction.scale,
+        reconstruction.reproj_rmse_px,
         t.elapsed().as_secs_f64(),
     );
 
@@ -337,10 +370,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
         t.elapsed().as_secs_f64(),
     );
 
-    // 7. Optional: visualize the result in the rerun viewer.
+    // 7. Optional: visualize the result (point cloud + camera poses) in rerun.
     if args.view {
-        eprintln!("[7/7] opening PLY in rerun viewer...");
-        ply_viewer::view_ply(&args.output)?;
+        eprintln!("[7/7] opening PLY + camera poses in rerun viewer...");
+        let (frame_w, frame_h) = rgb_frames
+            .first()
+            .map(|f| (f.width(), f.height()))
+            .unwrap_or((0, 0));
+        ply_viewer::view_world(
+            &args.output,
+            &reconstruction.views,
+            args.fx,
+            args.fy,
+            args.cx,
+            args.cy,
+            frame_w,
+            frame_h,
+        )?;
     }
 
     Ok(())
