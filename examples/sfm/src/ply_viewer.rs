@@ -11,21 +11,22 @@ use std::path::Path;
 use kornia_3d::pose::Pose3d;
 use kornia_algebra::QuatF64;
 
-/// Convert a camera pose (`T_world_cam`) into `(translation, quaternion_wxyz)`
-/// for rerun's `Transform3D::from_translation_rotation`.
+/// Convert a camera pose (`T_world_cam` = world→cam, as returned by
+/// `kornia_calib::reconstruct`) into `(translation, quaternion_wxyz)` for
+/// rerun's `Transform3D::from_translation_rotation`.
 ///
-/// rerun transforms are parent→child (`ChildFromParent`), so the camera's
-/// world transform is the inverse of `T_world_cam`: its translation is the
-/// camera center, its rotation is the cam→world rotation.
+/// rerun's `ChildFromParent` relation interprets the logged transform as the
+/// parent→child (world→cam) transform, which is exactly `T_world_cam` — the
+/// same convention `examples/colmap_rerun` uses (colmap logs qvec/tvec with
+/// `ChildFromParent`).
 fn pose_to_rerun(pose: &Pose3d) -> ([f32; 3], [f32; 4]) {
-    let cam_world = pose.inverse();
     let t = [
-        cam_world.translation.x as f32,
-        cam_world.translation.y as f32,
-        cam_world.translation.z as f32,
+        pose.translation.x as f32,
+        pose.translation.y as f32,
+        pose.translation.z as f32,
     ];
     // QuatF64::to_array is [x, y, z, w] (glam); rerun wants wxyz.
-    let q = QuatF64::from_mat3(&cam_world.rotation).to_array();
+    let q = QuatF64::from_mat3(&pose.rotation).to_array();
     (
         [t[0], t[1], t[2]],
         [q[3] as f32, q[0] as f32, q[1] as f32, q[2] as f32],
@@ -66,13 +67,43 @@ pub fn view_world(
         path.display()
     );
 
+    // Up-to-scale maps can be tiny: the orbit radius may be ~0.2 units while
+    // the pinhole frustums are ~1 unit long, which makes every camera cluster
+    // at the center visually. Normalize the display so the largest camera
+    // radius maps to a fixed target (rotation unchanged).
+    const TARGET_ORBIT_RADIUS: f64 = 5.0;
+    let radii: Vec<f64> = views
+        .iter()
+        .filter_map(|v| v.as_ref())
+        .map(|p| p.inverse().translation.length())
+        .collect();
+    let max_radius = radii.iter().cloned().fold(0.0, f64::max);
+    let max_extent = pointcloud
+        .points()
+        .iter()
+        .map(|p| (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt())
+        .fold(0.0, f64::max);
+    let scale = if max_radius > 1e-9 {
+        TARGET_ORBIT_RADIUS / max_radius
+    } else if max_extent > 1e-9 {
+        1.0 / max_extent
+    } else {
+        1.0
+    };
+
     let rec = rerun::RecordingStreamBuilder::new("SfM Point Cloud Viewer").spawn()?;
     rec.log("/", &rerun::ViewCoordinates::RIGHT_HAND_Y_DOWN())?;
 
     let points: Vec<rerun::Position3D> = pointcloud
         .points()
         .iter()
-        .map(|p| rerun::Position3D::new(p[0] as f32, p[1] as f32, p[2] as f32))
+        .map(|p| {
+            rerun::Position3D::new(
+                (p[0] * scale) as f32,
+                (p[1] * scale) as f32,
+                (p[2] * scale) as f32,
+            )
+        })
         .collect();
 
     let colors: Vec<rerun::Color> = pointcloud
@@ -90,11 +121,17 @@ pub fn view_world(
         &rerun::Points3D::new(points).with_colors(colors),
     )?;
 
-    // Camera frustums: one entity per registered view.
+    // Camera frustums: one entity per registered view (translation scaled,
+    // rotation unchanged).
     let mut n_cameras = 0;
     for (i, view) in views.iter().enumerate() {
         let Some(pose) = view else { continue };
         let (t, q) = pose_to_rerun(pose);
+        let t = [
+            t[0] * scale as f32,
+            t[1] * scale as f32,
+            t[2] * scale as f32,
+        ];
         rec.log(
             format!("world/camera_{i}"),
             &rerun::Transform3D::from_translation_rotation(
@@ -113,6 +150,15 @@ pub fn view_world(
             .with_principal_point([cx as f32, cy as f32]),
         )?;
         n_cameras += 1;
+    }
+    if !radii.is_empty() {
+        let min = radii.iter().cloned().fold(f64::INFINITY, f64::min);
+        eprintln!(
+            "[view] camera centers: orbit radius min {min:.3} / max {max_radius:.3} -> scaled \
+             {:.2}..{:.2}; display scale {scale:.2}",
+            min * scale,
+            max_radius * scale
+        );
     }
     eprintln!(
         "[view] logged {} cameras and {} points. Close the viewer to exit.",
@@ -141,9 +187,10 @@ mod tests {
     }
 
     #[test]
-    fn pose_to_rerun_uses_camera_center_from_inverse() {
-        // T_world_cam with a 90° yaw and t = (-5,0,0): its camera center in
-        // world is -R^T * t = (0,0,5).
+    fn pose_to_rerun_uses_world_to_cam_convention() {
+        // T_world_cam (world→cam) with a 90° yaw and translation (-5,0,0).
+        // rerun's ChildFromParent expects exactly this W2C transform, so the
+        // logged values must be pose.translation / pose.rotation verbatim.
         let rot = Mat3F64::from_cols(
             Vec3F64::new(0.0, 0.0, -1.0),
             Vec3F64::new(0.0, 1.0, 0.0),
@@ -151,9 +198,9 @@ mod tests {
         );
         let pose = Pose3d::new(rot, Vec3F64::new(-5.0, 0.0, 0.0));
         let (t, q) = pose_to_rerun(&pose);
-        assert!((t[0]).abs() < 1e-4, "t0={}", t[0]);
-        assert!((t[1]).abs() < 1e-4, "t1={}", t[1]);
-        assert!((t[2] - 5.0).abs() < 1e-3, "t2={}", t[2]);
+        // Translation passed through verbatim (not inverted).
+        assert!((t[0] + 5.0).abs() < 1e-4, "t0={}", t[0]);
+        assert!(t[1].abs() < 1e-4 && t[2].abs() < 1e-4, "t={t:?}");
         // Rotation is a quarter turn: quaternion must be unit length.
         let norm = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
         assert!((norm - 1.0).abs() < 1e-4, "unit quaternion, got {norm}");
