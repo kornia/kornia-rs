@@ -7,8 +7,8 @@ import kornia_rs
 @pytest.mark.parametrize(
     ("vector_type", "dtype"),
     [
-        (kornia_rs.Vec3F32, np.float32),
-        (kornia_rs.Vec3F64, np.float64),
+        (kornia_rs.algebra.Vec3F32, np.float32),
+        (kornia_rs.algebra.Vec3F64, np.float64),
     ],
 )
 def test_vec3_constructor(vector_type, dtype):
@@ -28,8 +28,8 @@ def test_vec3_constructor(vector_type, dtype):
 @pytest.mark.parametrize(
     ("vector_type", "dtype"),
     [
-        (kornia_rs.Vec3F32, np.float32),
-        (kornia_rs.Vec3F64, np.float64),
+        (kornia_rs.algebra.Vec3F32, np.float32),
+        (kornia_rs.algebra.Vec3F64, np.float64),
     ],
 )
 def test_vec3_numpy_roundtrip(vector_type, dtype):
@@ -45,8 +45,8 @@ def test_vec3_numpy_roundtrip(vector_type, dtype):
 @pytest.mark.parametrize(
     ("vector_type", "dtype"),
     [
-        (kornia_rs.Vec3F32, np.float32),
-        (kornia_rs.Vec3F64, np.float64),
+        (kornia_rs.algebra.Vec3F32, np.float32),
+        (kornia_rs.algebra.Vec3F64, np.float64),
     ],
 )
 def test_vec3_rejects_wrong_length(vector_type, dtype):
@@ -60,11 +60,11 @@ def test_vec3_f32_rejects_float64():
     array = np.array([1.0, 2.0, 3.0], dtype=np.float64)
 
     with pytest.raises(TypeError):
-        kornia_rs.Vec3F32.from_numpy(array)
+        kornia_rs.algebra.Vec3F32.from_numpy(array)
 
 
 def test_vec3_f64_rejects_float32():
     array = np.array([1.0, 2.0, 3.0], dtype=np.float32)
 
     with pytest.raises(TypeError):
-        kornia_rs.Vec3F64.from_numpy(array)
+        kornia_rs.algebra.Vec3F64.from_numpy(array)

@@ -4,7 +4,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 /// Python binding for `kornia_algebra::Vec3F32`.
-#[pyclass(name = "Vec3F32", module = "kornia_rs", frozen)]
+#[pyclass(name = "Vec3F32", module = "kornia_rs.algebra", frozen)]
 pub struct PyVec3F32(Vec3F32);
 
 #[pymethods]
@@ -46,7 +46,7 @@ impl PyVec3F32 {
 }
 
 /// Python binding for `kornia_algebra::Vec3F64`.
-#[pyclass(name = "Vec3F64", module = "kornia_rs", frozen)]
+#[pyclass(name = "Vec3F64", module = "kornia_rs.algebra", frozen)]
 pub struct PyVec3F64(Vec3F64);
 
 #[pymethods]
