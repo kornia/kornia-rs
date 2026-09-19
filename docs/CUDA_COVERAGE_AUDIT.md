@@ -1,0 +1,160 @@
+# 📘 CUDA Backend Coverage Handbook
+> **Reference Guide & Gap Analysis for `kornia-imgproc`**  
+> *Tracking Issue: [Phase 1 Coverage Audit (#1135)](https://github.com/kornia/kornia-rs/issues/1135)*
+
+---
+
+## 🧭 Executive Dashboard
+
+This handbook provides an easy-to-read, comprehensive comparison between `kornia-imgproc`'s **CPU implementation** and its **CUDA GPU backend**. It serves as an actionable roadmap for contributors looking to implement missing GPU kernels or verify numerical correctness.
+
+### Coverage at a Glance
+
+```
+1. Filter Operations     [██████████████░░░░░░] 70%  (11 of 16 supported)
+2. Geometric Operations  [████████████░░░░░░░░] 60%  (4 of 7 supported)
+3. Color / Hist / CLAHE  [█████████████████░░░] 85%  (25+ of 28 supported)
+4. Feature Operations    [█████░░░░░░░░░░░░░░░] 25%  (1 of 4 suites supported)
+```
+
+### Status Legend
+* ✅ **Full Parity**: Implemented on CUDA with matching parameters, types, and precision.
+* 🟡 **Partial / Type Gap**: Implemented on CUDA, but limited to certain types (e.g. `u8` only, single-channel only, or fixed kernel sizes).
+* ❌ **CPU-Only (Missing)**: No CUDA kernel exists today. High priority for new contributions.
+
+---
+
+## 🔍 Chapter 1: Filter Operations
+
+Filter operations are located in [`crates/kornia-imgproc/src/filter/`](file:///c:/Users/dkhan/Desktop/kornia-rs/crates/kornia-imgproc/src/filter). Most separable filters are accelerated through a shared 2-pass launcher (`separable_filter_f32_cuda` and `separable_blur_u8_cuda`).
+
+### Quick Status Matrix
+
+| Operation | CPU Types | CUDA Status | CUDA Types | Notes |
+|---|---|:---:|---|---|
+| **`box_blur`** | `f32`, any `C` | ✅ | `f32`, any `C` | Full parity via separable horizontal + vertical filter. |
+| **`box_blur_u8`** | `u8`, any `C` | ✅ | `u8`, any `C` | Optimized Q8 fixed-point separable blur. |
+| **`box_blur_fast`** | `f32`, any `C` | ❌ | *None* | Fast 3-pass box approximation of Gaussian. |
+| **`gaussian_blur`** | `f32`, any `C` | ✅ | `f32`, any `C` | Full parity with arbitrary kernel sizes & sigmas. |
+| **`gaussian_blur_u8`** | `u8`, any `C` | ✅ | `u8`, any `C` | Routes to 3×3 binomial or Q8 two-pass automatically. |
+| **`sobel`** | `f32`, any `C` | ✅ | `f32`, any `C` | Computes gradient magnitude $\sqrt{g_x^2 + g_y^2}$. |
+| **`scharr`** | `f32`, any `C` | ✅ | `f32`, any `C` | Higher accuracy 3×3 derivative filter. |
+| **`spatial_gradient`** | `f32`, any `C` | ❌ | *None* | Returns `(gx, gy)` pair. Computed on CUDA internally, but no public API. |
+| **`laplacian_u8`** | `u8` $\to$ `i16` | ✅ | `u8` $\to$ `i16` | 3×3 second-order derivative filter. |
+| **`bilateral_filter`** | `u8` (`C=1`) | 🟡 | `u8` (`C=1` only) | Byte-for-byte OpenCV parity. Multi-channel (RGB) and `f32` missing on both. |
+| **`median_blur`** | `u8`, any `C` | 🟡 | `u8` (3×3 & 5×5) | Fast sorting networks. Kernels $\ge 7\times 7$ and `f32` missing on CUDA. |
+| **`integral_image`** | `f32`, `u8` | ✅ | `f32`, `u8` | Summed Area Table computation. |
+
+> [!TIP]
+> **High-Impact Filter Issue to Pick Up**:
+> **Expose CUDA `spatial_gradient_f32`**: The CUDA Sobel/Scharr pipelines already allocate scratch buffers for `gx` and `gy` internally. Creating a public function that returns `(Image<f32, C>, Image<f32, C>)` on device memory is an easy, high-value PR!
+
+---
+
+## 📐 Chapter 2: Geometric Operations
+
+Geometric operations are in [`crates/kornia-imgproc/src/warp/`](file:///c:/Users/dkhan/Desktop/kornia-rs/crates/kornia-imgproc/src/warp), [`resize/`](file:///c:/Users/dkhan/Desktop/kornia-rs/crates/kornia-imgproc/src/resize), and [`interpolation/`](file:///c:/Users/dkhan/Desktop/kornia-rs/crates/kornia-imgproc/src/interpolation).
+
+### Quick Status Matrix
+
+| Operation | Interpolation Modes | CUDA Status | Supported Dtypes | Notes |
+|---|---|:---:|---|---|
+| **`resize`** | Nearest, Bilinear, Bicubic, Lanczos | ✅ | `u8`, `f32` (any `C`) | Full parity across all 4 modes. |
+| **`warp_affine`** | Nearest, Bilinear, Bicubic, Lanczos | ✅ | `u8`, `f32` (any `C`) | Byte-exact contract with CPU implementation. |
+| **`warp_perspective`** | Nearest, Bilinear, Bicubic, Lanczos | ✅ | `u8`, `f32` (any `C`) | Full parity with 3×3 homography transform. |
+| **`remap`** | Nearest, Bilinear | 🟡 | `u8`, `f32` (any `C`) | Bicubic and Lanczos modes are missing on both CPU and CUDA. |
+| **`crop`** | Rectangular RoI | ❌ | *None* | Extracting a sub-image bounding box is CPU-only. |
+| **`pad`** | Constant, Reflect, Replicate | ❌ | *None* | Standalone padding is CPU-only (only exists fused inside `preprocess`). |
+| **`flip`** | Horizontal, Vertical, Both, Transpose | ❌ | *None* | Mirroring and 90° rotations are completely CPU-only. |
+
+> [!TIP]
+> **Easiest PR in the Entire Roadmap**:
+> **`feat(cuda): implement CUDA flip and transpose`**:
+> Flipping an image requires no interpolation math—just swapping index coordinates in a 2D grid:
+> * Horizontal: `src_x = (width - 1) - dst_x`
+> * Vertical: `src_y = (height - 1) - dst_y`
+
+---
+
+## 🎨 Chapter 3: Color, Histogram & CLAHE Operations
+
+Color space transformations live in [`crates/kornia-imgproc/src/color/`](file:///c:/Users/dkhan/Desktop/kornia-rs/crates/kornia-imgproc/src/color). This is the most complete CUDA subsystem in the library.
+
+### Quick Status Matrix
+
+| Subsystem | Operations | CUDA Status | Notes |
+|---|---|:---:|---|
+| **Basic Color** | `gray_from_rgb`, `rgb_from_gray` | ✅ | Supports `u8`, `f32`, and `f64`. |
+| **Swizzle** | `bgr_from_rgb`, `rgba_from_rgb`, `bgra_from_rgb` | ✅ | Supports `u8` and `f32`. Fast memory swizzling. |
+| **Perceptual Spaces** | `hsv`, `hls` | 🟡 | Full parity for `f32` and `f64`. Integer `u8` missing. |
+| **CIE Standards** | `linear_rgb`, `xyz`, `lab`, `luv` | ✅ | Full parity for `f32` and `f64`. |
+| **Video / Broadcast** | `yuv`, `ycbcr` | ✅ | Full parity for `u8` and `f32` across chroma formats. |
+| **Sensor Demosaicing** | `rgb_from_bayer` | ✅ | Supports RGGB, BGGR, GBRG, GRBG patterns. |
+| **Histogramming** | `compute_histogram`, `equalize_hist` | ✅ | Single-channel `u8` full parity. |
+| **Contrast** | `clahe` | ✅ | Contrast Limited Adaptive Histogram Equalization. |
+| **Colormaps** | `apply_colormap` | ❌ | 21 OpenCV colormaps (Jet, Viridis, Turbo) are CPU-only. |
+| **Color Matrix** | `transform_color` | ❌ | Custom 3×3 matrix color transform is CPU-only. |
+| **Thresholding** | `threshold_binary`, `truncate`, `otsu` | ❌ | All thresholding ops in `threshold.rs` are CPU-only. |
+
+> [!TIP]
+> **Recommended First Color PR**:
+> **`feat(cuda): implement CUDA threshold_binary`**:
+> Thresholding is embarrassingly parallel and trivial to write:
+> ```cuda
+> int idx = blockIdx.x * blockDim.x + threadIdx.x;
+> if (idx < npixels) {
+>     dst[idx] = (src[idx] > thresh) ? max_val : 0;
+> }
+> ```
+
+---
+
+## 🎯 Chapter 4: Feature Detection & Matching
+
+Feature algorithms live in [`crates/kornia-imgproc/src/features/`](file:///c:/Users/dkhan/Desktop/kornia-rs/crates/kornia-imgproc/src/features).
+
+### Quick Status Matrix
+
+| Module | Description | CUDA Status | Notes |
+|---|---|:---:|---|
+| **`sift`** | SIFT detector, orientation & descriptors | ✅ | **World-class CUDA implementation**: Scale-space pyramid, DoG extrema, orientation histogram, 128D descriptors, and GPU matcher. |
+| **`fast`** | FAST-9 / FAST-12 corner detector | ❌ | CPU-only (Planned for Phase 4). |
+| **`orb`** | ORB detector, FAST keypoints, rBRIEF | ❌ | CPU-only (Planned for Phase 4). |
+| **`responses`** | Harris & Shi-Tomasi corner scores | ❌ | CPU-only. |
+| **`match`** | Brute-force & Hamming distance matcher | ❌ | Only SIFT matcher is on GPU; generic matcher is CPU-only. |
+| **`cells`** | Spatial grid distribution / binning | ❌ | CPU-only. |
+
+---
+
+## 🛠️ Implementation Playbook: Top 4 Gap Issues to File & Solve
+
+If you want to contribute code after this audit, here are the 4 best bite-sized issues ranked by difficulty:
+
+### 1. `feat(cuda): implement CUDA flip operations`
+* **Crate**: `kornia-imgproc`
+* **Difficulty**: 🟢 Easy (1–2 days)
+* **What to do**:
+  1. Add NVRTC kernel in `crates/kornia-imgproc/src/cuda/` mapping `dst[y, x] = src[y, (w - 1) - x]` (horizontal) and `dst[(h - 1) - y, x]` (vertical).
+  2. Add `try_device!` residency branch in [`crates/kornia-imgproc/src/flip.rs`](file:///c:/Users/dkhan/Desktop/kornia-rs/crates/kornia-imgproc/src/flip.rs).
+  3. Add parity tests comparing CPU and CUDA outputs.
+
+### 2. `feat(cuda): implement binary threshold operations`
+* **Crate**: `kornia-imgproc`
+* **Difficulty**: 🟢 Easy (1–2 days)
+* **What to do**:
+  1. Add element-wise kernel in `crates/kornia-imgproc/src/cuda/` for `threshold_binary` and `threshold_truncate`.
+  2. Connect to `crates/kornia-imgproc/src/threshold.rs`.
+
+### 3. `feat(cuda): implement CUDA apply_colormap`
+* **Crate**: `kornia-imgproc`
+* **Difficulty**: 🟡 Medium (2–3 days)
+* **What to do**:
+  1. Upload the 256×3 byte LUTs from `colormap_luts.rs` to device memory.
+  2. Map grayscale input pixels to output RGB triplets via device array indexing.
+
+### 4. `feat(cuda): expose spatial_gradient_f32`
+* **Crate**: `kornia-imgproc`
+* **Difficulty**: 🟡 Medium (2–3 days)
+* **What to do**:
+  1. Create a public function `spatial_gradient` that returns `(Image<f32, C>, Image<f32, C>)`.
+  2. Reuse the existing separable filter launches already present in `gradient_magnitude_f32_cuda`.
