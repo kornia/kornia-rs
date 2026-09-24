@@ -1,5 +1,6 @@
 use crate::image::{
-    alloc_output_pyarray, alloc_output_pyarray_f32, alloc_output_pyarray_u16, to_pyerr,
+    alloc_output_pyarray_f32_zeroed, alloc_output_pyarray_u16_zeroed, alloc_output_pyarray_zeroed,
+    to_pyerr,
 };
 use kornia_image::{
     color_spaces::{Gray16, Gray8, Grayf32, Rgb16, Rgb8, Rgba16, Rgba8, Rgbf32},
@@ -82,37 +83,40 @@ fn read_image_png_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<Py
 
     match (layout.channels, layout.pixel_format) {
         (1, PixelFormat::U8) => {
-            let (dst, out) = unsafe { alloc_output_pyarray::<1>(py, layout.image_size)? };
+            let (dst, out) = unsafe { alloc_output_pyarray_zeroed::<1>(py, layout.image_size)? };
             let mut wrapped = Gray8(dst);
             png_io::decode_image_png_mono8(&png_data, &mut wrapped).map_err(to_pyerr)?;
             Ok(out.into())
         }
         (1, PixelFormat::U16) => {
-            let (dst, out) = unsafe { alloc_output_pyarray_u16::<1>(py, layout.image_size)? };
+            let (dst, out) =
+                unsafe { alloc_output_pyarray_u16_zeroed::<1>(py, layout.image_size)? };
             let mut wrapped = Gray16(dst);
             png_io::decode_image_png_mono16(&png_data, &mut wrapped).map_err(to_pyerr)?;
             Ok(out.into())
         }
         (3, PixelFormat::U8) => {
-            let (dst, out) = unsafe { alloc_output_pyarray::<3>(py, layout.image_size)? };
+            let (dst, out) = unsafe { alloc_output_pyarray_zeroed::<3>(py, layout.image_size)? };
             let mut wrapped = Rgb8(dst);
             png_io::decode_image_png_rgb8(&png_data, &mut wrapped).map_err(to_pyerr)?;
             Ok(out.into())
         }
         (3, PixelFormat::U16) => {
-            let (dst, out) = unsafe { alloc_output_pyarray_u16::<3>(py, layout.image_size)? };
+            let (dst, out) =
+                unsafe { alloc_output_pyarray_u16_zeroed::<3>(py, layout.image_size)? };
             let mut wrapped = Rgb16(dst);
             png_io::decode_image_png_rgb16(&png_data, &mut wrapped).map_err(to_pyerr)?;
             Ok(out.into())
         }
         (4, PixelFormat::U8) => {
-            let (dst, out) = unsafe { alloc_output_pyarray::<4>(py, layout.image_size)? };
+            let (dst, out) = unsafe { alloc_output_pyarray_zeroed::<4>(py, layout.image_size)? };
             let mut wrapped = Rgba8(dst);
             png_io::decode_image_png_rgba8(&png_data, &mut wrapped).map_err(to_pyerr)?;
             Ok(out.into())
         }
         (4, PixelFormat::U16) => {
-            let (dst, out) = unsafe { alloc_output_pyarray_u16::<4>(py, layout.image_size)? };
+            let (dst, out) =
+                unsafe { alloc_output_pyarray_u16_zeroed::<4>(py, layout.image_size)? };
             let mut wrapped = Rgba16(dst);
             png_io::decode_image_png_rgba16(&png_data, &mut wrapped).map_err(to_pyerr)?;
             Ok(out.into())
@@ -131,37 +135,41 @@ fn read_image_tiff_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<P
 
     match (layout.channels, layout.pixel_format) {
         (1, PixelFormat::U8) => {
-            let (dst, out) = unsafe { alloc_output_pyarray::<1>(py, layout.image_size)? };
+            let (dst, out) = unsafe { alloc_output_pyarray_zeroed::<1>(py, layout.image_size)? };
             let mut wrapped = Gray8(dst);
             tiff_io::decode_image_tiff_mono8(&tiff_data, &mut wrapped).map_err(to_pyerr)?;
             Ok(out.into())
         }
         (1, PixelFormat::U16) => {
-            let (dst, out) = unsafe { alloc_output_pyarray_u16::<1>(py, layout.image_size)? };
+            let (dst, out) =
+                unsafe { alloc_output_pyarray_u16_zeroed::<1>(py, layout.image_size)? };
             let mut wrapped = Gray16(dst);
             tiff_io::decode_image_tiff_mono16(&tiff_data, &mut wrapped).map_err(to_pyerr)?;
             Ok(out.into())
         }
         (3, PixelFormat::U8) => {
-            let (dst, out) = unsafe { alloc_output_pyarray::<3>(py, layout.image_size)? };
+            let (dst, out) = unsafe { alloc_output_pyarray_zeroed::<3>(py, layout.image_size)? };
             let mut wrapped = Rgb8(dst);
             tiff_io::decode_image_tiff_rgb8(&tiff_data, &mut wrapped).map_err(to_pyerr)?;
             Ok(out.into())
         }
         (3, PixelFormat::U16) => {
-            let (dst, out) = unsafe { alloc_output_pyarray_u16::<3>(py, layout.image_size)? };
+            let (dst, out) =
+                unsafe { alloc_output_pyarray_u16_zeroed::<3>(py, layout.image_size)? };
             let mut wrapped = Rgb16(dst);
             tiff_io::decode_image_tiff_rgb16(&tiff_data, &mut wrapped).map_err(to_pyerr)?;
             Ok(out.into())
         }
         (1, PixelFormat::F32) => {
-            let (dst, out) = unsafe { alloc_output_pyarray_f32::<1>(py, layout.image_size)? };
+            let (dst, out) =
+                unsafe { alloc_output_pyarray_f32_zeroed::<1>(py, layout.image_size)? };
             let mut wrapped = Grayf32(dst);
             tiff_io::decode_image_tiff_mono32f(&tiff_data, &mut wrapped).map_err(to_pyerr)?;
             Ok(out.into())
         }
         (3, PixelFormat::F32) => {
-            let (dst, out) = unsafe { alloc_output_pyarray_f32::<3>(py, layout.image_size)? };
+            let (dst, out) =
+                unsafe { alloc_output_pyarray_f32_zeroed::<3>(py, layout.image_size)? };
             let mut wrapped = Rgbf32(dst);
             tiff_io::decode_image_tiff_rgb32f(&tiff_data, &mut wrapped).map_err(to_pyerr)?;
             Ok(out.into())
@@ -180,19 +188,19 @@ fn read_image_webp_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<P
 
     match layout.channels {
         1 => {
-            let (dst, out) = unsafe { alloc_output_pyarray::<1>(py, layout.image_size)? };
+            let (dst, out) = unsafe { alloc_output_pyarray_zeroed::<1>(py, layout.image_size)? };
             let mut wrapped = Gray8(dst);
             webp_io::decode_image_webp_gray8(&data, &mut wrapped).map_err(to_pyerr)?;
             Ok(out.into())
         }
         3 => {
-            let (dst, out) = unsafe { alloc_output_pyarray::<3>(py, layout.image_size)? };
+            let (dst, out) = unsafe { alloc_output_pyarray_zeroed::<3>(py, layout.image_size)? };
             let mut wrapped = Rgb8(dst);
             webp_io::decode_image_webp_rgb8(&data, &mut wrapped).map_err(to_pyerr)?;
             Ok(out.into())
         }
         4 => {
-            let (dst, out) = unsafe { alloc_output_pyarray::<4>(py, layout.image_size)? };
+            let (dst, out) = unsafe { alloc_output_pyarray_zeroed::<4>(py, layout.image_size)? };
             let mut wrapped = Rgba8(dst);
             webp_io::decode_image_webp_rgba8(&data, &mut wrapped).map_err(to_pyerr)?;
             Ok(out.into())
@@ -217,14 +225,16 @@ fn read_image_jpeg_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<P
         let decoder = jpegturbo_io::JpegTurboDecoder::new().map_err(to_pyerr)?;
         match (layout.channels, layout.pixel_format) {
             (1, PixelFormat::U8) => {
-                let (mut dst, out) = unsafe { alloc_output_pyarray::<1>(py, layout.image_size)? };
+                let (mut dst, out) =
+                    unsafe { alloc_output_pyarray_zeroed::<1>(py, layout.image_size)? };
                 decoder
                     .decode_gray8_into(&jpeg_data, &mut dst)
                     .map_err(to_pyerr)?;
                 Ok(out.into())
             }
             (3, PixelFormat::U8) => {
-                let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, layout.image_size)? };
+                let (mut dst, out) =
+                    unsafe { alloc_output_pyarray_zeroed::<3>(py, layout.image_size)? };
                 decoder
                     .decode_rgb8_into(&jpeg_data, &mut dst)
                     .map_err(to_pyerr)?;
@@ -244,12 +254,14 @@ fn read_image_jpeg_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<P
     // Pure-Rust fallback.
     match (layout.channels, layout.pixel_format) {
         (1, PixelFormat::U8) => {
-            let (mut dst, out) = unsafe { alloc_output_pyarray::<1>(py, layout.image_size)? };
+            let (mut dst, out) =
+                unsafe { alloc_output_pyarray_zeroed::<1>(py, layout.image_size)? };
             jpeg_io::decode_image_jpeg_mono8(&jpeg_data, &mut dst).map_err(to_pyerr)?;
             Ok(out.into())
         }
         (3, PixelFormat::U8) => {
-            let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, layout.image_size)? };
+            let (mut dst, out) =
+                unsafe { alloc_output_pyarray_zeroed::<3>(py, layout.image_size)? };
             jpeg_io::decode_image_jpeg_rgb8(&jpeg_data, &mut dst).map_err(to_pyerr)?;
             Ok(out.into())
         }

@@ -1,4 +1,4 @@
-use crate::image::{alloc_output_pyarray, numpy_as_image, to_pyerr, PyImage, PyImageSize};
+use crate::image::{alloc_output_pyarray_zeroed, numpy_as_image, to_pyerr, PyImage, PyImageSize};
 use kornia_image::color_spaces::{Gray8, Rgb8};
 use kornia_io::jpegturbo::{write_image_jpegturbo_rgb8, JpegTurboDecoder, JpegTurboEncoder};
 use pyo3::prelude::*;
@@ -50,7 +50,7 @@ impl PyImageDecoder {
     /// * `Exception`: If decoding fails.
     pub fn decode(&self, py: Python<'_>, jpeg_data: &[u8]) -> PyResult<PyImage> {
         let size = self.0.read_header(jpeg_data).map_err(to_pyerr)?;
-        let (dst, out) = unsafe { alloc_output_pyarray::<3>(py, size)? };
+        let (dst, out) = unsafe { alloc_output_pyarray_zeroed::<3>(py, size)? };
         let mut wrapped = Rgb8(dst);
         self.0
             .decode_rgb8_into(jpeg_data, &mut wrapped)
@@ -70,7 +70,7 @@ impl PyImageDecoder {
     /// * `Exception`: If decoding fails.
     pub fn decode_gray8(&self, py: Python<'_>, jpeg_data: &[u8]) -> PyResult<PyImage> {
         let size = self.0.read_header(jpeg_data).map_err(to_pyerr)?;
-        let (dst, out) = unsafe { alloc_output_pyarray::<1>(py, size)? };
+        let (dst, out) = unsafe { alloc_output_pyarray_zeroed::<1>(py, size)? };
         let mut wrapped = Gray8(dst);
         self.0
             .decode_gray8_into(jpeg_data, &mut wrapped)
@@ -180,7 +180,7 @@ pub fn read_image_jpegturbo(py: Python<'_>, file_path: &str) -> PyResult<PyImage
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string()))?;
     let decoder = JpegTurboDecoder::new().map_err(to_pyerr)?;
     let size = decoder.read_header(&bytes).map_err(to_pyerr)?;
-    let (dst, out) = unsafe { alloc_output_pyarray::<3>(py, size)? };
+    let (dst, out) = unsafe { alloc_output_pyarray_zeroed::<3>(py, size)? };
     let mut wrapped = Rgb8(dst);
     decoder
         .decode_rgb8_into(&bytes, &mut wrapped)
@@ -232,7 +232,7 @@ pub fn decode_image_jpegturbo(py: Python<'_>, jpeg_data: &[u8], mode: &str) -> P
     let size = decoder.read_header(jpeg_data).map_err(to_pyerr)?;
     match mode {
         "rgb" => {
-            let (dst, out) = unsafe { alloc_output_pyarray::<3>(py, size)? };
+            let (dst, out) = unsafe { alloc_output_pyarray_zeroed::<3>(py, size)? };
             let mut wrapped = Rgb8(dst);
             decoder
                 .decode_rgb8_into(jpeg_data, &mut wrapped)
@@ -240,7 +240,7 @@ pub fn decode_image_jpegturbo(py: Python<'_>, jpeg_data: &[u8], mode: &str) -> P
             Ok(out)
         }
         "mono" => {
-            let (dst, out) = unsafe { alloc_output_pyarray::<1>(py, size)? };
+            let (dst, out) = unsafe { alloc_output_pyarray_zeroed::<1>(py, size)? };
             let mut wrapped = Gray8(dst);
             decoder
                 .decode_gray8_into(jpeg_data, &mut wrapped)

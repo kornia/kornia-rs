@@ -344,25 +344,35 @@ pub(crate) unsafe fn numpy_as_out_image<const C: usize>(
 
 pub(crate) type AllocOutput<T, const C: usize, P> = (Image<T, C>, Py<P>);
 
-/// Allocate a fresh **zero-initialised** `(H, W, C)` numpy array and wrap it as
-/// a writable Rust Image.
+/// Allocate a fresh `(H, W, C)` numpy array and wrap it as a writable Rust Image.
 ///
-/// Zero-initialised on purpose: several kernels / decoders legitimately leave
-/// parts of the output untouched (odd tails, format mismatches), and an
-/// uninitialised buffer would then hand stale heap bytes back to Python.
+/// When `ZEROED` is false the buffer is left uninitialised (like `np.empty`):
+/// only use that for kernels that overwrite every output element. Decoders and
+/// any kernel that may leave parts of the output untouched must use a zeroed
+/// allocator so stale heap bytes are never handed back to Python. Zeroing is
+/// not the default because a fresh zero-filled mapping costs page faults on
+/// every call, roughly doubling the runtime of cheap per-pixel ops.
 ///
 /// # Safety
 ///
 /// The returned `Image` aliases the returned array's buffer; the caller must
 /// keep the `Py` handle alive for the Image's lifetime and not expose the array
-/// to Python until writes through the Image are finished.
-unsafe fn alloc_output_pyarray_t<T: numpy::Element + Clone, const C: usize>(
+/// to Python until writes through the Image are finished. With `ZEROED = false`
+/// the caller must also ensure every element is written before the array is
+/// returned to Python.
+unsafe fn alloc_output_pyarray_t<T: numpy::Element + Clone, const C: usize, const ZEROED: bool>(
     py: Python<'_>,
     size: ImageSize,
 ) -> PyResult<AllocOutput<T, C, PyArray3<T>>> {
     let dims = [size.height, size.width, C];
     let n = crate::pyutils::checked_numel(&dims, std::mem::size_of::<T>())?;
-    let arr = PyArray::<T, _>::zeros(py, dims, false);
+    let arr = if ZEROED {
+        PyArray::<T, _>::zeros(py, dims, false)
+    } else {
+        // SAFETY: the caller guarantees every element is written before the
+        // array becomes visible to Python (see the function-level contract).
+        unsafe { PyArray::<T, _>::new(py, dims, false) }
+    };
     // SAFETY: `arr` is a fresh C-contiguous array of exactly `n` elements
     // (`checked_numel` guarantees `n * size_of::<T>()` does not overflow).
     let img = unsafe {
@@ -377,7 +387,47 @@ unsafe fn alloc_output_pyarray_t<T: numpy::Element + Clone, const C: usize>(
     Ok((img, arr.unbind()))
 }
 
-/// u8 output allocator; see [`alloc_output_pyarray_t`].
+/// Zero-initialised u8 output allocator for decoders; see [`alloc_output_pyarray_t`].
+///
+/// # Safety
+///
+/// See [`alloc_output_pyarray_t`].
+pub(crate) unsafe fn alloc_output_pyarray_zeroed<const C: usize>(
+    py: Python<'_>,
+    size: ImageSize,
+) -> PyResult<AllocOutput<u8, C, PyArray3<u8>>> {
+    // SAFETY: forwarded caller contract.
+    unsafe { alloc_output_pyarray_t::<u8, C, true>(py, size) }
+}
+
+/// Zero-initialised u16 output allocator for decoders; see [`alloc_output_pyarray_t`].
+///
+/// # Safety
+///
+/// See [`alloc_output_pyarray_t`].
+pub(crate) unsafe fn alloc_output_pyarray_u16_zeroed<const C: usize>(
+    py: Python<'_>,
+    size: ImageSize,
+) -> PyResult<AllocOutput<u16, C, PyArray3<u16>>> {
+    // SAFETY: forwarded caller contract.
+    unsafe { alloc_output_pyarray_t::<u16, C, true>(py, size) }
+}
+
+/// Zero-initialised f32 output allocator for decoders; see [`alloc_output_pyarray_t`].
+///
+/// # Safety
+///
+/// See [`alloc_output_pyarray_t`].
+pub(crate) unsafe fn alloc_output_pyarray_f32_zeroed<const C: usize>(
+    py: Python<'_>,
+    size: ImageSize,
+) -> PyResult<AllocOutput<f32, C, PyArray3<f32>>> {
+    // SAFETY: forwarded caller contract.
+    unsafe { alloc_output_pyarray_t::<f32, C, true>(py, size) }
+}
+
+/// Uninitialised u8 output allocator for kernels that write every element; see
+/// [`alloc_output_pyarray_t`].
 ///
 /// # Safety
 ///
@@ -387,10 +437,11 @@ pub(crate) unsafe fn alloc_output_pyarray<const C: usize>(
     size: ImageSize,
 ) -> PyResult<AllocOutput<u8, C, PyArray3<u8>>> {
     // SAFETY: forwarded caller contract.
-    unsafe { alloc_output_pyarray_t::<u8, C>(py, size) }
+    unsafe { alloc_output_pyarray_t::<u8, C, false>(py, size) }
 }
 
-/// i32 output allocator; see [`alloc_output_pyarray_t`].
+/// Uninitialised i32 output allocator for kernels that write every element; see
+/// [`alloc_output_pyarray_t`].
 ///
 /// # Safety
 ///
@@ -400,10 +451,11 @@ pub(crate) unsafe fn alloc_output_pyarray_i32<const C: usize>(
     size: ImageSize,
 ) -> PyResult<AllocOutput<i32, C, PyArray3<i32>>> {
     // SAFETY: forwarded caller contract.
-    unsafe { alloc_output_pyarray_t::<i32, C>(py, size) }
+    unsafe { alloc_output_pyarray_t::<i32, C, false>(py, size) }
 }
 
-/// u16 output allocator; see [`alloc_output_pyarray_t`].
+/// Uninitialised u16 output allocator for kernels that write every element; see
+/// [`alloc_output_pyarray_t`].
 ///
 /// # Safety
 ///
@@ -413,10 +465,11 @@ pub(crate) unsafe fn alloc_output_pyarray_u16<const C: usize>(
     size: ImageSize,
 ) -> PyResult<AllocOutput<u16, C, PyArray3<u16>>> {
     // SAFETY: forwarded caller contract.
-    unsafe { alloc_output_pyarray_t::<u16, C>(py, size) }
+    unsafe { alloc_output_pyarray_t::<u16, C, false>(py, size) }
 }
 
-/// f32 output allocator; see [`alloc_output_pyarray_t`].
+/// Uninitialised f32 output allocator for kernels that write every element; see
+/// [`alloc_output_pyarray_t`].
 ///
 /// # Safety
 ///
@@ -426,7 +479,7 @@ pub(crate) unsafe fn alloc_output_pyarray_f32<const C: usize>(
     size: ImageSize,
 ) -> PyResult<AllocOutput<f32, C, PyArray3<f32>>> {
     // SAFETY: forwarded caller contract.
-    unsafe { alloc_output_pyarray_t::<f32, C>(py, size) }
+    unsafe { alloc_output_pyarray_t::<f32, C, false>(py, size) }
 }
 
 /// Copy numpy u8 data into a kornia_image::allocator::host_alloc() f32 Image (for Category B ops needing f32).

@@ -4,8 +4,8 @@ use pyo3::prelude::*;
 use crate::dispatch::{cpu_op, try_dispatch_device};
 
 use crate::image::{
-    alloc_output_pyarray, alloc_output_pyarray_f32, numpy_as_image, numpy_as_image_f32, to_pyerr,
-    PyImage, PyImageF32,
+    alloc_output_pyarray, alloc_output_pyarray_f32, alloc_output_pyarray_zeroed, numpy_as_image,
+    numpy_as_image_f32, to_pyerr, PyImage, PyImageF32,
 };
 use kornia_image::ImageSize;
 use kornia_imgproc::color;
@@ -393,7 +393,7 @@ macro_rules! py_video_decode {
             // only read inside `py.detach` while `arr` remains valid.
             let src = crate::pyutils::c_slice(arr, "YUV buffer")?;
             let (mut dst, out) =
-                unsafe { alloc_output_pyarray::<3>(py, ImageSize { width, height })? };
+                unsafe { alloc_output_pyarray_zeroed::<3>(py, ImageSize { width, height })? };
             // Length validation happens inside the kernel (returns InvalidImageSize).
             py.detach(|| $func(src, &mut dst)).map_err(to_pyerr)?;
             Ok(out)

@@ -1,7 +1,7 @@
 use kornia_image::ImageSize;
 use pyo3::prelude::*;
 
-use crate::image::{alloc_output_pyarray_u16, numpy_as_image_u16, to_pyerr, PyImageU16};
+use crate::image::{alloc_output_pyarray_u16_zeroed, numpy_as_image_u16, to_pyerr, PyImageU16};
 use kornia_io::rvl as R;
 
 /// Encodes a single-channel 16-bit depth image to RVL-compressed bytes.
@@ -42,7 +42,7 @@ pub fn decode_image_rvl(py: Python<'_>, src: &[u8]) -> PyResult<PyImageU16> {
         width: img.width(),
         height: img.height(),
     };
-    let (mut dst, out) = unsafe { alloc_output_pyarray_u16::<1>(py, size)? };
+    let (mut dst, out) = unsafe { alloc_output_pyarray_u16_zeroed::<1>(py, size)? };
     dst.as_slice_mut().copy_from_slice(img.as_slice());
     Ok(out)
 }
@@ -72,7 +72,7 @@ pub fn read_image_rvl(py: Python<'_>, file_path: &str) -> PyResult<PyImageU16> {
         width: img.width(),
         height: img.height(),
     };
-    let (mut dst, out) = unsafe { alloc_output_pyarray_u16::<1>(py, size)? };
+    let (mut dst, out) = unsafe { alloc_output_pyarray_u16_zeroed::<1>(py, size)? };
     dst.as_slice_mut().copy_from_slice(img.as_slice());
     Ok(out)
 }
