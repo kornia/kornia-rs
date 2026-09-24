@@ -16,7 +16,7 @@
             type: "copper::tasks::video_capture::VideoCapture",
             config: {
                 "source_type": "rtsp",
-                "source_uri": "rtsp://tapo_entrance:123456789@192.168.1.141:554/stream2",
+                "source_uri": "rtsp://<user>:<password>@<camera-ip>:554/stream2",
             },
         ),
         (
