@@ -88,6 +88,17 @@ pub fn remap<const C: usize>(
         }
     }
 
+    // Nothing to write (and `par_chunks_mut(0)` would panic).
+    if dst.cols() == 0 || dst.rows() == 0 {
+        return Ok(());
+    }
+
+    // Out-of-range (or NaN) source coordinates produce BORDER_CONSTANT = 0,
+    // matching `remap_u8` and the CUDA remap kernels. The samplers are only
+    // ever called with coordinates inside `[0, w) x [0, h)`.
+    let src_w_f = src.cols() as f32;
+    let src_h_f = src.rows() as f32;
+
     // One monomorphic pixel loop per mode — see the note in `resize`.
     macro_rules! run {
         ($sampler:path) => {
@@ -96,6 +107,11 @@ pub fn remap<const C: usize>(
                 map_x.as_slice(),
                 map_y.as_slice(),
                 |&x, &y, dst_pixel| {
+                    // Negated conjunction also rejects NaN.
+                    if !(x >= 0.0 && x < src_w_f && y >= 0.0 && y < src_h_f) {
+                        dst_pixel.fill(0.0);
+                        return;
+                    }
                     for (c, pixel) in dst_pixel.iter_mut().enumerate() {
                         *pixel = $sampler(src, x, y, c);
                     }
@@ -507,6 +523,48 @@ mod tests {
             &map_y,
             super::InterpolationMode::Lanczos,
         )?;
+        Ok(())
+    }
+
+    /// Regression: out-of-range / NaN / huge map values used to be passed
+    /// straight to the samplers, which indexed out of bounds. They must now
+    /// zero-fill (BORDER_CONSTANT), for every interpolation mode.
+    #[test]
+    fn remap_out_of_range_maps_zero_fill() -> Result<(), ImageError> {
+        let image = Image::<f32, 2>::from_size_val(
+            ImageSize {
+                width: 4,
+                height: 4,
+            },
+            1.0,
+        )?;
+        let xs = vec![20.0, 1.0e9, -1.0, f32::NAN, 4.0, 0.0, 1.5, f32::INFINITY];
+        let ys = vec![0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 1.5, 0.0];
+        let expected = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+        let map_x = make_map(8, 1, xs)?;
+        let map_y = make_map(8, 1, ys)?;
+        for mode in [
+            super::InterpolationMode::Bilinear,
+            super::InterpolationMode::Nearest,
+            super::InterpolationMode::Bicubic,
+            super::InterpolationMode::Lanczos,
+        ] {
+            let mut dst = Image::<f32, 2>::from_size_val(
+                ImageSize {
+                    width: 8,
+                    height: 1,
+                },
+                -5.0,
+            )?;
+            super::remap(&image, &mut dst, &map_x, &map_y, mode)?;
+            for (i, e) in expected.iter().enumerate() {
+                let px = &dst.as_slice()[i * 2..i * 2 + 2];
+                assert!(
+                    px.iter().all(|v| (v - e).abs() < 1e-5),
+                    "{mode:?} pixel {i}: {px:?} expected {e}"
+                );
+            }
+        }
         Ok(())
     }
 

@@ -21,8 +21,15 @@ pub(crate) fn bilinear_interpolation<const C: usize>(
 ) -> f32 {
     let (rows, cols) = (image.rows(), image.cols());
 
-    let iu = u.trunc() as usize;
-    let iv = v.trunc() as usize;
+    // Never index outside the image: an empty image or an out-of-range channel
+    // yields 0, and integer taps are clamped into the image. For coordinates in
+    // `[0, cols) x [0, rows)` the clamp is a no-op, so in-range results are
+    // unchanged. Negative / NaN coordinates saturate to 0 in the `as usize` cast.
+    if rows == 0 || cols == 0 || c >= C {
+        return 0.0;
+    }
+    let iu = (u.trunc() as usize).min(cols - 1);
+    let iv = (v.trunc() as usize).min(rows - 1);
 
     let frac_u = u.fract();
     let frac_v = v.fract();

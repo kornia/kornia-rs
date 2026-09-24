@@ -31,6 +31,13 @@ pub fn validate_interpolation(interpolation: InterpolationMode) -> Result<(), Im
 ///
 /// # Returns
 /// The interpolated pixel value, or an error if the interpolation mode is unsupported.
+///
+/// Coordinates outside the image are clamped to the border (replicate).
+///
+/// # Errors
+///
+/// Returns [`ImageError::ChannelIndexOutOfBounds`] if `c >= C`, and
+/// [`ImageError::InvalidImageSize`] if the image is empty.
 pub fn interpolate_pixel<const C: usize>(
     image: &Image<f32, C>,
     u: f32,
@@ -39,6 +46,17 @@ pub fn interpolate_pixel<const C: usize>(
     interpolation: InterpolationMode,
 ) -> Result<f32, ImageError> {
     validate_interpolation(interpolation)?;
+    if c >= C {
+        return Err(ImageError::ChannelIndexOutOfBounds(c, C));
+    }
+    if image.rows() == 0 || image.cols() == 0 {
+        return Err(ImageError::InvalidImageSize(
+            image.cols(),
+            image.rows(),
+            1,
+            1,
+        ));
+    }
     Ok(interpolate_pixel_fast(image, u, v, c, interpolation))
 }
 
@@ -62,5 +80,58 @@ pub(crate) fn interpolate_pixel_fast<const C: usize>(
         InterpolationMode::Nearest => nearest_neighbor_interpolation(image, u, v, c),
         InterpolationMode::Bicubic => bicubic_sample(image, u, v, c),
         InterpolationMode::Lanczos => lanczos_sample(image, u, v, c),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kornia_image::ImageSize;
+
+    /// Regression: the channel index and coordinates were passed unchecked to
+    /// `Tensor::get_unchecked`. Out-of-range channels are now an error and
+    /// out-of-range coordinates clamp to the border.
+    #[test]
+    fn interpolate_pixel_rejects_bad_channel_and_clamps_coords() -> Result<(), ImageError> {
+        let src = Image::<f32, 1>::new(
+            ImageSize {
+                width: 4,
+                height: 4,
+            },
+            (0..16).map(|v| v as f32).collect(),
+        )?;
+        for mode in [
+            InterpolationMode::Nearest,
+            InterpolationMode::Bilinear,
+            InterpolationMode::Bicubic,
+            InterpolationMode::Lanczos,
+        ] {
+            assert!(matches!(
+                interpolate_pixel(&src, 0.0, 0.0, 5, mode),
+                Err(ImageError::ChannelIndexOutOfBounds(5, 1))
+            ));
+        }
+        // Far right of row 0 -> last pixel of row 0.
+        assert_eq!(
+            interpolate_pixel(&src, 1.0e9, 0.0, 0, InterpolationMode::Bilinear)?,
+            3.0
+        );
+        assert_eq!(
+            interpolate_pixel(&src, 1.0e9, 1.0e9, 0, InterpolationMode::Nearest)?,
+            15.0
+        );
+        // Negative / NaN coordinates stay in bounds (no panic, finite or NaN).
+        let _ = interpolate_pixel(&src, -1.0e9, f32::NAN, 0, InterpolationMode::Bilinear)?;
+        let _ = interpolate_pixel(&src, f32::NAN, -3.0, 0, InterpolationMode::Nearest)?;
+
+        let empty = Image::<f32, 1>::from_size_val(
+            ImageSize {
+                width: 0,
+                height: 0,
+            },
+            0.0,
+        )?;
+        assert!(interpolate_pixel(&empty, 0.0, 0.0, 0, InterpolationMode::Bilinear).is_err());
+        Ok(())
     }
 }

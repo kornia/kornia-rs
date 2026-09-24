@@ -20,11 +20,15 @@ pub(crate) fn nearest_neighbor_interpolation<const C: usize>(
 ) -> f32 {
     let (rows, cols) = (image.rows(), image.cols());
 
-    let iu = u.round() as usize;
-    let iv = v.round() as usize;
+    // Empty image or out-of-range channel: nothing valid to sample.
+    if rows == 0 || cols == 0 || c >= C {
+        return 0.0;
+    }
 
-    let iu = iu.clamp(0, cols - 1);
-    let iv = iv.clamp(0, rows - 1);
+    // Negative / NaN coordinates saturate to 0 in the `as usize` cast; the
+    // upper bound is clamped explicitly.
+    let iu = (u.round() as usize).min(cols - 1);
+    let iv = (v.round() as usize).min(rows - 1);
 
     // Row-major (H, W, C) read with a single slice bounds check (see bilinear).
     image
