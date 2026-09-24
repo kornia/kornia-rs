@@ -131,6 +131,20 @@ impl ImageSize {
     }
 }
 
+/// Computes `height * width * C`, checking for overflow.
+pub(crate) fn checked_image_len<const C: usize>(size: ImageSize) -> Result<usize, ImageError> {
+    size.height
+        .checked_mul(size.width)
+        .and_then(|n| n.checked_mul(C))
+        .ok_or_else(|| {
+            ImageError::InvalidImageShape(kornia_tensor::TensorError::ShapeOverflow(vec![
+                size.height,
+                size.width,
+                C,
+            ]))
+        })
+}
+
 #[derive(Clone)]
 /// Represents an image with pixel data.
 ///
@@ -193,13 +207,26 @@ impl<T, const C: usize> Image<T, C> {
     }
 
     /// Like [`new`](Self::new) but with an explicit allocator handle.
+    ///
+    /// # Arguments
+    ///
+    /// * `size` - The size of the image in pixels.
+    /// * `data` - The pixel data of the image.
+    /// * `alloc` - The allocator handle to associate with the image.
+    ///
+    /// # Returns
+    ///
+    /// A new image with the given pixel data.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ImageError::InvalidImageShape`] if `width * height * C` overflows, or
+    /// [`ImageError::InvalidChannelShape`] if it does not match `data.len()`.
     pub fn new_in(size: ImageSize, data: Vec<T>, alloc: AllocHandle) -> Result<Self, ImageError> {
         // check if the data length matches the image size
-        if data.len() != size.width * size.height * C {
-            return Err(ImageError::InvalidChannelShape(
-                data.len(),
-                size.width * size.height * C,
-            ));
+        let expected = checked_image_len::<C>(size)?;
+        if data.len() != expected {
+            return Err(ImageError::InvalidChannelShape(data.len(), expected));
         }
 
         // allocate the image data
@@ -248,11 +275,25 @@ impl<T, const C: usize> Image<T, C> {
     }
 
     /// Like [`from_size_val`](Self::from_size_val) but with an explicit allocator handle.
+    ///
+    /// # Arguments
+    ///
+    /// * `size` - The size of the image in pixels.
+    /// * `val` - The default value of the pixel data.
+    /// * `alloc` - The allocator handle to associate with the image.
+    ///
+    /// # Returns
+    ///
+    /// A new image with the given size and default pixel data.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ImageError::InvalidImageShape`] if `width * height * C` overflows.
     pub fn from_size_val_in(size: ImageSize, val: T, alloc: AllocHandle) -> Result<Self, ImageError>
     where
         T: Clone,
     {
-        let data = vec![val; size.width * size.height * C];
+        let data = vec![val; checked_image_len::<C>(size)?];
         let image = Image::new_in(size, data, alloc)?;
 
         Ok(image)
@@ -260,19 +301,31 @@ impl<T, const C: usize> Image<T, C> {
 
     /// Create a new image from raw parts.
     ///
+    /// The image does not own the memory.
+    ///
     /// # Arguments
     ///
     /// * `size` - The size of the image in pixels.
     /// * `data` - A pointer to the pixel data.
-    /// * `len` - The length of the pixel data.
+    /// * `len` - The length of the pixel buffer in **bytes** (not elements); it must be
+    ///   exactly `width * height * C * size_of::<T>()`.
+    /// * `alloc` - The allocator handle to associate with the image.
     ///
     /// # Returns
     ///
     /// A new image created from the given size and pixel data.
     ///
+    /// # Errors
+    ///
+    /// Returns [`ImageError::InvalidImageShape`] if `data` is null, the size
+    /// computation overflows, or `len` is smaller than the image needs, and
+    /// [`ImageError::InvalidChannelShape`] if `len` is larger than the image needs.
+    ///
     /// # Safety
     ///
-    /// The pointer must be non-null and the length must be valid.
+    /// `data` must be non-null, aligned for `T`, and valid for reads and writes of
+    /// `len` bytes for the whole lifetime of the image (the image does not keep the
+    /// memory alive).
     pub unsafe fn from_raw_parts(
         size: ImageSize,
         data: *const T,
@@ -341,13 +394,7 @@ impl<T, const C: usize> Image<T, C> {
         domain: kornia_tensor::resource::MemoryDomain,
         keepalive: Arc<dyn Any + Send + Sync>,
     ) -> Result<Self, ImageError> {
-        let len = size
-            .height
-            .checked_mul(size.width)
-            .and_then(|n| n.checked_mul(C))
-            .ok_or(ImageError::InvalidImageShape(
-                kornia_tensor::TensorError::InvalidShape(usize::MAX),
-            ))?;
+        let len = checked_image_len::<C>(size)?;
 
         let tensor =
             Tensor3::from_borrowed([size.height, size.width, C], data, len, domain, keepalive)?;
@@ -375,13 +422,7 @@ impl<T, const C: usize> Image<T, C> {
         domain: kornia_tensor::resource::MemoryDomain,
         keepalive: Arc<dyn Any + Send + Sync>,
     ) -> Result<Self, ImageError> {
-        let len = size
-            .height
-            .checked_mul(size.width)
-            .and_then(|n| n.checked_mul(C))
-            .ok_or(ImageError::InvalidImageShape(
-                kornia_tensor::TensorError::InvalidShape(usize::MAX),
-            ))?;
+        let len = checked_image_len::<C>(size)?;
 
         let tensor = Tensor3::from_borrowed_readonly(
             [size.height, size.width, C],
@@ -642,27 +683,21 @@ impl<T, const C: usize> Image<T, C> {
     ///
     /// assert_eq!(image_f32.get([1, 0, 2]), Some(&1.0f32));
     /// ```
-    #[allow(clippy::uninit_vec)]
     pub fn cast_and_scale<U>(self, scale: U) -> Result<Image<U, C>, ImageError>
     where
         U: num_traits::NumCast + std::ops::Mul<Output = U> + Clone + Copy + Send + Sync,
         T: num_traits::NumCast + Clone + Copy + Send + Sync,
     {
-        let slice = self.as_slice();
-        let mut casted_data = Vec::with_capacity(slice.len());
-        // SAFETY: Each element is written to with no reads beforehand.
-        unsafe {
-            casted_data.set_len(slice.len());
-        }
-
-        slice
+        // Indexed parallel collect writes every element exactly once into a
+        // pre-sized buffer; no uninitialized memory is ever exposed.
+        let casted_data = self
+            .as_slice()
             .par_iter()
-            .zip(casted_data.par_iter_mut())
-            .try_for_each(|(&x, out)| {
+            .map(|&x| {
                 let xu = U::from(x).ok_or(ImageError::CastError)?;
-                *out = xu * scale;
-                Ok::<(), ImageError>(())
-            })?;
+                Ok(xu * scale)
+            })
+            .collect::<Result<Vec<U>, ImageError>>()?;
 
         let alloc = self.storage.alloc();
         Image::new_in(self.size(), casted_data, alloc.clone())
@@ -677,26 +712,20 @@ impl<T, const C: usize> Image<T, C> {
     /// # Returns
     ///
     /// A new image with the pixel data cast to the new type and scaled.
-    #[allow(clippy::uninit_vec)]
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ImageError::CastError`] if a scaled value cannot be represented as `U`.
     pub fn scale_and_cast<U>(&self, scale: T) -> Result<Image<U, C>, ImageError>
     where
         U: num_traits::NumCast + Clone + Copy + Send + Sync,
         T: num_traits::NumCast + std::ops::Mul<Output = T> + Clone + Copy + Send + Sync,
     {
-        let slice = self.as_slice();
-        let mut casted_data = Vec::with_capacity(slice.len());
-        // SAFETY: Each element is written to with no reads beforehand.
-        unsafe {
-            casted_data.set_len(slice.len());
-        }
-
-        slice
+        let casted_data = self
+            .as_slice()
             .par_iter()
-            .zip(casted_data.par_iter_mut())
-            .try_for_each(|(&x, out)| {
-                *out = U::from(x * scale).ok_or(ImageError::CastError)?;
-                Ok::<(), ImageError>(())
-            })?;
+            .map(|&x| U::from(x * scale).ok_or(ImageError::CastError))
+            .collect::<Result<Vec<U>, ImageError>>()?;
 
         let alloc = self.storage.alloc();
         Image::new_in(self.size(), casted_data, alloc.clone())
@@ -802,12 +831,22 @@ impl<T> TryFrom<Tensor2<T>> for Image<T, 1> {
 }
 
 /// helper to convert an multi channel tensor to a kornia image with try into
+///
+/// Image code assumes a dense row-major `(H, W, C)` buffer whose storage holds
+/// exactly `H * W * C` elements, so the tensor is validated accordingly.
 impl<T, const C: usize> TryFrom<Tensor3<T>> for Image<T, C> {
     type Error = ImageError;
 
     fn try_from(value: Tensor3<T>) -> Result<Self, Self::Error> {
         if value.shape[2] != C {
             return Err(ImageError::InvalidChannelShape(value.shape[2], C));
+        }
+        let expected = kornia_tensor::tensor::checked_numel(&value.shape)?;
+        if value.numel() != expected {
+            return Err(ImageError::InvalidChannelShape(value.numel(), expected));
+        }
+        if !value.is_standard_layout() {
+            return Err(ImageError::ImageDataNotContiguous);
         }
         Ok(Self(value))
     }
@@ -1158,6 +1197,82 @@ mod tests {
         assert_eq!(image_2.size().height, 2);
         assert_eq!(image_2.num_channels(), 4);
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_image_new_overflow() {
+        // Regression (F3/F6): `width * height * C` wrapped to 0 in release builds, so a
+        // (1<<32)x(1<<32) image was accepted with an empty buffer.
+        let big = 1usize << (usize::BITS / 2);
+        let size = ImageSize {
+            width: big,
+            height: big,
+        };
+        assert!(Image::<u8, 1>::new(size, vec![]).is_err());
+        assert!(Image::<u8, 3>::from_size_val(size, 0).is_err());
+        let size = ImageSize {
+            width: usize::MAX,
+            height: 1,
+        };
+        assert!(Image::<u8, 3>::new(size, vec![]).is_err());
+    }
+
+    #[test]
+    fn test_try_from_tensor_validates_layout() -> Result<(), ImageError> {
+        // Regression (F3): only `shape[2] == C` was checked.
+        let mut t = Tensor::<u8, 3>::from_shape_vec([1, 1, 1], vec![1])?;
+        t.shape = [4, 4, 1];
+        t.strides = [4, 1, 1];
+        assert!(Image::<u8, 1>::try_from(t).is_err());
+
+        // Non-contiguous layouts are rejected as well.
+        let mut t = Tensor::<u8, 3>::from_shape_vec([2, 2, 1], vec![1, 2, 3, 4])?;
+        t.strides = [1, 2, 1];
+        assert!(matches!(
+            Image::<u8, 1>::try_from(t),
+            Err(ImageError::ImageDataNotContiguous)
+        ));
+
+        let t = Tensor::<u8, 3>::from_shape_vec([2, 2, 1], vec![1, 2, 3, 4])?;
+        let img = Image::<u8, 1>::try_from(t)?;
+        assert_eq!(img.as_slice(), &[1, 2, 3, 4]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_image_from_raw_parts_validates_len() {
+        let data = [0f32; 6];
+        // `len` is in bytes: passing the element count is too short and rejected.
+        // SAFETY: the buffer is valid for 24 bytes; the call must fail before use.
+        let res = unsafe {
+            Image::<f32, 1>::from_raw_parts([2, 3].into(), data.as_ptr(), data.len(), host_alloc())
+        };
+        assert!(res.is_err());
+        // SAFETY: the buffer is valid for exactly 6 * 4 bytes and outlives the image.
+        let res = unsafe {
+            Image::<f32, 1>::from_raw_parts(
+                [2, 3].into(),
+                data.as_ptr(),
+                data.len() * std::mem::size_of::<f32>(),
+                host_alloc(),
+            )
+        };
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    fn test_cast_and_scale_error_and_values() -> Result<(), ImageError> {
+        let img = Image::<f32, 1>::new([3, 1].into(), vec![1.0, 2.0, 300.0])?;
+        // 300 cannot be represented as u8.
+        assert!(matches!(
+            img.scale_and_cast::<u8>(1.0),
+            Err(ImageError::CastError)
+        ));
+        let out = img.scale_and_cast::<u16>(2.0)?;
+        assert_eq!(out.as_slice(), &[2, 4, 600]);
+        let out = img.cast_and_scale::<f64>(0.5)?;
+        assert_eq!(out.as_slice(), &[0.5, 1.0, 150.0]);
         Ok(())
     }
 
