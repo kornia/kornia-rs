@@ -35,9 +35,28 @@ pub enum JpegTurboError {
         expected: usize,
     },
 
+    /// The JPEG header declares more pixels than [`crate::limits::MAX_IMAGE_PIXELS`].
+    #[error("JPEG of {width}x{height} exceeds the maximum decodable size")]
+    ImageTooLarge {
+        /// Declared width in pixels.
+        width: usize,
+        /// Declared height in pixels.
+        height: usize,
+    },
+
     /// I/O error, e.g. when reading a JPEG file from disk.
     #[error(transparent)]
     IoError(#[from] std::io::Error),
+}
+
+// Rejects headers declaring more pixels than the crate-wide decode limit before allocating.
+fn check_decode_size(size: ImageSize) -> Result<(), JpegTurboError> {
+    crate::limits::check_image_dimensions(size.width, size.height).map_err(|_| {
+        JpegTurboError::ImageTooLarge {
+            width: size.width,
+            height: size.height,
+        }
+    })
 }
 
 /// A JPEG decoder using the turbojpeg library.
@@ -94,7 +113,14 @@ impl JpegTurboEncoder {
         pixels: &[u8],
         size: ImageSize,
     ) -> Result<Vec<u8>, JpegTurboError> {
-        let expected = size.width * size.height * 3;
+        let expected = size
+            .width
+            .checked_mul(size.height)
+            .and_then(|n| n.checked_mul(3))
+            .ok_or(JpegTurboError::InvalidBufferLength {
+                got: pixels.len(),
+                expected: usize::MAX,
+            })?;
         if pixels.len() != expected {
             return Err(JpegTurboError::InvalidBufferLength {
                 got: pixels.len(),
@@ -184,6 +210,7 @@ impl JpegTurboDecoder {
     /// Decodes the given JPEG data as RGB8 image.
     pub fn decode_rgb8(&self, jpeg_data: &[u8]) -> Result<Image<u8, 3>, JpegTurboError> {
         let image_size = self.read_header(jpeg_data)?;
+        check_decode_size(image_size)?;
         let mut dst = Image::from_size_val(image_size, 0u8)?;
         self.decode_rgb8_into(jpeg_data, &mut dst)?;
         Ok(dst)
@@ -192,6 +219,7 @@ impl JpegTurboDecoder {
     /// Decodes the given JPEG data as Gray/Mono8 image.
     pub fn decode_gray8(&self, jpeg_data: &[u8]) -> Result<Image<u8, 1>, JpegTurboError> {
         let image_size = self.read_header(jpeg_data)?;
+        check_decode_size(image_size)?;
         let mut dst = Image::from_size_val(image_size, 0u8)?;
         self.decode_gray8_into(jpeg_data, &mut dst)?;
         Ok(dst)

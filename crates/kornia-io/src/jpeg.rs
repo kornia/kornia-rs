@@ -66,13 +66,9 @@ pub fn encode_image_jpeg_rgb8(
     quality: u8,
     buffer: &mut Vec<u8>,
 ) -> Result<(), IoError> {
+    let (width, height) = jpeg_dimensions(image.width(), image.height())?;
     let encoder = Encoder::new(buffer, quality);
-    encoder.encode(
-        image.as_slice(),
-        image.width() as u16,
-        image.height() as u16,
-        ColorType::Rgb,
-    )?;
+    encoder.encode(image.as_slice(), width, height, ColorType::Rgb)?;
     Ok(())
 }
 
@@ -113,13 +109,9 @@ pub fn encode_image_jpeg_bgra8(
     quality: u8,
     buffer: &mut Vec<u8>,
 ) -> Result<(), IoError> {
+    let (width, height) = jpeg_dimensions(image.width(), image.height())?;
     let encoder = Encoder::new(buffer, quality);
-    encoder.encode(
-        image.as_slice(),
-        image.width() as u16,
-        image.height() as u16,
-        ColorType::Bgra,
-    )?;
+    encoder.encode(image.as_slice(), width, height, ColorType::Bgra)?;
     Ok(())
 }
 
@@ -142,14 +134,22 @@ pub fn encode_image_jpeg_gray8(
     quality: u8,
     buffer: &mut Vec<u8>,
 ) -> Result<(), IoError> {
+    let (width, height) = jpeg_dimensions(image.width(), image.height())?;
     let encoder = Encoder::new(buffer, quality);
-    encoder.encode(
-        image.as_slice(),
-        image.width() as u16,
-        image.height() as u16,
-        ColorType::Luma,
-    )?;
+    encoder.encode(image.as_slice(), width, height, ColorType::Luma)?;
     Ok(())
+}
+
+// JPEG stores dimensions as u16; reject larger images instead of silently truncating them.
+fn jpeg_dimensions(width: usize, height: usize) -> Result<(u16, u16), IoError> {
+    match (u16::try_from(width), u16::try_from(height)) {
+        (Ok(w), Ok(h)) => Ok((w, h)),
+        _ => Err(IoError::ImageTooLarge {
+            width,
+            height,
+            max_pixels: (u16::MAX as usize) * (u16::MAX as usize),
+        }),
+    }
 }
 
 fn write_image_jpeg_imp<const N: usize>(
@@ -158,14 +158,9 @@ fn write_image_jpeg_imp<const N: usize>(
     color_type: ColorType,
     quality: u8,
 ) -> Result<(), IoError> {
-    let image_size = image.size();
+    let (width, height) = jpeg_dimensions(image.width(), image.height())?;
     let encoder = Encoder::new_file(file_path, quality)?;
-    encoder.encode(
-        image.as_slice(),
-        image_size.width as u16,
-        image_size.height as u16,
-        color_type,
-    )?;
+    encoder.encode(image.as_slice(), width, height, color_type)?;
     Ok(())
 }
 

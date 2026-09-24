@@ -1,11 +1,11 @@
-use crate::error::IoError;
+use crate::{error::IoError, limits::check_image_dimensions};
 use kornia_image::{
     color_spaces::{Gray16, Gray8, Grayf32, Rgb16, Rgb8, Rgbf32},
     Image, ImageLayout, ImageSize, PixelFormat,
 };
 use std::{fs, io::Cursor, path::Path};
 use tiff::{
-    decoder::DecodingResult,
+    decoder::{DecodingResult, DecodingSampleType},
     encoder::{colortype, TiffEncoder},
 };
 
@@ -238,6 +238,7 @@ pub fn decode_image_tiff_layout(src: &[u8]) -> Result<ImageLayout, IoError> {
         width: width as usize,
         height: height as usize,
     };
+    check_image_dimensions(size.width, size.height)?;
 
     let colortype = decoder.colortype()?;
     let num_channels =
@@ -319,6 +320,24 @@ pub fn decode_image_tiff_rgb32f(src: &[u8], dst: &mut Rgbf32) -> Result<(), IoEr
     decode_tiff_impl_f32(src, dst.as_slice_mut(), size, 3)
 }
 
+// Verifies that the TIFF's channel count and sample type match what the caller requested, so
+// that e.g. a grayscale or integer TIFF is not silently reinterpreted as RGB or float data.
+fn check_tiff_format<R: std::io::Read + std::io::Seek>(
+    decoder: &mut tiff::decoder::Decoder<R>,
+    expected_channels: u8,
+    expected_type: DecodingSampleType,
+) -> Result<(), IoError> {
+    let colortype = decoder.colortype()?;
+    let channels = extract_channels_from_tiff_colortype(&colortype);
+    let sample_type = decoder.image_buffer_layout()?.sample_type;
+    if channels != Some(expected_channels) || sample_type != Some(expected_type) {
+        return Err(IoError::FormatMismatch(format!(
+            "TIFF is {colortype:?} ({sample_type:?}), expected {expected_channels} channel(s) of {expected_type:?}"
+        )));
+    }
+    Ok(())
+}
+
 fn decode_tiff_impl_u8(
     src: &[u8],
     dst: &mut [u8],
@@ -337,6 +356,8 @@ fn decode_tiff_impl_u8(
             image_size.width,
         ));
     }
+
+    check_tiff_format(&mut decoder, expected_channels, DecodingSampleType::U8)?;
 
     let expected_len = image_size.width * image_size.height * expected_channels as usize;
     if dst.len() != expected_len {
@@ -365,6 +386,8 @@ fn decode_tiff_impl_u16(
             image_size.width,
         ));
     }
+
+    check_tiff_format(&mut decoder, expected_channels, DecodingSampleType::U16)?;
 
     let expected_len = image_size.width * image_size.height * expected_channels as usize;
     if dst.len() != expected_len {
@@ -400,6 +423,8 @@ fn decode_tiff_impl_f32(
             image_size.width,
         ));
     }
+
+    check_tiff_format(&mut decoder, expected_channels, DecodingSampleType::F32)?;
 
     let expected_len = image_size.width * image_size.height * expected_channels as usize;
     if dst.len() != expected_len {
@@ -592,6 +617,32 @@ mod tests {
     use super::*;
     use crate::error::IoError;
     use std::fs::{create_dir_all, read};
+
+    #[test]
+    fn decode_rejects_mismatched_pixel_format() -> Result<(), Box<dyn std::error::Error>> {
+        let size = ImageSize {
+            width: 4,
+            height: 4,
+        };
+        let gray = Gray8::from_size_val(size, 200)?;
+        let mut encoded = Vec::new();
+        encode_image_tiff_mono8(&gray, &mut encoded)?;
+
+        let mut rgb = Rgb8::from_size_val(size, 0)?;
+        assert!(matches!(
+            decode_image_tiff_rgb8(&encoded, &mut rgb),
+            Err(IoError::FormatMismatch(_))
+        ));
+        let mut mono16 = Gray16::from_size_val(size, 0)?;
+        assert!(matches!(
+            decode_image_tiff_mono16(&encoded, &mut mono16),
+            Err(IoError::FormatMismatch(_))
+        ));
+        let mut back = Gray8::from_size_val(size, 0)?;
+        decode_image_tiff_mono8(&encoded, &mut back)?;
+        assert_eq!(back.as_slice(), gray.as_slice());
+        Ok(())
+    }
 
     #[test]
     fn synthetic_write_tiff_rgb8() -> Result<(), IoError> {

@@ -3,6 +3,7 @@ use std::any::Any;
 use crate::stream::{
     camera::{CameraCapture, CameraCaptureConfig},
     error::StreamCaptureError,
+    quote_pipeline_value,
 };
 
 use kornia_image::ImageSize;
@@ -102,14 +103,24 @@ impl Default for V4L2CameraConfig {
 /// # Returns
 ///
 /// A GStreamer pipeline string
-pub fn v4l2_camera_pipeline_description(device: &str, size: Option<ImageSize>, fps: u32) -> String {
+///
+/// # Errors
+///
+/// Returns [`StreamCaptureError::InvalidConfig`] if `device` contains characters that could
+/// escape the quoted `device` property (`"`, `\` or control characters).
+pub fn v4l2_camera_pipeline_description(
+    device: &str,
+    size: Option<ImageSize>,
+    fps: u32,
+) -> Result<String, StreamCaptureError> {
+    let device = quote_pipeline_value(device)?;
     let video_resize = if let Some(size) = size {
         format!("! video/x-raw,width={},height={} ", size.width, size.height)
     } else {
         "".to_string()
     };
 
-    format!(
-            "v4l2src device={device} {video_resize}! videorate ! video/x-raw,framerate={fps}/1 ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink"
-        )
+    Ok(format!(
+        "v4l2src device={device} {video_resize}! videorate ! video/x-raw,framerate={fps}/1 ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink"
+    ))
 }

@@ -26,6 +26,28 @@ pub use crate::stream::video::VideoWriter;
 use std::any::Any;
 use std::sync::Arc;
 
+/// Quotes a user-supplied value for interpolation into a `gst_parse_launch` pipeline string.
+///
+/// Values are wrapped in double quotes so whitespace, `!` and `=` cannot introduce new elements or
+/// properties. Characters that would terminate or escape the quoted string (`"`, `\`) and control
+/// characters are rejected outright.
+///
+/// # Errors
+///
+/// Returns [`StreamCaptureError::InvalidConfig`] if `value` contains `"`, `\` or a control
+/// character.
+pub(crate) fn quote_pipeline_value(value: &str) -> Result<String, StreamCaptureError> {
+    if value
+        .chars()
+        .any(|c| c == '"' || c == '\\' || c.is_control())
+    {
+        return Err(StreamCaptureError::InvalidConfig(format!(
+            "value {value:?} contains characters not allowed in a pipeline description"
+        )));
+    }
+    Ok(format!("\"{value}\""))
+}
+
 use kornia_image::Image;
 use kornia_tensor::resource::{MemoryDomain, MemoryResource};
 
@@ -148,6 +170,34 @@ pub(crate) fn image_from_gst_buffer(
 #[cfg(test)]
 mod tests {
     use crate::stream::StreamCapture;
+
+    /// A quoted value containing pipeline syntax must be parsed as a single property value,
+    /// not as additional elements.
+    #[test]
+    fn quoted_value_cannot_inject_elements() -> Result<(), Box<dyn std::error::Error>> {
+        use gstreamer::prelude::*;
+        gstreamer::init()?;
+        let evil = "/tmp/a b ! fakesink name=injected location=x";
+        let desc = format!(
+            "filesrc name=src location={}",
+            super::quote_pipeline_value(evil)?
+        );
+        let bin = gstreamer::parse::launch(&desc)?
+            .dynamic_cast::<gstreamer::Bin>()
+            .ok();
+        // A single element is returned as-is rather than wrapped in a bin.
+        assert!(bin.is_none(), "value was split into multiple elements");
+        let src = gstreamer::parse::launch(&desc)?;
+        assert_eq!(
+            src.property::<Option<String>>("location").as_deref(),
+            Some(evil)
+        );
+
+        assert!(super::quote_pipeline_value("a\" ! fakesink").is_err());
+        assert!(super::quote_pipeline_value("a\\").is_err());
+        assert!(super::quote_pipeline_value("a\nb").is_err());
+        Ok(())
+    }
 
     /// Verifies that capturing N frames with `videotestsrc` succeeds, that the pixel
     /// data is readable through the Image slice (proving the GstResource keepalive is

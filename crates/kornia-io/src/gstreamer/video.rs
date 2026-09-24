@@ -1,4 +1,7 @@
-use super::{capture::StreamerState, error::VideoReaderError, StreamCapture, StreamCaptureError};
+use super::{
+    capture::StreamerState, error::VideoReaderError, quote_pipeline_value, StreamCapture,
+    StreamCaptureError,
+};
 use gstreamer::prelude::*;
 use kornia_image::{Image, ImageSize};
 use std::{path::Path, time::Duration};
@@ -70,7 +73,13 @@ impl VideoWriter {
             ImageFormat::Rgb8 => "RGB",
         };
 
-        let path = path.as_ref().to_owned();
+        if fps <= 0 {
+            return Err(StreamCaptureError::InvalidConfig(format!(
+                "fps must be positive, got {fps}"
+            )));
+        }
+
+        let location = quote_pipeline_value(&path.as_ref().to_string_lossy())?;
 
         let pipeline_str = format!(
             "appsrc name=src ! \
@@ -79,8 +88,7 @@ impl VideoWriter {
             video/x-h264,profile=main ! \
             h264parse ! \
             mp4mux ! \
-            filesink location={}",
-            path.to_string_lossy()
+            filesink location={location}"
         );
 
         let pipeline = gstreamer::parse::launch(&pipeline_str)?
@@ -243,14 +251,14 @@ impl VideoReader {
             ImageFormat::Mono8 => "GRAY8",
         };
 
+        let location = quote_pipeline_value(&path.as_ref().to_string_lossy())?;
         let pipeline = format!(
-            "filesrc location=\"{}\" ! \
+            "filesrc location={} ! \
             decodebin ! \
             videoconvert ! \
             video/x-raw,format={} ! \
             appsink name=sink sync=true",
-            path.as_ref().to_string_lossy(),
-            video_format
+            location, video_format
         );
 
         let capture = StreamCapture::new(&pipeline)?;

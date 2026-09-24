@@ -18,6 +18,8 @@ pub mod fps_counter;
 /// High-level read and write functions for images.
 pub mod functional;
 
+pub mod limits;
+
 /// TurboJPEG image encoding and decoding.
 #[cfg(feature = "turbojpeg")]
 pub mod jpegturbo;

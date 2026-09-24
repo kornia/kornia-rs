@@ -1,4 +1,7 @@
-use crate::error::IoError;
+use crate::{
+    error::IoError,
+    limits::{check_image_dimensions, try_alloc_zeroed},
+};
 use image_webp::{ColorType, WebPDecoder, WebPEncoder};
 use kornia_image::{
     color_spaces::{Gray8, Rgb8, Rgba8},
@@ -130,7 +133,7 @@ pub fn decode_image_webp_gray8(src: &[u8], dst: &mut Image<u8, 1>) -> Result<(),
         .ok_or(IoError::WebpDecodingError(
             image_webp::DecodingError::ImageTooLarge,
         ))?;
-    let mut temp_buf = vec![0u8; buf_size];
+    let mut temp_buf = try_alloc_zeroed(buf_size)?;
     decoder.read_image(&mut temp_buf)?;
 
     let has_alpha = decoder.has_alpha();
@@ -160,6 +163,7 @@ pub fn decode_image_webp_gray8(src: &[u8], dst: &mut Image<u8, 1>) -> Result<(),
 pub fn decode_image_webp_layout(src: &[u8]) -> Result<ImageLayout, IoError> {
     let decoder = WebPDecoder::new(Cursor::new(src))?;
     let (width, height) = decoder.dimensions();
+    check_image_dimensions(width as usize, height as usize)?;
     let channels: u8 = if decoder.has_alpha() { 4 } else { 3 };
     Ok(ImageLayout::new(
         ImageSize {
@@ -225,15 +229,16 @@ fn read_webp_rgb_or_rgba(
     let file = fs::File::open(file_path)?;
     let reader = BufReader::new(file);
     let mut decoder = WebPDecoder::new(reader)?;
+    let (width, height) = decoder.dimensions();
+    check_image_dimensions(width as usize, height as usize)?;
     let buf_size = decoder
         .output_buffer_size()
         .ok_or(IoError::WebpDecodingError(
             image_webp::DecodingError::ImageTooLarge,
         ))?;
-    let mut buf = vec![0u8; buf_size];
+    let mut buf = try_alloc_zeroed(buf_size)?;
     decoder.read_image(&mut buf)?;
 
-    let (width, height) = decoder.dimensions();
     let size = ImageSize {
         width: width as usize,
         height: height as usize,
@@ -363,6 +368,44 @@ fn write_image_webp_impl<const N: usize>(
 mod tests {
     use super::*;
     use std::fs::read;
+
+    // A 44-byte WebP whose VP8X header declares a 65535x65535 canvas.
+    fn webp_bomb() -> Vec<u8> {
+        let mut vp8x = [0u8; 10];
+        vp8x[4..7].copy_from_slice(&65534u32.to_le_bytes()[..3]);
+        vp8x[7..10].copy_from_slice(&65534u32.to_le_bytes()[..3]);
+        let mut body = Vec::new();
+        body.extend_from_slice(b"VP8X");
+        body.extend_from_slice(&10u32.to_le_bytes());
+        body.extend_from_slice(&vp8x);
+        let vp8l = [0x2fu8, 0, 0, 0, 0];
+        body.extend_from_slice(b"VP8L");
+        body.extend_from_slice(&(vp8l.len() as u32).to_le_bytes());
+        body.extend_from_slice(&vp8l);
+        body.push(0);
+        let mut out = b"RIFF".to_vec();
+        out.extend_from_slice(&((body.len() + 4) as u32).to_le_bytes());
+        out.extend_from_slice(b"WEBP");
+        out.extend_from_slice(&body);
+        out
+    }
+
+    #[test]
+    fn rejects_decompression_bomb() -> Result<(), Box<dyn std::error::Error>> {
+        let bomb = webp_bomb();
+        assert!(matches!(
+            decode_image_webp_layout(&bomb),
+            Err(IoError::ImageTooLarge { .. })
+        ));
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("bomb.webp");
+        std::fs::write(&path, &bomb)?;
+        assert!(matches!(
+            read_image_webp_rgb8(&path),
+            Err(IoError::ImageTooLarge { .. })
+        ));
+        Ok(())
+    }
 
     #[test]
     fn test_read_webp_rgb8() -> Result<(), IoError> {
