@@ -9,8 +9,12 @@ updates:
         patterns:
           - "*"
 
+  # Keeps SHA-pinned actions (and their `# vX.Y.Z` comments) up to date,
+  # including the local composite actions under .github/actions/.
   - package-ecosystem: "github-actions"
-    directory: "/"
+    directories:
+      - "/"
+      - "/.github/actions/*"
     schedule:
       interval: "monthly"
     groups:
