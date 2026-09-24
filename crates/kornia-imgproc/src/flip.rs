@@ -52,6 +52,12 @@ where
         ));
     }
 
+    // Empty image: nothing to flip (a zero row length would make the
+    // chunked parallel loops below panic).
+    if src.cols() == 0 || src.rows() == 0 {
+        return Ok(());
+    }
+
     {
         use std::any::TypeId;
         if C == 3 && TypeId::of::<T>() == TypeId::of::<u8>() {
@@ -320,6 +326,10 @@ where
 
     let row_len = src.cols() * C;
     let rows = src.rows();
+    // Empty image: nothing to flip (zero-sized chunks would panic).
+    if row_len == 0 || rows == 0 {
+        return Ok(());
+    }
 
     // Group rows into coarse chunks so rayon task count stays ~O(cores×16),
     // not O(rows). Per-row parallelism buries memcpy in spawn overhead at any
@@ -461,6 +471,37 @@ mod tests {
         super::vertical_flip(&image, &mut flipped)?;
         // Rows reversed: [40, 30, 20, 10]
         assert_eq!(flipped.as_slice(), &[40u8, 30, 20, 10]);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod empty_image_tests {
+    use kornia_image::{Image, ImageError, ImageSize};
+
+    /// Regression: zero-width images made the chunked parallel loops panic
+    /// (`par_chunks_mut(0)`).
+    #[test]
+    fn flips_on_empty_images_are_noops() -> Result<(), ImageError> {
+        for size in [
+            ImageSize {
+                width: 0,
+                height: 4,
+            },
+            ImageSize {
+                width: 4,
+                height: 0,
+            },
+        ] {
+            let src = Image::<u8, 3>::from_size_val(size, 7)?;
+            let mut dst = Image::<u8, 3>::from_size_val(size, 0)?;
+            super::horizontal_flip(&src, &mut dst)?;
+            super::vertical_flip(&src, &mut dst)?;
+            let srcf = Image::<f32, 1>::from_size_val(size, 7.0)?;
+            let mut dstf = Image::<f32, 1>::from_size_val(size, 0.0)?;
+            super::horizontal_flip(&srcf, &mut dstf)?;
+            super::vertical_flip(&srcf, &mut dstf)?;
+        }
         Ok(())
     }
 }
