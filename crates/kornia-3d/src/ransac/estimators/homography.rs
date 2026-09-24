@@ -96,10 +96,16 @@ impl Estimator for HomographyEstimator {
     /// otherwise the portable scalar reference. All three paths produce
     /// byte-equal results to FMA-reordering noise.
     fn residual_batch(&self, model: &Self::Model, samples: &[Self::Sample], out: &mut [f64]) {
-        debug_assert_eq!(out.len(), samples.len());
+        // Real check (not a debug_assert): the SIMD kernels below write `out`
+        // through raw pointers for every sample, so clamp both slices to a common
+        // length. Only the first `min(out.len(), samples.len())` entries are computed.
+        let n = samples.len().min(out.len());
+        let (samples, out) = (&samples[..n], &mut out[..n]);
         let h = pack_h(model);
 
         #[cfg(target_arch = "aarch64")]
+        // SAFETY: NEON is architectural on aarch64. `out.len() == samples.len()`
+        // holds after the clamp above; the kernel stays below `samples.len()`.
         unsafe {
             let idx = transfer_error_batch_neon(h, samples, out);
             transfer_error_batch_scalar_tail(h, samples, out, idx);
@@ -108,6 +114,7 @@ impl Estimator for HomographyEstimator {
 
         #[cfg(target_arch = "x86_64")]
         if kornia_imgproc::simd::cpu_features().has_avx2 {
+            // SAFETY: AVX2 confirmed by the runtime probe; equal slice lengths as above.
             unsafe {
                 let idx = transfer_error_batch_avx2(h, samples, out);
                 transfer_error_batch_scalar_tail(h, samples, out, idx);
@@ -341,6 +348,24 @@ mod tests {
 
     /// SIMD `residual_batch` must match scalar `residual` element-wise.
     /// Catches lane-ordering / mask bugs on either NEON or AVX2 paths.
+    /// Regression: `out.len() == samples.len()` was only a debug_assert, so in
+    /// release builds the SIMD kernels wrote past a short `out` slice.
+    #[test]
+    fn residual_batch_short_out_stays_in_bounds() {
+        let est = HomographyEstimator;
+        let samples = vec![Match2d2d::new(Vec2F64::new(1.0, 2.0), Vec2F64::new(3.0, 4.0)); 64];
+        let sentinel = -12345.0;
+        let mut buf = vec![sentinel; 68];
+        est.residual_batch(&Mat3F64::IDENTITY, &samples, &mut buf[..4]);
+        assert!(buf[..4].iter().all(|&r| r != sentinel));
+        assert!(buf[4..].iter().all(|&r| r == sentinel), "wrote past `out`");
+
+        // Longer `out` than `samples`: only the prefix is written.
+        let mut buf = vec![sentinel; 8];
+        est.residual_batch(&Mat3F64::IDENTITY, &samples[..3], &mut buf);
+        assert!(buf[3..].iter().all(|&r| r == sentinel));
+    }
+
     #[test]
     fn batch_dispatcher_matches_scalar_residual() {
         let h_true = Mat3F64::from_cols(

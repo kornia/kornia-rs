@@ -75,12 +75,16 @@ impl Estimator for FundamentalEstimator {
     /// All three paths produce identical results to within FMA reordering
     /// noise (≤ 1e-12 relative) — a unit test pins the equivalence.
     fn residual_batch(&self, model: &Self::Model, samples: &[Self::Sample], out: &mut [f64]) {
-        debug_assert_eq!(out.len(), samples.len());
+        // Real check (not a debug_assert): the SIMD kernels below write `out`
+        // through raw pointers for every sample, so clamp both slices to a common
+        // length. Only the first `min(out.len(), samples.len())` entries are computed.
+        let n = samples.len().min(out.len());
+        let (samples, out) = (&samples[..n], &mut out[..n]);
         let f = pack_f(model);
 
         #[cfg(target_arch = "aarch64")]
-        // SAFETY: NEON is architectural on aarch64-unknown-linux-gnu. Caller
-        // upholds `out.len() == samples.len()`; the kernel never reads/writes
+        // SAFETY: NEON is architectural on aarch64-unknown-linux-gnu.
+        // `out.len() == samples.len()` holds after the clamp above; the kernel never reads/writes
         // past `samples.len()` (returns `idx`, scalar tail handles the rest).
         unsafe {
             let idx = sampson_residual_batch_neon(f, samples, out);
@@ -356,6 +360,24 @@ mod tests {
     /// the scalar `residual` path element-wise on identical input.
     /// Catches lane-ordering bugs in the AoS→SoA loads (NEON `vld4q_f64`,
     /// AVX2 4×4 transpose) and bad branchless masking on the denom guard.
+    /// Regression: `out.len() == samples.len()` was only a debug_assert, so in
+    /// release builds the SIMD kernels wrote past a short `out` slice.
+    #[test]
+    fn residual_batch_short_out_stays_in_bounds() {
+        let est = FundamentalEstimator;
+        let samples = vec![Match2d2d::new(Vec2F64::new(1.0, 2.0), Vec2F64::new(3.0, 4.0)); 64];
+        let sentinel = -12345.0;
+        let mut buf = vec![sentinel; 68];
+        est.residual_batch(&Mat3F64::IDENTITY, &samples, &mut buf[..4]);
+        assert!(buf[..4].iter().all(|&r| r != sentinel));
+        assert!(buf[4..].iter().all(|&r| r == sentinel), "wrote past `out`");
+
+        // Longer `out` than `samples`: only the prefix is written.
+        let mut buf = vec![sentinel; 8];
+        est.residual_batch(&Mat3F64::IDENTITY, &samples[..3], &mut buf);
+        assert!(buf[3..].iter().all(|&r| r == sentinel));
+    }
+
     #[test]
     fn batch_dispatcher_matches_scalar_residual() {
         let pair = synthetic_pair();

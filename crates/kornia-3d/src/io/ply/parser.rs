@@ -14,6 +14,9 @@ use crate::pointcloud::PointCloud;
 ///
 /// Returns:
 ///     A `PointCloud` struct containing the points, colors, and normals.
+///
+/// Errors:
+///     `PlyError::MalformedHeader` if the file ends before the `end_header` line.
 pub fn read_ply_binary(path: impl AsRef<Path>, property: PlyType) -> Result<PointCloud, PlyError> {
     // open the file
     let file = std::fs::File::open(path)?;
@@ -24,7 +27,10 @@ pub fn read_ply_binary(path: impl AsRef<Path>, property: PlyType) -> Result<Poin
     let mut header = String::new();
     loop {
         let mut line = String::new();
-        reader.read_line(&mut line)?;
+        if reader.read_line(&mut line)? == 0 {
+            // EOF before `end_header`: previously this looped forever.
+            return Err(PlyError::MalformedHeader);
+        }
         if line.starts_with("end_header") {
             header.push_str(&line);
             break;
@@ -48,4 +54,23 @@ pub fn read_ply_binary(path: impl AsRef<Path>, property: PlyType) -> Result<Poin
     }
 
     Ok(PointCloud::new(points, Some(colors), Some(normals)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_read_ply_missing_end_header() -> Result<(), Box<dyn std::error::Error>> {
+        // Regression: a header without `end_header` used to loop forever at EOF.
+        let path = std::env::temp_dir().join(format!(
+            "kornia_3d_{}_no_end_header.ply",
+            std::process::id()
+        ));
+        std::fs::write(&path, b"ply\nformat binary_little_endian 1.0\n")?;
+        let result = read_ply_binary(&path, PlyType::XYZRgbNormals);
+        std::fs::remove_file(&path)?;
+        assert!(matches!(result, Err(PlyError::MalformedHeader)));
+        Ok(())
+    }
 }

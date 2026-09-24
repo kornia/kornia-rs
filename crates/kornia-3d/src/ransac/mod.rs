@@ -102,12 +102,13 @@ pub trait Estimator {
     /// driver calls this once per scored model, so any setup amortises across
     /// all `samples.len()` evaluations.
     ///
-    /// `out.len() == samples.len()` must hold; the driver pre-sizes the
-    /// scratch buffer.
+    /// `out.len() == samples.len()` is expected (the driver pre-sizes the
+    /// scratch buffer). If the lengths differ, only the first
+    /// `min(out.len(), samples.len())` residuals are written; implementations
+    /// must never write past either slice.
     fn residual_batch(&self, model: &Self::Model, samples: &[Self::Sample], out: &mut [f64]) {
-        debug_assert_eq!(out.len(), samples.len());
-        for (i, s) in samples.iter().enumerate() {
-            out[i] = self.residual(model, s);
+        for (o, s) in out.iter_mut().zip(samples) {
+            *o = self.residual(model, s);
         }
     }
 }
