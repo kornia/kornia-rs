@@ -1,5 +1,9 @@
 use crate::kernels::{cosine_similarity_float_kernel, dot_product1_kernel};
-use kornia_tensor::{storage::TensorStorage, Tensor, TensorError};
+use kornia_tensor::{
+    storage::TensorStorage,
+    tensor::{checked_numel, get_strides_from_shape},
+    Tensor, TensorError,
+};
 use num_traits::{Float, Zero};
 
 use crate::error::TensorOpsError;
@@ -42,29 +46,64 @@ where
         return Err(TensorOpsError::DimOutOfBounds(dim, N - 1));
     }
 
+    // `shape`/`strides` are public fields: make sure they only address elements that
+    // exist before walking them.
+    tensor.check_layout()?;
+
     let mut out_shape = tensor.shape;
     out_shape[dim] = 1;
 
-    let mut out_strides = tensor.strides;
-    if dim > 0 {
-        out_strides
-            .iter_mut()
-            .take(dim)
-            .for_each(|s| *s /= tensor.shape[dim]);
-    }
+    // The output is a freshly allocated contiguous buffer, so it gets standard
+    // row-major strides (deriving them from the input strides was wrong for strided
+    // inputs and divided by zero for zero-sized dimensions).
+    let out_strides = get_strides_from_shape(out_shape);
 
-    let numel: usize = out_shape.iter().product();
-    let mut data = vec![T::zero(); numel];
+    let out_numel = checked_numel(&out_shape)?;
+    let mut data = vec![T::zero(); out_numel];
 
-    for (i, v) in tensor.as_slice().iter().enumerate() {
-        let mut out_index = tensor.get_index_unchecked(i);
-        out_index[dim] = 0;
-        let out_offset = out_index
+    // Walk the *logical* shape of the input (not its storage) with an odometer index.
+    let in_numel = checked_numel(&tensor.shape)?;
+    let src = tensor.as_slice();
+    let mut index = [0usize; N];
+    for _ in 0..in_numel {
+        let in_offset = index
             .iter()
-            .zip(out_strides.iter())
-            .fold(0, |acc, (&idx, &stride)| acc + idx * stride);
-        let agg = unsafe { data.get_unchecked_mut(out_offset) };
+            .zip(tensor.strides.iter())
+            .fold(0usize, |acc, (&i, &s)| acc + i * s);
+        let out_offset =
+            index
+                .iter()
+                .zip(out_strides.iter())
+                .enumerate()
+                .fold(
+                    0usize,
+                    |acc, (d, (&i, &s))| {
+                        if d == dim {
+                            acc
+                        } else {
+                            acc + i * s
+                        }
+                    },
+                );
+        // Both offsets are in bounds: `check_layout` validated the input layout, and
+        // the output index is `index` with `index[dim] = 0` over a standard layout.
+        // Use checked access anyway so a logic error can never become an OOB access.
+        let v = src
+            .get(in_offset)
+            .ok_or(TensorError::IndexOutOfBounds(in_offset))?;
+        let agg = data
+            .get_mut(out_offset)
+            .ok_or(TensorError::IndexOutOfBounds(out_offset))?;
         *agg = agg.clone() + v.clone();
+
+        // advance the odometer
+        for d in (0..N).rev() {
+            index[d] += 1;
+            if index[d] < tensor.shape[d] {
+                break;
+            }
+            index[d] = 0;
+        }
     }
 
     let storage = TensorStorage::from_vec(data, tensor.storage.alloc().clone());
@@ -667,6 +706,52 @@ mod tests {
         } else {
             panic!("Expected ShapeMismatch error");
         }
+    }
+
+    #[test]
+    fn test_sum_strided_layout() -> Result<(), TensorOpsError> {
+        // Regression (F3): a legit padded 2x2 layout (row stride 3) over 5 elements
+        // used to write the output at a stride-derived offset past its buffer.
+        let mut t = Tensor::<u32, 2>::from_shape_vec([1, 5], vec![1, 2, 3, 4, 5])?;
+        t.shape = [2, 2];
+        t.strides = [3, 1];
+        // logical tensor: [[1, 2], [4, 5]]
+        let r0 = sum_elements(&t, 0)?;
+        assert_eq!(r0.shape, [1, 2]);
+        assert_eq!(r0.as_slice(), [5, 7]);
+        let r1 = sum_elements(&t, 1)?;
+        assert_eq!(r1.shape, [2, 1]);
+        assert_eq!(r1.strides, [1, 1]);
+        assert_eq!(r1.as_slice(), [3, 9]);
+
+        // Transposed view of a 2x3 tensor: logical [[1, 4], [2, 5], [3, 6]].
+        let mut t = Tensor::<u32, 2>::from_shape_vec([2, 3], vec![1, 2, 3, 4, 5, 6])?;
+        t.shape = [3, 2];
+        t.strides = [1, 3];
+        assert_eq!(sum_elements(&t, 1)?.as_slice(), [5, 7, 9]);
+        assert_eq!(sum_elements(&t, 0)?.as_slice(), [6, 15]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_sum_rejects_out_of_bounds_layout() -> Result<(), TensorOpsError> {
+        let mut t = Tensor::<u32, 2>::from_shape_vec([1, 4], vec![1; 4])?;
+        t.shape = [4, 4];
+        assert!(sum_elements(&t, 0).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_sum_zero_sized_dim() -> Result<(), TensorOpsError> {
+        // Regression (F10): summing over a zero-sized dimension divided by zero.
+        let t = Tensor::<f32, 2>::from_shape_vec([2, 0], vec![])?;
+        let r = sum_elements(&t, 1)?;
+        assert_eq!(r.shape, [2, 1]);
+        assert_eq!(r.as_slice(), [0.0, 0.0]);
+        let r = sum_elements(&t, 0)?;
+        assert_eq!(r.shape, [1, 0]);
+        assert!(r.as_slice().is_empty());
+        Ok(())
     }
 
     #[test]
