@@ -221,175 +221,212 @@ pub(crate) fn to_pyerr(e: impl std::fmt::Display) -> PyErr {
     PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e))
 }
 
+/// Zero-copy wrap a typed numpy `(H, W, C)` array as a Rust Image.
+///
+/// Validates that the array is C-contiguous, that its data pointer is aligned
+/// for `T`, and that it has exactly `C` channels. The byte length handed to
+/// `Image::from_raw_parts` is derived from the array's real element count.
+///
+/// # Safety
+///
+/// The caller MUST keep the numpy array alive (and un-resized) for the whole
+/// lifetime of the returned `Image`, which aliases its buffer without copying.
+pub(crate) unsafe fn numpy_as_image_t<T: numpy::Element + Clone, const C: usize>(
+    py: Python<'_>,
+    image: &Py<PyArray3<T>>,
+) -> PyResult<Image<T, C>> {
+    let arr = image.bind(py);
+    crate::pyutils::require_c_contig_aligned(arr, "numpy array")?;
+    let shape = arr.shape();
+    if shape[2] != C {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "expected {} channels, got {}",
+            C, shape[2]
+        )));
+    }
+    let (h, w) = (shape[0], shape[1]);
+    let size = ImageSize {
+        width: w,
+        height: h,
+    };
+    // `arr.len()` is numpy's own element count; it cannot overflow for a live array.
+    let len_bytes = arr.len() * std::mem::size_of::<T>();
+    // SAFETY: the array is C-contiguous and aligned (checked above) with exactly
+    // h*w*C elements, so `data()` is valid for `len_bytes` bytes; the caller keeps
+    // the array alive for the Image's lifetime (function contract).
+    unsafe {
+        Image::from_raw_parts(
+            size,
+            arr.data() as *const T,
+            len_bytes,
+            kornia_image::allocator::host_alloc(),
+        )
+    }
+    .map_err(to_pyerr)
+}
+
 /// Zero-copy wrap a numpy u8 array as a Rust Image for reading.
+///
+/// # Safety
 ///
 /// The caller MUST ensure the Py<PyArray3<u8>> stays alive for the lifetime of the Image.
 pub(crate) unsafe fn numpy_as_image<const C: usize>(
     py: Python<'_>,
     image: &Py<PyArray3<u8>>,
 ) -> PyResult<Image<u8, C>> {
-    let arr = image.bind(py);
-    if !arr.is_c_contiguous() {
-        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-            "numpy array is not C-contiguous",
-        ));
-    }
-    let shape = arr.shape();
-    if shape[2] != C {
-        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-            "expected {} channels, got {}",
-            C, shape[2]
-        )));
-    }
-    let (h, w) = (shape[0], shape[1]);
-    let size = ImageSize {
-        width: w,
-        height: h,
-    };
-    Image::from_raw_parts(
-        size,
-        arr.data() as *const u8,
-        h * w * C,
-        kornia_image::allocator::host_alloc(),
-    )
-    .map_err(to_pyerr)
+    // SAFETY: forwarded caller contract.
+    unsafe { numpy_as_image_t::<u8, C>(py, image) }
 }
 
 /// Zero-copy wrap a numpy u16 array as a Rust Image for reading.
+///
+/// # Safety
 ///
 /// The caller MUST ensure the Py<PyArray3<u16>> stays alive for the lifetime of the Image.
 pub(crate) unsafe fn numpy_as_image_u16<const C: usize>(
     py: Python<'_>,
     image: &Py<PyArray3<u16>>,
 ) -> PyResult<Image<u16, C>> {
-    let arr = image.bind(py);
-    if !arr.is_c_contiguous() {
-        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-            "numpy array is not C-contiguous",
-        ));
-    }
-    let shape = arr.shape();
-    if shape[2] != C {
-        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-            "expected {} channels, got {}",
-            C, shape[2]
-        )));
-    }
-    let (h, w) = (shape[0], shape[1]);
-    let size = ImageSize {
-        width: w,
-        height: h,
-    };
-    let len_bytes = h * w * C * std::mem::size_of::<u16>();
-    Image::from_raw_parts(
-        size,
-        arr.data() as *const u16,
-        len_bytes,
-        kornia_image::allocator::host_alloc(),
-    )
-    .map_err(to_pyerr)
+    // SAFETY: forwarded caller contract.
+    unsafe { numpy_as_image_t::<u16, C>(py, image) }
 }
 
 /// Zero-copy wrap a numpy f32 array as a Rust Image for reading.
+///
+/// # Safety
 ///
 /// The caller MUST ensure the Py<PyArray3<f32>> stays alive for the lifetime of the Image.
 pub(crate) unsafe fn numpy_as_image_f32<const C: usize>(
     py: Python<'_>,
     image: &Py<PyArray3<f32>>,
 ) -> PyResult<Image<f32, C>> {
-    let arr = image.bind(py);
-    if !arr.is_c_contiguous() {
-        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-            "numpy array is not C-contiguous",
-        ));
-    }
-    let shape = arr.shape();
-    if shape[2] != C {
+    // SAFETY: forwarded caller contract.
+    unsafe { numpy_as_image_t::<f32, C>(py, image) }
+}
+
+/// Wrap a caller-provided `out=` numpy array as a writable destination Image.
+///
+/// Validates, in addition to [`numpy_as_image`]'s contiguity/channel checks:
+/// - the shape is exactly `expected` (`[H, W, C]`),
+/// - the array is writeable (numpy's `WRITEABLE` flag — a raw-pointer write
+///   would otherwise silently mutate e.g. an immutable `bytes` buffer),
+/// - its memory does not overlap `src` (the kernels read `src` while writing
+///   `out`; aliasing them is a data race / Rust aliasing violation).
+///
+/// # Safety
+///
+/// Same contract as [`numpy_as_image`]: keep `out` alive while the Image lives.
+pub(crate) unsafe fn numpy_as_out_image<const C: usize>(
+    py: Python<'_>,
+    op: &str,
+    out: &Py<PyArray3<u8>>,
+    expected: [usize; 3],
+    src: &[u8],
+) -> PyResult<Image<u8, C>> {
+    let arr = out.bind(py);
+    if arr.shape() != expected {
         return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-            "expected {} channels, got {}",
-            C, shape[2]
+            "{op}: out shape {:?} must be {:?}",
+            arr.shape(),
+            expected
         )));
     }
-    let (h, w) = (shape[0], shape[1]);
-    let size = ImageSize {
-        width: w,
-        height: h,
-    };
-    let len_bytes = h * w * C * std::mem::size_of::<f32>();
-    Image::from_raw_parts(
-        size,
-        arr.data() as *const f32,
-        len_bytes,
-        kornia_image::allocator::host_alloc(),
-    )
-    .map_err(to_pyerr)
+    crate::pyutils::require_writeable(arr, &format!("{op}: out"))?;
+    crate::pyutils::require_c_contig_aligned(arr, &format!("{op}: out"))?;
+    if crate::pyutils::ranges_overlap(arr.data() as *const u8, arr.len(), src.as_ptr(), src.len()) {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "{op}: out must not share memory with the input image"
+        )));
+    }
+    // SAFETY: forwarded caller contract; layout validated above.
+    unsafe { numpy_as_image::<C>(py, out) }
 }
 
 pub(crate) type AllocOutput<T, const C: usize, P> = (Image<T, C>, Py<P>);
 
+/// Allocate a fresh **zero-initialised** `(H, W, C)` numpy array and wrap it as
+/// a writable Rust Image.
+///
+/// Zero-initialised on purpose: several kernels / decoders legitimately leave
+/// parts of the output untouched (odd tails, format mismatches), and an
+/// uninitialised buffer would then hand stale heap bytes back to Python.
+///
+/// # Safety
+///
+/// The returned `Image` aliases the returned array's buffer; the caller must
+/// keep the `Py` handle alive for the Image's lifetime and not expose the array
+/// to Python until writes through the Image are finished.
+unsafe fn alloc_output_pyarray_t<T: numpy::Element + Clone, const C: usize>(
+    py: Python<'_>,
+    size: ImageSize,
+) -> PyResult<AllocOutput<T, C, PyArray3<T>>> {
+    let dims = [size.height, size.width, C];
+    let n = crate::pyutils::checked_numel(&dims, std::mem::size_of::<T>())?;
+    let arr = PyArray::<T, _>::zeros(py, dims, false);
+    // SAFETY: `arr` is a fresh C-contiguous array of exactly `n` elements
+    // (`checked_numel` guarantees `n * size_of::<T>()` does not overflow).
+    let img = unsafe {
+        Image::from_raw_parts(
+            size,
+            arr.data() as *const T,
+            n * std::mem::size_of::<T>(),
+            kornia_image::allocator::host_alloc(),
+        )
+    }
+    .map_err(to_pyerr)?;
+    Ok((img, arr.unbind()))
+}
+
+/// u8 output allocator; see [`alloc_output_pyarray_t`].
+///
+/// # Safety
+///
+/// See [`alloc_output_pyarray_t`].
 pub(crate) unsafe fn alloc_output_pyarray<const C: usize>(
     py: Python<'_>,
     size: ImageSize,
 ) -> PyResult<AllocOutput<u8, C, PyArray3<u8>>> {
-    let arr = PyArray::<u8, _>::new(py, [size.height, size.width, C], false);
-    let len = size.height * size.width * C;
-    let img = Image::from_raw_parts(
-        size,
-        arr.data() as *const u8,
-        len,
-        kornia_image::allocator::host_alloc(),
-    )
-    .map_err(to_pyerr)?;
-    Ok((img, arr.unbind()))
+    // SAFETY: forwarded caller contract.
+    unsafe { alloc_output_pyarray_t::<u8, C>(py, size) }
 }
 
+/// i32 output allocator; see [`alloc_output_pyarray_t`].
+///
+/// # Safety
+///
+/// See [`alloc_output_pyarray_t`].
 pub(crate) unsafe fn alloc_output_pyarray_i32<const C: usize>(
     py: Python<'_>,
     size: ImageSize,
 ) -> PyResult<AllocOutput<i32, C, PyArray3<i32>>> {
-    let arr = PyArray::<i32, _>::new(py, [size.height, size.width, C], false);
-    // from_raw_parts takes a BYTE length (see the f32 helper).
-    let len = size.height * size.width * C * std::mem::size_of::<i32>();
-    let img = Image::from_raw_parts(
-        size,
-        arr.data() as *const i32,
-        len,
-        kornia_image::allocator::host_alloc(),
-    )
-    .map_err(to_pyerr)?;
-    Ok((img, arr.unbind()))
+    // SAFETY: forwarded caller contract.
+    unsafe { alloc_output_pyarray_t::<i32, C>(py, size) }
 }
 
+/// u16 output allocator; see [`alloc_output_pyarray_t`].
+///
+/// # Safety
+///
+/// See [`alloc_output_pyarray_t`].
 pub(crate) unsafe fn alloc_output_pyarray_u16<const C: usize>(
     py: Python<'_>,
     size: ImageSize,
 ) -> PyResult<AllocOutput<u16, C, PyArray3<u16>>> {
-    let arr = PyArray::<u16, _>::new(py, [size.height, size.width, C], false);
-    let len = size.height * size.width * C * std::mem::size_of::<u16>();
-    let img = Image::from_raw_parts(
-        size,
-        arr.data() as *const u16,
-        len,
-        kornia_image::allocator::host_alloc(),
-    )
-    .map_err(to_pyerr)?;
-    Ok((img, arr.unbind()))
+    // SAFETY: forwarded caller contract.
+    unsafe { alloc_output_pyarray_t::<u16, C>(py, size) }
 }
 
+/// f32 output allocator; see [`alloc_output_pyarray_t`].
+///
+/// # Safety
+///
+/// See [`alloc_output_pyarray_t`].
 pub(crate) unsafe fn alloc_output_pyarray_f32<const C: usize>(
     py: Python<'_>,
     size: ImageSize,
 ) -> PyResult<AllocOutput<f32, C, PyArray3<f32>>> {
-    let arr = PyArray::<f32, _>::new(py, [size.height, size.width, C], false);
-    let len = size.height * size.width * C * std::mem::size_of::<f32>();
-    let img = Image::from_raw_parts(
-        size,
-        arr.data() as *const f32,
-        len,
-        kornia_image::allocator::host_alloc(),
-    )
-    .map_err(to_pyerr)?;
-    Ok((img, arr.unbind()))
+    // SAFETY: forwarded caller contract.
+    unsafe { alloc_output_pyarray_t::<f32, C>(py, size) }
 }
 
 /// Copy numpy u8 data into a kornia_image::allocator::host_alloc() f32 Image (for Category B ops needing f32).
@@ -405,17 +442,38 @@ pub(crate) fn numpy_to_f32_image<const C: usize>(
 }
 
 /// Get raw u8 data and dimensions from a PyArray3.
-pub(crate) fn pyarray_data<'py>(
-    arr: &Bound<'py, PyArray3<u8>>,
-) -> (&'py [u8], usize, usize, usize) {
+///
+/// Errors (instead of reading out of bounds) if the array is strided /
+/// broadcast / reversed: the slice length is the array's real element count.
+pub(crate) fn pyarray_data<'a>(
+    arr: &'a Bound<'_, PyArray3<u8>>,
+) -> PyResult<(&'a [u8], usize, usize, usize)> {
     let s = arr.shape();
     let (h, w, c) = (s[0], s[1], s[2]);
-    (
-        unsafe { std::slice::from_raw_parts(arr.data(), h * w * c) },
-        h,
-        w,
-        c,
-    )
+    Ok((crate::pyutils::c_slice(arr, "image")?, h, w, c))
+}
+
+/// Move a Vec into a numpy array of shape `(h, w, c)`.
+///
+/// Errors if `data.len() != h * w * c` (the old raw `copy_nonoverlapping`
+/// trusted the caller and could write past a smaller array).
+fn vec_to_pyarray_t<T: numpy::Element>(
+    py: Python<'_>,
+    data: Vec<T>,
+    h: usize,
+    w: usize,
+    c: usize,
+) -> PyResult<Py<PyArray3<T>>> {
+    let n = crate::pyutils::checked_numel(&[h, w, c], std::mem::size_of::<T>())?;
+    if n != data.len() {
+        return Err(value_err(format!(
+            "buffer has {} elements, expected {h}x{w}x{c} = {n}",
+            data.len()
+        )));
+    }
+    Ok(numpy::PyArray1::from_vec(py, data)
+        .reshape([h, w, c])?
+        .unbind())
 }
 
 /// Create a PyArray3<u8> from a Vec with given dimensions.
@@ -425,12 +483,8 @@ pub(crate) fn vec_to_pyarray(
     h: usize,
     w: usize,
     c: usize,
-) -> Py<PyArray3<u8>> {
-    unsafe {
-        let arr = PyArray::<u8, _>::new(py, [h, w, c], false);
-        std::ptr::copy_nonoverlapping(data.as_ptr(), arr.data(), data.len());
-        arr.unbind()
-    }
+) -> PyResult<Py<PyArray3<u8>>> {
+    vec_to_pyarray_t(py, data, h, w, c)
 }
 
 /// Create a `PyArray3<u16>` from a Vec with given dimensions. Sister of
@@ -442,12 +496,8 @@ pub(crate) fn vec_to_pyarray_u16(
     h: usize,
     w: usize,
     c: usize,
-) -> Py<PyArray3<u16>> {
-    unsafe {
-        let arr = PyArray::<u16, _>::new(py, [h, w, c], false);
-        std::ptr::copy_nonoverlapping(data.as_ptr(), arr.data(), data.len());
-        arr.unbind()
-    }
+) -> PyResult<Py<PyArray3<u16>>> {
+    vec_to_pyarray_t(py, data, h, w, c)
 }
 
 /// Apply brightness using saturating integer add/sub.
@@ -494,18 +544,31 @@ fn resize_nearest(
     dst_h: usize,
     dst_w: usize,
     c: usize,
-) -> Vec<u8> {
-    let mut out = vec![0u8; dst_h * dst_w * c];
+) -> PyResult<Vec<u8>> {
+    // `dst_h`/`dst_w` are arbitrary Python ints: size the output with checked
+    // math and report allocation failure as MemoryError rather than aborting.
+    let n = backing::byte_len(dst_h, dst_w, c, backing::Dtype::U8)?;
+    if n > 0 && (src_h == 0 || src_w == 0) {
+        return Err(value_err("resize: cannot resize an empty image"));
+    }
+    let mut out: Vec<u8> = Vec::new();
+    out.try_reserve_exact(n)
+        .map_err(|_| pyo3::exceptions::PyMemoryError::new_err("resize: output too large"))?;
+    out.resize(n, 0);
+    // Index math in u128 so `y * src_h` cannot overflow for huge targets.
+    let scale = |i: usize, src: usize, dst: usize| -> usize {
+        (((i as u128) * (src as u128) / (dst as u128)) as usize).min(src - 1)
+    };
     for y in 0..dst_h {
-        let sy = (y * src_h / dst_h).min(src_h - 1);
+        let sy = scale(y, src_h, dst_h);
         for x in 0..dst_w {
-            let sx = (x * src_w / dst_w).min(src_w - 1);
+            let sx = scale(x, src_w, dst_w);
             let si = (sy * src_w + sx) * c;
             let di = (y * dst_w + x) * c;
             out[di..di + c].copy_from_slice(&src[si..si + c]);
         }
     }
-    out
+    Ok(out)
 }
 
 /// Horizontal flip for any channel count.
@@ -718,9 +781,14 @@ fn convert_u16_to_u8(img: &PyImageApi, channels: usize, mode: String) -> PyResul
             c, channels
         )));
     }
-    let n = h * w * channels;
+    img.backing.ensure_host()?;
+    let n = backing::byte_len(h, w, channels, backing::Dtype::U8)?;
+    // SAFETY: host backing (checked) holding h*w*channels u16 elements
+    // (dtype checked above); owned/borrowed buffers are at least 2-byte aligned
+    // (64-byte AlignedBytes, or ingest paths that validate alignment).
     let src = unsafe { std::slice::from_raw_parts(img.backing.data_ptr() as *const u16, n) };
-    let mut out = backing::AlignedBytes::zeroed(n);
+    let mut out = backing::AlignedBytes::zeroed(n)?;
+    // SAFETY: `out` owns exactly `n` bytes, uniquely borrowed here.
     let dst = unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr(), n) };
     for (s, d) in src.iter().zip(dst.iter_mut()) {
         *d = (s >> 8) as u8;
@@ -747,9 +815,13 @@ fn convert_u8_to_u16(img: &PyImageApi, channels: usize, mode: String) -> PyResul
             c, channels
         )));
     }
-    let n = h * w * channels;
+    img.backing.ensure_host()?;
+    let n = backing::byte_len(h, w, channels, backing::Dtype::U8)?;
+    let n_out = backing::byte_len(h, w, channels, backing::Dtype::U16)?;
+    // SAFETY: host backing (checked) holding h*w*channels u8 elements.
     let src = unsafe { std::slice::from_raw_parts(img.backing.data_ptr(), n) };
-    let mut out = backing::AlignedBytes::zeroed(n * 2);
+    let mut out = backing::AlignedBytes::zeroed(n_out)?;
+    // SAFETY: `out` owns `n_out = 2n` bytes, 64-byte aligned (>= align_of u16).
     let dst = unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u16, n) };
     for (s, d) in src.iter().zip(dst.iter_mut()) {
         *d = (*s as u16) * 257;
@@ -900,16 +972,16 @@ impl PyImageApi {
         (self.shape[0], self.shape[1], self.shape[2])
     }
     /// Public wrapper so augmentations can build owned results.
-    pub(crate) fn wrap_u8_result_pub(&self, py: Python<'_>, arr: Py<PyArray3<u8>>) -> Self {
+    pub(crate) fn wrap_u8_result_pub(
+        &self,
+        py: Python<'_>,
+        arr: Py<PyArray3<u8>>,
+    ) -> PyResult<Self> {
         self.wrap_u8_result(py, arr)
     }
     #[inline]
     fn nbytes_total(&self) -> usize {
         self.shape[0] * self.shape[1] * self.shape[2] * self.dtype.itemsize()
-    }
-    #[inline]
-    fn nelems(&self) -> usize {
-        self.shape[0] * self.shape[1] * self.shape[2]
     }
     #[inline]
     fn is_u16(&self) -> bool {
@@ -938,7 +1010,7 @@ impl PyImageApi {
         py: Python<'_>,
         arr: Py<PyArray3<u8>>,
         mode: Option<String>,
-    ) -> Self {
+    ) -> PyResult<Self> {
         let c = arr.bind(py).shape()[2];
         let mode = mode.unwrap_or_else(|| mode_from_channels(c, false));
         Self::copy_numpy_into_owned::<u8>(py, &arr, backing::Dtype::U8, self.color_space, mode)
@@ -1241,24 +1313,39 @@ impl PyImageApi {
         dtype: backing::Dtype,
         cs: ColorSpace,
         mode: String,
-    ) -> Self {
+    ) -> PyResult<Self> {
         let b = arr.bind(py);
-        let s = b.shape();
+        // A strided / broadcast / reversed view cannot be read as a flat run of
+        // bytes; normalise it to a C-contiguous copy first (the result is copied
+        // into an owned buffer anyway).
+        let contig: Bound<'_, PyArray3<T>> = if b.is_c_contiguous() {
+            b.clone()
+        } else {
+            py.import("numpy")?
+                .call_method1("ascontiguousarray", (b,))?
+                .cast_into::<PyArray3<T>>()?
+        };
+        if !contig.is_c_contiguous() {
+            return Err(value_err("could not obtain a C-contiguous array"));
+        }
+        let s = contig.shape();
         let (h, w, c) = (s[0], s[1], s[2]);
-        // Checked multiplication: the numpy array is already allocated so this
-        // should never overflow in practice, but we guard the unsafe slice
-        // creation defensively. If somehow the shape is adversarial, this is
-        // unreachable — numpy itself would have failed to allocate first.
-        let n_bytes = backing::byte_len(h, w, c, dtype)
-            .expect("image dimensions overflow usize — should have been caught at ingest");
-        let src = unsafe { std::slice::from_raw_parts(b.data() as *const u8, n_bytes) };
-        let bytes = backing::AlignedBytes::from_slice(src);
-        Self::from_owned_bytes(bytes, dtype, [h, w, c], cs, mode)
+        let n_bytes = backing::byte_len(h, w, c, dtype)?;
+        if n_bytes != contig.len() * std::mem::size_of::<T>() {
+            return Err(value_err("array dtype does not match the image dtype"));
+        }
+        // SAFETY: `contig` is C-contiguous with exactly `n_bytes` bytes of
+        // element data starting at `data()` (checked above; a byte view needs no
+        // alignment). It is kept alive by the `Bound` for the duration of the
+        // copy below.
+        let src = unsafe { std::slice::from_raw_parts(contig.data() as *const u8, n_bytes) };
+        let bytes = backing::AlignedBytes::from_slice(src)?;
+        Ok(Self::from_owned_bytes(bytes, dtype, [h, w, c], cs, mode))
     }
 
     /// Wrap a freshly-allocated 8-bit numpy array by copying it into an owned
     /// aligned buffer. Mode defaults to `"L"`/`"RGB"`/`"RGBA"` by channel count.
-    pub fn wrap(py: Python<'_>, data: Py<PyArray3<u8>>, mode: Option<String>) -> Self {
+    pub fn wrap(py: Python<'_>, data: Py<PyArray3<u8>>, mode: Option<String>) -> PyResult<Self> {
         let c = data.bind(py).shape()[2];
         let mode = mode.unwrap_or_else(|| mode_from_channels(c, false));
         let cs = default_color_space(c);
@@ -1266,7 +1353,11 @@ impl PyImageApi {
     }
 
     /// Wrap a freshly-allocated 16-bit numpy array into an owned buffer.
-    pub fn wrap_u16(py: Python<'_>, data: Py<PyArray3<u16>>, mode: Option<String>) -> Self {
+    pub fn wrap_u16(
+        py: Python<'_>,
+        data: Py<PyArray3<u16>>,
+        mode: Option<String>,
+    ) -> PyResult<Self> {
         let c = data.bind(py).shape()[2];
         let mode = mode.unwrap_or_else(|| mode_from_channels(c, true));
         let cs = default_color_space(c);
@@ -1274,7 +1365,11 @@ impl PyImageApi {
     }
 
     /// Wrap a freshly-allocated 32-bit float numpy array into an owned buffer.
-    pub fn wrap_f32(py: Python<'_>, data: Py<PyArray3<f32>>, mode: Option<String>) -> Self {
+    pub fn wrap_f32(
+        py: Python<'_>,
+        data: Py<PyArray3<f32>>,
+        mode: Option<String>,
+    ) -> PyResult<Self> {
         let c = data.bind(py).shape()[2];
         let mode = mode.unwrap_or_else(|| mode_from_channels_f32(c));
         let cs = default_color_space(c);
@@ -1361,7 +1456,11 @@ impl PyImageApi {
         let mode = mode.unwrap_or_else(|| mode_for_dtype(dtype, c));
         let cs = cs.unwrap_or_else(|| default_color_space(c));
 
-        if copy || !c_contig {
+        // A misaligned u16/f32/i32 view (e.g. `np.frombuffer(buf, offset=1,
+        // dtype=np.float32)`) must not be borrowed zero-copy: every typed access
+        // to it would be undefined behaviour. Copy it into an aligned buffer.
+        let aligned = (ptr as usize).is_multiple_of(dtype.itemsize());
+        if copy || !c_contig || !aligned {
             // Force an owned, contiguous buffer (ascontiguousarray semantics).
             let n = backing::byte_len(h, w, c, dtype)?;
             let contig = if c_contig {
@@ -1385,7 +1484,7 @@ impl PyImageApi {
                 }
             };
             let src = unsafe { std::slice::from_raw_parts(bptr, n) };
-            let bytes = backing::AlignedBytes::from_slice(src);
+            let bytes = backing::AlignedBytes::from_slice(src)?;
             return Ok(Self::from_owned_bytes(bytes, dtype, [h, w, c], cs, mode));
         }
 
@@ -1397,6 +1496,7 @@ impl PyImageApi {
             keep: backing::BorrowGuard::PyObject {
                 obj: obj.clone().unbind(),
                 buffer: None,
+                dl_managed: None,
             },
             readonly: !writeable,
             // numpy borrows are always host memory.
@@ -1520,47 +1620,76 @@ impl PyImageApi {
     }
 
     /// Return a deep-copied owned clone (independent of self's storage).
-    pub(crate) fn clone_handle(&self, _py: Python<'_>) -> Self {
-        let n = self.nbytes_total();
-        let src = unsafe { std::slice::from_raw_parts(self.backing.data_ptr(), n) };
-        let bytes = backing::AlignedBytes::from_slice(src);
-        Self {
+    ///
+    /// Errors if the backing is not host memory (a device pointer must never be
+    /// dereferenced on the host).
+    pub(crate) fn clone_handle(&self, _py: Python<'_>) -> PyResult<Self> {
+        let bytes = backing::AlignedBytes::from_slice(self.raw_bytes()?)?;
+        Ok(Self {
             backing: backing::Backing::Owned(bytes),
             dtype: self.dtype,
             shape: self.shape,
             color_space: self.color_space,
             mode: self.mode.clone(),
             format: self.format,
-        }
+        })
     }
 
     /// Wrap a Vec<u8> result as a new owned u8 image preserving mode + cs.
-    fn wrap_vec(&self, _py: Python<'_>, out: Vec<u8>, h: usize, w: usize, c: usize) -> Self {
-        let bytes = backing::AlignedBytes::from_slice(&out);
-        Self::from_owned_bytes(
+    fn wrap_vec(
+        &self,
+        _py: Python<'_>,
+        out: Vec<u8>,
+        h: usize,
+        w: usize,
+        c: usize,
+    ) -> PyResult<Self> {
+        if backing::byte_len(h, w, c, backing::Dtype::U8)? != out.len() {
+            return Err(value_err(
+                "internal error: result buffer does not match its shape",
+            ));
+        }
+        let bytes = backing::AlignedBytes::from_slice(&out)?;
+        Ok(Self::from_owned_bytes(
             bytes,
             backing::Dtype::U8,
             [h, w, c],
             self.color_space,
             self.mode.clone(),
-        )
+        ))
     }
 
     /// Wrap a PyArray3<u8> produced by an imgproc submodule as a new owned
     /// image, preserving mode + color_space from `self`.
-    fn wrap_u8_result(&self, py: Python<'_>, arr: Py<PyArray3<u8>>) -> Self {
+    fn wrap_u8_result(&self, py: Python<'_>, arr: Py<PyArray3<u8>>) -> PyResult<Self> {
         self.owned_from_numpy_u8(py, arr, Some(self.mode.clone()))
     }
 
     /// Borrow the backing as a `&[u8]` slice over all element bytes.
-    fn raw_bytes(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(self.backing.data_ptr(), self.nbytes_total()) }
+    ///
+    /// Errors (instead of dereferencing a device pointer on the host) if the
+    /// backing is not host memory.
+    fn raw_bytes(&self) -> PyResult<&[u8]> {
+        self.backing.ensure_host()?;
+        // SAFETY: host backing (checked above) that owns / borrows at least
+        // `nbytes_total()` bytes (the shape invariant is validated with checked
+        // math at every ingest path), kept alive by `self`.
+        Ok(unsafe { std::slice::from_raw_parts(self.backing.data_ptr(), self.nbytes_total()) })
     }
 
     /// Borrow the backing as a `&[u8]` element slice (u8 dtype only).
-    pub(crate) fn u8_elems(&self) -> &[u8] {
-        debug_assert!(self.dtype == backing::Dtype::U8);
-        unsafe { std::slice::from_raw_parts(self.backing.data_ptr(), self.nelems()) }
+    ///
+    /// Errors if the image is not `uint8` or not host-resident: callers used to
+    /// hand this slice to CPU kernels without checking residency, which read a
+    /// CUDA device pointer as host memory.
+    pub(crate) fn u8_elems(&self) -> PyResult<&[u8]> {
+        if self.dtype != backing::Dtype::U8 {
+            return Err(value_err(format!(
+                "expected a uint8 image, got {}",
+                self.dtype.name()
+            )));
+        }
+        self.raw_bytes()
     }
 
     /// Zero-copy numpy view of the backing. Borrowed-numpy images return the
@@ -1592,7 +1721,10 @@ impl PyImageApi {
         // return the producer verbatim; fall through to build a real numpy view over
         // the backing pointer (with the Image as base, which keeps the producer alive).
         if let backing::Backing::Borrowed {
-            keep: backing::BorrowGuard::PyObject { obj, buffer: None },
+            keep:
+                backing::BorrowGuard::PyObject {
+                    obj, buffer: None, ..
+                },
             ..
         } = &me.backing
         {
@@ -1628,7 +1760,13 @@ impl PyImageApi {
         // Host guard: crop copies pixel bytes on the host.
         self.backing.ensure_host()?;
         let [src_h, src_w, c] = self.shape;
-        if y + height > src_h || x + width > src_w {
+        // Checked adds: `x + width` / `y + height` from Python ints must not
+        // wrap around and slip past the bounds check.
+        let in_bounds = matches!(
+            (y.checked_add(height), x.checked_add(width)),
+            (Some(ye), Some(xe)) if ye <= src_h && xe <= src_w
+        );
+        if !in_bounds {
             return Err(value_err(format!(
                 "crop: box ({}, {}, {}x{}) out of bounds for ({}, {}, {})",
                 x, y, width, height, src_h, src_w, c
@@ -1641,10 +1779,10 @@ impl PyImageApi {
             // owned backing) plus a zeroing.
             let src = unsafe { self.borrow_self::<u8, 3>().map_err(to_pyerr)? };
             let out_size = ImageSize { width, height };
-            let n = width * height * 3;
+            let n = backing::byte_len(height, width, 3, backing::Dtype::U8)?;
             // SAFETY: `crop_image` writes all `n` bytes (height*width*3) before the
             // buffer is wrapped/read, so the uninitialized alloc is fully covered.
-            let mut bytes = backing::AlignedBytes::uninit(n);
+            let mut bytes = backing::AlignedBytes::uninit(n)?;
             let mut dst = unsafe {
                 Image::<u8, 3>::from_raw_parts(
                     out_size,
@@ -1666,14 +1804,14 @@ impl PyImageApi {
         }
         // Generic byte-level crop for any dtype / channel count.
         // Validate output dimensions before allocation to catch overflow.
-        let _total = backing::byte_len(height, width, c, self.dtype)?;
+        let total = backing::byte_len(height, width, c, self.dtype)?;
         let isz = self.dtype.itemsize();
         let row_stride = src_w * c * isz;
         let out_row = width * c * isz;
-        let src =
-            unsafe { std::slice::from_raw_parts(self.backing.data_ptr(), src_h * row_stride) };
-        let mut bytes = backing::AlignedBytes::zeroed(height * out_row);
-        let dst = unsafe { std::slice::from_raw_parts_mut(bytes.as_mut_ptr(), height * out_row) };
+        let src = self.raw_bytes()?;
+        let mut bytes = backing::AlignedBytes::zeroed(total)?;
+        // SAFETY: `bytes` owns exactly `total == height * out_row` bytes.
+        let dst = unsafe { std::slice::from_raw_parts_mut(bytes.as_mut_ptr(), total) };
         for row in 0..height {
             let s_off = (y + row) * row_stride + x * c * isz;
             let d_off = row * out_row;
@@ -1689,14 +1827,15 @@ impl PyImageApi {
     }
 
     /// dtype-trivial flip producing an owned buffer (byte-level, any dtype).
-    fn flip_pod(&self, dir: FlipDir) -> Self {
+    fn flip_pod(&self, dir: FlipDir) -> PyResult<Self> {
         let [h, w, c] = self.shape;
         let isz = self.dtype.itemsize();
         let elem = c * isz; // bytes per pixel
         let row = w * elem;
-        let n = h * row;
-        let src = unsafe { std::slice::from_raw_parts(self.backing.data_ptr(), n) };
-        let mut bytes = backing::AlignedBytes::zeroed(n);
+        let src = self.raw_bytes()?;
+        let n = src.len();
+        let mut bytes = backing::AlignedBytes::zeroed(n)?;
+        // SAFETY: `bytes` owns exactly `n` bytes, uniquely borrowed here.
         let dst = unsafe { std::slice::from_raw_parts_mut(bytes.as_mut_ptr(), n) };
         match dir {
             FlipDir::Horizontal => {
@@ -1720,13 +1859,13 @@ impl PyImageApi {
                 }
             }
         }
-        Self::from_owned_bytes(
+        Ok(Self::from_owned_bytes(
             bytes,
             self.dtype,
             [h, w, c],
             self.color_space,
             self.mode.clone(),
-        )
+        ))
     }
 
     /// Gate for 8-bit-only imgproc methods: error on u16 / f32 storage.
@@ -2024,7 +2163,8 @@ impl PyImageApi {
                 )))
             }
         };
-        let expected = height * width * c * itemsize;
+        // Checked: an unchecked product of user ints can wrap to match a small buffer.
+        let expected = crate::pyutils::checked_numel(&[height, width, c], itemsize)? * itemsize;
 
         let bytes: Vec<u8> = if let Ok(v) = data.extract::<Vec<u8>>() {
             v
@@ -2049,8 +2189,8 @@ impl PyImageApi {
         }
 
         if itemsize == 1 {
-            let arr = vec_to_pyarray(py, bytes, height, width, c);
-            Ok(Self::wrap(py, arr, mode))
+            let arr = vec_to_pyarray(py, bytes, height, width, c)?;
+            Self::wrap(py, arr, mode)
         } else {
             // Re-interpret little-endian byte pairs as uint16. Allocates a
             // typed buffer; numpy will hold the canonical view.
@@ -2058,8 +2198,8 @@ impl PyImageApi {
             for pair in bytes.chunks_exact(2) {
                 u16_buf.push(u16::from_le_bytes([pair[0], pair[1]]));
             }
-            let arr = vec_to_pyarray_u16(py, u16_buf, height, width, c);
-            Ok(Self::wrap_u16(py, arr, mode))
+            let arr = vec_to_pyarray_u16(py, u16_buf, height, width, c)?;
+            Self::wrap_u16(py, arr, mode)
         }
     }
 
@@ -2077,14 +2217,14 @@ impl PyImageApi {
         // Py<PyArray3<u16>> depending on the file's pixel format. Try the u8
         // path first (the dominant case) and fall through to u16.
         let img = if let Ok(arr) = arr_any.extract::<Py<PyArray3<u8>>>(py) {
-            Self::wrap(py, arr, None)
+            Self::wrap(py, arr, None)?
         } else {
             let arr: Py<PyArray3<u16>> = arr_any.extract(py).map_err(|_| {
                 PyErr::new::<pyo3::exceptions::PyValueError, _>(
                     "load: file decoded to unsupported dtype (expected uint8 or uint16)",
                 )
             })?;
-            Self::wrap_u16(py, arr, None)
+            Self::wrap_u16(py, arr, None)?
         };
         Ok(match format {
             Some(f) => img.with_format(f),
@@ -2127,7 +2267,7 @@ impl PyImageApi {
                 #[cfg(not(feature = "turbojpeg"))]
                 crate::io::jpeg::decode_image_jpeg(py, data)?
             };
-            return Ok(Self::wrap(py, arr, Some(mode.to_string())).with_format("JPEG"));
+            return Ok(Self::wrap(py, arr, Some(mode.to_string()))?.with_format("JPEG"));
         }
 
         if data.len() >= 4 && &data[0..4] == b"\x89PNG" {
@@ -2149,7 +2289,7 @@ impl PyImageApi {
                         _ => unreachable!("native_mode validated above"),
                     };
                     Ok(
-                        Self::wrap_u16(py, arr, Some(mode_from_channels(channels, true)))
+                        Self::wrap_u16(py, arr, Some(mode_from_channels(channels, true)))?
                             .with_format("PNG"),
                     )
                 }
@@ -2160,7 +2300,7 @@ impl PyImageApi {
                         (height, width),
                         native_mode,
                     )?;
-                    Ok(Self::wrap(py, arr, Some(mode.to_string())).with_format("PNG"))
+                    Ok(Self::wrap(py, arr, Some(mode.to_string()))?.with_format("PNG"))
                 }
             };
         }
@@ -2175,21 +2315,21 @@ impl PyImageApi {
                     let mut wrapped = kornia_image::color_spaces::Rgb8(dst);
                     kornia_io::webp::decode_image_webp_rgb8(data, &mut wrapped)
                         .map_err(to_pyerr)?;
-                    Ok(Self::wrap(py, out, Some(mode.to_string())).with_format("WEBP"))
+                    Ok(Self::wrap(py, out, Some(mode.to_string()))?.with_format("WEBP"))
                 }
                 "RGBA" => {
                     let (dst, out) = unsafe { alloc_output_pyarray::<4>(py, size)? };
                     let mut wrapped = kornia_image::color_spaces::Rgba8(dst);
                     kornia_io::webp::decode_image_webp_rgba8(data, &mut wrapped)
                         .map_err(to_pyerr)?;
-                    Ok(Self::wrap(py, out, Some(mode.to_string())).with_format("WEBP"))
+                    Ok(Self::wrap(py, out, Some(mode.to_string()))?.with_format("WEBP"))
                 }
                 "L" => {
                     let (dst, out) = unsafe { alloc_output_pyarray::<1>(py, size)? };
                     let mut wrapped = kornia_image::color_spaces::Gray8(dst);
                     kornia_io::webp::decode_image_webp_gray8(data, &mut wrapped)
                         .map_err(to_pyerr)?;
-                    Ok(Self::wrap(py, out, Some(mode.to_string())).with_format("WEBP"))
+                    Ok(Self::wrap(py, out, Some(mode.to_string()))?.with_format("WEBP"))
                 }
                 _ => unreachable!("native_mode validated above"),
             };
@@ -2215,13 +2355,13 @@ impl PyImageApi {
                         let mut wrapped = kornia_image::color_spaces::Rgb8(dst);
                         kornia_io::tiff::decode_image_tiff_rgb8(data, &mut wrapped)
                             .map_err(to_pyerr)?;
-                        Ok(Self::wrap(py, out, Some(mode.to_string())).with_format("TIFF"))
+                        Ok(Self::wrap(py, out, Some(mode.to_string()))?.with_format("TIFF"))
                     } else if want_channels == 1 {
                         let (dst, out) = unsafe { alloc_output_pyarray::<1>(py, size)? };
                         let mut wrapped = kornia_image::color_spaces::Gray8(dst);
                         kornia_io::tiff::decode_image_tiff_mono8(data, &mut wrapped)
                             .map_err(to_pyerr)?;
-                        Ok(Self::wrap(py, out, Some(mode.to_string())).with_format("TIFF"))
+                        Ok(Self::wrap(py, out, Some(mode.to_string()))?.with_format("TIFF"))
                     } else {
                         Err(value_err(format!(
                             "decode: TIFF u8 with mode={:?} not supported (channels={})",
@@ -2236,13 +2376,13 @@ impl PyImageApi {
                         let mut wrapped = kornia_image::color_spaces::Rgb16(dst);
                         kornia_io::tiff::decode_image_tiff_rgb16(data, &mut wrapped)
                             .map_err(to_pyerr)?;
-                        Ok(Self::wrap_u16(py, out, Some(mode_u16)).with_format("TIFF"))
+                        Ok(Self::wrap_u16(py, out, Some(mode_u16))?.with_format("TIFF"))
                     } else if want_channels == 1 {
                         let (dst, out) = unsafe { alloc_output_pyarray_u16::<1>(py, size)? };
                         let mut wrapped = kornia_image::color_spaces::Gray16(dst);
                         kornia_io::tiff::decode_image_tiff_mono16(data, &mut wrapped)
                             .map_err(to_pyerr)?;
-                        Ok(Self::wrap_u16(py, out, Some(mode_u16)).with_format("TIFF"))
+                        Ok(Self::wrap_u16(py, out, Some(mode_u16))?.with_format("TIFF"))
                     } else {
                         Err(value_err(format!(
                             "decode: TIFF u16 with mode={:?} not supported (channels={})",
@@ -2322,27 +2462,29 @@ impl PyImageApi {
             }
         };
 
+        // Validate the user-supplied size before numpy is asked to allocate it.
+        crate::pyutils::checked_numel(&[height, width, channels], 4)?;
         match dtype {
             Dtype::U8 => {
                 let arr = unsafe { PyArray::<u8, _>::new(py, [height, width, channels], false) };
                 let len = height * width * channels;
                 let slice = unsafe { std::slice::from_raw_parts_mut(arr.data(), len) };
                 fill_color::<u8>(slice, color, channels, "uint8 (0-255)")?;
-                Ok(Self::wrap(py, arr.unbind(), Some(mode.to_string())))
+                Self::wrap(py, arr.unbind(), Some(mode.to_string()))
             }
             Dtype::U16 => {
                 let arr = unsafe { PyArray::<u16, _>::new(py, [height, width, channels], false) };
                 let len = height * width * channels;
                 let slice = unsafe { std::slice::from_raw_parts_mut(arr.data(), len) };
                 fill_color::<u16>(slice, color, channels, "uint16 (0-65535)")?;
-                Ok(Self::wrap_u16(py, arr.unbind(), Some(mode.to_string())))
+                Self::wrap_u16(py, arr.unbind(), Some(mode.to_string()))
             }
             Dtype::F32 => {
                 let arr = unsafe { PyArray::<f32, _>::new(py, [height, width, channels], false) };
                 let len = height * width * channels;
                 let slice = unsafe { std::slice::from_raw_parts_mut(arr.data(), len) };
                 fill_color::<f32>(slice, color, channels, "float32")?;
-                Ok(Self::wrap_f32(py, arr.unbind(), Some(mode.to_string())))
+                Self::wrap_f32(py, arr.unbind(), Some(mode.to_string()))
             }
         }
     }
@@ -2534,7 +2676,7 @@ impl PyImageApi {
     /// ``uint16`` -> 2 bytes little-endian native).
     fn tobytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
         self.backing.ensure_host()?;
-        Ok(pyo3::types::PyBytes::new(py, self.raw_bytes()))
+        Ok(pyo3::types::PyBytes::new(py, self.raw_bytes()?))
     }
 
     /// Return a copy of the underlying buffer as a fresh numpy array (owns its
@@ -2553,7 +2695,7 @@ impl PyImageApi {
     /// Return a deep copy of this image (owned, independent storage).
     pub fn copy(&self, py: Python<'_>) -> PyResult<Self> {
         self.backing.ensure_host()?;
-        Ok(self.clone_handle(py))
+        self.clone_handle(py)
     }
 
     // --- Chainable transforms ---
@@ -2587,8 +2729,8 @@ impl PyImageApi {
                 kornia_imgproc::resize::resize_fast_rgb_aa(&src, dst, interp, antialias)
             })
         } else {
-            let out = resize_nearest(self.u8_elems(), src_h, src_w, height, width, c);
-            Ok(self.wrap_vec(py, out, height, width, c))
+            let out = resize_nearest(self.u8_elems()?, src_h, src_w, height, width, c)?;
+            self.wrap_vec(py, out, height, width, c)
         }
     }
 
@@ -2622,12 +2764,17 @@ impl PyImageApi {
             return Err(value_err("target width and height must be > 0"));
         }
         // Zero-copy borrow of the HWC u8 input.
-        let src = self.u8_elems();
+        let src = self.u8_elems()?;
         let params = kornia_imgproc::resize::NormalizeParams::<3>::from_mean_std(mean, std);
 
-        // Single owned output allocation (CHW), written in place.
-        let n = 3 * height * width;
-        let mut bytes = backing::AlignedBytes::zeroed(n * 4);
+        // Single owned output allocation (CHW), written in place. Checked math:
+        // `width`/`height` are arbitrary Python ints, and an unchecked
+        // `3 * height * width * 4` used to wrap to a tiny allocation that the
+        // kernel then overflowed.
+        let n_bytes = backing::byte_len(3, height, width, backing::Dtype::F32)?;
+        let n = n_bytes / std::mem::size_of::<f32>();
+        let mut bytes = backing::AlignedBytes::zeroed(n_bytes)?;
+        // SAFETY: `bytes` owns exactly `n * 4` bytes, 64-byte aligned.
         let out_slice =
             unsafe { std::slice::from_raw_parts_mut(bytes.as_mut_ptr() as *mut f32, n) };
         let result = py.detach(|| {
@@ -2677,10 +2824,10 @@ impl PyImageApi {
             });
         }
         if self.dtype == backing::Dtype::U8 {
-            let out = flip_h_generic(self.u8_elems(), h, w, c);
-            return Ok(self.wrap_vec(py, out, h, w, c));
+            let out = flip_h_generic(self.u8_elems()?, h, w, c);
+            return self.wrap_vec(py, out, h, w, c);
         }
-        Ok(self.flip_pod(FlipDir::Horizontal))
+        self.flip_pod(FlipDir::Horizontal)
     }
 
     /// Flip image vertically. Supports 8-bit, 16-bit, and float32 Images.
@@ -2694,10 +2841,10 @@ impl PyImageApi {
             });
         }
         if self.dtype == backing::Dtype::U8 {
-            let out = flip_v_generic(self.u8_elems(), h, w, c);
-            return Ok(self.wrap_vec(py, out, h, w, c));
+            let out = flip_v_generic(self.u8_elems()?, h, w, c);
+            return self.wrap_vec(py, out, h, w, c);
         }
-        Ok(self.flip_pod(FlipDir::Vertical))
+        self.flip_pod(FlipDir::Vertical)
     }
 
     /// Crop image. 8-bit only.
@@ -2781,10 +2928,10 @@ impl PyImageApi {
         self.backing.ensure_host()?;
         self.require_u8("adjust_brightness")?;
         let [h, w, c] = self.shape;
-        Ok(self.wrap_u8_result(
+        self.wrap_u8_result(
             py,
-            adjust_brightness_into_pyarray(py, self.u8_elems(), factor * 255.0, h, w, c),
-        ))
+            adjust_brightness_into_pyarray(py, self.u8_elems()?, factor * 255.0, h, w, c),
+        )
     }
 
     /// Adjust contrast. factor=1.0 is identity, >1 increases contrast. 8-bit only.
@@ -2792,10 +2939,10 @@ impl PyImageApi {
         self.backing.ensure_host()?;
         self.require_u8("adjust_contrast")?;
         let [h, w, c] = self.shape;
-        Ok(self.wrap_u8_result(
+        self.wrap_u8_result(
             py,
-            adjust_contrast_into_pyarray(py, self.u8_elems(), factor, h, w, c),
-        ))
+            adjust_contrast_into_pyarray(py, self.u8_elems()?, factor, h, w, c),
+        )
     }
 
     /// Adjust saturation. factor=1.0 is identity, 0.0 is grayscale. 8-bit only.
@@ -2806,10 +2953,10 @@ impl PyImageApi {
         if c != 3 {
             return self.copy(py);
         }
-        Ok(self.wrap_u8_result(
+        self.wrap_u8_result(
             py,
-            adjust_saturation_into_pyarray(py, self.u8_elems(), h * w, factor as f32, h, w),
-        ))
+            adjust_saturation_into_pyarray(py, self.u8_elems()?, h * w, factor as f32, h, w),
+        )
     }
 
     /// Adjust hue. factor is in [-0.5, 0.5], fraction of hue wheel. 8-bit only.
@@ -2820,10 +2967,10 @@ impl PyImageApi {
         if c != 3 || factor == 0.0 {
             return self.copy(py);
         }
-        Ok(self.wrap_u8_result(
+        self.wrap_u8_result(
             py,
-            adjust_hue_into_pyarray(py, self.u8_elems(), h * w, factor as f32, h, w),
-        ))
+            adjust_hue_into_pyarray(py, self.u8_elems()?, h * w, factor as f32, h, w),
+        )
     }
 
     /// Normalize image to float32 using mean and std per channel. 8-bit only.
@@ -2837,7 +2984,7 @@ impl PyImageApi {
         me.backing.ensure_host()?;
         me.require_u8("normalize")?;
         let [h, w, c] = me.shape;
-        let src = me.u8_elems();
+        let src = me.u8_elems()?;
         let npixels = h * w;
         let out = unsafe { PyArray::<f32, _>::new(py, [h, w, c], false) };
         let dst = unsafe { std::slice::from_raw_parts_mut(out.data(), npixels * c) };
@@ -2897,9 +3044,11 @@ impl PyImageApi {
             ("RGB", "RGBA") => {
                 self.require_u8("convert")?;
                 let [h, w, _] = self.shape;
-                let src = self.u8_elems();
-                let mut bytes = backing::AlignedBytes::zeroed(h * w * 4);
-                let dst = unsafe { std::slice::from_raw_parts_mut(bytes.as_mut_ptr(), h * w * 4) };
+                let src = self.u8_elems()?;
+                let n_out = backing::byte_len(h, w, 4, backing::Dtype::U8)?;
+                let mut bytes = backing::AlignedBytes::zeroed(n_out)?;
+                // SAFETY: `bytes` owns exactly `n_out` bytes, uniquely borrowed here.
+                let dst = unsafe { std::slice::from_raw_parts_mut(bytes.as_mut_ptr(), n_out) };
                 for (i, px) in src.chunks_exact(3).enumerate() {
                     let o = i * 4;
                     dst[o] = px[0];
@@ -2971,7 +3120,7 @@ impl PyImageApi {
                 crate::color::rgb_from_rgba(py, arr.bind(py).as_any(), None)?
             };
             let result: PyImage = result.bind(py).extract().map_err(to_pyerr)?;
-            let mut out = self.owned_from_numpy_u8(py, result, Some("RGB".to_string()));
+            let mut out = self.owned_from_numpy_u8(py, result, Some("RGB".to_string()))?;
             out.color_space = default_color_space(3);
             Ok(out)
         } else {
@@ -2993,12 +3142,14 @@ impl PyImageApi {
             backing::Dtype::I32 => Err(pyo3::exceptions::PyNotImplementedError::new_err(
                 "to_float: int32 label images are not convertible",
             )),
-            backing::Dtype::F32 => Ok(self.clone_handle(py)),
+            backing::Dtype::F32 => self.clone_handle(py),
             backing::Dtype::U8 => {
                 let [h, w, c] = self.shape;
-                let src = self.u8_elems();
-                let n = h * w * c;
-                let mut bytes = backing::AlignedBytes::zeroed(n * 4);
+                let src = self.u8_elems()?;
+                let n_bytes = backing::byte_len(h, w, c, backing::Dtype::F32)?;
+                let n = n_bytes / std::mem::size_of::<f32>();
+                let mut bytes = backing::AlignedBytes::zeroed(n_bytes)?;
+                // SAFETY: `bytes` owns `n * 4` bytes, 64-byte aligned (>= align_of f32).
                 let dst =
                     unsafe { std::slice::from_raw_parts_mut(bytes.as_mut_ptr() as *mut f32, n) };
                 for (d, &s) in dst.iter_mut().zip(src.iter()) {
@@ -3024,13 +3175,19 @@ impl PyImageApi {
             backing::Dtype::I32 => Err(pyo3::exceptions::PyNotImplementedError::new_err(
                 "to_uint8: int32 label images are not convertible",
             )),
-            backing::Dtype::U8 => Ok(self.clone_handle(py)),
+            backing::Dtype::U8 => self.clone_handle(py),
             backing::Dtype::F32 => {
                 let [h, w, c] = self.shape;
-                let n = h * w * c;
+                let n = backing::byte_len(h, w, c, backing::Dtype::U8)?;
+                if !(self.backing.data_ptr() as usize).is_multiple_of(std::mem::align_of::<f32>()) {
+                    return Err(value_err("to_uint8: float32 buffer is misaligned"));
+                }
+                // SAFETY: host backing (ensure_host above) holding h*w*c f32
+                // elements (dtype checked by the match arm), aligned (checked).
                 let src =
                     unsafe { std::slice::from_raw_parts(self.backing.data_ptr() as *const f32, n) };
-                let mut bytes = backing::AlignedBytes::zeroed(n);
+                let mut bytes = backing::AlignedBytes::zeroed(n)?;
+                // SAFETY: `bytes` owns exactly `n` bytes, uniquely borrowed here.
                 let dst = unsafe { std::slice::from_raw_parts_mut(bytes.as_mut_ptr(), n) };
                 for (d, &s) in dst.iter_mut().zip(src.iter()) {
                     *d = (s * 255.0).round().clamp(0.0, 255.0) as u8;
@@ -3055,7 +3212,7 @@ impl PyImageApi {
         let from = self.color_space;
         let to: CS = to.into();
         if from == to {
-            return Ok(self.clone_handle(py));
+            return self.clone_handle(py);
         }
         if !CS::supports(from, to) {
             return Err(value_err(
@@ -3120,7 +3277,7 @@ impl PyImageApi {
         let arr = self.as_numpy_u8(py)?;
         let result = crate::color::apply_colormap(py, arr.bind(py).as_any(), colormap)?;
         let result: PyImage = result.bind(py).extract().map_err(to_pyerr)?;
-        let mut out = self.owned_from_numpy_u8(py, result, Some("RGB".to_string()));
+        let mut out = self.owned_from_numpy_u8(py, result, Some("RGB".to_string()))?;
         out.color_space = default_color_space(3);
         Ok(out)
     }
@@ -3141,12 +3298,12 @@ impl PyImageApi {
             match k {
                 0 => return self.copy(py),
                 2 => {
-                    let (out, _, _) = rot90_generic(self.u8_elems(), h, w, c, 2);
-                    return Ok(self.wrap_vec(py, out, h, w, c));
+                    let (out, _, _) = rot90_generic(self.u8_elems()?, h, w, c, 2);
+                    return self.wrap_vec(py, out, h, w, c);
                 }
                 1 | 3 if h == w => {
-                    let (out, nh, nw) = rot90_generic(self.u8_elems(), h, w, c, k as i32);
-                    return Ok(self.wrap_vec(py, out, nh, nw, c));
+                    let (out, nh, nw) = rot90_generic(self.u8_elems()?, h, w, c, k as i32);
+                    return self.wrap_vec(py, out, nh, nw, c);
                 }
                 _ => {} // fall through to warp for non-square 90/270
             }
@@ -3163,7 +3320,7 @@ impl PyImageApi {
         let result =
             crate::warp::warp_affine(py, arr.bind(py).as_any(), m, (h, w), "bilinear", None)?;
         let result: crate::image::PyImage = result.extract(py)?;
-        Ok(self.wrap_u8_result(py, result))
+        self.wrap_u8_result(py, result)
     }
 
     // --- Serialization for multiprocess (Ray Data, etc.) ---
@@ -3201,30 +3358,30 @@ impl PyImageApi {
         )
     }
 
-    fn __eq__(&self, other: &Self) -> bool {
+    fn __eq__(&self, other: &Self) -> PyResult<bool> {
         if self.mode != other.mode
             || self.dtype != other.dtype
             || self.shape != other.shape
             || self.color_space != other.color_space
         {
-            return false;
+            return Ok(false);
         }
         // Device images cannot be byte-compared on the host (dereferencing device
         // memory is UB). Equal only if they alias the same device buffer.
         if !self.backing.is_host() || !other.backing.is_host() {
-            return self.backing.device() == other.backing.device()
-                && self.backing.data_ptr() == other.backing.data_ptr();
+            return Ok(self.backing.device() == other.backing.device()
+                && self.backing.data_ptr() == other.backing.data_ptr());
         }
-        self.raw_bytes() == other.raw_bytes()
+        Ok(self.raw_bytes()? == other.raw_bytes()?)
     }
 
-    fn __hash__(&self) -> u64 {
+    fn __hash__(&self) -> PyResult<u64> {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
         // Device images cannot be byte-hashed on the host; hash the device +
         // buffer address instead of dereferencing device memory.
         if self.backing.is_host() {
-            self.raw_bytes().hash(&mut h);
+            self.raw_bytes()?.hash(&mut h);
         } else {
             self.backing.device().hash(&mut h);
             (self.backing.data_ptr() as usize).hash(&mut h);
@@ -3233,7 +3390,7 @@ impl PyImageApi {
         (self.dtype as u8).hash(&mut h);
         self.shape.hash(&mut h);
         format!("{:?}", self.color_space).hash(&mut h);
-        h.finish()
+        Ok(h.finish())
     }
 
     #[pyo3(signature = (dtype=None, copy=None))]
@@ -3455,6 +3612,15 @@ impl PyImageApi {
         };
         let capsule = if max_version.is_some_and(|(maj, _)| maj >= 1) {
             export.into_capsule_versioned(py, flags)?
+        } else if readonly {
+            // A legacy "dltensor" capsule cannot carry the read-only flag, so the
+            // consumer would receive a writable alias of immutable memory (e.g. a
+            // `bytes` buffer). Refuse, exactly like NumPy does for read-only arrays.
+            return Err(pyo3::exceptions::PyBufferError::new_err(
+                "__dlpack__: cannot export a read-only Image via the legacy (unversioned) \
+                 DLPack protocol, which cannot signal read-only; pass max_version=(1, 0) \
+                 or export img.copy()",
+            ));
         } else {
             export.into_capsule(py)?
         };
@@ -3521,13 +3687,30 @@ impl PyImageApi {
                 view.len, need, height, width, channels, dtype
             )));
         }
-        let ptr = std::ptr::NonNull::new(view.buf as *mut u8)
-            .ok_or_else(|| value_err("from_buffer: null buffer pointer"))?;
+        let Some(ptr) = std::ptr::NonNull::new(view.buf as *mut u8) else {
+            // SAFETY: `view` was filled by the successful PyObject_GetBuffer above
+            // and has not been released yet; release it exactly once here.
+            unsafe { pyo3::ffi::PyBuffer_Release(view.as_mut()) };
+            return Err(value_err("from_buffer: null buffer pointer"));
+        };
+        // Typed (u16/f32) access to a misaligned pointer is undefined behaviour;
+        // e.g. `memoryview(buf)[1:]` is a valid PEP-3118 buffer at an odd address.
+        if !(ptr.as_ptr() as usize).is_multiple_of(dt.itemsize()) {
+            // SAFETY: as above — release the still-held view exactly once.
+            unsafe { pyo3::ffi::PyBuffer_Release(view.as_mut()) };
+            return Err(value_err(format!(
+                "from_buffer: buffer address is not aligned to {} bytes as required for {}; \
+                 pass an aligned buffer or use Image.frombytes (copies)",
+                dt.itemsize(),
+                dtype
+            )));
+        }
         let readonly = view.readonly != 0;
         // BorrowGuard::PyObject Drop calls PyBuffer_Release exactly once (see backing.rs).
         let keep = backing::BorrowGuard::PyObject {
             obj: data.clone().unbind(),
             buffer: Some(view),
+            dl_managed: None,
         };
         Ok(Self {
             backing: backing::Backing::Borrowed {
@@ -3721,7 +3904,8 @@ impl PyImageApi {
             let mut expected = 1i64;
             let ok = (0..ndim).rev().all(|i| {
                 let ok = strides[i] == expected;
-                expected *= raw_shape[i];
+                // Saturating: producer-controlled dims must not overflow-panic.
+                expected = expected.saturating_mul(raw_shape[i]);
                 ok
             });
             if !ok {
@@ -3802,8 +3986,23 @@ impl PyImageApi {
                 )
             })? as *mut u8;
 
-        let ptr = std::ptr::NonNull::new(base)
-            .expect("from_dlpack: base pointer is null after adding byte_offset (unreachable)");
+        let ptr = std::ptr::NonNull::new(base).ok_or_else(|| {
+            pyo3::exceptions::PyValueError::new_err(
+                "from_dlpack: tensor data pointer is null after byte_offset",
+            )
+        })?;
+        // Typed (u16/f32) access requires element alignment; a producer can hand
+        // out an arbitrary `data + byte_offset`. Only enforce it for host memory
+        // (device pointers are never dereferenced on the host).
+        if src_device.0 == dlpack_rs::ffi::K_DL_CPU as i32
+            && !(base as usize).is_multiple_of(dtype.itemsize())
+        {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "from_dlpack: data pointer is not aligned to {} bytes for {}",
+                dtype.itemsize(),
+                dtype.name()
+            )));
+        }
 
         // 10. Build the Image with the PRODUCER as keep-alive.
         //
@@ -3828,27 +4027,18 @@ impl PyImageApi {
         //   is NOT involved here; the chain is `img2.keep → obj(=t) → t.storage
         //   → ImageExport → img` (implicit; mediated by torch's lifecycle).
         //
-        // We consume the capsule (rename) to prevent double-free: the capsule's
-        // C destructor would otherwise also call the deleter, which would
-        // decrement the producer's internal refcount, possibly freeing the buffer
-        // while `obj` still claims to own it.
-        {
-            use pyo3::ffi::PyCapsule_SetName;
-            // Consumed name for the capsule (DLPack spec: "used_dltensor" / "used_dltensor_versioned")
-            let consumed_name: &'static CStr = if name_cstr == c"dltensor_versioned" {
-                c"used_dltensor_versioned"
-            } else {
-                c"used_dltensor"
-            };
-            // SAFETY: capsule is a valid PyCapsule (validated by cast_into) and the
-            // new name is a valid C string with static lifetime.
-            let ok = unsafe { PyCapsule_SetName(capsule.as_ptr(), consumed_name.as_ptr()) };
-            if ok != 0 {
-                return Err(pyo3::exceptions::PyRuntimeError::new_err(
-                    "from_dlpack: failed to consume DLPack capsule (PyCapsule_SetName failed)",
-                ));
-            }
-        }
+        // Consuming the capsule (rename) transfers ownership of the managed
+        // tensor to us: the capsule's C destructor will no longer call the
+        // deleter, so WE must call it exactly once — `DlManagedOwner` does so
+        // when this Image's BorrowGuard drops. (Previously the deleter was never
+        // called, leaking the producer's manager context — for numpy a strong
+        // reference to the whole source array — on every import.) Holding the
+        // managed tensor also keeps the buffer valid by DLPack contract, in
+        // addition to the `obj` keep-alive.
+        //
+        // All fallible validation is done above, so nothing between here and the
+        // returned Image can fail and drop the owner early.
+        let dl_managed = crate::dlpack::DlManagedOwner::consume_capsule(&capsule)?;
 
         let mode = mode_for_dtype(dtype, c);
 
@@ -3858,6 +4048,7 @@ impl PyImageApi {
                 keep: backing::BorrowGuard::PyObject {
                     obj: obj.clone().unbind(),
                     buffer: None,
+                    dl_managed: Some(dl_managed),
                 },
                 readonly,
                 device: src_device,
@@ -3928,7 +4119,7 @@ impl PyImageApi {
             }
             None => {
                 self.backing.ensure_host()?;
-                Ok(self.clone_handle(py))
+                self.clone_handle(py)
             }
         }
     }
@@ -4319,7 +4510,7 @@ impl PyImageApi {
 
         let dt = backing::Dtype::from_numpy_str(dtype)?;
         let nbytes = backing::byte_len(height, width, channels, dt)?;
-        let bytes = backing::AlignedBytes::zeroed(nbytes);
+        let bytes = backing::AlignedBytes::zeroed(nbytes)?;
         let cs = default_color_space(channels);
         let mode = mode_for_dtype(dt, channels);
         Ok(Self::from_owned_bytes(
@@ -4398,7 +4589,7 @@ impl PyImageApi {
         #[cfg(not(feature = "cuda"))]
         {
             if self.backing.is_host() {
-                Ok(self.clone_handle(py))
+                self.clone_handle(py)
             } else {
                 Err(cuda_not_compiled())
             }

@@ -16,6 +16,8 @@ use kornia_algebra::{Mat3F64, Vec3F64};
 use numpy::{PyArray, PyArray1, PyArray2, PyArrayMethods, PyUntypedArrayMethods};
 use pyo3::prelude::*;
 
+use crate::pyutils::{c_slice, to_value_err};
+
 /// Build a `Pose3d` from a (3, 3) row-major rotation + (3,) translation slice.
 fn pose_from_slice(r: &[f64], t: &[f64]) -> Pose3d {
     // numpy row-major → glam column-major Mat3F64
@@ -116,8 +118,8 @@ pub fn bundle_adjust_py<'py>(
     let n_obs = o_shape[0];
 
     // Unpack poses
-    let r_data = unsafe { std::slice::from_raw_parts(rotations.data(), n_poses * 9) };
-    let t_data = unsafe { std::slice::from_raw_parts(translations.data(), n_poses * 3) };
+    let r_data = c_slice(&rotations, "rotations")?;
+    let t_data = c_slice(&translations, "translations")?;
     let mut poses: Vec<Pose3d> = Vec::with_capacity(n_poses);
     for i in 0..n_poses {
         poses.push(pose_from_slice(
@@ -127,7 +129,7 @@ pub fn bundle_adjust_py<'py>(
     }
 
     // Unpack points
-    let p_data = unsafe { std::slice::from_raw_parts(points.data(), n_points * 3) };
+    let p_data = c_slice(&points, "points")?;
     let points_vec: Vec<Vec3F64> = (0..n_points)
         .map(|i| Vec3F64::new(p_data[i * 3], p_data[i * 3 + 1], p_data[i * 3 + 2]))
         .collect();
@@ -137,7 +139,7 @@ pub fn bundle_adjust_py<'py>(
         .unwrap_or_else(|| vec![0])
         .into_iter()
         .collect();
-    let o_data = unsafe { std::slice::from_raw_parts(observations.data(), n_obs * 4) };
+    let o_data = c_slice(&observations, "observations")?;
 
     // Optional per-observation depth + sigma. When `obs_depths` is None or
     // every entry is <=0, no depth residuals are emitted (behaviour matches
@@ -150,8 +152,7 @@ pub fn bundle_adjust_py<'py>(
                 "obs_depths must be (M,) float32 matching observations rows",
             ));
         }
-        let data = unsafe { std::slice::from_raw_parts(arr.data(), n_obs) };
-        Some(data.to_vec())
+        Some(c_slice(&arr, "obs_depths")?.to_vec())
     } else {
         None
     };
@@ -162,8 +163,7 @@ pub fn bundle_adjust_py<'py>(
                 "obs_sigmas must be (M,) float32 matching observations rows",
             ));
         }
-        let data = unsafe { std::slice::from_raw_parts(arr.data(), n_obs) };
-        Some(data.to_vec())
+        Some(c_slice(&arr, "obs_sigmas")?.to_vec())
     } else {
         None
     };
@@ -203,7 +203,7 @@ pub fn bundle_adjust_py<'py>(
     }
 
     // Camera
-    let k_data = unsafe { std::slice::from_raw_parts(k.data(), 9) };
+    let k_data = c_slice(&k, "k")?;
     let camera = PinholeCamera {
         fx: k_data[0],
         fy: k_data[4],
@@ -255,8 +255,8 @@ pub fn bundle_adjust_py<'py>(
                         "pose_prior_sigmas must be (P,) float32 matching poses",
                     ));
                 }
-                let c_data = unsafe { std::slice::from_raw_parts(c.data(), n_poses * 3) };
-                let s_data = unsafe { std::slice::from_raw_parts(s.data(), n_poses) };
+                let c_data = c_slice(c, "pose_prior_centers")?;
+                let s_data = c_slice(s, "pose_prior_sigmas")?;
                 let mut out = Vec::with_capacity(n_poses);
                 let mut any = false;
                 for i in 0..n_poses {
@@ -320,10 +320,13 @@ pub fn bundle_adjust_py<'py>(
     };
 
     // Pack output
-    let r_out = unsafe { PyArray::<f64, _>::new(py, [n_poses, 3, 3], false) };
-    let t_out = unsafe { PyArray2::<f64>::new(py, [n_poses, 3], false) };
-    let r_out_data = unsafe { std::slice::from_raw_parts_mut(r_out.data(), n_poses * 9) };
-    let t_out_data = unsafe { std::slice::from_raw_parts_mut(t_out.data(), n_poses * 3) };
+    let r_out = PyArray::<f64, _>::zeros(py, [n_poses, 3, 3], false);
+    let t_out = PyArray2::<f64>::zeros(py, [n_poses, 3], false);
+    // SAFETY: `r_out` is a freshly allocated, zero-initialised, C-contiguous
+    // (n_poses, 3, 3) f64 array not yet shared with Python.
+    let r_out_data = unsafe { r_out.as_slice_mut() }.map_err(to_value_err)?;
+    // SAFETY: as above, for the fresh (n_poses, 3) `t_out`.
+    let t_out_data = unsafe { t_out.as_slice_mut() }.map_err(to_value_err)?;
     for (i, p) in result.poses.iter().enumerate() {
         let cols = p.rotation.to_cols_array(); // column-major
                                                // To row-major
@@ -337,8 +340,9 @@ pub fn bundle_adjust_py<'py>(
         t_out_data[i * 3 + 2] = p.translation.z;
     }
 
-    let p_out = unsafe { PyArray2::<f64>::new(py, [n_points, 3], false) };
-    let p_out_data = unsafe { std::slice::from_raw_parts_mut(p_out.data(), n_points * 3) };
+    let p_out = PyArray2::<f64>::zeros(py, [n_points, 3], false);
+    // SAFETY: fresh, zero-initialised, C-contiguous (n_points, 3) array.
+    let p_out_data = unsafe { p_out.as_slice_mut() }.map_err(to_value_err)?;
     for (i, pt) in result.points.iter().enumerate() {
         p_out_data[i * 3] = pt.x;
         p_out_data[i * 3 + 1] = pt.y;

@@ -91,6 +91,123 @@ impl IntoDLPack for ImageExport {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Import: ownership of a consumed DLManagedTensor
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Raw pointer to a producer's managed tensor, legacy or versioned.
+enum ManagedTensorPtr {
+    Legacy(std::ptr::NonNull<dlpack_rs::ffi::DLManagedTensor>),
+    Versioned(std::ptr::NonNull<dlpack_rs::ffi::DLManagedTensorVersioned>),
+}
+
+/// Owner of a DLPack managed tensor taken from a consumed capsule.
+///
+/// Per the DLPack protocol, a consumer that renames a capsule to
+/// `used_dltensor[_versioned]` takes ownership of the `DLManagedTensor` and
+/// MUST call its `deleter` exactly once when done with the data. Before this
+/// type existed `from_dlpack` renamed the capsule but never called the deleter,
+/// leaking the producer's manager context (for numpy: a strong reference to the
+/// source array, i.e. the whole buffer) on every import.
+///
+/// Dropping the owner calls the deleter exactly once (it is not `Clone`, and
+/// the capsule was renamed so the capsule destructor will not call it too).
+pub struct DlManagedOwner {
+    ptr: ManagedTensorPtr,
+}
+
+// SAFETY: the owner only holds a pointer whose sole use is the one-shot deleter
+// call in `Drop`, which runs with the GIL attached. DLPack deleters are required
+// to be callable from any thread.
+unsafe impl Send for DlManagedOwner {}
+// SAFETY: no `&self` method touches the pointee.
+unsafe impl Sync for DlManagedOwner {}
+
+impl DlManagedOwner {
+    /// Consume a `dltensor` / `dltensor_versioned` capsule and take ownership of
+    /// its managed tensor.
+    ///
+    /// Renames the capsule to `used_dltensor[_versioned]` (so the producer's
+    /// capsule destructor will not free it) and returns the owner that will
+    /// call the deleter on drop. Call this only once all fallible validation
+    /// that should leave the capsule untouched has been done; any error after
+    /// this call still frees the tensor correctly via the owner's `Drop`.
+    ///
+    /// # Errors
+    ///
+    /// `ValueError` if the capsule name is not a DLPack name or its pointer is
+    /// null; `RuntimeError` if renaming fails.
+    pub fn consume_capsule(
+        capsule: &Bound<'_, pyo3::types::PyCapsule>,
+    ) -> PyResult<DlManagedOwner> {
+        use pyo3::types::PyCapsuleMethods;
+        let name = capsule.name()?;
+        // SAFETY: the name pointer is valid for as long as the capsule is alive
+        // and not renamed; we only compare it before renaming below.
+        let versioned = match &name {
+            Some(n) if unsafe { n.as_cstr() } == c"dltensor_versioned" => true,
+            Some(n) if unsafe { n.as_cstr() } == c"dltensor" => false,
+            _ => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "from_dlpack: capsule is not an unconsumed DLPack tensor",
+                ))
+            }
+        };
+        let raw = if versioned {
+            capsule.pointer_checked(Some(c"dltensor_versioned"))?
+        } else {
+            capsule.pointer_checked(Some(c"dltensor"))?
+        };
+        let ptr = if versioned {
+            ManagedTensorPtr::Versioned(raw.cast())
+        } else {
+            ManagedTensorPtr::Legacy(raw.cast())
+        };
+        let consumed: &'static std::ffi::CStr = if versioned {
+            c"used_dltensor_versioned"
+        } else {
+            c"used_dltensor"
+        };
+        // SAFETY: `capsule` is a live PyCapsule and `consumed` is a 'static C
+        // string, as PyCapsule_SetName requires.
+        if unsafe { pyo3::ffi::PyCapsule_SetName(capsule.as_ptr(), consumed.as_ptr()) } != 0 {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "from_dlpack: failed to consume DLPack capsule (PyCapsule_SetName failed)",
+            ));
+        }
+        Ok(DlManagedOwner { ptr })
+    }
+}
+
+impl Drop for DlManagedOwner {
+    fn drop(&mut self) {
+        let call = || match self.ptr {
+            ManagedTensorPtr::Legacy(p) => {
+                // SAFETY: `p` came from a live, consumed `dltensor` capsule and is
+                // owned exclusively by us; the deleter (if any) is called once.
+                if let Some(deleter) = unsafe { (*p.as_ptr()).deleter } {
+                    // SAFETY: DLPack contract — deleter(self) frees the tensor.
+                    unsafe { deleter(p.as_ptr()) };
+                }
+            }
+            ManagedTensorPtr::Versioned(p) => {
+                // SAFETY: as above, for the versioned struct.
+                if let Some(deleter) = unsafe { (*p.as_ptr()).deleter } {
+                    // SAFETY: DLPack contract — deleter(self) frees the tensor.
+                    unsafe { deleter(p.as_ptr()) };
+                }
+            }
+        };
+        // Producer deleters (numpy, torch) may touch Python objects; run them
+        // with the GIL attached. During interpreter finalization there is no
+        // interpreter to attach to — leak instead (the process is exiting).
+        // SAFETY: plain query of interpreter state.
+        if unsafe { pyo3::ffi::Py_IsInitialized() } != 0 {
+            Python::attach(|_py| call());
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Helper: Dtype <-> DLDataType
 // ─────────────────────────────────────────────────────────────────────────────
 

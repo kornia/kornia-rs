@@ -90,13 +90,36 @@ pub struct AlignedBytes {
 // SAFETY: AlignedBytes uniquely owns a heap allocation of plain bytes.
 unsafe impl Send for AlignedBytes {}
 unsafe impl Sync for AlignedBytes {}
+/// Layout for an `len`-byte, 64-byte-aligned buffer, or `MemoryError` if the
+/// size is not representable (> `isize::MAX` after alignment rounding).
+fn aligned_layout(len: usize) -> PyResult<Layout> {
+    Layout::from_size_align(len.max(1), ALIGN).map_err(|_| {
+        pyo3::exceptions::PyMemoryError::new_err(format!(
+            "cannot allocate an image buffer of {len} bytes"
+        ))
+    })
+}
+
+/// Turn a null allocator result into a Python `MemoryError` (instead of
+/// aborting the interpreter via `handle_alloc_error`: sizes here are often
+/// user-controlled).
+fn non_null_or_oom(raw: *mut u8, len: usize) -> PyResult<NonNull<u8>> {
+    NonNull::new(raw).ok_or_else(|| {
+        pyo3::exceptions::PyMemoryError::new_err(format!(
+            "out of memory allocating an image buffer of {len} bytes"
+        ))
+    })
+}
+
 impl AlignedBytes {
-    pub fn zeroed(len: usize) -> Self {
-        let layout = Layout::from_size_align(len.max(1), ALIGN).expect("layout");
+    /// Allocate `len` zeroed bytes. Returns `MemoryError` if the size is
+    /// unrepresentable or the allocation fails.
+    pub fn zeroed(len: usize) -> PyResult<Self> {
+        let layout = aligned_layout(len)?;
         // SAFETY: layout has non-zero size (len.max(1)).
         let raw = unsafe { alloc_zeroed(layout) };
-        let ptr = NonNull::new(raw).unwrap_or_else(|| std::alloc::handle_alloc_error(layout));
-        Self { ptr, len, layout }
+        let ptr = non_null_or_oom(raw, len)?;
+        Ok(Self { ptr, len, layout })
     }
     /// Allocate `len` bytes **without zeroing**. This is how numpy/OpenCV allocate
     /// output buffers — pre-zeroing a buffer you're about to fully overwrite is
@@ -105,20 +128,21 @@ impl AlignedBytes {
     /// # Safety contract (caller-enforced, not in the type)
     /// The caller MUST fully initialize all `len` bytes before any read of this
     /// buffer (e.g. a full-overwrite op like crop, or `copy_nonoverlapping`).
-    pub fn uninit(len: usize) -> Self {
-        let layout = Layout::from_size_align(len.max(1), ALIGN).expect("layout");
+    pub fn uninit(len: usize) -> PyResult<Self> {
+        let layout = aligned_layout(len)?;
         // SAFETY: layout has non-zero size (len.max(1)); the returned bytes are
         // uninitialized and must be fully written before being read.
         let raw = unsafe { alloc(layout) };
-        let ptr = NonNull::new(raw).unwrap_or_else(|| std::alloc::handle_alloc_error(layout));
-        Self { ptr, len, layout }
+        let ptr = non_null_or_oom(raw, len)?;
+        Ok(Self { ptr, len, layout })
     }
-    pub fn from_slice(src: &[u8]) -> Self {
+    /// Copy `src` into a fresh aligned buffer.
+    pub fn from_slice(src: &[u8]) -> PyResult<Self> {
         // `uninit` is sound here: copy_nonoverlapping below writes every byte.
-        let b = Self::uninit(src.len());
+        let b = Self::uninit(src.len())?;
         // SAFETY: b.ptr owns len==src.len() bytes; regions don't overlap.
         unsafe { std::ptr::copy_nonoverlapping(src.as_ptr(), b.ptr.as_ptr(), src.len()) };
-        b
+        Ok(b)
     }
     #[allow(dead_code)]
     pub fn as_ptr(&self) -> *const u8 {
@@ -154,6 +178,10 @@ pub enum BorrowGuard {
     PyObject {
         obj: Py<PyAny>,
         buffer: Option<Box<pyo3::ffi::Py_buffer>>,
+        /// Managed tensor taken from a consumed DLPack capsule (`from_dlpack`).
+        /// Its deleter runs exactly once when the guard drops.
+        #[allow(dead_code)] // held only for its `Drop`
+        dl_managed: Option<crate::dlpack::DlManagedOwner>,
     },
 }
 impl Drop for BorrowGuard {
@@ -321,7 +349,7 @@ pub fn alloc_output_owned<const C: usize>(
     size: ImageSize,
 ) -> pyo3::PyResult<(AlignedBytes, ImageSize)> {
     let len = byte_len(size.height, size.width, C, dtype)?;
-    Ok((AlignedBytes::zeroed(len), size))
+    Ok((AlignedBytes::zeroed(len)?, size))
 }
 
 #[cfg(test)]
@@ -330,7 +358,7 @@ mod tests {
 
     #[test]
     fn aligned_bytes_is_64b_aligned_and_zeroed() {
-        let b = AlignedBytes::zeroed(100);
+        let b = AlignedBytes::zeroed(100).unwrap();
         assert_eq!(b.as_ptr() as usize % ALIGN, 0);
         assert_eq!(b.len(), 100);
         assert!(b.as_slice().iter().all(|&x| x == 0));
@@ -339,7 +367,7 @@ mod tests {
     #[test]
     fn from_slice_copies() {
         let src = [1u8, 2, 3, 4, 5];
-        let b = AlignedBytes::from_slice(&src);
+        let b = AlignedBytes::from_slice(&src).unwrap();
         assert_eq!(b.as_slice(), &src);
         assert_eq!(b.as_ptr() as usize % ALIGN, 0);
     }

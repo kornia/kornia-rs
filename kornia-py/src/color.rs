@@ -1,4 +1,4 @@
-use numpy::{PyArray, PyArray1, PyArrayMethods, PyUntypedArrayMethods};
+use numpy::{PyArray, PyArray1, PyArrayMethods};
 use pyo3::prelude::*;
 
 use crate::dispatch::{cpu_op, try_dispatch_device};
@@ -381,14 +381,17 @@ macro_rules! py_video_decode {
             height: usize,
         ) -> PyResult<PyImage> {
             let arr = data.bind(py);
-            if !arr.is_c_contiguous() {
-                return Err(pyo3::exceptions::PyValueError::new_err(
-                    "YUV buffer must be a C-contiguous 1-D uint8 array",
-                ));
+            // The decoders work on 2-pixel (4:2:2) / 2x2 (4:2:0) groups; an odd
+            // dimension would leave the last column/row of the output unwritten.
+            if !width.is_multiple_of(2) || !height.is_multiple_of(2) {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "{}: width and height must be even, got {width}x{height}",
+                    stringify!($name)
+                )));
             }
-            // SAFETY: `data` is owned for the call, keeping the buffer alive; the slice is
+            // `data` is owned for the call, keeping the buffer alive; the slice is
             // only read inside `py.detach` while `arr` remains valid.
-            let src = unsafe { std::slice::from_raw_parts(arr.data(), arr.len()) };
+            let src = crate::pyutils::c_slice(arr, "YUV buffer")?;
             let (mut dst, out) =
                 unsafe { alloc_output_pyarray::<3>(py, ImageSize { width, height })? };
             // Length validation happens inside the kernel (returns InvalidImageSize).
@@ -442,9 +445,10 @@ macro_rules! py_video_encode {
             let src = unsafe { numpy_as_image::<3>(py, &image)? };
             let (w, h) = (src.width(), src.height());
             let len = $len_expr(w, h);
-            let out = unsafe { PyArray::<u8, _>::new(py, [len], false) };
-            // SAFETY: freshly-allocated 1-D uint8 array, not yet shared.
-            let out_slice = unsafe { std::slice::from_raw_parts_mut(out.data(), len) };
+            let out = PyArray::<u8, _>::zeros(py, [len], false);
+            // SAFETY: freshly-allocated, zero-initialised, contiguous 1-D uint8
+            // array of `len` elements, not yet shared with Python.
+            let out_slice = unsafe { out.as_slice_mut() }.map_err(to_pyerr)?;
             py.detach(|| $func(&src, out_slice)).map_err(to_pyerr)?;
             Ok(out.unbind())
         }

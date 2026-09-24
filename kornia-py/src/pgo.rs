@@ -9,6 +9,8 @@ use kornia_algebra::{Mat3F64, Vec3AF32, Vec3F64, SE3F32, SO3F32};
 use numpy::{PyArray, PyArray2, PyArrayMethods, PyUntypedArrayMethods};
 use pyo3::prelude::*;
 
+use crate::pyutils::{c_slice, to_value_err};
+
 /// Build a [`Pose3d`] from row-major (3, 3) rotation + (3,) translation slices.
 fn pose_from_slice(r: &[f64], t: &[f64]) -> Pose3d {
     let rotation = Mat3F64::from_cols(
@@ -86,8 +88,8 @@ pub fn pose_graph_optimize_py<'py>(
     let n_edges = e_shape[0];
 
     // Build poses.
-    let r_data = unsafe { std::slice::from_raw_parts(rotations.data(), n_poses * 9) };
-    let t_data = unsafe { std::slice::from_raw_parts(translations.data(), n_poses * 3) };
+    let r_data = c_slice(&rotations, "rotations")?;
+    let t_data = c_slice(&translations, "translations")?;
     let mut poses: Vec<Pose3d> = Vec::with_capacity(n_poses);
     for i in 0..n_poses {
         poses.push(pose_from_slice(
@@ -97,7 +99,7 @@ pub fn pose_graph_optimize_py<'py>(
     }
 
     // Edge row layout (15 cols): [pose_a, pose_b, R[0..9] row-major, t[0..3], weight]
-    let e_data = unsafe { std::slice::from_raw_parts(edges.data(), n_edges * 15) };
+    let e_data = c_slice(&edges, "edges")?;
     let mut edge_vec: Vec<PgoEdge> = Vec::with_capacity(n_edges);
     for i in 0..n_edges {
         let off = i * 15;
@@ -127,10 +129,13 @@ pub fn pose_graph_optimize_py<'py>(
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{e}")))?;
 
     // Pack output (R, t).
-    let r_out = unsafe { PyArray::<f64, _>::new(py, [n_poses, 3, 3], false) };
-    let t_out = unsafe { PyArray2::<f64>::new(py, [n_poses, 3], false) };
-    let r_out_data = unsafe { std::slice::from_raw_parts_mut(r_out.data(), n_poses * 9) };
-    let t_out_data = unsafe { std::slice::from_raw_parts_mut(t_out.data(), n_poses * 3) };
+    let r_out = PyArray::<f64, _>::zeros(py, [n_poses, 3, 3], false);
+    let t_out = PyArray2::<f64>::zeros(py, [n_poses, 3], false);
+    // SAFETY: `r_out` is a freshly allocated, zero-initialised, C-contiguous
+    // (n_poses, 3, 3) f64 array not yet shared with Python.
+    let r_out_data = unsafe { r_out.as_slice_mut() }.map_err(to_value_err)?;
+    // SAFETY: as above, for the fresh (n_poses, 3) `t_out`.
+    let t_out_data = unsafe { t_out.as_slice_mut() }.map_err(to_value_err)?;
     for (i, p) in result.poses.iter().enumerate() {
         let cols = p.rotation.to_cols_array();
         for r in 0..3 {

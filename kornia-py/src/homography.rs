@@ -60,8 +60,8 @@ pub fn ransac_homography_py(
         )));
     }
 
-    let x1 = unpack_pts(&pts1);
-    let x2 = unpack_pts(&pts2);
+    let x1 = unpack_pts(&pts1)?;
+    let x2 = unpack_pts(&pts2)?;
 
     let params = RansacParams {
         max_iterations,
@@ -134,8 +134,8 @@ pub fn find_homography_py(
         )));
     }
     let n = s1[0];
-    let x1 = unpack_pts(&pts1);
-    let x2 = unpack_pts(&pts2);
+    let x1 = unpack_pts(&pts1)?;
+    let x2 = unpack_pts(&pts2)?;
 
     let (h, inliers) = match method {
         0 => {
@@ -225,8 +225,8 @@ pub fn find_fundamental_py(
         )));
     }
     let n = s1[0];
-    let x1 = unpack_pts(&pts1);
-    let x2 = unpack_pts(&pts2);
+    let x1 = unpack_pts(&pts1)?;
+    let x2 = unpack_pts(&pts2)?;
 
     let (f, inliers) = match method {
         0 => {

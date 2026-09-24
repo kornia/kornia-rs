@@ -16,9 +16,17 @@ fn ensure_c_contiguous(ok: bool, name: &str) -> PyResult<()> {
 
 /// Decode COCO column-major RLE into a column-major flat u8 buffer.
 /// flat[x * mh + y] == 1 means pixel (row=y, col=x) is foreground.
-fn decode_rle_flat(rle: &[u32], mh: usize, mw: usize) -> Vec<u8> {
-    let mask_size = mh * mw;
-    let mut flat = vec![0u8; mask_size];
+///
+/// `mask_size` must equal `mh * mw` (validated with checked math by the caller).
+/// Allocation failure is reported as `MemoryError` instead of aborting.
+fn decode_rle_flat(rle: &[u32], mask_size: usize) -> PyResult<Vec<u8>> {
+    let mut flat: Vec<u8> = Vec::new();
+    flat.try_reserve_exact(mask_size).map_err(|_| {
+        pyo3::exceptions::PyMemoryError::new_err(format!(
+            "rle_to_mask: cannot allocate a {mask_size}-byte mask"
+        ))
+    })?;
+    flat.resize(mask_size, 0);
     let mut pos = 0usize;
     let mut is_fg = false;
     for &count in rle {
@@ -33,7 +41,7 @@ fn decode_rle_flat(rle: &[u32], mh: usize, mw: usize) -> Vec<u8> {
         }
         is_fg = !is_fg;
     }
-    flat
+    Ok(flat)
 }
 
 // ── NEON 8×8 byte block transpose (aarch64) ───────────────────────────────────
@@ -169,9 +177,21 @@ pub fn rle_to_mask<'py>(
             "shape dimensions must be > 0",
         ));
     }
-    let flat = decode_rle_flat(&rle, mh, mw);
-    let arr = unsafe { PyArray::<u8, _>::new(py, [mh, mw], false) };
-    let out = unsafe { std::slice::from_raw_parts_mut(arr.data(), mh * mw) };
+    // Checked size: an unchecked `mh * mw` could wrap to a small value.
+    let mask_size = crate::pyutils::checked_numel(&[mh, mw], 1)?;
+    // Validate the runs against the mask size BEFORE allocating anything.
+    let total: u64 = rle.iter().map(|&c| c as u64).sum();
+    if total > mask_size as u64 {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "rle_to_mask: RLE counts sum to {total}, more than the {mh}x{mw} = {mask_size} mask pixels"
+        )));
+    }
+    let flat = decode_rle_flat(&rle, mask_size)?;
+    let arr = PyArray::<u8, _>::zeros(py, [mh, mw], false);
+    // SAFETY: `arr` is a freshly allocated, zero-initialised, C-contiguous
+    // (mh, mw) array (exactly `mask_size` elements) not yet shared with Python.
+    let out = unsafe { arr.as_slice_mut() }
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
     col_major_to_row_major(&flat, out, mh, mw);
     Ok(arr)
 }
@@ -186,7 +206,7 @@ pub fn mask_to_rle(_py: Python<'_>, mask: &Bound<'_, PyArray2<u8>>) -> PyResult<
     let shape = mask.shape();
     let mh = shape[0];
     let mw = shape[1];
-    let src = unsafe { std::slice::from_raw_parts(mask.data(), mh * mw) };
+    let src = crate::pyutils::c_slice(mask, "mask")?;
 
     // Iterate in column-major order: x in 0..mw, y in 0..mh.
     // Starting with is_fg = false guarantees the first push is the bg count.

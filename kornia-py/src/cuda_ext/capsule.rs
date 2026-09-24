@@ -138,19 +138,29 @@ where
 /// discipline as `dlpack::ImageExport`. During interpreter finalization the
 /// handle is forgotten instead (CPython reclaims everything anyway and
 /// `Python::attach` would panic).
+///
+/// Also owns the consumed DLPack managed tensor (if any), whose deleter runs
+/// exactly once when the keep-alive drops (see `dlpack::DlManagedOwner`).
 #[cfg(feature = "cuda")]
-struct PyKeepalive(std::mem::ManuallyDrop<Py<PyAny>>);
+struct PyKeepalive(
+    std::mem::ManuallyDrop<Py<PyAny>>,
+    #[allow(dead_code)] // held only for its `Drop`
+    Option<crate::dlpack::DlManagedOwner>,
+);
 
 #[cfg(feature = "cuda")]
 impl PyKeepalive {
-    fn new(obj: Py<PyAny>) -> Self {
-        Self(std::mem::ManuallyDrop::new(obj))
+    fn new(obj: Py<PyAny>, managed: Option<crate::dlpack::DlManagedOwner>) -> Self {
+        Self(std::mem::ManuallyDrop::new(obj), managed)
     }
 }
 
 #[cfg(feature = "cuda")]
 impl Drop for PyKeepalive {
     fn drop(&mut self) {
+        // Release the producer's managed tensor first (its own Drop attaches
+        // the GIL / skips during finalization).
+        drop(self.1.take());
         // SAFETY: we own the handle inside ManuallyDrop and drop it exactly once.
         let keepalive = unsafe { std::mem::ManuallyDrop::take(&mut self.0) };
         if unsafe { pyo3::ffi::Py_IsInitialized() } != 0 {
@@ -246,26 +256,12 @@ pub(crate) fn dlpack_to_device_arc(py: Python<'_>, obj: &Bound<'_, PyAny>) -> Py
     // destructor will NOT run the producer's deleter when the borrowed capsule
     // GCs at function end — same discipline as the host `Image::from_dlpack`.
     // Without this, a spec-conformant producer whose `__dlpack__` transfers
-    // buffer ownership to the managed tensor (rather than keeping an
-    // independent reference like torch/cupy do) would free the buffer at import
-    // time, dangling our zero-copy alias (a use-after-free; torch/cupy happen to
-    // be safe only because `obj` retains its own ref). The buffer then stays
-    // alive via the `obj` keep-alive below.
-    {
-        use pyo3::ffi::PyCapsule_SetName;
-        let consumed: &'static CStr = if name_cstr == NAME_DLV {
-            c"used_dltensor_versioned"
-        } else {
-            c"used_dltensor"
-        };
-        // SAFETY: `capsule` is a valid PyCapsule (cast_into validated it) and
-        // `consumed` is a 'static C string.
-        if unsafe { PyCapsule_SetName(capsule.as_ptr(), consumed.as_ptr()) } != 0 {
-            return Err(PyRuntimeError::new_err(
-                "from_dlpack: failed to consume DLPack capsule (PyCapsule_SetName failed)",
-            ));
-        }
-    }
+    // buffer ownership to the managed tensor would free the buffer at import
+    // time, dangling our zero-copy alias. Consuming makes US responsible for
+    // calling the deleter exactly once: `managed` does that on drop — on any
+    // error return below, or when the imported image's keep-alive drops.
+    // (Previously the deleter was never called: a leak on every import.)
+    let managed = crate::dlpack::DlManagedOwner::consume_capsule(&capsule)?;
 
     if t.device.device_type != dlpack_rs::ffi::DLDeviceType::kDLCUDA {
         return Err(PyValueError::new_err(
@@ -310,6 +306,7 @@ pub(crate) fn dlpack_to_device_arc(py: Python<'_>, obj: &Bound<'_, PyAny>) -> Py
         h: usize,
         w: usize,
         obj: &Bound<'_, PyAny>,
+        managed: crate::dlpack::DlManagedOwner,
     ) -> PyResult<Image<T, C>>
     where
         T: cudarc::driver::DeviceRepr + cudarc::driver::ValidAsZeroBits + 'static,
@@ -323,17 +320,27 @@ pub(crate) fn dlpack_to_device_arc(py: Python<'_>, obj: &Bound<'_, PyAny>) -> Py
             src,
             [h, w, C],
             stream.clone(),
-            Box::new(PyKeepalive::new(obj.clone().unbind())),
+            Box::new(PyKeepalive::new(obj.clone().unbind(), Some(managed))),
         )))
     }
 
     use dlpack_rs::ffi::{K_DL_FLOAT, K_DL_UINT};
     let inner = match (t.dtype.code, t.dtype.bits, t.dtype.lanes, c) {
-        (code, 8, 1, 1) if code == K_DL_UINT => Inner::U8C1(dl_image(&stream, ptr, h, w, obj)?),
-        (code, 8, 1, 3) if code == K_DL_UINT => Inner::U8C3(dl_image(&stream, ptr, h, w, obj)?),
-        (code, 8, 1, 4) if code == K_DL_UINT => Inner::U8C4(dl_image(&stream, ptr, h, w, obj)?),
-        (code, 32, 1, 1) if code == K_DL_FLOAT => Inner::F32C1(dl_image(&stream, ptr, h, w, obj)?),
-        (code, 32, 1, 3) if code == K_DL_FLOAT => Inner::F32C3(dl_image(&stream, ptr, h, w, obj)?),
+        (code, 8, 1, 1) if code == K_DL_UINT => {
+            Inner::U8C1(dl_image(&stream, ptr, h, w, obj, managed)?)
+        }
+        (code, 8, 1, 3) if code == K_DL_UINT => {
+            Inner::U8C3(dl_image(&stream, ptr, h, w, obj, managed)?)
+        }
+        (code, 8, 1, 4) if code == K_DL_UINT => {
+            Inner::U8C4(dl_image(&stream, ptr, h, w, obj, managed)?)
+        }
+        (code, 32, 1, 1) if code == K_DL_FLOAT => {
+            Inner::F32C1(dl_image(&stream, ptr, h, w, obj, managed)?)
+        }
+        (code, 32, 1, 3) if code == K_DL_FLOAT => {
+            Inner::F32C3(dl_image(&stream, ptr, h, w, obj, managed)?)
+        }
         (code, bits, lanes, c) => {
             return Err(PyValueError::new_err(format!(
                 "from_dlpack: unsupported dtype (code {code}, {bits} bits, {lanes} lanes) \

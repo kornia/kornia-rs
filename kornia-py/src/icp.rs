@@ -1,4 +1,4 @@
-use numpy::{PyArray1, PyArray2, PyArrayMethods};
+use numpy::{PyArray1, PyArray2};
 use pyo3::prelude::*;
 
 use kornia_3d::pointcloud::PointCloud;
@@ -104,23 +104,27 @@ pub fn icp_vanilla(
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
 
     // convert the initial rotation and translation to a vector
-    let initial_rot = Python::attach(|py| {
+    let initial_rot = Python::attach(|py| -> PyResult<[[f64; 3]; 3]> {
         let array = initial_rot.bind(py);
-        let data_slice =
-            unsafe { array.as_slice() }.expect("Failed to convert initial rotation to vector");
-        [
-            [data_slice[0], data_slice[1], data_slice[2]],
-            [data_slice[3], data_slice[4], data_slice[5]],
-            [data_slice[6], data_slice[7], data_slice[8]],
-        ]
-    });
+        let d = crate::pyutils::c_slice(array, "initial_rot")?;
+        if d.len() != 9 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "initial_rot must be a (3, 3) float64 array",
+            ));
+        }
+        Ok([[d[0], d[1], d[2]], [d[3], d[4], d[5]], [d[6], d[7], d[8]]])
+    })?;
 
-    let initial_trans = Python::attach(|py| {
+    let initial_trans = Python::attach(|py| -> PyResult<[f64; 3]> {
         let array = initial_trans.bind(py);
-        let data_slice =
-            unsafe { array.as_slice() }.expect("Failed to convert initial translation to vector");
-        [data_slice[0], data_slice[1], data_slice[2]]
-    });
+        let d = crate::pyutils::c_slice(array, "initial_trans")?;
+        if d.len() != 3 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "initial_trans must be a (3,) float64 array",
+            ));
+        }
+        Ok([d[0], d[1], d[2]])
+    })?;
 
     let result = icp_vanilla_fn(&source, &target, initial_rot, initial_trans, criteria.0)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
