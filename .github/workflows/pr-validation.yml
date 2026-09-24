@@ -14,9 +14,8 @@ jobs:
     name: Validate PR Requirements
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
+      # No checkout: this job runs under pull_request_target with a write token,
+      # and the script below only uses the GitHub API (never the PR's files).
       - name: Validate PR requirements
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
@@ -29,7 +28,9 @@ jobs:
             // Matches patterns like: Fixes #123, Closes #456, Relates to #789, etc.
             const issuePattern = /(?:fixes?|closes?|resolves?|relates?\s+to|see|refs?)\s+#(\d+)/gi;
             const matches = [...prBody.matchAll(issuePattern)];
-            const issueNumbers = [...new Set(matches.map(m => parseInt(m[1])))];
+            // Cap the number of issues checked to bound API calls on crafted PR bodies.
+            const MAX_ISSUES = 5;
+            const issueNumbers = [...new Set(matches.map(m => parseInt(m[1], 10)))].slice(0, MAX_ISSUES);
 
             const warnings = [];
 
@@ -87,7 +88,7 @@ jobs:
               });
 
               const botComment = comments.data.find(
-                c => c.user.type === 'Bot' && c.body.includes('PR Validation Warnings')
+                c => c.user && c.user.login === 'github-actions[bot]' && (c.body || '').includes('PR Validation Warnings')
               );
 
               if (botComment) {
@@ -116,7 +117,7 @@ jobs:
               });
 
               const botComment = comments.data.find(
-                c => c.user.type === 'Bot' && c.body.includes('PR Validation Warnings')
+                c => c.user && c.user.login === 'github-actions[bot]' && (c.body || '').includes('PR Validation Warnings')
               );
 
               if (botComment) {
