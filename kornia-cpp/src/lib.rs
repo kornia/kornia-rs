@@ -247,7 +247,10 @@ macro_rules! define_image_type {
             // Constructor: from existing data
             fn [<$prefix _from_data>](width: usize, height: usize, data: &[$dtype]) -> Result<Box<$wrapper>, ImageError> {
                 let size = kornia_image::ImageSize { width, height };
-                let expected_len = width * height * $ch;
+                let expected_len = width
+                    .checked_mul(height)
+                    .and_then(|n| n.checked_mul($ch))
+                    .ok_or(ImageError::InvalidChannelShape(data.len(), usize::MAX))?;
                 if data.len() != expected_len {
                     return Err(ImageError::InvalidChannelShape(data.len(), expected_len));
                 }
@@ -327,6 +330,9 @@ fn decode_image_jpeg_rgb8(jpeg_bytes: &[u8]) -> Result<Box<ImageU8C3>, Box<dyn s
         )
         .into());
     }
+
+    // Reject headers declaring more pixels than the decoder limit before allocating
+    kornia_io::limits::check_image_dimensions(layout.image_size.width, layout.image_size.height)?;
 
     // Create output image
     let mut image = kornia_image::Image::<u8, 3>::from_size_val(layout.image_size, 0)?;

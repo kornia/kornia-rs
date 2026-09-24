@@ -1,5 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <kornia/image.hpp>
+#include <limits>
+#include <stdexcept>
 
 TEST_CASE("ImageSize construction", "[image][size]") {
     kornia::image::ImageSize size{640, 480};
@@ -84,6 +86,21 @@ TEST_CASE("Image move semantics", "[image][move]") {
         REQUIRE(image2.width() == 100);
         REQUIRE(image2.height() == 80);
     }
+}
+
+TEST_CASE("Image rejects invalid construction", "[image][safety]") {
+    const size_t huge = std::numeric_limits<size_t>::max() / 2 + 1;
+    uint8_t byte = 0;
+    REQUIRE_THROWS_AS(kornia::image::ImageU8C3(huge, 2, &byte), std::length_error);
+    REQUIRE_THROWS_AS(kornia::image::ImageU8C3(4, 4, static_cast<const uint8_t*>(nullptr)),
+                      std::invalid_argument);
+}
+
+TEST_CASE("Moved-from image throws instead of dereferencing null", "[image][move]") {
+    kornia::image::ImageU8C3 image1(10, 10, uint8_t(1));
+    kornia::image::ImageU8C3 image2 = std::move(image1);
+    REQUIRE(image2.width() == 10);
+    REQUIRE_THROWS_AS(image1.width(), std::logic_error);
 }
 
 TEST_CASE("Image data layout", "[image][layout]") {
