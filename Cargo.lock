@@ -6621,7 +6621,7 @@ dependencies = [
 [[package]]
 name = "hiroz"
 version = "0.1.0"
-source = "git+https://github.com/ZettaScaleLabs/hiroz.git?branch=main#cb66390366fff0dd501ad471303c06d92dbc21d9"
+source = "git+https://github.com/ZettaScaleLabs/hiroz.git?rev=cb66390366fff0dd501ad471303c06d92dbc21d9#cb66390366fff0dd501ad471303c06d92dbc21d9"
 dependencies = [
  "byteorder",
  "clap",
@@ -6656,7 +6656,7 @@ dependencies = [
 [[package]]
 name = "hiroz-cdr"
 version = "0.1.0"
-source = "git+https://github.com/ZettaScaleLabs/hiroz.git?branch=main#cb66390366fff0dd501ad471303c06d92dbc21d9"
+source = "git+https://github.com/ZettaScaleLabs/hiroz.git?rev=cb66390366fff0dd501ad471303c06d92dbc21d9#cb66390366fff0dd501ad471303c06d92dbc21d9"
 dependencies = [
  "bytemuck",
  "byteorder",
@@ -6668,7 +6668,7 @@ dependencies = [
 [[package]]
 name = "hiroz-derive"
 version = "0.1.0"
-source = "git+https://github.com/ZettaScaleLabs/hiroz.git?branch=main#cb66390366fff0dd501ad471303c06d92dbc21d9"
+source = "git+https://github.com/ZettaScaleLabs/hiroz.git?rev=cb66390366fff0dd501ad471303c06d92dbc21d9#cb66390366fff0dd501ad471303c06d92dbc21d9"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6702,7 +6702,7 @@ dependencies = [
 [[package]]
 name = "hiroz-protocol"
 version = "0.1.0"
-source = "git+https://github.com/ZettaScaleLabs/hiroz.git?branch=main#cb66390366fff0dd501ad471303c06d92dbc21d9"
+source = "git+https://github.com/ZettaScaleLabs/hiroz.git?rev=cb66390366fff0dd501ad471303c06d92dbc21d9#cb66390366fff0dd501ad471303c06d92dbc21d9"
 dependencies = [
  "zenoh",
 ]
@@ -6710,7 +6710,7 @@ dependencies = [
 [[package]]
 name = "hiroz-schema"
 version = "0.1.0"
-source = "git+https://github.com/ZettaScaleLabs/hiroz.git?branch=main#cb66390366fff0dd501ad471303c06d92dbc21d9"
+source = "git+https://github.com/ZettaScaleLabs/hiroz.git?rev=cb66390366fff0dd501ad471303c06d92dbc21d9#cb66390366fff0dd501ad471303c06d92dbc21d9"
 dependencies = [
  "hex",
  "serde",
