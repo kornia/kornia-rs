@@ -26,13 +26,28 @@ use super::descriptor::DESCR_LEN;
 /// Four independent accumulators, not one: a single accumulator makes this a
 /// serial `fma` chain 32 long, which at ~4-cycle latency is latency-bound rather
 /// than throughput-bound. Same reason the blur uses four.
+///
+/// # Arguments
+///
+/// * `a`, `b` - Descriptors. The vector path runs when both are exactly
+///   `DESCR_LEN` (128) long; any other lengths fall back to
+///   [`l2_sq_scalar`], which sums over the common prefix — the same result
+///   every target produces.
+///
+/// # Returns
+///
+/// The squared Euclidean distance.
 #[cfg(target_arch = "aarch64")]
 #[inline]
 pub fn l2_sq(a: &[f32], b: &[f32]) -> f32 {
     use std::arch::aarch64::*;
-    debug_assert_eq!(a.len(), DESCR_LEN);
-    debug_assert_eq!(b.len(), DESCR_LEN);
-    // SAFETY: both slices are `DESCR_LEN` long and `DESCR_LEN % 16 == 0`.
+    // Real (release-mode) length check: the loads below read exactly
+    // `DESCR_LEN` floats from each slice.
+    if a.len() != DESCR_LEN || b.len() != DESCR_LEN {
+        return l2_sq_scalar(a, b);
+    }
+    // SAFETY: both slices are exactly `DESCR_LEN` long (checked above) and
+    // `DESCR_LEN % 16 == 0`, so every 4-lane load is in bounds.
     unsafe {
         let (mut s0, mut s1) = (vdupq_n_f32(0.0), vdupq_n_f32(0.0));
         let (mut s2, mut s3) = (vdupq_n_f32(0.0), vdupq_n_f32(0.0));
@@ -56,7 +71,11 @@ pub fn l2_sq(a: &[f32], b: &[f32]) -> f32 {
 /// Squared L2 between two descriptors.
 ///
 /// Off aarch64 this is [`l2_sq_scalar`]; the vector form is the aarch64 twin
-/// above.
+/// above. Mismatched lengths sum over the common prefix on every target.
+///
+/// # Returns
+///
+/// The squared Euclidean distance.
 #[cfg(not(target_arch = "aarch64"))]
 #[inline]
 pub fn l2_sq(a: &[f32], b: &[f32]) -> f32 {
@@ -190,6 +209,21 @@ fn match_descriptors_impl(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: on aarch64 `l2_sq` only `debug_assert`ed the lengths and
+    /// then issued 128-float NEON loads, reading out of bounds in release for
+    /// short slices. Every target must now agree with the scalar reference.
+    #[test]
+    fn l2_sq_short_or_mismatched_slices_match_scalar() {
+        let a = [1.0f32, 2.0, 3.0];
+        let b = [0.0f32; 5];
+        assert_eq!(l2_sq(&a, &b), l2_sq_scalar(&a, &b));
+        assert_eq!(l2_sq(&a, &b), 14.0);
+        assert_eq!(l2_sq(&[], &[]), 0.0);
+        let long = vec![1.0f32; DESCR_LEN + 3];
+        let zero = vec![0.0f32; DESCR_LEN + 3];
+        assert_eq!(l2_sq(&long, &zero), (DESCR_LEN + 3) as f32);
+    }
 
     fn rand_desc(n: usize, seed: u64) -> Vec<f32> {
         let mut s = seed;
