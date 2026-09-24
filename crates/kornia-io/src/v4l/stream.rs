@@ -38,7 +38,9 @@ pub struct MmapBuffer {
 /// # Safety
 ///
 /// `MmapBuffer` is `Send` because:
-/// - The mmap'd memory is read-only from the buffer's perspective (no mutable access)
+/// - The mmap'd memory is read-only from the buffer's perspective (no mutable access), and
+///   `MmapStream` never re-queues a buffer to the driver (which would let the kernel write
+///   into it) while any `MmapBuffer` referencing it is alive
 /// - `Arc<MmapInfo>` is `Send` and `Sync`, providing thread-safe reference counting
 /// - The pointer (`NonNull<u8>`) and length (`usize`) are `Copy` types that can be safely moved between threads
 /// - Multiple threads can safely read from the same mmap'd memory concurrently
@@ -48,7 +50,9 @@ unsafe impl Send for MmapBuffer {}
 /// # Safety
 ///
 /// `MmapBuffer` is `Sync` because:
-/// - The mmap'd memory is read-only from the buffer's perspective (no mutable access)
+/// - The mmap'd memory is read-only from the buffer's perspective (no mutable access), and
+///   `MmapStream` never re-queues a buffer to the driver while any `MmapBuffer` referencing
+///   it is alive
 /// - `Arc<MmapInfo>` is `Send` and `Sync`, providing thread-safe reference counting
 /// - The pointer (`NonNull<u8>`) and length (`usize`) are `Copy` types that can be safely shared between threads
 /// - Multiple threads can safely read from the same mmap'd memory concurrently
@@ -171,7 +175,12 @@ pub struct MmapStream {
     buf_meta: Vec<Metadata>,
     active: bool,
     timeout: Option<i32>,
-    current_index: usize,
+    /// Whether each buffer is currently owned by the driver (queued).
+    ///
+    /// A dequeued buffer is only handed back to the driver once no [`MmapBuffer`]
+    /// returned by [`MmapStream::next_frame`] references it anymore, so the kernel
+    /// never writes into memory that safe code still reads through `&[u8]`.
+    queued: Vec<bool>,
 }
 
 impl MmapStream {
@@ -255,7 +264,7 @@ impl MmapStream {
             buf_meta,
             active: false,
             timeout: None,
-            current_index: 0,
+            queued: vec![false; actual_count],
         })
     }
 
@@ -299,6 +308,12 @@ impl MmapStream {
         }
 
         let index = v4l2_buf.index as usize;
+        if index >= self.buf_meta.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "driver returned an invalid buffer index",
+            ));
+        }
 
         // Update metadata
         self.buf_meta[index] = Metadata {
@@ -317,23 +332,50 @@ impl MmapStream {
     /// The buffer uses `Arc<MmapInfo>` to keep the mmap'd memory alive, enabling
     /// zero-copy access. Only the actual used bytes (from metadata.bytesused) are
     /// exposed if available, while the full mmap remains alive.
+    ///
+    /// A buffer is re-queued to the driver only after every `MmapBuffer` previously
+    /// returned for it has been dropped. Holding on to more frames than the stream
+    /// has buffers therefore makes this call fail with [`io::ErrorKind::WouldBlock`]
+    /// until older frames are released.
     pub fn next_frame(&mut self) -> io::Result<(MmapBuffer, Metadata)> {
         if !self.active {
             // Queue all buffers and start streaming
             for i in 0..self.buffers.len() {
-                self.queue_buffer(i)?;
+                if !self.queued[i] {
+                    self.queue_buffer(i)?;
+                    self.queued[i] = true;
+                }
             }
             self.start()?;
         } else {
-            // Re-queue the current buffer
-            self.queue_buffer(self.current_index)?;
+            // Hand back every dequeued buffer that no frame references anymore. The
+            // stream's own `MmapBuffer` accounts for one strong reference; `&mut self`
+            // guarantees it cannot be cloned concurrently.
+            for i in 0..self.buffers.len() {
+                if !self.queued[i] && Arc::strong_count(&self.buffers[i]._mmap_info) == 1 {
+                    self.queue_buffer(i)?;
+                    self.queued[i] = true;
+                }
+            }
+        }
+
+        if !self.queued.iter().any(|&q| q) {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "all capture buffers are still referenced by previous frames",
+            ));
         }
 
         // Dequeue the next available buffer
-        self.current_index = self.dequeue_buffer()?;
-
-        let buffer = &self.buffers[self.current_index];
-        let metadata = self.buf_meta[self.current_index];
+        let index = self.dequeue_buffer()?;
+        let buffer = self.buffers.get(index).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "driver returned an invalid buffer index",
+            )
+        })?;
+        self.queued[index] = false;
+        let metadata = self.buf_meta[index];
 
         // Create a zero-copy buffer that only covers the used bytes
         // The Arc<MmapInfo> keeps the full mmap alive
