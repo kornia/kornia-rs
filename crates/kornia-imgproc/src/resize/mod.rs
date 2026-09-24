@@ -136,6 +136,16 @@ pub fn resize<const C: usize>(
         return Ok(());
     }
 
+    // Empty destination: nothing to write. Empty source with a non-empty
+    // destination: nothing to sample from (the axis tables below would
+    // underflow `src_len - 1`).
+    if dst.cols() == 0 || dst.rows() == 0 {
+        return Ok(());
+    }
+    if src.cols() == 0 || src.rows() == 0 {
+        return Err(ImageError::InvalidImageSize(src.cols(), src.rows(), 1, 1));
+    }
+
     // Lanczos is separable on both backends (the CUDA pipeline is H-then-V
     // with host-built tables); the direct per-pixel sampler below would give
     // a different — and slower — result. Bicubic stays per-pixel: the kernel
@@ -289,6 +299,11 @@ pub(crate) fn resize_u8_path(
     dst_h: usize,
 ) -> Result<ResizeU8Path, ImageError> {
     use InterpolationMode as I;
+    // A non-empty destination needs a non-empty source to sample from; every
+    // kernel below indexes `src_len - 1`.
+    if (dst_w > 0 && dst_h > 0) && (src_w == 0 || src_h == 0) {
+        return Err(ImageError::InvalidImageSize(src_w, src_h, 1, 1));
+    }
     Ok(match mode {
         I::Bilinear
             if channels == 3
@@ -365,6 +380,12 @@ pub fn resize_fast_u8_aa<const C: usize>(
 
     let (src_w, src_h) = (src.cols(), src.rows());
     let (dst_w, dst_h) = (dst.cols(), dst.rows());
+
+    // Empty destination: nothing to write (the row-parallel kernels would
+    // otherwise panic on a zero chunk size).
+    if dst_w == 0 || dst_h == 0 {
+        return Ok(());
+    }
 
     match resize_u8_path(C, interpolation, src_w, src_h, dst_w, dst_h)? {
         ResizeU8Path::PyrDown2xRgb => {
@@ -639,6 +660,67 @@ mod tests {
                     "bottom-right wxh={w}x{h} ch={ch}"
                 );
             }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod memory_safety_tests {
+    use super::*;
+    use kornia_image::ImageSize;
+
+    fn sz(width: usize, height: usize) -> ImageSize {
+        ImageSize { width, height }
+    }
+
+    /// Regression (audit repro): the RGB nearest row kernel copied 4 bytes
+    /// from a 3-byte (1-pixel) source row. Output must replicate the pixel.
+    #[test]
+    fn nearest_u8_c3_single_pixel_source() -> Result<(), ImageError> {
+        let src = Image::<u8, 3>::new(sz(1, 1), vec![11, 22, 33])?;
+        let mut dst = Image::<u8, 3>::from_size_val(sz(3, 1), 0)?;
+        resize_fast_u8::<3>(&src, &mut dst, InterpolationMode::Nearest)?;
+        assert_eq!(dst.as_slice(), &[11, 22, 33, 11, 22, 33, 11, 22, 33]);
+
+        let src = Image::<u8, 3>::new(sz(1, 2), vec![1, 2, 3, 4, 5, 6])?;
+        let mut dst = Image::<u8, 3>::from_size_val(sz(5, 4), 0)?;
+        resize_fast_u8::<3>(&src, &mut dst, InterpolationMode::Nearest)?;
+        for (i, px) in dst.as_slice().chunks_exact(3).enumerate() {
+            let expect: &[u8] = if i / 5 < 2 { &[1, 2, 3] } else { &[4, 5, 6] };
+            assert_eq!(px, expect, "pixel {i}");
+        }
+
+        let src = Image::<u8, 4>::new(sz(1, 1), vec![7, 8, 9, 10])?;
+        let mut dst = Image::<u8, 4>::from_size_val(sz(2, 2), 0)?;
+        resize_fast_u8::<4>(&src, &mut dst, InterpolationMode::Nearest)?;
+        assert_eq!(dst.as_slice(), &[7, 8, 9, 10].repeat(4)[..]);
+        Ok(())
+    }
+
+    /// Zero-sized images: empty destination is a no-op, empty source with a
+    /// non-empty destination is an error — never a panic.
+    #[test]
+    fn resize_empty_images() -> Result<(), ImageError> {
+        let src = Image::<u8, 3>::from_size_val(sz(4, 4), 1)?;
+        let empty = Image::<u8, 3>::from_size_val(sz(0, 4), 1)?;
+        for mode in [
+            InterpolationMode::Nearest,
+            InterpolationMode::Bilinear,
+            InterpolationMode::Bicubic,
+            InterpolationMode::Lanczos,
+        ] {
+            let mut dst = Image::<u8, 3>::from_size_val(sz(0, 3), 0)?;
+            resize_fast_u8::<3>(&src, &mut dst, mode)?;
+            let mut dst = Image::<u8, 3>::from_size_val(sz(3, 3), 0)?;
+            assert!(resize_fast_u8::<3>(&empty, &mut dst, mode).is_err());
+
+            let srcf = Image::<f32, 1>::from_size_val(sz(4, 4), 1.0)?;
+            let emptyf = Image::<f32, 1>::from_size_val(sz(4, 0), 1.0)?;
+            let mut dstf = Image::<f32, 1>::from_size_val(sz(0, 2), 0.0)?;
+            resize(&srcf, &mut dstf, mode)?;
+            let mut dstf = Image::<f32, 1>::from_size_val(sz(2, 2), 0.0)?;
+            assert!(resize(&emptyf, &mut dstf, mode).is_err());
         }
         Ok(())
     }
