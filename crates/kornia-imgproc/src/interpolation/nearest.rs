@@ -26,5 +26,10 @@ pub(crate) fn nearest_neighbor_interpolation<const C: usize>(
     let iu = iu.clamp(0, cols - 1);
     let iv = iv.clamp(0, rows - 1);
 
-    *image.get_unchecked([iv, iu, c])
+    // Row-major (H, W, C) read with a single slice bounds check (see bilinear).
+    image
+        .as_slice()
+        .get((iv * cols + iu) * C + c)
+        .copied()
+        .unwrap_or(0.0)
 }

@@ -26,19 +26,18 @@ pub(crate) fn bilinear_interpolation<const C: usize>(
 
     let frac_u = u.fract();
     let frac_v = v.fract();
-    let val00 = *image.get_unchecked([iv, iu, c]);
-    let val01 = if iu + 1 < cols {
-        *image.get_unchecked([iv, iu + 1, c])
-    } else {
-        val00
-    };
-    let val10 = if iv + 1 < rows {
-        *image.get_unchecked([iv + 1, iu, c])
-    } else {
-        val00
-    };
+
+    // Row-major (H, W, C) read with a single slice bounds check: callers keep
+    // (iu, iv) inside the image, and an out-of-range tap reads 0 instead of
+    // touching memory outside the buffer.
+    let data = image.as_slice();
+    let at =
+        |y: usize, x: usize| -> f32 { data.get((y * cols + x) * C + c).copied().unwrap_or(0.0) };
+    let val00 = at(iv, iu);
+    let val01 = if iu + 1 < cols { at(iv, iu + 1) } else { val00 };
+    let val10 = if iv + 1 < rows { at(iv + 1, iu) } else { val00 };
     let val11 = if iu + 1 < cols && iv + 1 < rows {
-        *image.get_unchecked([iv + 1, iu + 1, c])
+        at(iv + 1, iu + 1)
     } else {
         val00
     };

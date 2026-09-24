@@ -1,4 +1,9 @@
-use crate::{get_strides_from_shape, storage::TensorStorage, Tensor};
+use crate::{
+    get_strides_from_shape,
+    storage::TensorStorage,
+    tensor::{checked_numel, validate_layout},
+    Tensor, TensorError,
+};
 use rayon::prelude::*;
 
 /// A non-owning view into tensor data.
@@ -31,8 +36,8 @@ use rayon::prelude::*;
 /// // Create a 2x3 view of the 1D tensor
 /// let view = tensor.reshape([2, 3]).unwrap();
 /// assert_eq!(view.shape, [2, 3]);
-/// assert_eq!(*view.get_unchecked([0, 0]), 1);
-/// assert_eq!(*view.get_unchecked([1, 2]), 6);
+/// assert_eq!(view.get([0, 0]), Some(&1));
+/// assert_eq!(view.get([1, 2]), Some(&6));
 /// ```
 ///
 /// Converting a view to a contiguous tensor:
@@ -44,10 +49,10 @@ use rayon::prelude::*;
 /// let tensor = Tensor::<i32, 2>::from_shape_vec([2, 2], data).unwrap();
 ///
 /// // Permute creates a non-contiguous view
-/// let view = tensor.permute_axes([1, 0]);
+/// let view = tensor.permute_axes([1, 0]).unwrap();
 ///
 /// // Convert to an owned contiguous tensor
-/// let contiguous = view.as_contiguous();
+/// let contiguous = view.as_contiguous().unwrap();
 /// assert_eq!(contiguous.as_slice(), &[1, 3, 2, 4]);
 /// ```
 pub struct TensorView<'a, T, const N: usize> {
@@ -66,7 +71,7 @@ impl<T: Send, const N: usize> TensorView<'_, T, N> {
     ///
     /// Note: This returns the entire underlying storage slice, not just the elements
     /// visible through this view's shape and strides. For element-wise access respecting
-    /// the view's layout, use [`get_unchecked`](Self::get_unchecked).
+    /// the view's layout, use [`get`](Self::get).
     ///
     /// # Returns
     ///
@@ -92,16 +97,54 @@ impl<T: Send, const N: usize> TensorView<'_, T, N> {
     ///
     /// # Returns
     ///
-    /// The total number of elements (product of all dimensions in the shape).
+    /// The total number of elements (product of all dimensions in the shape),
+    /// saturating at `usize::MAX`.
     #[inline]
     pub fn numel(&self) -> usize {
-        self.storage.len() / std::mem::size_of::<T>()
+        self.shape
+            .iter()
+            .fold(1usize, |acc, &d| acc.saturating_mul(d))
+    }
+
+    /// Gets the element at the given index, checking bounds.
+    ///
+    /// # Arguments
+    ///
+    /// * `index` - The multi-dimensional index to access
+    ///
+    /// # Returns
+    ///
+    /// `Some(&T)` if `index[i] < shape[i]` for every dimension and the resulting
+    /// offset lies inside the storage, `None` otherwise.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use kornia_tensor::Tensor;
+    ///
+    /// let data = vec![1, 2, 3, 4, 5, 6];
+    /// let tensor = Tensor::<i32, 1>::from_shape_vec([6], data).unwrap();
+    /// let view = tensor.reshape([2, 3]).unwrap();
+    ///
+    /// assert_eq!(view.get([1, 2]), Some(&6));
+    /// assert_eq!(view.get([2, 0]), None);
+    /// ```
+    pub fn get(&self, index: [usize; N]) -> Option<&T> {
+        let mut offset: usize = 0;
+        for ((&idx, &dim), &stride) in index.iter().zip(&self.shape).zip(&self.strides) {
+            if idx >= dim {
+                return None;
+            }
+            offset = offset.checked_add(idx.checked_mul(stride)?)?;
+        }
+        self.storage.as_slice().get(offset)
     }
 
     /// Gets the element at the given index without bounds checking.
     ///
     /// This method uses the view's strides to compute the offset into the storage,
-    /// allowing efficient access to elements in non-contiguous views.
+    /// allowing efficient access to elements in non-contiguous views. For a checked
+    /// alternative use [`get`](Self::get).
     ///
     /// # Arguments
     ///
@@ -113,8 +156,11 @@ impl<T: Send, const N: usize> TensorView<'_, T, N> {
     ///
     /// # Safety
     ///
-    /// The caller must ensure that the index is within the bounds defined by the
-    /// view's shape. Out-of-bounds access results in undefined behavior.
+    /// The offset `sum(index[i] * strides[i])` must be smaller than the number of
+    /// elements in the underlying storage. This holds if `index[i] < shape[i]` for
+    /// every dimension and the view layout is in bounds (the `shape`/`strides` fields
+    /// are public, so the caller is responsible for both). Out-of-bounds access
+    /// results in undefined behavior.
     ///
     /// # Examples
     ///
@@ -125,15 +171,20 @@ impl<T: Send, const N: usize> TensorView<'_, T, N> {
     /// let tensor = Tensor::<i32, 1>::from_shape_vec([6], data).unwrap();
     /// let view = tensor.reshape([2, 3]).unwrap();
     ///
-    /// assert_eq!(*view.get_unchecked([0, 0]), 1);
-    /// assert_eq!(*view.get_unchecked([0, 1]), 2);
-    /// assert_eq!(*view.get_unchecked([1, 2]), 6);
+    /// // SAFETY: the indices are within the [2, 3] shape of a freshly reshaped view.
+    /// unsafe {
+    ///     assert_eq!(*view.get_unchecked([0, 0]), 1);
+    ///     assert_eq!(*view.get_unchecked([0, 1]), 2);
+    ///     assert_eq!(*view.get_unchecked([1, 2]), 6);
+    /// }
     /// ```
-    pub fn get_unchecked(&self, index: [usize; N]) -> &T {
+    #[inline]
+    pub unsafe fn get_unchecked(&self, index: [usize; N]) -> &T {
         let offset = index
             .iter()
             .zip(self.strides.iter())
-            .fold(0, |acc, (i, s)| acc + i * s);
+            .fold(0usize, |acc, (i, s)| acc.wrapping_add(i.wrapping_mul(*s)));
+        // SAFETY: the caller guarantees `offset` is within the storage (see `# Safety`).
         unsafe { self.storage.as_slice().get_unchecked(offset) }
     }
 
@@ -146,7 +197,13 @@ impl<T: Send, const N: usize> TensorView<'_, T, N> {
     /// # Returns
     ///
     /// A new [`Tensor`] instance with contiguous memory containing the same logical
-    /// data as this view, allocated using [`host_alloc`](crate::allocator::host_alloc).
+    /// data as this view, using the allocator handle of the source storage.
+    ///
+    /// # Errors
+    ///
+    /// * [`TensorError::ShapeOverflow`] if the product of the view's shape overflows.
+    /// * [`TensorError::InvalidLayout`] if the view's shape/strides address memory
+    ///   outside of its storage.
     ///
     /// # Examples
     ///
@@ -157,32 +214,39 @@ impl<T: Send, const N: usize> TensorView<'_, T, N> {
     /// let tensor = Tensor::<i32, 2>::from_shape_vec([2, 3], data).unwrap();
     ///
     /// // Transpose by permuting axes
-    /// let transposed = tensor.permute_axes([1, 0]);
+    /// let transposed = tensor.permute_axes([1, 0]).unwrap();
     ///
     /// // Convert to contiguous layout: [[1, 4], [2, 5], [3, 6]]
-    /// let contiguous = transposed.as_contiguous();
+    /// let contiguous = transposed.as_contiguous().unwrap();
     /// assert_eq!(contiguous.as_slice(), &[1, 4, 2, 5, 3, 6]);
     /// ```
-    pub fn as_contiguous(&self) -> Tensor<T, N>
+    pub fn as_contiguous(&self) -> Result<Tensor<T, N>, TensorError>
     where
         T: Clone + Sync,
     {
-        let numel = self.numel();
+        // Iterate the view's *logical* shape, not the storage size: a view may address
+        // fewer (or, if malformed, more) elements than the storage holds.
+        let numel = checked_numel(&self.shape)?;
+        let storage_len = self.storage.num_elements();
+        validate_layout(&self.shape, &self.strides, storage_len)?;
 
         let data: Vec<T> = (0..numel)
             .into_par_iter()
             .map(|flat_idx| {
                 let index = self.flat_index_to_multi_index(flat_idx);
-                self.get_unchecked(index).clone()
+                // SAFETY: `flat_idx < numel = product(shape)`, so every `index[i] <
+                // shape[i]`; `validate_layout` proved that every such index maps to an
+                // offset `< storage_len` without overflow.
+                unsafe { self.get_unchecked(index) }.clone()
             })
             .collect();
 
         let strides = get_strides_from_shape(self.shape);
-        Tensor {
+        Ok(Tensor {
             storage: TensorStorage::from_vec(data, self.storage.alloc().clone()),
             shape: self.shape,
             strides,
-        }
+        })
     }
 
     /// Convert 1D to N-dimensional index for retrieving elements.
@@ -227,16 +291,46 @@ mod tests {
         assert_eq!(data[6], 7);
         assert_eq!(data[7], 8);
 
-        // check get_unchecked
-        assert_eq!(view.get_unchecked([0]), &1);
-        assert_eq!(view.get_unchecked([1]), &2);
-        assert_eq!(view.get_unchecked([2]), &3);
-        assert_eq!(view.get_unchecked([3]), &4);
-        assert_eq!(view.get_unchecked([4]), &5);
-        assert_eq!(view.get_unchecked([5]), &6);
-        assert_eq!(view.get_unchecked([6]), &7);
-        assert_eq!(view.get_unchecked([7]), &8);
+        // check get / get_unchecked
+        for i in 0..8 {
+            assert_eq!(view.get([i]), Some(&(i as u8 + 1)));
+            // SAFETY: `i < 8 == shape[0]` and the storage holds 8 contiguous elements.
+            assert_eq!(unsafe { view.get_unchecked([i]) }, &(i as u8 + 1));
+        }
+        assert_eq!(view.get([8]), None);
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_view_get_out_of_bounds_layout() {
+        // A malformed view whose strides reach past the storage: `get` must refuse
+        // instead of reading out of bounds.
+        let storage = TensorStorage::from_vec(vec![1u8, 2, 3, 4], host_alloc());
+        let view = TensorView::<u8, 2> {
+            storage: &storage,
+            shape: [2, 2],
+            strides: [4, 1],
+        };
+        assert_eq!(view.get([0, 1]), Some(&2));
+        assert_eq!(view.get([1, 0]), None);
+        assert!(view.as_contiguous().is_err());
+    }
+
+    #[test]
+    fn test_as_contiguous_uses_logical_shape() -> Result<(), crate::TensorError> {
+        // Regression: `as_contiguous` iterated `storage.numel()` instead of the view's
+        // shape product. A sub-view with fewer elements than the storage must produce
+        // exactly `product(shape)` elements.
+        let storage = TensorStorage::from_vec((0u32..12).collect(), host_alloc());
+        let view = TensorView::<u32, 2> {
+            storage: &storage,
+            shape: [2, 3],
+            strides: [4, 1],
+        };
+        let t = view.as_contiguous()?;
+        assert_eq!(t.shape, [2, 3]);
+        assert_eq!(t.as_slice(), &[0, 1, 2, 4, 5, 6]);
         Ok(())
     }
 

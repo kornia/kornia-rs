@@ -13,7 +13,11 @@ fn bench_image(c: &mut Criterion) {
     group.bench_function("as_contiguous", |b| {
         b.iter_batched(
             sample_tensor,
-            |tv| black_box(tv).permute_axes([2, 0, 1]).as_contiguous(),
+            |tv| {
+                black_box(tv)
+                    .permute_axes([2, 0, 1])
+                    .and_then(|v| v.as_contiguous())
+            },
             criterion::BatchSize::LargeInput,
         )
     });

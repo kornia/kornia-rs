@@ -105,6 +105,17 @@ pub enum OpsError {
 
 // ── CPU implementations ───────────────────────────────────────────────────────
 
+/// Returns an error unless `t` can be accessed from the host (CPU path).
+fn check_host<const N: usize>(t: &Tensor<f32, N>) -> Result<(), OpsError> {
+    let domain = t.storage.domain();
+    if !domain.is_host_accessible() {
+        return Err(OpsError::ShapeMismatch(format!(
+            "operand is not host-accessible (domain={domain:?}); mixed host/device operands"
+        )));
+    }
+    Ok(())
+}
+
 fn cpu_apply_unary<const N: usize>(
     input: &Tensor<f32, N>,
     output: &mut Tensor<f32, N>,
@@ -116,6 +127,7 @@ fn cpu_apply_unary<const N: usize>(
             input.shape, output.shape
         )));
     }
+    check_host(output)?;
     let src = input.as_slice();
     let dst = output.as_slice_mut();
     match op {
@@ -155,6 +167,8 @@ fn cpu_apply_binary<const N: usize>(
             a.shape, b.shape, out.shape
         )));
     }
+    check_host(b)?;
+    check_host(out)?;
     let as_ = a.as_slice();
     let bs = b.as_slice();
     let ds = out.as_slice_mut();
@@ -233,6 +247,7 @@ fn cpu_apply_binary_inplace<const N: usize>(
             tensor.shape, other.shape
         )));
     }
+    check_host(other)?;
     let rhs = other.as_slice();
     let lhs = tensor.as_slice_mut();
     match op {
@@ -364,17 +379,64 @@ extern "C" __global__ void kernel_reduce_sum(
     ///
     /// The returned slice is wrapped in `ManuallyDrop` to prevent cudarc from
     /// calling `cuMemFreeAsync` — the tensor owns the memory and will free it on drop.
+    /// The alias length is taken from the storage byte length (never from the
+    /// public, user-mutable `shape`), so it never covers memory the tensor does
+    /// not own.
     ///
     /// # Safety
     ///
-    /// The alias is valid only while `tensor` is alive and its domain is Device.
+    /// The alias is valid only while `tensor` is alive and its domain is
+    /// device-accessible on the stream's device (see [`check_operand`]).
     unsafe fn alias<T: DeviceRepr, const N: usize>(
         tensor: &Tensor<T, N>,
         stream: &Arc<CudaStream>,
     ) -> ManuallyDrop<CudaSlice<T>> {
-        let numel = tensor.shape.iter().product::<usize>();
-        let slice = stream.upgrade_device_ptr::<T>(tensor.as_ptr() as u64, numel);
+        let len = tensor.storage.num_elements();
+        // SAFETY: the pointer is a live device allocation of at least `len` elements
+        // (storage invariant); ManuallyDrop prevents cudarc from freeing it.
+        let slice = unsafe { stream.upgrade_device_ptr::<T>(tensor.as_ptr() as u64, len) };
         ManuallyDrop::new(slice)
+    }
+
+    /// Validate that `tensor` can be bound as a kernel operand on `device_id`
+    /// covering `numel` elements.
+    fn check_operand<const N: usize>(
+        tensor: &Tensor<f32, N>,
+        device_id: i32,
+        numel: usize,
+        writable: bool,
+    ) -> Result<(), OpsError> {
+        let domain = tensor.storage.domain();
+        if !domain.is_device_accessible() {
+            return Err(OpsError::NotDeviceAccessible(domain));
+        }
+        if domain.device_id() != device_id {
+            return Err(OpsError::ShapeMismatch(format!(
+                "operands live on different CUDA devices ({} vs {device_id})",
+                domain.device_id()
+            )));
+        }
+        if writable && tensor.storage.owner.is_readonly() {
+            return Err(OpsError::ShapeMismatch(
+                "destination tensor is read-only".to_string(),
+            ));
+        }
+        if tensor.storage.num_elements() < numel {
+            return Err(OpsError::ShapeMismatch(format!(
+                "storage holds {} elements but the shape requires {numel}",
+                tensor.storage.num_elements()
+            )));
+        }
+        Ok(())
+    }
+
+    /// Element count of `shape` as a kernel `i32`, rejecting overflow.
+    fn kernel_numel<const N: usize>(shape: &[usize; N]) -> Result<(usize, i32), OpsError> {
+        let numel = crate::tensor::checked_numel(shape)?;
+        let n = i32::try_from(numel).map_err(|_| {
+            OpsError::ShapeMismatch(format!("{numel} elements exceed the kernel's i32 range"))
+        })?;
+        Ok((numel, n))
     }
 
     // ── public CUDA ops ───────────────────────────────────────────────────────
@@ -393,10 +455,13 @@ extern "C" __global__ void kernel_reduce_sum(
         let stream = input
             .cuda_stream()
             .ok_or_else(|| OpsError::NotDeviceAccessible(input.storage.domain()))?;
+        let (count, numel) = kernel_numel(&input.shape)?;
+        let dev = input.storage.device_id();
+        check_operand(input, dev, count, false)?;
+        check_operand(output, dev, count, true)?;
         let ctx = stream.context().clone();
         let kernel = get_unary(&ctx)?;
 
-        let numel = input.shape.iter().product::<usize>() as i32;
         let (op_code, lo, hi): (i32, f32, f32) = match op {
             UnaryOp::Abs => (0, 0.0, 0.0),
             UnaryOp::Relu => (1, 0.0, 0.0),
@@ -404,8 +469,11 @@ extern "C" __global__ void kernel_reduce_sum(
             UnaryOp::Clamp { min, max } => (3, min, max),
         };
 
-        // SAFETY: aliases are ManuallyDrop — cuMemFreeAsync never runs on them.
+        // SAFETY: both operands were checked to be device-accessible on the same device
+        // and to hold at least `numel` elements; aliases are ManuallyDrop so
+        // cuMemFreeAsync never runs on them.
         let src_alias = unsafe { alias(input, stream) };
+        // SAFETY: see above.
         let mut dst_alias = unsafe { alias(output, stream) };
 
         kernel
@@ -436,10 +504,14 @@ extern "C" __global__ void kernel_reduce_sum(
         let stream = a
             .cuda_stream()
             .ok_or_else(|| OpsError::NotDeviceAccessible(a.storage.domain()))?;
+        let (count, numel) = kernel_numel(&a.shape)?;
+        let dev = a.storage.device_id();
+        check_operand(a, dev, count, false)?;
+        check_operand(b, dev, count, false)?;
+        check_operand(out, dev, count, true)?;
         let ctx = stream.context().clone();
         let kernel = get_binary(&ctx)?;
 
-        let numel = a.shape.iter().product::<usize>() as i32;
         let op_code: i32 = match op {
             BinaryOp::Add => 0,
             BinaryOp::Sub => 1,
@@ -449,8 +521,12 @@ extern "C" __global__ void kernel_reduce_sum(
             BinaryOp::Max => 5,
         };
 
+        // SAFETY: all operands were checked to be device-accessible on the same device
+        // and to hold at least `numel` elements; aliases are ManuallyDrop.
         let a_alias = unsafe { alias(a, stream) };
+        // SAFETY: see above.
         let b_alias = unsafe { alias(b, stream) };
+        // SAFETY: see above.
         let mut dst_alias = unsafe { alias(out, stream) };
 
         kernel
@@ -478,10 +554,11 @@ extern "C" __global__ void kernel_reduce_sum(
             .cuda_stream()
             .ok_or_else(|| OpsError::NotDeviceAccessible(tensor.storage.domain()))?
             .clone();
+        let (count, numel) = kernel_numel(&tensor.shape)?;
+        check_operand(tensor, tensor.storage.device_id(), count, true)?;
         let ctx = stream.context().clone();
         let kernel = get_unary(&ctx)?;
 
-        let numel = tensor.shape.iter().product::<usize>() as i32;
         let (op_code, lo, hi): (i32, f32, f32) = match op {
             UnaryOp::Abs => (0, 0.0, 0.0),
             UnaryOp::Relu => (1, 0.0, 0.0),
@@ -492,6 +569,7 @@ extern "C" __global__ void kernel_reduce_sum(
         // SAFETY: both aliases are ManuallyDrop, so neither frees the buffer the
         // tensor owns; see the element-wise argument above for the aliasing.
         let src_alias = unsafe { alias(&*tensor, &stream) };
+        // SAFETY: see above.
         let mut dst_alias = unsafe { alias(&*tensor, &stream) };
 
         kernel
@@ -525,10 +603,13 @@ extern "C" __global__ void kernel_reduce_sum(
             .cuda_stream()
             .ok_or_else(|| OpsError::NotDeviceAccessible(tensor.storage.domain()))?
             .clone();
+        let (count, numel) = kernel_numel(&tensor.shape)?;
+        let dev = tensor.storage.device_id();
+        check_operand(tensor, dev, count, true)?;
+        check_operand(other, dev, count, false)?;
         let ctx = stream.context().clone();
         let kernel = get_binary(&ctx)?;
 
-        let numel = tensor.shape.iter().product::<usize>() as i32;
         let op_code: i32 = match op {
             BinaryOp::Add => 0,
             BinaryOp::Sub => 1,
@@ -538,8 +619,13 @@ extern "C" __global__ void kernel_reduce_sum(
             BinaryOp::Max => 5,
         };
 
+        // SAFETY: both operands were checked to be device-accessible on the same device
+        // and to hold at least `numel` elements; aliases are ManuallyDrop and the
+        // element-wise kernel makes the in-place aliasing race-free.
         let a_alias = unsafe { alias(&*tensor, &stream) };
+        // SAFETY: see above.
         let b_alias = unsafe { alias(other, &stream) };
+        // SAFETY: see above.
         let mut dst_alias = unsafe { alias(&*tensor, &stream) };
 
         kernel
@@ -561,16 +647,19 @@ extern "C" __global__ void kernel_reduce_sum(
         let ctx = stream.context().clone();
         let kernel = get_reduce(&ctx)?;
 
-        let numel = input.shape.iter().product::<usize>();
+        let (numel, _) = kernel_numel(&input.shape)?;
         if numel == 0 {
             return Ok(0.0);
         }
+        check_operand(input, input.storage.device_id(), numel, false)?;
 
         // Single-element output buffer, zero-initialised.
         let mut out_dev: CudaSlice<f32> = stream
             .alloc_zeros::<f32>(1)
             .map_err(|e| CudaError::Driver(e.to_string()))?;
 
+        // SAFETY: `input` was checked to be device-accessible and to hold `numel`
+        // elements; the alias is ManuallyDrop.
         let src_alias = unsafe { alias(input, stream) };
 
         const BLOCK: u32 = 256;
