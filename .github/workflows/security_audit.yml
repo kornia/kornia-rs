@@ -1,0 +1,73 @@
+name: Security Audit
+
+on:
+  schedule:
+    - cron: "17 5 * * 1" # Weekly, Monday 05:17 UTC
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "Cargo.lock"
+      - "**/Cargo.toml"
+      - ".github/workflows/security_audit.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "Cargo.lock"
+      - "**/Cargo.toml"
+      - ".github/workflows/security_audit.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cargo-audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked --version 0.22.2
+
+      # Every ignore below is an advisory with no semver-compatible fix
+      # available to us. Re-check each one when bumping the listed dependency
+      # and drop the ignore as soon as a fixed version can be locked.
+      #
+      # RUSTSEC-2023-0071  rsa "Marvin" timing side channel. No fixed release
+      #                    exists. Pulled only by zenoh (examples/hiroz-nodes).
+      # RUSTSEC-2026-0041  lz4_flex 0.10 uninitialized-memory leak. Fixed in
+      #                    0.11.6+, but zenoh-transport 1.9 requires 0.10.
+      #                    examples/hiroz-nodes only.
+      # RUSTSEC-2026-0194  quick-xml < 0.41 quadratic duplicate-attr check.
+      # RUSTSEC-2026-0195  quick-xml < 0.41 unbounded NsReader allocation.
+      #                    Fix is semver-incompatible for our dependents:
+      #                    little_exif (kornia-io dev-dependency), urdf-rs
+      #                    (rerun, examples only) and wayland-scanner
+      #                    (build-time proc macro, GUI examples only).
+      # RUSTSEC-2026-0176  pyo3 < 0.29 out-of-bounds read in PyList/PyTuple
+      #                    iterator nth/nth_back.
+      # RUSTSEC-2026-0177  pyo3 < 0.29 missing Sync bound on
+      #                    PyCFunction::new_closure. Both need the pyo3/numpy/
+      #                    dlpack-rs 0.29 migration in kornia-py (tracked
+      #                    separately).
+      - name: Run cargo audit
+        run: |
+          cargo audit \
+            --ignore RUSTSEC-2023-0071 \
+            --ignore RUSTSEC-2026-0041 \
+            --ignore RUSTSEC-2026-0194 \
+            --ignore RUSTSEC-2026-0195 \
+            --ignore RUSTSEC-2026-0176 \
+            --ignore RUSTSEC-2026-0177
