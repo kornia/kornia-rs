@@ -31,7 +31,9 @@
 //! Each dispatch function is designed to have a stable signature so
 //! backends can be added without touching the callers.
 
-use super::common::bilinear_sample_u8_valid;
+use super::common::{
+    bilinear_sample_u8, bilinear_sample_u8_valid, bilinear_sample_u8_valid_unchecked,
+};
 
 /// Process a run of `[x_lo, x_hi)` destination columns for one row of a
 /// perspective warp, filling `dst_row` in-place.
@@ -51,13 +53,12 @@ use super::common::bilinear_sample_u8_valid;
 /// backends agree only "up to sub-ULP noise"; direct evaluation removes
 /// both the drift and the approximation.
 ///
-/// Preconditions (the caller is responsible for these):
-///
-/// - For every `x ∈ [x_lo, x_hi)` the source coordinate
-///   `(nx0+dnx*x)/(nd0+dnd*x)` is in `[0, src_w)`, and the y coordinate
-///   analog is in `[0, src_h)`.
-/// - `nd` does not change sign on `[x_lo, x_hi)` (i.e. the row stays on
-///   one side of the vanishing line).
+/// Expectations (performance, not safety): for every `x ∈ [x_lo, x_hi)` the
+/// source coordinate `(nx0+dnx*x)/(nd0+dnd*x)` is in `[0, src_w)` (and the y
+/// analog in `[0, src_h)`), and `nd` does not change sign on the span. The
+/// span is derived in f32 and can disagree with the direct per-column
+/// evaluation at the edges, so every backend still bounds-checks each pixel
+/// and writes zeros for out-of-range coordinates.
 #[inline]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn process_perspective_span<const C: usize>(
@@ -75,18 +76,27 @@ pub(super) fn process_perspective_span<const C: usize>(
     dny: f32,
     dnd: f32,
 ) {
+    // The SIMD helpers sample without re-checking the buffer layout; anything
+    // but a packed `src_h x src_w x C` buffer (never the case for an `Image`)
+    // takes the fully checked scalar path.
+    let packed = is_packed::<C>(src, src_w, src_h, src_stride) && x_hi <= dst_row.len() / C;
     #[cfg(target_arch = "aarch64")]
-    // SAFETY: NEON is baseline on aarch64-unknown-linux-gnu. The helper
-    // requires `x_lo ≤ x_hi ≤ dst_row.len() / C` and the perspective-span
-    // in-bounds invariants documented above.
-    unsafe {
-        process_perspective_span_neon::<C>(
-            src, src_w, src_h, src_stride, dst_row, x_lo, x_hi, nx0, ny0, nd0, dnx, dny, dnd,
-        );
+    if packed {
+        // SAFETY: NEON is baseline on aarch64-unknown-linux-gnu; `packed`
+        // establishes the helper's buffer-layout precondition, and each
+        // lane's tap is range-checked before sampling.
+        unsafe {
+            process_perspective_span_neon::<C>(
+                src, src_w, src_h, src_stride, dst_row, x_lo, x_hi, nx0, ny0, nd0, dnx, dny, dnd,
+            );
+        }
         return;
     }
     #[cfg(target_arch = "x86_64")]
-    if crate::simd::cpu_features().has_avx2 {
+    if packed && crate::simd::cpu_features().has_avx2 {
+        // SAFETY: AVX2 confirmed by the runtime probe; `packed` establishes
+        // the helper's buffer-layout precondition, and each lane's tap is
+        // range-checked before sampling.
         unsafe {
             process_perspective_span_avx2::<C>(
                 src, src_w, src_h, src_stride, dst_row, x_lo, x_hi, nx0, ny0, nd0, dnx, dny, dnd,
@@ -98,6 +108,17 @@ pub(super) fn process_perspective_span<const C: usize>(
     process_perspective_span_scalar::<C>(
         src, src_w, src_h, src_stride, dst_row, x_lo, x_hi, nx0, ny0, nd0, dnx, dny, dnd,
     );
+}
+
+/// Whether `src` is a packed `src_h x src_w x C` u8 buffer — the layout the
+/// unchecked sampler requires. Always true for an `Image` slice; checked once
+/// per span so the per-pixel paths can rely on it.
+#[inline(always)]
+fn is_packed<const C: usize>(src: &[u8], src_w: i32, src_h: i32, src_stride: usize) -> bool {
+    src_w > 0
+        && src_h > 0
+        && src_stride == src_w as usize * C
+        && src.len() >= src_h as usize * src_stride
 }
 
 /// Direct per-column perspective sample coordinate. Single source of the
@@ -141,12 +162,47 @@ pub(super) fn process_perspective_span_scalar<const C: usize>(
 ) {
     for x in x_lo..x_hi {
         let (xf, yf) = perspective_coord_at(x, nx0, ny0, nd0, dnx, dny, dnd);
-        let xi = xf.floor() as i32;
-        let yi = yf.floor() as i32;
-        let fx_q10 = ((xf - xi as f32) * 1024.0) as u32;
-        let fy_q10 = ((yf - yi as f32) * 1024.0) as u32;
         let dst_pixel = &mut dst_row[x * C..x * C + C];
-        bilinear_sample_u8_valid::<C>(
+        // Bounds-checked sampler: identical bytes to the valid sampler for
+        // in-range coordinates, zeros when the f32 span analysis admitted a
+        // column whose direct coordinate lands outside the source (matches
+        // the CUDA u8 perspective kernel, which bounds-checks every pixel).
+        bilinear_sample_u8::<C>(src, src_w, src_h, src_stride, xf, yf, dst_pixel);
+    }
+}
+
+/// Per-lane tail of the SIMD perspective paths: zero-fill if the lane's
+/// integer source tap is outside the image (the span analysis is f32 and can
+/// admit an edge column whose direct coordinate falls just outside), else
+/// sample. Mirrors [`bilinear_sample_u8`]'s bounds check.
+///
+/// # Safety
+///
+/// `src` must be a packed `src_h x src_w x C` buffer (`is_packed`) and
+/// `dst_pixel.len() >= C`.
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+unsafe fn sample_lane_checked<const C: usize>(
+    src: &[u8],
+    src_w: i32,
+    src_h: i32,
+    src_stride: usize,
+    xi: i32,
+    yi: i32,
+    fx_q10: u32,
+    fy_q10: u32,
+    dst_pixel: &mut [u8],
+) {
+    if xi < 0 || xi >= src_w || yi < 0 || yi >= src_h {
+        dst_pixel.fill(0);
+        return;
+    }
+    // SAFETY: the tap is in range (checked above); packed buffer and a
+    // `C`-byte `dst_pixel` per this function's contract. The fractions only
+    // affect the arithmetic, not memory access.
+    unsafe {
+        bilinear_sample_u8_valid_unchecked::<C>(
             src, src_w, src_h, src_stride, xi, yi, fx_q10, fy_q10, dst_pixel,
         );
     }
@@ -158,8 +214,8 @@ pub(super) fn process_perspective_span_scalar<const C: usize>(
 /// - NEON is baseline on aarch64-unknown-linux-gnu (no runtime feature check
 ///   needed), so we mark the function `#[target_feature(enable = "neon")]`
 ///   to unlock the intrinsics but skip dynamic dispatch.
-/// - Caller must satisfy the perspective-span preconditions documented on
-///   [`process_perspective_span`].
+/// - `src` must be a packed `src_h x src_w x C` buffer (`is_packed`); every
+///   lane's tap is range-checked before the unchecked sample.
 /// - `dst_row.len() >= x_hi * C`.
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
@@ -228,7 +284,9 @@ unsafe fn process_perspective_span_neon<const C: usize>(
 
                 for lane in 0..4 {
                     let dst_pixel = &mut dst_row[(xi + lane) * C..(xi + lane) * C + C];
-                    bilinear_sample_u8_valid::<C>(
+                    // SAFETY: packed buffer per this function's contract; `dst_pixel`
+                    // is a `C`-byte slice.
+                    sample_lane_checked::<C>(
                         src, src_w, src_h, src_stride, xs[lane], ys[lane], fxs[lane], fys[lane],
                         dst_pixel,
                     );
@@ -252,8 +310,8 @@ unsafe fn process_perspective_span_neon<const C: usize>(
 ///
 /// # Safety
 /// - AVX2 must be available (caller checks `cpu_features().has_avx2`).
-/// - Caller must satisfy the perspective-span preconditions documented on
-///   [`process_perspective_span`].
+/// - `src` must be a packed `src_h x src_w x C` buffer (`is_packed`); every
+///   lane's tap is range-checked before the unchecked sample.
 /// - `dst_row.len() >= x_hi * C`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
@@ -320,7 +378,9 @@ unsafe fn process_perspective_span_avx2<const C: usize>(
 
             for lane in 0..4 {
                 let dst_pixel = &mut dst_row[(xi + lane) * C..(xi + lane) * C + C];
-                bilinear_sample_u8_valid::<C>(
+                // SAFETY: packed buffer per this function's contract; `dst_pixel`
+                // is a `C`-byte slice.
+                sample_lane_checked::<C>(
                     src, src_w, src_h, src_stride, xs[lane], ys[lane], fxs[lane], fys[lane],
                     dst_pixel,
                 );
@@ -348,8 +408,10 @@ unsafe fn process_perspective_span_avx2<const C: usize>(
 /// and the low 16 bits become the fractional weight (right-shifted 6
 /// more to reach Q10).
 ///
-/// Preconditions: `0 ≤ (sx_q >> 16) < src_w` and `0 ≤ (sy_q >> 16) <
-/// src_h` for every `x` in `[x_lo, x_hi)`. `dst_row.len() ≥ x_hi * C`.
+/// Expected (not trusted): `0 ≤ (sx_q >> 16) < src_w` and `0 ≤ (sy_q >> 16) <
+/// src_h` for every `x` in `[x_lo, x_hi)`. Coordinates that stray outside
+/// (the f32 span and the Q16 walk can disagree at the edges) are clamped to
+/// the border by the sampler; `x_hi` is clamped to `dst_row.len() / C`.
 ///
 /// Numerical behavior: identical across backends — the per-pixel call
 /// is `bilinear_sample_u8_valid::<C>`, which itself has an internal
@@ -369,10 +431,10 @@ pub(super) fn process_affine_span<const C: usize>(
     dst_row: &mut [u8],
     x_lo: usize,
     x_hi: usize,
-    sx_q_lo: i32,
-    sy_q_lo: i32,
-    dsx_q: i32,
-    dsy_q: i32,
+    sx_q_lo: i64,
+    sy_q_lo: i64,
+    dsx_q: i64,
+    dsy_q: i64,
 ) {
     process_affine_span_scalar::<C>(
         src, src_w, src_h, src_stride, dst_row, x_lo, x_hi, sx_q_lo, sy_q_lo, dsx_q, dsy_q,
@@ -391,21 +453,91 @@ pub(super) fn process_affine_span_scalar<const C: usize>(
     dst_row: &mut [u8],
     x_lo: usize,
     x_hi: usize,
-    sx_q_lo: i32,
-    sy_q_lo: i32,
-    dsx_q: i32,
-    dsy_q: i32,
+    sx_q_lo: i64,
+    sy_q_lo: i64,
+    dsx_q: i64,
+    dsy_q: i64,
 ) {
-    const Q: i32 = 16;
+    const Q: i64 = 16;
+    // Q16 coordinates are carried in i64: in i32 they overflow once a
+    // coordinate reaches 2^15 = 32768 pixels, which used to wrap `xi`/`yi`
+    // to arbitrary values.
+    let x_hi = x_hi.min(dst_row.len() / C);
+    if x_lo >= x_hi {
+        return;
+    }
+    let span = &mut dst_row[x_lo * C..x_hi * C];
+    let last = (x_hi - x_lo - 1) as i64;
+
+    // The Q16 walk is exact integer arithmetic and linear in the column, so
+    // every tap in the span is in range iff both end taps are. The caller's
+    // span comes from f32 algebra that can disagree with this walk by a
+    // pixel, so check it here (O(1) per row) and fall back to the clamping
+    // sampler when it does not hold.
+    let axis_ok = |q0: i64, dq: i64, len: i32| -> bool {
+        let Some(q1) = last.checked_mul(dq).and_then(|t| q0.checked_add(t)) else {
+            return false;
+        };
+        let (a, b) = (q0 >> Q, q1 >> Q);
+        let len = len as i64;
+        a >= 0 && a < len && b >= 0 && b < len
+    };
+    let fast = is_packed::<C>(src, src_w, src_h, src_stride)
+        && axis_ok(sx_q_lo, dsx_q, src_w)
+        && axis_ok(sy_q_lo, dsy_q, src_h);
+
     let mut sx_q = sx_q_lo;
     let mut sy_q = sy_q_lo;
-    for x in x_lo..x_hi {
-        let dst_pixel_ptr = unsafe { dst_row.as_mut_ptr().add(x * C) };
-        let xi = sx_q >> Q;
-        let yi = sy_q >> Q;
+    if fast {
+        for dst_pixel in span.chunks_exact_mut(C) {
+            let xi = (sx_q >> Q) as i32;
+            let yi = (sy_q >> Q) as i32;
+            let fx_q10 = ((sx_q & 0xFFFF) as u32) >> 6;
+            let fy_q10 = ((sy_q & 0xFFFF) as u32) >> 6;
+            // SAFETY: both end taps of this linear walk are inside the image
+            // (checked above), so every intermediate tap is too; `is_packed`
+            // certifies the buffer layout; `dst_pixel` is a `C`-byte chunk.
+            unsafe {
+                bilinear_sample_u8_valid_unchecked::<C>(
+                    src, src_w, src_h, src_stride, xi, yi, fx_q10, fy_q10, dst_pixel,
+                );
+            }
+            sx_q += dsx_q;
+            sy_q += dsy_q;
+        }
+    } else {
+        affine_span_clamped::<C>(
+            src, src_w, src_h, src_stride, span, sx_q, sy_q, dsx_q, dsy_q,
+        );
+    }
+}
+
+/// Clamping fallback for [`process_affine_span_scalar`]: used for rows whose
+/// Q16 walk leaves the image (the f32 span disagreed with the fixed-point
+/// arithmetic). Kept out of line so the proven-in-range loop stays compact.
+#[cold]
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn affine_span_clamped<const C: usize>(
+    src: &[u8],
+    src_w: i32,
+    src_h: i32,
+    src_stride: usize,
+    span: &mut [u8],
+    mut sx_q: i64,
+    mut sy_q: i64,
+    dsx_q: i64,
+    dsy_q: i64,
+) {
+    const Q: i64 = 16;
+    let (w_max, h_max) = (src_w as i64, src_h as i64);
+    for dst_pixel in span.chunks_exact_mut(C) {
+        // Clamp to `[-1, src]` before narrowing; the sampler then clamps
+        // into the image (edge replicate).
+        let xi = (sx_q >> Q).clamp(-1, w_max) as i32;
+        let yi = (sy_q >> Q).clamp(-1, h_max) as i32;
         let fx_q10 = ((sx_q & 0xFFFF) as u32) >> 6;
         let fy_q10 = ((sy_q & 0xFFFF) as u32) >> 6;
-        let dst_pixel = unsafe { std::slice::from_raw_parts_mut(dst_pixel_ptr, C) };
         bilinear_sample_u8_valid::<C>(
             src, src_w, src_h, src_stride, xi, yi, fx_q10, fy_q10, dst_pixel,
         );

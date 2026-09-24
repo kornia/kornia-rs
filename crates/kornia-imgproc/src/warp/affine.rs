@@ -145,6 +145,9 @@ pub fn warp_affine<const C: usize>(
     let src_h = src.rows();
     let dst_w = dst.cols();
     let row_len = dst_w * C;
+    if row_len == 0 || dst.rows() == 0 {
+        return Ok(());
+    }
 
     // Per-column increments (affine: same for every row).
     let dsx = m_inv[0];
@@ -394,16 +397,23 @@ pub fn warp_affine_u8<const C: usize>(
     let src_stride = src.cols() * C;
     let dst_w = dst.cols();
     let dst_stride = dst_w * C;
+    if dst_stride == 0 || dst.rows() == 0 {
+        return Ok(());
+    }
     let src_slice = src.as_slice();
 
     // Q16 fixed-point coords for the inner loop: replaces per-pixel
     // `.floor() as i32` (frintm+fcvtzs) with a single arithmetic shift.
+    //
+    // The per-column increment keeps the historical i32 quantization (so the
+    // bytes match the CUDA kernel), but the running coordinate is carried in
+    // i64: in i32 it overflows for coordinates >= 32768 px.
     const Q: i32 = 16;
     const Q_SCALE: f32 = (1 << Q) as f32;
     let dsx = m_inv[0];
     let dsy = m_inv[3];
-    let dsx_q = (dsx * Q_SCALE) as i32;
-    let dsy_q = (dsy * Q_SCALE) as i32;
+    let dsx_q = (dsx * Q_SCALE) as i32 as i64;
+    let dsy_q = (dsy * Q_SCALE) as i32 as i64;
     // Valid iff `0 <= xi < src_w`, i.e. src coord in `[0, src_w)`. The
     // sampler clamps `xi+1` to `src_w-1` (BORDER_REPLICATE), so exact-edge
     // integer coords (fx=0) produce `src[yi, xi]` — matching the f32
@@ -435,8 +445,8 @@ pub fn warp_affine_u8<const C: usize>(
             }
 
             // Q16 coord at x_lo.
-            let sx_q_lo = ((sx0 + dsx * x_lo_u as f32) * Q_SCALE) as i32;
-            let sy_q_lo = ((sy0 + dsy * x_lo_u as f32) * Q_SCALE) as i32;
+            let sx_q_lo = ((sx0 + dsx * x_lo_u as f32) * Q_SCALE) as i64;
+            let sy_q_lo = ((sy0 + dsy * x_lo_u as f32) * Q_SCALE) as i64;
 
             // Branch-free inner loop over the valid region (dispatched
             // to the best backend by the kernels module).
@@ -642,6 +652,67 @@ mod tests {
             &[1.0f32, 3.0f32, 0.0f32, 2.0f32]
         );
 
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod memory_safety_tests {
+    use kornia_image::{Image, ImageError, ImageSize};
+
+    fn sz(width: usize, height: usize) -> ImageSize {
+        ImageSize { width, height }
+    }
+
+    /// Regression (audit repro): the f32 valid span admitted columns whose Q16
+    /// coordinate landed outside the 3-pixel source, and the unchecked
+    /// sampler read past the buffer.
+    #[test]
+    fn warp_affine_u8_span_q16_mismatch_stays_in_bounds() -> Result<(), ImageError> {
+        let src = Image::<u8, 3>::new(sz(3, 1), (0..9u8).map(|v| v * 20).collect())?;
+        let mut dst = Image::<u8, 3>::from_size_val(sz(11, 1), 0)?;
+        super::warp_affine_u8(&src, &mut dst, &[3.1362, 1.0, 0.0, -1.0, 1.0, -1.0])?;
+        let max = *src.as_slice().iter().max().unwrap_or(&0);
+        assert!(dst.as_slice().iter().all(|&v| v <= max));
+        Ok(())
+    }
+
+    /// Regression: Q16 coordinates overflowed i32 at >= 32768 px, wrapping to
+    /// arbitrary (out-of-bounds) indices. An identity warp must reproduce the
+    /// source exactly on very wide and very tall images.
+    #[test]
+    fn warp_affine_u8_identity_on_huge_dims() -> Result<(), ImageError> {
+        let identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+        for size in [sz(40_000, 1), sz(1, 40_000)] {
+            let data: Vec<u8> = (0..40_000usize).map(|i| (i % 251) as u8).collect();
+            let src = Image::<u8, 1>::new(size, data)?;
+            let mut dst = Image::<u8, 1>::from_size_val(size, 0)?;
+            super::warp_affine_u8(&src, &mut dst, &identity)?;
+            assert_eq!(dst.as_slice(), src.as_slice(), "size {size:?}");
+        }
+        Ok(())
+    }
+
+    /// Zero-sized destinations are a no-op, not a panic.
+    #[test]
+    fn warp_affine_empty_images() -> Result<(), ImageError> {
+        let identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+        let src = Image::<u8, 3>::from_size_val(sz(4, 4), 1)?;
+        let mut dst = Image::<u8, 3>::from_size_val(sz(0, 4), 0)?;
+        super::warp_affine_u8(&src, &mut dst, &identity)?;
+        let src_empty = Image::<u8, 3>::from_size_val(sz(0, 0), 1)?;
+        let mut dst = Image::<u8, 3>::from_size_val(sz(4, 4), 9)?;
+        super::warp_affine_u8(&src_empty, &mut dst, &identity)?;
+        assert!(dst.as_slice().iter().all(|&v| v == 0));
+
+        let srcf = Image::<f32, 1>::from_size_val(sz(4, 4), 1.0)?;
+        let mut dstf = Image::<f32, 1>::from_size_val(sz(0, 3), 0.0)?;
+        super::warp_affine(
+            &srcf,
+            &mut dstf,
+            &identity,
+            crate::interpolation::InterpolationMode::Bilinear,
+        )?;
         Ok(())
     }
 }

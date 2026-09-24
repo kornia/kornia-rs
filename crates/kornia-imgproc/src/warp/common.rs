@@ -65,17 +65,24 @@ pub(crate) fn bilinear_sample_u8<const C: usize>(
     }
 }
 
-/// Sample at a pre-bounds-checked coord with Q10 fractional weights.
+/// Q10 bilinear sample at integer tap `(xi, yi)` with fractional weights
+/// `fx_q10`/`fy_q10` — safe for any inputs.
 ///
-/// Assumes `xi ∈ [0, src_w - 1]` and `yi ∈ [0, src_h - 1]`. When `xi` (or
-/// `yi`) is at the extreme edge, the neighbor index is clamped to the
-/// same pixel — equivalent to `BORDER_REPLICATE` for the interior of a
+/// Callers are expected to pass `xi ∈ [0, src_w - 1]`, `yi ∈ [0, src_h - 1]`
+/// and fractions in `[0, 1024]`, but nothing here trusts it: callers derive
+/// taps from a float span analysis that can disagree with their fixed-point
+/// sampling arithmetic by a pixel, so the taps are clamped into the image
+/// (a negative tap also drops its fractional weight, so the output is exactly
+/// the edge pixel) and the farthest byte read is checked against `src.len()`.
+/// For in-range inputs the clamps are no-ops and the bytes are identical to
+/// [`bilinear_sample_u8_valid_unchecked`].
+///
+/// When `xi` (or `yi`) is at the extreme edge, the neighbor index is clamped
+/// to the same pixel — equivalent to `BORDER_REPLICATE` for the interior of a
 /// single-pixel border. At an exact-integer source coord on the edge
-/// (fx_q10=0 or fy_q10=0) the clamped neighbor is weighted to zero, so
-/// the output is exactly `src[yi, xi]` — matching the f32 reference
-/// kernel's identity-preservation.
-///
-/// `fx_q10`/`fy_q10` must be in `[0, 1024]`.
+/// (fx_q10=0 or fy_q10=0) the clamped neighbor is weighted to zero, so the
+/// output is exactly `src[yi, xi]` — matching the f32 reference kernel's
+/// identity-preservation.
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn bilinear_sample_u8_valid<const C: usize>(
@@ -89,13 +96,115 @@ pub(crate) fn bilinear_sample_u8_valid<const C: usize>(
     fy_q10: u32,
     dst_pixel: &mut [u8],
 ) {
+    if src_w <= 0 || src_h <= 0 || dst_pixel.len() < C {
+        for p in dst_pixel.iter_mut().take(C) {
+            *p = 0;
+        }
+        return;
+    }
+    let (xi, fx_q10) = if xi < 0 {
+        (0, 0)
+    } else {
+        (xi.min(src_w - 1), fx_q10.min(1024))
+    };
+    let (yi, fy_q10) = if yi < 0 {
+        (0, 0)
+    } else {
+        (yi.min(src_h - 1), fy_q10.min(1024))
+    };
+    // The (xi1, yi1) corner holds the farthest byte any path reads.
+    let xi1 = if xi + 1 < src_w { xi + 1 } else { xi } as usize;
+    let yi1 = if yi + 1 < src_h { yi + 1 } else { yi } as usize;
+    let far = yi1 * src_stride + xi1 * C;
+    if far + C > src.len() {
+        // Only reachable with a `src` shorter than `src_h * src_stride`.
+        for p in dst_pixel.iter_mut().take(C) {
+            *p = 0;
+        }
+        return;
+    }
+    // C=3 SIMD samplers load a 4-byte word per corner.
+    let word_ok = far + 4 <= src.len();
+    // SAFETY: `0 <= xi <= xi1 < src_w`, `0 <= yi <= yi1 < src_h`, the
+    // farthest corner's `C` bytes (and 4 bytes when `word_ok`) lie inside
+    // `src` as checked above, all other corners are at lower offsets, and
+    // `dst_pixel.len() >= C`.
+    unsafe {
+        sample_q10_impl::<C>(
+            src, src_w, src_h, src_stride, xi, yi, fx_q10, fy_q10, dst_pixel, word_ok,
+        );
+    }
+}
+
+/// Unchecked Q10 bilinear sample — the hot-loop form of
+/// [`bilinear_sample_u8_valid`] for callers that have proven the tap range for
+/// a whole span up front (see `process_affine_span`).
+///
+/// `fx_q10`/`fy_q10` should be `<= 1024` for a meaningful result (larger
+/// values only corrupt the arithmetic, never memory access).
+///
+/// # Safety
+///
+/// - `0 <= xi < src_w` and `0 <= yi < src_h`;
+/// - `src.len() >= src_h * src_stride` and `src_stride == src_w * C`;
+/// - `dst_pixel.len() >= C`.
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) unsafe fn bilinear_sample_u8_valid_unchecked<const C: usize>(
+    src: &[u8],
+    src_w: i32,
+    src_h: i32,
+    src_stride: usize,
+    xi: i32,
+    yi: i32,
+    fx_q10: u32,
+    fy_q10: u32,
+    dst_pixel: &mut [u8],
+) {
+    // The 4-byte corner word at (xi+1, yi+1) is in-bounds unless the tap is
+    // in the last two columns of the last two rows: with a packed stride the
+    // word then spills one byte past the buffer.
+    let word_ok = xi < src_w - 2 || yi < src_h - 2;
+    // SAFETY: forwarded from this function's contract; `word_ok` as argued
+    // above given `src.len() >= src_h * src_stride` and a packed stride.
+    unsafe {
+        sample_q10_impl::<C>(
+            src, src_w, src_h, src_stride, xi, yi, fx_q10, fy_q10, dst_pixel, word_ok,
+        );
+    }
+}
+
+/// Shared body of the two samplers above.
+///
+/// # Safety
+///
+/// - `0 <= xi < src_w`, `0 <= yi < src_h`;
+/// - the `C` bytes at `yi1 * src_stride + xi1 * C` are inside `src`, where
+///   `xi1`/`yi1` are the edge-clamped `xi + 1`/`yi + 1` (all other corners
+///   are at lower offsets);
+/// - `word_ok` implies the 4 bytes at that offset are inside `src`;
+/// - `dst_pixel.len() >= C`.
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+unsafe fn sample_q10_impl<const C: usize>(
+    src: &[u8],
+    src_w: i32,
+    src_h: i32,
+    src_stride: usize,
+    xi: i32,
+    yi: i32,
+    fx_q10: u32,
+    fy_q10: u32,
+    dst_pixel: &mut [u8],
+    word_ok: bool,
+) {
     // NEON fast path for C=3: holds RGB in lanes 0-2 of u32x4, does
-    // Q10 bilinear math in SIMD. Safe whenever the 4-byte unaligned
-    // read at (xi+1, yi+1) is in-bounds, i.e. xi < src_w-2 OR yi < src_h-2.
+    // Q10 bilinear math in SIMD. Needs the 4-byte word reads (`word_ok`).
     #[cfg(target_arch = "aarch64")]
     {
-        if C == 3 && (xi < src_w - 2 || yi < src_h - 2) {
-            // Safety: bounds checked above; caller guarantees xi, yi valid.
+        if C == 3 && word_ok {
+            // SAFETY: taps in range and 4-byte corner reads in-bounds
+            // (`word_ok`), per this function's contract.
             unsafe {
                 bilinear_sample_u8_valid_c3_neon(
                     src.as_ptr(),
@@ -114,8 +223,9 @@ pub(crate) fn bilinear_sample_u8_valid<const C: usize>(
     }
     #[cfg(target_arch = "x86_64")]
     {
-        if C == 3 && (xi < src_w - 2 || yi < src_h - 2) && crate::simd::cpu_features().has_avx2 {
-            // Safety: bounds checked above; caller guarantees xi, yi valid.
+        if C == 3 && word_ok && crate::simd::cpu_features().has_avx2 {
+            // SAFETY: AVX2 checked at runtime; taps in range and 4-byte
+            // corner reads in-bounds (`word_ok`), per this function's contract.
             unsafe {
                 bilinear_sample_u8_valid_c3_avx2(
                     src.as_ptr(),
@@ -132,6 +242,8 @@ pub(crate) fn bilinear_sample_u8_valid<const C: usize>(
             return;
         }
     }
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    let _ = word_ok;
 
     let fx1 = 1024 - fx_q10;
     let fy1 = 1024 - fy_q10;
@@ -148,8 +260,8 @@ pub(crate) fn bilinear_sample_u8_valid<const C: usize>(
     let off10 = row1 + xoff0;
     let off11 = row1 + xoff1;
 
-    // Safety: caller guaranteed xi, yi are in-bounds, and xi1, yi1 are
-    // clamped into range, so all four offsets + C <= src.len().
+    // SAFETY: `off11 + C <= src.len()` per the contract and every other
+    // offset is `<=` it; `dst_pixel.len() >= C`.
     unsafe {
         let p = src.as_ptr();
         for ch in 0..C {
@@ -173,12 +285,12 @@ pub(crate) fn bilinear_sample_u8_valid<const C: usize>(
 /// u8→u16→u32.
 ///
 /// # Safety
-/// - `src` must point to a valid u8 buffer of size ≥ `src_h * src_stride`.
-/// - `src_stride == src_w * 3`.
 /// - `xi ∈ [0, src_w-1]`, `yi ∈ [0, src_h-1]`.
-/// - Must have `xi < src_w-2 OR yi < src_h-2`: ensures the 4-byte read
-///   at the (xi+1, yi+1) corner is in-bounds. At the last pixel the
-///   unaligned read would otherwise spill 1 byte past the buffer.
+/// - The 4 bytes at `yi1 * src_stride + xi1 * 3` (the edge-clamped
+///   `(xi+1, yi+1)` corner, the farthest one) must be readable from `src`.
+///   With a packed buffer of `src_h * src_stride` bytes this holds whenever
+///   `xi < src_w-2 OR yi < src_h-2`; at the last pixel the unaligned read
+///   would otherwise spill 1 byte past the buffer.
 /// - `dst_pixel` must point to 3 writable bytes.
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
@@ -324,4 +436,48 @@ pub(crate) unsafe fn bilinear_sample_u8_valid_c3_avx2(
     *dst_pixel.add(0) = _mm_extract_epi32::<0>(res) as u8;
     *dst_pixel.add(1) = _mm_extract_epi32::<1>(res) as u8;
     *dst_pixel.add(2) = _mm_extract_epi32::<2>(res) as u8;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: `bilinear_sample_u8_valid` used to trust `xi`/`yi` (and the
+    /// Q10 fractions) and read through raw pointers, so a caller whose span
+    /// analysis disagreed with its sampling arithmetic read out of bounds.
+    /// Taps must now be clamped into the image.
+    #[test]
+    fn valid_sampler_clamps_out_of_range_taps() {
+        // 3x2 RGB, buffer exactly `h * stride` bytes.
+        let src: Vec<u8> = (0..18u8).map(|v| v * 10).collect();
+        let (w, h, stride) = (3, 2, 9);
+        let mut out = [0u8; 3];
+
+        // Past the right/bottom edge -> last pixel (2, 1).
+        bilinear_sample_u8_valid::<3>(&src, w, h, stride, 3, 1, 512, 0, &mut out);
+        assert_eq!(out, [150, 160, 170]);
+        bilinear_sample_u8_valid::<3>(&src, w, h, stride, i32::MAX, i32::MAX, 1023, 1023, &mut out);
+        assert_eq!(out, [150, 160, 170]);
+
+        // Negative taps -> (0, 0) with the fractional weight dropped.
+        bilinear_sample_u8_valid::<3>(&src, w, h, stride, -1, -5, 1023, 1023, &mut out);
+        assert_eq!(out, [0, 10, 20]);
+        bilinear_sample_u8_valid::<3>(&src, w, h, stride, i32::MIN, i32::MIN, 1023, 1023, &mut out);
+        assert_eq!(out, [0, 10, 20]);
+
+        // Out-of-range fraction is clamped to a full-weight neighbour.
+        bilinear_sample_u8_valid::<3>(&src, w, h, stride, 0, 0, u32::MAX, 0, &mut out);
+        assert_eq!(out, [30, 40, 50]);
+
+        // Single channel, same rules.
+        let src1: Vec<u8> = vec![1, 2, 3, 4];
+        let mut o1 = [0u8; 1];
+        bilinear_sample_u8_valid::<1>(&src1, 2, 2, 2, 7, 7, 100, 100, &mut o1);
+        assert_eq!(o1, [4]);
+
+        // Empty source: zeros, no read.
+        let mut o = [9u8; 3];
+        bilinear_sample_u8_valid::<3>(&[], 0, 0, 0, 0, 0, 0, 0, &mut o);
+        assert_eq!(o, [0, 0, 0]);
+    }
 }
