@@ -203,11 +203,31 @@ fn check_dst_size(
     Ok(())
 }
 
+/// 4:2:0 decoders process 2×2 luma blocks; odd dimensions would leave the last
+/// row/column of `dst` unwritten (and mis-size the chroma planes), so reject them.
+#[inline]
+fn check_even_420(width: usize, height: usize, src_len: usize) -> Result<(), ImageError> {
+    if !width.is_multiple_of(2) || !height.is_multiple_of(2) {
+        return Err(ImageError::InvalidImageSize(
+            src_len,
+            width,
+            height,
+            width * height * 3 / 2,
+        ));
+    }
+    Ok(())
+}
+
 macro_rules! impl_packed422 {
     ($fn_name:ident, $variant:ident, $doc:expr_2021) => {
         #[doc = $doc]
         pub fn $fn_name(src: &[u8], dst: &mut Image<u8, 3>) -> Result<(), ImageError> {
             let (w, h) = (dst.width(), dst.height());
+            // The kernel decodes 2-pixel groups; an odd width would leave the
+            // last column of `dst` unwritten.
+            if !w.is_multiple_of(2) {
+                return Err(ImageError::InvalidImageSize(src.len(), w, h, w * h * 2));
+            }
             check_dst_size(dst, w, h, src.len(), w * h * 2)?;
             kernels::rgb_from_packed422(src, dst.as_slice_mut(), w, h, Packed422::$variant);
             Ok(())
@@ -234,6 +254,7 @@ impl_packed422!(
 /// Decode a planar 4:2:0 NV12 (Y plane + interleaved `UV`) buffer to RGB (BT.601 limited).
 pub fn rgb_from_nv12(src: &[u8], dst: &mut Image<u8, 3>) -> Result<(), ImageError> {
     let (w, h) = (dst.width(), dst.height());
+    check_even_420(w, h, src.len())?;
     check_dst_size(dst, w, h, src.len(), w * h * 3 / 2)?;
     let (y, uv) = src.split_at(w * h);
     kernels::rgb_from_planar420(y, uv, &[], dst.as_slice_mut(), w, h, Planar420::Nv12);
@@ -243,6 +264,7 @@ pub fn rgb_from_nv12(src: &[u8], dst: &mut Image<u8, 3>) -> Result<(), ImageErro
 /// Decode a planar 4:2:0 NV21 (Y plane + interleaved `VU`) buffer to RGB (BT.601 limited).
 pub fn rgb_from_nv21(src: &[u8], dst: &mut Image<u8, 3>) -> Result<(), ImageError> {
     let (w, h) = (dst.width(), dst.height());
+    check_even_420(w, h, src.len())?;
     check_dst_size(dst, w, h, src.len(), w * h * 3 / 2)?;
     let (y, uv) = src.split_at(w * h);
     kernels::rgb_from_planar420(y, uv, &[], dst.as_slice_mut(), w, h, Planar420::Nv21);
@@ -252,6 +274,7 @@ pub fn rgb_from_nv21(src: &[u8], dst: &mut Image<u8, 3>) -> Result<(), ImageErro
 /// Decode a planar 4:2:0 I420 (Y, then U plane, then V plane) buffer to RGB (BT.601 limited).
 pub fn rgb_from_i420(src: &[u8], dst: &mut Image<u8, 3>) -> Result<(), ImageError> {
     let (w, h) = (dst.width(), dst.height());
+    check_even_420(w, h, src.len())?;
     check_dst_size(dst, w, h, src.len(), w * h * 3 / 2)?;
     let n = w * h;
     let (y, chroma) = src.split_at(n);
@@ -263,6 +286,7 @@ pub fn rgb_from_i420(src: &[u8], dst: &mut Image<u8, 3>) -> Result<(), ImageErro
 /// Decode a planar 4:2:0 YV12 (Y, then V plane, then U plane) buffer to RGB (BT.601 limited).
 pub fn rgb_from_yv12(src: &[u8], dst: &mut Image<u8, 3>) -> Result<(), ImageError> {
     let (w, h) = (dst.width(), dst.height());
+    check_even_420(w, h, src.len())?;
     check_dst_size(dst, w, h, src.len(), w * h * 3 / 2)?;
     let n = w * h;
     let (y, chroma) = src.split_at(n);
@@ -477,4 +501,37 @@ fn yuv_to_rgb_u8_bt601_limited(y: u8, u: u8, v: u8) -> (u8, u8, u8) {
         g.clamp(0, 255) as u8,
         b.clamp(0, 255) as u8,
     )
+}
+
+#[cfg(test)]
+mod video_decode_tests {
+    use super::*;
+    use kornia_image::ImageSize;
+
+    fn dst(width: usize, height: usize) -> Image<u8, 3> {
+        Image::<u8, 3>::from_size_val(ImageSize { width, height }, 0).unwrap()
+    }
+
+    /// Regression: odd dimensions used to be accepted, leaving the last
+    /// column/row of `dst` unwritten (stale memory leaked to the caller).
+    #[test]
+    fn video_decode_rejects_odd_dims() {
+        let (w, h) = (5usize, 4usize);
+        let mut d = dst(w, h);
+        assert!(rgb_from_yuyv(&vec![128; w * h * 2], &mut d).is_err());
+        assert!(rgb_from_uyvy(&vec![128; w * h * 2], &mut d).is_err());
+        assert!(rgb_from_yvyu(&vec![128; w * h * 2], &mut d).is_err());
+        for (w, h) in [(5usize, 4usize), (4, 5), (5, 5)] {
+            let mut d = dst(w, h);
+            let src = vec![128u8; w * h * 3 / 2];
+            assert!(rgb_from_nv12(&src, &mut d).is_err());
+            assert!(rgb_from_nv21(&src, &mut d).is_err());
+            assert!(rgb_from_i420(&src, &mut d).is_err());
+            assert!(rgb_from_yv12(&src, &mut d).is_err());
+        }
+        // Even dimensions still work.
+        let mut d = dst(4, 4);
+        assert!(rgb_from_yuyv(&[128; 32], &mut d).is_ok());
+        assert!(rgb_from_nv12(&[128; 24], &mut d).is_ok());
+    }
 }

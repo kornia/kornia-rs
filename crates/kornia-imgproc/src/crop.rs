@@ -194,10 +194,16 @@ where
     T: Copy + Send + Sync,
 {
     // Bounds check: crop region must fit entirely inside source.
-    if x + dst.cols() > src.cols() || y + dst.rows() > src.rows() {
+    // Checked adds: a caller-supplied `x`/`y` near `usize::MAX` must not wrap
+    // around and pass the bounds check.
+    let x_end = x.checked_add(dst.cols());
+    let y_end = y.checked_add(dst.rows());
+    let in_bounds =
+        matches!((x_end, y_end), (Some(xe), Some(ye)) if xe <= src.cols() && ye <= src.rows());
+    if !in_bounds {
         return Err(ImageError::PixelIndexOutOfBounds(
-            x + dst.cols(),
-            y + dst.rows(),
+            x_end.unwrap_or(usize::MAX),
+            y_end.unwrap_or(usize::MAX),
             src.cols(),
             src.rows(),
         ));
@@ -395,6 +401,29 @@ mod tests {
         .unwrap();
         let result = super::crop_image(&src, &mut dst, 2, 0);
         assert!(result.is_err(), "expected Err for OOB crop, got Ok");
+    }
+
+    #[test]
+    fn test_crop_offset_overflow_returns_err() {
+        // Regression: `x + dst.cols()` must not wrap around to pass the check.
+        let src = Image::<u8, 1>::from_size_val(
+            ImageSize {
+                width: 4,
+                height: 4,
+            },
+            0u8,
+        )
+        .unwrap();
+        let mut dst = Image::<u8, 1>::from_size_val(
+            ImageSize {
+                width: 2,
+                height: 2,
+            },
+            0u8,
+        )
+        .unwrap();
+        assert!(super::crop_image(&src, &mut dst, usize::MAX, 0).is_err());
+        assert!(super::crop_image(&src, &mut dst, 0, usize::MAX - 1).is_err());
     }
 
     #[test]
