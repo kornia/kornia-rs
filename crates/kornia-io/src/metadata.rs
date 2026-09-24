@@ -154,8 +154,8 @@ fn parse_exif_orientation(bytes: &[u8]) -> Option<NonZeroU8> {
     let ifd_offset = read_u32(bytes, offset, le) as usize;
 
     let tiff_start = pos + needle.len();
-    let ifd_pos = tiff_start + ifd_offset;
-    if ifd_pos + 2 > bytes.len() {
+    let ifd_pos = tiff_start.checked_add(ifd_offset)?;
+    if ifd_pos.checked_add(2)? > bytes.len() {
         return None;
     }
 
@@ -174,10 +174,8 @@ fn parse_exif_orientation(bytes: &[u8]) -> Option<NonZeroU8> {
         // Orientation tag is short type (3)
         if tag == 0x0112 && field_type == 3 && count >= 1 {
             let val = read_u16(bytes, entry_pos + 8, le);
-            if let Some(nz) = NonZeroU8::new(val as u8) {
-                if (1..=8).contains(&nz.get()) {
-                    return Some(nz);
-                }
+            if (1..=8).contains(&val) {
+                return NonZeroU8::new(val as u8);
             }
             return None;
         }
@@ -192,6 +190,30 @@ fn parse_exif_orientation(bytes: &[u8]) -> Option<NonZeroU8> {
 mod tests {
     use super::*;
     use std::fs;
+
+    // Builds a little-endian EXIF blob with a single orientation entry.
+    fn exif_with_orientation(value: u16) -> Vec<u8> {
+        let mut b = b"Exif\0\0II".to_vec();
+        b.extend_from_slice(&42u16.to_le_bytes());
+        b.extend_from_slice(&8u32.to_le_bytes()); // IFD right after the TIFF header
+        b.extend_from_slice(&1u16.to_le_bytes()); // one entry
+        b.extend_from_slice(&0x0112u16.to_le_bytes());
+        b.extend_from_slice(&3u16.to_le_bytes());
+        b.extend_from_slice(&1u32.to_le_bytes());
+        b.extend_from_slice(&value.to_le_bytes());
+        b.extend_from_slice(&[0, 0]);
+        b
+    }
+
+    #[test]
+    fn fast_path_rejects_out_of_range_orientation() {
+        assert_eq!(
+            parse_exif_orientation(&exif_with_orientation(6)).map(|v| v.get()),
+            Some(6)
+        );
+        // 0x0106 used to be truncated to 6.
+        assert_eq!(parse_exif_orientation(&exif_with_orientation(0x0106)), None);
+    }
 
     #[test]
     fn test_missing_exif_returns_none() {
