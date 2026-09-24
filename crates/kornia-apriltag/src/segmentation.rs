@@ -347,6 +347,12 @@ fn cc_strip_phase1(
 /// # Returns
 ///
 /// * `Result<(), AprilTagError>` - `Ok(())` on success.
+///
+/// # Errors
+///
+/// Returns [`AprilTagError::ImageTooSmall`] if the image is narrower than 2 pixels
+/// or has no rows, and [`AprilTagError::InvalidUnionFindSize`] if `uf` does not
+/// have exactly one element per pixel.
 pub fn find_connected_components(
     src: &Image<Pixel, 1>,
     uf: &mut UnionFind,
@@ -355,6 +361,16 @@ pub fn find_connected_components(
     let height = src.height();
     let src_data = src.as_slice();
     let n_pixels = width * height;
+
+    // The row scans below index `width - 2` inner columns.
+    if width < 2 || height < 1 {
+        return Err(AprilTagError::ImageTooSmall {
+            width,
+            height,
+            min_width: 2,
+            min_height: 1,
+        });
+    }
 
     if n_pixels != uf.len() {
         return Err(AprilTagError::InvalidUnionFindSize(n_pixels, uf.len()));
@@ -502,6 +518,7 @@ impl Pixel {
 /// # Returns
 ///
 /// A `FxHashMap` keyed by `(representative_a, representative_b)` pairs mapping to gradient info vectors.
+/// Images smaller than 3x3 have no interior pixels and yield an empty map.
 pub fn find_gradient_clusters(
     src: &Image<Pixel, 1>,
     uf: &UnionFind,
@@ -509,6 +526,9 @@ pub fn find_gradient_clusters(
     let height = src.height();
     let width = src.width();
     let src_slice = src.as_slice();
+    if width < 3 || height < 3 {
+        return FxHashMap::default();
+    }
 
     let n_threads = rayon::current_num_threads().max(1);
     let inner_rows = height.saturating_sub(2);
@@ -1081,6 +1101,9 @@ fn gradient_clusters_inner(
 ///
 /// rep_cache encodes u32::MAX for pixels that should be skipped (isolated or small components),
 /// else the root pixel index as u32. Built by [`UnionFind::compress_and_fill_rep_cache`].
+///
+/// Returns no clusters if the image has no interior pixels (smaller than 3x3) or if
+/// `rep_cache` holds fewer than one entry per pixel (the SIMD kernels read it unchecked).
 pub(crate) fn find_gradient_clusters_with_cache(
     src: &Image<Pixel, 1>,
     rep_cache: &[u32],
@@ -1088,6 +1111,9 @@ pub(crate) fn find_gradient_clusters_with_cache(
     let height = src.height();
     let width = src.width();
     let src_slice = src.as_slice();
+    if width < 3 || height < 3 || rep_cache.len() < width * height {
+        return Vec::new();
+    }
 
     let n_threads = rayon::current_num_threads().max(1);
     let inner_rows = height.saturating_sub(2);
@@ -1125,6 +1151,49 @@ mod tests {
     use crate::threshold::{adaptive_threshold, TileMinMax};
     use kornia_image::ImageSize;
     use kornia_io::png::read_image_png_mono8;
+
+    #[test]
+    fn test_segmentation_tiny_images() -> Result<(), Box<dyn std::error::Error>> {
+        // Regression: width < 2 used to underflow `width - 2` and panic.
+        for (width, height) in [(1, 64), (0, 4), (4, 0)] {
+            let img = Image::new(
+                ImageSize { width, height },
+                vec![Pixel::White; width * height],
+            )?;
+            let mut uf = UnionFind::new(width * height);
+            let res = find_connected_components(&img, &mut uf);
+            assert!(matches!(res, Err(AprilTagError::ImageTooSmall { .. })));
+            assert!(find_gradient_clusters(&img, &uf).is_empty());
+            assert!(find_gradient_clusters_with_cache(&img, &[]).is_empty());
+        }
+        // Width 2 has no interior columns but is still valid.
+        let img = Image::new(
+            ImageSize {
+                width: 2,
+                height: 3,
+            },
+            vec![Pixel::White; 6],
+        )?;
+        let mut uf = UnionFind::new(6);
+        find_connected_components(&img, &mut uf)?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_gradient_clusters_short_rep_cache() -> Result<(), Box<dyn std::error::Error>> {
+        // A rep_cache shorter than the image must not be read out of bounds.
+        let img = Image::new(
+            ImageSize {
+                width: 64,
+                height: 64,
+            },
+            vec![Pixel::White; 64 * 64],
+        )?;
+        let mut uf = UnionFind::new(16);
+        assert!(find_gradient_clusters_with_cache(&img, &[0u32; 16]).is_empty());
+        assert!(find_gradient_clusters_cached(&img, &mut uf).is_empty());
+        Ok(())
+    }
 
     #[test]
     fn test_basic_segmentation() -> Result<(), Box<dyn std::error::Error>> {

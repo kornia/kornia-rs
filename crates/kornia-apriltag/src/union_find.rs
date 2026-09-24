@@ -142,9 +142,15 @@ impl UnionFind {
     }
 
     /// Fuses path-compression + `rep_cache` fill in parallel across N Rayon strips.
+    ///
+    /// `cache` is grown to at least `self.len()` entries if it is shorter.
     pub fn compress_and_fill_rep_cache(&mut self, cache: &mut Vec<u32>, min_size: usize) {
-        debug_assert!(cache.len() >= self.parent.len());
         let total = self.parent.len();
+        // The loop below writes `cache[0..total]` through a raw pointer, so this must
+        // be a real check (not a debug_assert).
+        if cache.len() < total {
+            cache.resize(total, u32::MAX);
+        }
         let n_threads = rayon::current_num_threads().max(1);
         let strip = total.div_ceil(n_threads);
 
@@ -336,6 +342,22 @@ mod tests {
 
         uf.connect(0, 3);
         assert_eq!(uf.get_representative(0), uf.get_representative(4));
+    }
+
+    #[test]
+    fn test_compress_and_fill_rep_cache_short_cache() {
+        // Regression: a too-short cache was only guarded by a debug_assert, then
+        // written through a raw pointer.
+        let mut uf = UnionFind::new(64);
+        for i in 1..32 {
+            uf.connect(0, i);
+        }
+        let mut cache: Vec<u32> = Vec::new();
+        uf.compress_and_fill_rep_cache(&mut cache, 2);
+        assert_eq!(cache.len(), 64);
+        let root = uf.get_representative(0) as u32;
+        assert!(cache[..32].iter().all(|&c| c == root));
+        assert!(cache[32..].iter().all(|&c| c == u32::MAX));
     }
 
     #[test]

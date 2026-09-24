@@ -12,7 +12,7 @@ use crate::{
     errors::AprilTagError,
     family::{TagFamily, TagFamilyKind},
     quad::{fit_quads, FitQuadConfig},
-    rle_cc::RleCC,
+    rle_cc::{RleCC, MAX_RLE_WIDTH},
     segmentation::{find_gradient_clusters_with_cache, GradientInfo},
     threshold::{adaptive_threshold_with_split, TileMinMax},
     utils::Pixel,
@@ -156,8 +156,33 @@ impl DecodeTagsConfig {
     }
 }
 
+/// Returns the decimated size matching C's `image_u8_decimate`: `1 + (w - 1) / factor`.
+fn decimated_size(size: ImageSize, factor: usize) -> ImageSize {
+    ImageSize {
+        width: 1 + size.width.saturating_sub(1) / factor,
+        height: 1 + size.height.saturating_sub(1) / factor,
+    }
+}
+
 /// Stride-based decimation matching C's `image_u8_decimate` (top-left pixel of each factor×factor block).
-fn stride_decimate(src: &Image<u8, 1>, dst: &mut Image<u8, 1>, factor: usize) {
+///
+/// Returns an error if `dst` is not exactly the decimated size of `src`; the SIMD
+/// path below reads `src` through raw pointers and relies on that invariant.
+fn stride_decimate(
+    src: &Image<u8, 1>,
+    dst: &mut Image<u8, 1>,
+    factor: usize,
+) -> Result<(), AprilTagError> {
+    let expected = decimated_size(src.size(), factor);
+    if src.width() == 0 || src.height() == 0 || dst.size() != expected {
+        return Err(kornia_image::error::ImageError::InvalidImageSize(
+            expected.width,
+            expected.height,
+            dst.width(),
+            dst.height(),
+        )
+        .into());
+    }
     let src_w = src.width();
     let dst_w = dst.width();
     let dst_h = dst.height();
@@ -186,7 +211,7 @@ fn stride_decimate(src: &Image<u8, 1>, dst: &mut Image<u8, 1>, factor: usize) {
                 sx += 1;
             }
         }
-        return;
+        return Ok(());
     }
 
     for sy in 0..dst_h {
@@ -194,6 +219,7 @@ fn stride_decimate(src: &Image<u8, 1>, dst: &mut Image<u8, 1>, factor: usize) {
             dst_data[sy * dst_w + sx] = src_data[(sy * factor) * src_w + sx * factor];
         }
     }
+    Ok(())
 }
 
 /// Decoder for AprilTag detection and decoding.
@@ -236,18 +262,37 @@ impl AprilTagDecoder {
     /// # Returns
     ///
     /// Returns a `Result` containing the new `AprilTagDecoder` or an `AprilTagError`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AprilTagError::ImageTooSmall`] if `img_size` has a zero dimension, and
+    /// [`AprilTagError::ImageTooLarge`] if the (downscaled) width exceeds `u16::MAX`.
     pub fn new(config: DecodeTagsConfig, img_size: ImageSize) -> Result<Self, AprilTagError> {
+        if img_size.width == 0 || img_size.height == 0 {
+            return Err(AprilTagError::ImageTooSmall {
+                width: img_size.width,
+                height: img_size.height,
+                min_width: 1,
+                min_height: 1,
+            });
+        }
         let (img_size, downscale_img) = if config.downscale_factor <= 1 {
             (img_size, None)
         } else {
             // Match C's image_u8_decimate: swidth = 1 + (w-1)/factor (ceiling division).
-            let new_size = ImageSize {
-                width: 1 + (img_size.width - 1) / config.downscale_factor,
-                height: 1 + (img_size.height - 1) / config.downscale_factor,
-            };
+            let new_size = decimated_size(img_size, config.downscale_factor);
 
             (new_size, Some(Image::from_size_val(new_size, 0)?))
         };
+        // The run-length connected-components stage stores columns as u16.
+        if img_size.width > MAX_RLE_WIDTH {
+            return Err(AprilTagError::ImageTooLarge {
+                width: img_size.width,
+                height: img_size.height,
+                max_width: MAX_RLE_WIDTH,
+                max_pixels: u32::MAX as usize,
+            });
+        }
 
         // Build the tag family cache once
         let cached_families: Vec<(TagFamilyKind, TagFamily)> = config
@@ -294,7 +339,7 @@ impl AprilTagDecoder {
     pub fn decode(&mut self, src: &Image<u8, 1>) -> Result<Vec<Detection>, AprilTagError> {
         if let Some(downscale_img) = self.downscale_img.as_mut() {
             // Stride-based subsample matching C's image_u8_decimate: dst[sy][sx] = src[sy*f][sx*f].
-            stride_decimate(src, downscale_img, self.config.downscale_factor);
+            stride_decimate(src, downscale_img, self.config.downscale_factor)?;
 
             // Step 1: Adaptive Threshold
             adaptive_threshold_with_split(
@@ -316,7 +361,8 @@ impl AprilTagDecoder {
         }
 
         // Step 2(a): Find Connected Components + path-compress + build rep_cache (one fused pass).
-        self.rle_cc.process(&self.bin_img, &mut self.rep_cache, 25);
+        self.rle_cc
+            .process(&self.bin_img, &mut self.rep_cache, 25)?;
 
         // Step 2(b): Find Clusters (NEON fast-path on aarch64)
         self.clusters = find_gradient_clusters_with_cache(&self.bin_img, &self.rep_cache);
@@ -345,7 +391,7 @@ impl AprilTagDecoder {
     /// testing where you want to find the detection closest to a known reference.
     pub fn decode_all(&mut self, src: &Image<u8, 1>) -> Result<Vec<Detection>, AprilTagError> {
         if let Some(downscale_img) = self.downscale_img.as_mut() {
-            stride_decimate(src, downscale_img, self.config.downscale_factor);
+            stride_decimate(src, downscale_img, self.config.downscale_factor)?;
             adaptive_threshold_with_split(
                 downscale_img,
                 &mut self.bin_img,
@@ -362,7 +408,8 @@ impl AprilTagDecoder {
                 self.config.threshold_split,
             )?;
         }
-        self.rle_cc.process(&self.bin_img, &mut self.rep_cache, 25);
+        self.rle_cc
+            .process(&self.bin_img, &mut self.rep_cache, 25)?;
         self.clusters = find_gradient_clusters_with_cache(&self.bin_img, &self.rep_cache);
         let mut quads = fit_quads(&self.bin_img, &self.clusters, &self.config);
         let refine_edges_range = self.config.downscale_factor as f32 + 1.0;
@@ -385,7 +432,7 @@ impl AprilTagDecoder {
         let mut us = [0u64; 6];
         let t = std::time::Instant::now();
         if let Some(downscale_img) = self.downscale_img.as_mut() {
-            stride_decimate(src, downscale_img, self.config.downscale_factor);
+            stride_decimate(src, downscale_img, self.config.downscale_factor)?;
             us[0] = t.elapsed().as_micros() as u64;
             let t = std::time::Instant::now();
             adaptive_threshold_with_split(
@@ -409,7 +456,8 @@ impl AprilTagDecoder {
             us[1] = t.elapsed().as_micros() as u64;
         }
         let t = std::time::Instant::now();
-        self.rle_cc.process(&self.bin_img, &mut self.rep_cache, 25);
+        self.rle_cc
+            .process(&self.bin_img, &mut self.rep_cache, 25)?;
         us[2] = t.elapsed().as_micros() as u64;
         let t = std::time::Instant::now();
         self.clusters = find_gradient_clusters_with_cache(&self.bin_img, &self.rep_cache);
@@ -519,6 +567,46 @@ mod tests {
             }
         }
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_decode_one_pixel_stripes() -> Result<(), Box<dyn std::error::Error>> {
+        // Regression: 1-px vertical stripes produce one run per pixel, which used
+        // to overflow the RLE connected-components run buffer.
+        let (width, height) = (256, 128);
+        let mut config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag36H11])?;
+        config.downscale_factor = 1;
+        let size = kornia_image::ImageSize { width, height };
+        let data = (0..width * height)
+            .map(|i| if (i % width) & 1 == 0 { 0 } else { 255 })
+            .collect();
+        let img = kornia_image::Image::<u8, 1>::new(size, data)?;
+        let mut decoder = AprilTagDecoder::new(config, size)?;
+        let detections = decoder.decode(&img)?;
+        assert!(detections.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_decoder_rejects_unsupported_sizes() -> Result<(), Box<dyn std::error::Error>> {
+        let config = || DecodeTagsConfig::new(vec![TagFamilyKind::Tag36H11]);
+        // Run columns are u16: wider images must be rejected up front.
+        let mut cfg = config()?;
+        cfg.downscale_factor = 1;
+        let res = AprilTagDecoder::new(cfg, [65_600, 4].into());
+        assert!(matches!(res, Err(AprilTagError::ImageTooLarge { .. })));
+        // Zero-sized images used to underflow the downscale arithmetic.
+        let res = AprilTagDecoder::new(config()?, [0, 10].into());
+        assert!(matches!(res, Err(AprilTagError::ImageTooSmall { .. })));
+
+        // A source image that does not match the decoder size must be rejected
+        // before the (SIMD) decimation reads from it.
+        let mut cfg = config()?;
+        cfg.downscale_factor = 2;
+        let mut decoder = AprilTagDecoder::new(cfg, [64, 64].into())?;
+        let small = kornia_image::Image::<u8, 1>::from_size_val([64, 8].into(), 0)?;
+        assert!(decoder.decode(&small).is_err());
         Ok(())
     }
 
