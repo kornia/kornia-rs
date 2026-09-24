@@ -15,6 +15,16 @@ jobs:
   publish:
     name: cargo publish (topological)
     runs-on: ubuntu-latest
+    # Only publish from main or a v* release tag. Configure required reviewers
+    # / deployment branch rules for the `crates-io` environment in repo settings.
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    environment:
+      name: crates-io
+      url: https://crates.io/crates/kornia
+    # TODO: migrate to crates.io Trusted Publishing (OIDC) once configured on
+    # crates.io (https://crates.io/docs/trusted-publishing): grant
+    # `permissions: id-token: write` on this job, obtain the token with
+    # rust-lang/crates-io-auth-action, and remove the CARGO_REGISTRY_TOKEN secret.
     steps:
       - name: Guard — require explicit confirmation
         env:
