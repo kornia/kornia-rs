@@ -49,7 +49,7 @@ jobs:
         with:
           with-sccache: ${{ matrix.needs-sccache }}
 
-      - uses: prefix-dev/setup-pixi@a09b6247153796b190642a2b53fac4241043cf6f # v0.10.0
+      - uses: prefix-dev/setup-pixi@d3f436a425481402e6a95a1d1fc10331c708cd9e # v0.10.2
         with:
           pixi-version: v0.73.0
           cache: true
@@ -70,14 +70,14 @@ jobs:
     # Kernel-execution tests run on real hardware (Jetson) outside CI.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Pinned to match the toolchain pixi provides for the `Clippy` job above
       # (`rust = ">=1.76"` currently resolves to 1.96). Tracking `stable` meant a
       # compiler release could introduce a lint and fail this job on every open
       # PR without any source change - Rust 1.98's `chunks_exact_to_as_chunks`
       # did exactly that. Bump this deliberately, together with pixi's rust pin.
-      - uses: dtolnay/rust-toolchain@ebb3d1676050bfd0971c36c1e215b5751473994d # 1.96.0
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # 1.96.0
         with:
           components: clippy
 
@@ -101,7 +101,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: prefix-dev/setup-pixi@a09b6247153796b190642a2b53fac4241043cf6f # v0.10.0
+      - uses: prefix-dev/setup-pixi@d3f436a425481402e6a95a1d1fc10331c708cd9e # v0.10.2
         with:
           pixi-version: v0.73.0
           cache: true
