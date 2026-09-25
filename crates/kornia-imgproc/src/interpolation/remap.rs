@@ -88,14 +88,10 @@ pub fn remap<const C: usize>(
         }
     }
 
-    // Nothing to write (and `par_chunks_mut(0)` would panic).
-    if dst.cols() == 0 || dst.rows() == 0 {
-        return Ok(());
-    }
-
     // Out-of-range (or NaN) source coordinates produce BORDER_CONSTANT = 0,
     // matching `remap_u8` and the CUDA remap kernels. The samplers are only
-    // ever called with coordinates inside `[0, w) x [0, h)`.
+    // ever called with coordinates inside `[0, w) x [0, h)` — never for an
+    // empty `src`, where no coordinate passes the range test.
     let src_w_f = src.cols() as f32;
     let src_h_f = src.rows() as f32;
 
@@ -246,10 +242,6 @@ pub fn remap_u8<const C: usize>(
     let dst_w = dst.cols();
     let dst_stride = dst_w * C;
 
-    if dst_stride == 0 {
-        return Ok(());
-    }
-
     let zero_pixel = |dst_pixel: &mut [u8]| {
         for pixel in dst_pixel.iter_mut().take(C) {
             *pixel = 0;
@@ -279,8 +271,7 @@ pub fn remap_u8<const C: usize>(
                 return Ok(());
             }
 
-            dst.as_slice_mut()
-                .par_chunks_exact_mut(dst_stride)
+            parallel::par_rows_exact_mut(dst.as_slice_mut(), dst_stride)
                 .enumerate()
                 .for_each(|(y, dst_row)| {
                     let row_base = y * dst_w;
@@ -308,8 +299,7 @@ pub fn remap_u8<const C: usize>(
                 });
         }
         InterpolationMode::Nearest => {
-            dst.as_slice_mut()
-                .par_chunks_exact_mut(dst_stride)
+            parallel::par_rows_exact_mut(dst.as_slice_mut(), dst_stride)
                 .enumerate()
                 .for_each(|(y, dst_row)| {
                     let row_base = y * dst_w;
@@ -357,8 +347,7 @@ unsafe fn remap_u8_bilinear_c3_avx2<const C: usize>(
         }
     };
 
-    dst.as_slice_mut()
-        .par_chunks_exact_mut(dst_stride)
+    parallel::par_rows_exact_mut(dst.as_slice_mut(), dst_stride)
         .enumerate()
         .for_each(|(y, dst_row)| {
             let row_base = y * dst_w;

@@ -1,8 +1,7 @@
 use kornia_image::{Image, ImageError};
-use rayon::{
-    iter::{IndexedParallelIterator, ParallelIterator},
-    slice::{ParallelSlice, ParallelSliceMut},
-};
+use rayon::iter::{IndexedParallelIterator, ParallelIterator};
+
+use crate::parallel::{par_row_chunks, par_row_chunks_mut};
 
 /// Flip the input image horizontally.
 ///
@@ -52,12 +51,6 @@ where
         ));
     }
 
-    // Empty image: nothing to flip (a zero row length would make the
-    // chunked parallel loops below panic).
-    if src.cols() == 0 || src.rows() == 0 {
-        return Ok(());
-    }
-
     {
         use std::any::TypeId;
         if C == 3 && TypeId::of::<T>() == TypeId::of::<u8>() {
@@ -93,9 +86,8 @@ where
                 )
             };
             const ROWS_PER_TASK: usize = 16;
-            dst_bytes
-                .par_chunks_mut(ROWS_PER_TASK * row_bytes)
-                .zip_eq(src_bytes.par_chunks(ROWS_PER_TASK * row_bytes))
+            par_row_chunks_mut(dst_bytes, row_bytes, ROWS_PER_TASK)
+                .zip_eq(par_row_chunks(src_bytes, row_bytes, ROWS_PER_TASK))
                 .for_each(|(dst_big, src_big)| {
                     dst_big
                         .chunks_exact_mut(row_bytes)
@@ -110,9 +102,8 @@ where
 
     const ROWS_PER_TASK: usize = 16;
     let row_len = src.cols() * C;
-    dst.as_slice_mut()
-        .par_chunks_mut(ROWS_PER_TASK * row_len)
-        .zip_eq(src.as_slice().par_chunks(ROWS_PER_TASK * row_len))
+    par_row_chunks_mut(dst.as_slice_mut(), row_len, ROWS_PER_TASK)
+        .zip_eq(par_row_chunks(src.as_slice(), row_len, ROWS_PER_TASK))
         .for_each(|(dst_big, src_big)| {
             dst_big
                 .chunks_exact_mut(row_len)
@@ -326,25 +317,20 @@ where
 
     let row_len = src.cols() * C;
     let rows = src.rows();
-    // Empty image: nothing to flip (zero-sized chunks would panic).
-    if row_len == 0 || rows == 0 {
-        return Ok(());
-    }
 
     // Group rows into coarse chunks so rayon task count stays ~O(cores×16),
     // not O(rows). Per-row parallelism buries memcpy in spawn overhead at any
     // resolution up to 8K. Within a chunk we use raw-ptr copy_nonoverlapping
     // to skip per-row slice-bounds checks (visible at 1080p: ~100 μs of 930).
     const ROWS_PER_TASK: usize = 16;
-    let chunk_elems = ROWS_PER_TASK * row_len;
 
     // Pass src as usize address; raw pointers aren't Send. Each rayon task
     // reconstructs the pointer and reads its own disjoint row ranges.
     let src_addr = src.as_slice().as_ptr() as usize;
     let dst_slice = dst.as_slice_mut();
 
-    dst_slice
-        .par_chunks_mut(chunk_elems)
+    // An empty image yields no chunks, so `row_len` is non-zero below.
+    par_row_chunks_mut(dst_slice, row_len, ROWS_PER_TASK)
         .enumerate()
         .for_each(|(chunk_idx, dst_chunk)| {
             let n_rows_in_chunk = dst_chunk.len() / row_len;

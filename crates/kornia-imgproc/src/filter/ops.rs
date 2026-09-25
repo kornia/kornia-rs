@@ -895,17 +895,10 @@ fn separable_blur_u8_striped(
             let mut ring: Vec<u8> = vec![0u8; ring_len];
 
             let mut padded = vec![0u8; padded_stride];
-            // Tap pointer table sized to the kernel: a stack array for the
-            // common case, a heap Vec only for kernels longer than 32 taps
-            // (the fixed `[_; 32]` used to panic there).
-            let mut tap_arr = [std::ptr::null::<u8>(); 32];
-            let mut tap_vec: Vec<*const u8> = Vec::new();
-            let tap_ptrs: &mut [*const u8] = if ksize_y <= tap_arr.len() {
-                &mut tap_arr[..ksize_y]
-            } else {
-                tap_vec.resize(ksize_y, std::ptr::null());
-                &mut tap_vec
-            };
+            // Tap pointer table sized to the kernel (a fixed `[_; 32]` used to
+            // panic for 33+ taps); one small allocation per strip, like the
+            // ring buffers above.
+            let mut tap_ptrs = vec![std::ptr::null::<u8>(); ksize_y];
 
             #[cfg(target_arch = "aarch64")]
             let kvecs_x: Vec<_> = kernel_x

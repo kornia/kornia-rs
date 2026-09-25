@@ -9,6 +9,43 @@ use kornia_image::Image;
 /// work-stealing balance without drowning in task overhead.
 const ROWS_PER_TASK: usize = 16;
 
+/// Parallel mutable chunks of `rows_per_task` whole rows of `row_len`
+/// elements each.
+///
+/// For an image buffer (`data.len()` a multiple of `row_len`), an empty
+/// image — zero rows or zero-length rows — has an empty `data` and yields no
+/// chunks. This is the single place that keeps rayon's `chunk_size != 0`
+/// assertion from firing on empty images; callers need no guard of their own
+/// for it.
+#[inline]
+pub(crate) fn par_row_chunks_mut<T: Send>(
+    data: &mut [T],
+    row_len: usize,
+    rows_per_task: usize,
+) -> rayon::slice::ChunksMut<'_, T> {
+    data.par_chunks_mut(row_len.saturating_mul(rows_per_task).max(1))
+}
+
+/// Shared-reference twin of [`par_row_chunks_mut`].
+#[inline]
+pub(crate) fn par_row_chunks<T: Sync>(
+    data: &[T],
+    row_len: usize,
+    rows_per_task: usize,
+) -> rayon::slice::Chunks<'_, T> {
+    data.par_chunks(row_len.saturating_mul(rows_per_task).max(1))
+}
+
+/// Parallel mutable rows of exactly `row_len` elements; an empty image
+/// yields no rows (see [`par_row_chunks_mut`]).
+#[inline]
+pub(crate) fn par_rows_exact_mut<T: Send>(
+    data: &mut [T],
+    row_len: usize,
+) -> rayon::slice::ChunksExactMut<'_, T> {
+    data.par_chunks_exact_mut(row_len.max(1))
+}
+
 /// Apply a function to each pixel in the image in parallel.
 ///
 /// # Arguments
@@ -26,16 +63,12 @@ pub fn par_iter_rows<T1, const C1: usize, T2, const C2: usize>(
 {
     let src_row_len = C1 * src.cols();
     let dst_row_len = C2 * src.cols();
-    // Zero-width images: nothing to do (and a zero chunk size would panic).
-    if src_row_len == 0 || dst_row_len == 0 {
-        return;
-    }
-    src.as_slice()
-        .par_chunks(ROWS_PER_TASK * src_row_len)
-        .zip(
-            dst.as_slice_mut()
-                .par_chunks_mut(ROWS_PER_TASK * dst_row_len),
-        )
+    par_row_chunks(src.as_slice(), src_row_len, ROWS_PER_TASK)
+        .zip(par_row_chunks_mut(
+            dst.as_slice_mut(),
+            dst_row_len,
+            ROWS_PER_TASK,
+        ))
         .for_each(|(src_chunk, dst_chunk)| {
             src_chunk
                 .chunks_exact(C1)
@@ -57,16 +90,12 @@ pub fn par_iter_rows_val<T1, const C1: usize, T2, const C2: usize>(
 {
     let src_row_len = C1 * src.cols();
     let dst_row_len = C2 * src.cols();
-    // Zero-width images: nothing to do (and a zero chunk size would panic).
-    if src_row_len == 0 || dst_row_len == 0 {
-        return;
-    }
-    src.as_slice()
-        .par_chunks(ROWS_PER_TASK * src_row_len)
-        .zip(
-            dst.as_slice_mut()
-                .par_chunks_mut(ROWS_PER_TASK * dst_row_len),
-        )
+    par_row_chunks(src.as_slice(), src_row_len, ROWS_PER_TASK)
+        .zip(par_row_chunks_mut(
+            dst.as_slice_mut(),
+            dst_row_len,
+            ROWS_PER_TASK,
+        ))
         .for_each(|(src_chunk, dst_chunk)| {
             src_chunk
                 .iter()
@@ -92,13 +121,9 @@ pub fn par_iter_rows_val_two<T1, const C1: usize, T2, const C2: usize, T3, const
     let s1_row = C1 * cols;
     let s2_row = C2 * cols;
     let d_row = C3 * cols;
-    if s1_row == 0 || s2_row == 0 || d_row == 0 {
-        return;
-    }
-    src1.as_slice()
-        .par_chunks(ROWS_PER_TASK * s1_row)
-        .zip(src2.as_slice().par_chunks(ROWS_PER_TASK * s2_row))
-        .zip(dst.as_slice_mut().par_chunks_mut(ROWS_PER_TASK * d_row))
+    par_row_chunks(src1.as_slice(), s1_row, ROWS_PER_TASK)
+        .zip(par_row_chunks(src2.as_slice(), s2_row, ROWS_PER_TASK))
+        .zip(par_row_chunks_mut(dst.as_slice_mut(), d_row, ROWS_PER_TASK))
         .for_each(|((src1_chunk, src2_chunk), dst_chunk)| {
             src1_chunk
                 .iter()
@@ -118,15 +143,9 @@ pub fn par_iter_rows_resample<const C: usize>(
     f: impl Fn(&f32, &f32, &mut [f32]) + Send + Sync,
 ) {
     let cols = dst.cols();
-    if C * cols == 0 {
-        return;
-    }
-    let dst_slice = dst.as_slice_mut();
-
-    dst_slice
-        .par_chunks_mut(ROWS_PER_TASK * C * cols)
-        .zip(map_x.par_chunks(ROWS_PER_TASK * cols))
-        .zip(map_y.par_chunks(ROWS_PER_TASK * cols))
+    par_row_chunks_mut(dst.as_slice_mut(), C * cols, ROWS_PER_TASK)
+        .zip(par_row_chunks(map_x, cols, ROWS_PER_TASK))
+        .zip(par_row_chunks(map_y, cols, ROWS_PER_TASK))
         .for_each(|((dst_chunk, map_x_chunk), map_y_chunk)| {
             dst_chunk
                 .chunks_exact_mut(C)
@@ -143,13 +162,7 @@ pub fn par_iter_rows_spatial_mapping<const C: usize>(
 ) {
     let cols = dst.cols();
     let row_len = C * cols;
-    if row_len == 0 {
-        return;
-    }
-    let dst_slice = dst.as_slice_mut();
-
-    dst_slice
-        .par_chunks_mut(ROWS_PER_TASK * row_len)
+    par_row_chunks_mut(dst.as_slice_mut(), row_len, ROWS_PER_TASK)
         .enumerate()
         .for_each(|(chunk_idx, dst_chunk)| {
             let r_base = chunk_idx * ROWS_PER_TASK;

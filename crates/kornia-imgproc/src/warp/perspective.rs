@@ -202,14 +202,10 @@ pub fn warp_perspective_u8<const C: usize>(
     let src_stride = src.cols() * C;
     let dst_w = dst.cols();
     let dst_stride = dst_w * C;
-    if dst_stride == 0 || dst.rows() == 0 {
-        return Ok(());
-    }
     let src_slice = src.as_slice();
     let (dnx, dny, dnd) = (inv[0], inv[3], inv[6]);
 
-    dst.as_slice_mut()
-        .par_chunks_exact_mut(dst_stride)
+    crate::parallel::par_rows_exact_mut(dst.as_slice_mut(), dst_stride)
         .enumerate()
         .for_each(|(y, dst_row)| {
             let y_f = y as f32;

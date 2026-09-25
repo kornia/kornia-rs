@@ -5,6 +5,7 @@ use rayon::prelude::*;
 
 use super::kernels::process_affine_span;
 use crate::interpolation::{validate_interpolation, InterpolationMode};
+use crate::parallel::{par_row_chunks_mut, par_rows_exact_mut};
 
 /// Inverts a 2x3 affine transformation matrix.
 ///
@@ -145,9 +146,6 @@ pub fn warp_affine<const C: usize>(
     let src_h = src.rows();
     let dst_w = dst.cols();
     let row_len = dst_w * C;
-    if row_len == 0 || dst.rows() == 0 {
-        return Ok(());
-    }
 
     // Per-column increments (affine: same for every row).
     let dsx = m_inv[0];
@@ -260,8 +258,7 @@ pub fn warp_affine<const C: usize>(
 
     match interpolation {
         InterpolationMode::Nearest => {
-            dst.as_slice_mut()
-                .par_chunks_mut(row_len * ROWS_PER_TASK)
+            par_row_chunks_mut(dst.as_slice_mut(), row_len, ROWS_PER_TASK)
                 .enumerate()
                 .for_each(|(ci, chunk)| {
                     run_rows!(
@@ -282,8 +279,7 @@ pub fn warp_affine<const C: usize>(
                 });
         }
         InterpolationMode::Bilinear => {
-            dst.as_slice_mut()
-                .par_chunks_mut(row_len * ROWS_PER_TASK)
+            par_row_chunks_mut(dst.as_slice_mut(), row_len, ROWS_PER_TASK)
                 .enumerate()
                 .for_each(|(ci, chunk)| {
                     run_rows!(
@@ -330,8 +326,7 @@ pub fn warp_affine<const C: usize>(
             // samplers are the byte-exact twins of the CUDA kernels.
             macro_rules! run_sampled {
                 ($sampler:path) => {
-                    dst.as_slice_mut()
-                        .par_chunks_mut(row_len * ROWS_PER_TASK)
+                    par_row_chunks_mut(dst.as_slice_mut(), row_len, ROWS_PER_TASK)
                         .enumerate()
                         .for_each(|(ci, chunk)| {
                             run_rows!(
@@ -397,9 +392,6 @@ pub fn warp_affine_u8<const C: usize>(
     let src_stride = src.cols() * C;
     let dst_w = dst.cols();
     let dst_stride = dst_w * C;
-    if dst_stride == 0 || dst.rows() == 0 {
-        return Ok(());
-    }
     let src_slice = src.as_slice();
 
     // Q16 fixed-point coords for the inner loop: replaces per-pixel
@@ -421,8 +413,7 @@ pub fn warp_affine_u8<const C: usize>(
     let sx_upper = src_w as f32;
     let sy_upper = src_h as f32;
 
-    dst.as_slice_mut()
-        .par_chunks_exact_mut(dst_stride)
+    par_rows_exact_mut(dst.as_slice_mut(), dst_stride)
         .enumerate()
         .for_each(|(y, dst_row)| {
             let y_f = y as f32;

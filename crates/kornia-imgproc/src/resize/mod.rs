@@ -136,14 +136,9 @@ pub fn resize<const C: usize>(
         return Ok(());
     }
 
-    // Empty destination: nothing to write. Empty source with a non-empty
-    // destination: nothing to sample from (the axis tables below would
-    // underflow `src_len - 1`).
-    if dst.cols() == 0 || dst.rows() == 0 {
+    // The axis tables below index `src_len - 1`.
+    if !has_work(src.cols(), src.rows(), dst.cols(), dst.rows())? {
         return Ok(());
-    }
-    if src.cols() == 0 || src.rows() == 0 {
-        return Err(ImageError::InvalidImageSize(src.cols(), src.rows(), 1, 1));
     }
 
     // Lanczos is separable on both backends (the CUDA pipeline is H-then-V
@@ -290,6 +285,20 @@ pub(crate) enum ResizeU8Path {
     Separable(FilterKind),
 }
 
+/// Empty-extent policy shared by every resize entry point: an empty
+/// destination has nothing to write (`Ok(false)`); a non-empty destination
+/// needs a non-empty source to sample from (every kernel indexes
+/// `src_len - 1`), so an empty source is an error. Otherwise `Ok(true)`.
+fn has_work(src_w: usize, src_h: usize, dst_w: usize, dst_h: usize) -> Result<bool, ImageError> {
+    if dst_w == 0 || dst_h == 0 {
+        return Ok(false);
+    }
+    if src_w == 0 || src_h == 0 {
+        return Err(ImageError::InvalidImageSize(src_w, src_h, 1, 1));
+    }
+    Ok(true)
+}
+
 pub(crate) fn resize_u8_path(
     channels: usize,
     mode: InterpolationMode,
@@ -299,11 +308,7 @@ pub(crate) fn resize_u8_path(
     dst_h: usize,
 ) -> Result<ResizeU8Path, ImageError> {
     use InterpolationMode as I;
-    // A non-empty destination needs a non-empty source to sample from; every
-    // kernel below indexes `src_len - 1`.
-    if (dst_w > 0 && dst_h > 0) && (src_w == 0 || src_h == 0) {
-        return Err(ImageError::InvalidImageSize(src_w, src_h, 1, 1));
-    }
+    has_work(src_w, src_h, dst_w, dst_h)?;
     Ok(match mode {
         I::Bilinear
             if channels == 3
@@ -381,9 +386,7 @@ pub fn resize_fast_u8_aa<const C: usize>(
     let (src_w, src_h) = (src.cols(), src.rows());
     let (dst_w, dst_h) = (dst.cols(), dst.rows());
 
-    // Empty destination: nothing to write (the row-parallel kernels would
-    // otherwise panic on a zero chunk size).
-    if dst_w == 0 || dst_h == 0 {
+    if !has_work(src_w, src_h, dst_w, dst_h)? {
         return Ok(());
     }
 

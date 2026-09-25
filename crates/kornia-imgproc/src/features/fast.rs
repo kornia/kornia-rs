@@ -24,6 +24,15 @@ pub struct FastDetector {
     taken: Vec<bool>,
 }
 
+/// Whether a `width x height` image has a pixel whose full 16-pixel
+/// Bresenham ring (radius 3) is inside the image. Smaller images have no
+/// corner candidates, and the corner-response loops' `width - 3` /
+/// `height - 3` bounds would underflow (sending the u8 SIMD block loop out of
+/// bounds in release builds).
+fn has_ring_interior(width: usize, height: usize) -> bool {
+    width >= 7 && height >= 7
+}
+
 impl FastDetector {
     /// Creates a new `FastDetector` with the specified parameters.
     ///
@@ -100,10 +109,7 @@ impl FastDetector {
         let width = src.width();
         let height = src.height();
 
-        // The 16-pixel Bresenham ring needs a 3-pixel border on every side;
-        // smaller images have no interior pixel (and `width - 3` /
-        // `height - 3` below would underflow).
-        if width < 7 || height < 7 {
+        if !has_ring_interior(width, height) {
             return &self.corner_response;
         }
 
@@ -190,10 +196,7 @@ impl FastDetector {
         let src_slice = src.as_slice();
         let width = src.width();
         let height = src.height();
-        // No interior pixel for images below 7x7 (3-pixel ring border);
-        // `width - 3` would also underflow and send the SIMD block loop out
-        // of bounds.
-        if width < 7 || height < 7 {
+        if !has_ring_interior(width, height) {
             return &self.corner_response;
         }
         let corner_response = self.corner_response.as_slice_mut();
