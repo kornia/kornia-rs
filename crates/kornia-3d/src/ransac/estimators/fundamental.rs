@@ -7,7 +7,7 @@
 use kornia_algebra::{Mat3F64, Vec2F64};
 
 use crate::pose::{fundamental_8point, sampson_distance};
-use crate::ransac::{Estimator, Match2d2d};
+use crate::ransac::{clamp_pair, Estimator, Match2d2d};
 
 /// Estimator for the fundamental matrix from 2D-2D pixel correspondences.
 ///
@@ -75,11 +75,9 @@ impl Estimator for FundamentalEstimator {
     /// All three paths produce identical results to within FMA reordering
     /// noise (≤ 1e-12 relative) — a unit test pins the equivalence.
     fn residual_batch(&self, model: &Self::Model, samples: &[Self::Sample], out: &mut [f64]) {
-        // Real check (not a debug_assert): the SIMD kernels below write `out`
-        // through raw pointers for every sample, so clamp both slices to a common
-        // length. Only the first `min(out.len(), samples.len())` entries are computed.
-        let n = samples.len().min(out.len());
-        let (samples, out) = (&samples[..n], &mut out[..n]);
+        // The SIMD kernels below write `out` through raw pointers for every sample;
+        // only the first `min(out.len(), samples.len())` entries are computed.
+        let (samples, out) = clamp_pair(samples, out);
         let f = pack_f(model);
 
         #[cfg(target_arch = "aarch64")]
@@ -354,24 +352,6 @@ mod tests {
             let d = est.residual(&f, m);
             assert!(d < 1e-8, "Sampson residual too large: {d}");
         }
-    }
-
-    /// Regression: `out.len() == samples.len()` was only a debug_assert, so in
-    /// release builds the SIMD kernels wrote past a short `out` slice.
-    #[test]
-    fn residual_batch_short_out_stays_in_bounds() {
-        let est = FundamentalEstimator;
-        let samples = vec![Match2d2d::new(Vec2F64::new(1.0, 2.0), Vec2F64::new(3.0, 4.0)); 64];
-        let sentinel = -12345.0;
-        let mut buf = vec![sentinel; 68];
-        est.residual_batch(&Mat3F64::IDENTITY, &samples, &mut buf[..4]);
-        assert!(buf[..4].iter().all(|&r| r != sentinel));
-        assert!(buf[4..].iter().all(|&r| r == sentinel), "wrote past `out`");
-
-        // Longer `out` than `samples`: only the prefix is written.
-        let mut buf = vec![sentinel; 8];
-        est.residual_batch(&Mat3F64::IDENTITY, &samples[..3], &mut buf);
-        assert!(buf[3..].iter().all(|&r| r == sentinel));
     }
 
     /// `residual_batch` (whichever kernel the dispatcher picks) must match

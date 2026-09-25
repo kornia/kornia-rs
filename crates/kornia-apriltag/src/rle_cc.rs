@@ -6,6 +6,28 @@ use kornia_image::Image;
 /// Maximum image width supported by the run encoding (`Run::col_*` are `u16`).
 pub(crate) const MAX_RLE_WIDTH: usize = u16::MAX as usize;
 
+/// The error returned for images the run encoding cannot represent.
+fn image_too_large(width: usize, height: usize) -> AprilTagError {
+    AprilTagError::ImageTooLarge {
+        width,
+        height,
+        max_width: MAX_RLE_WIDTH,
+        max_pixels: u32::MAX as usize,
+    }
+}
+
+/// Checks that an image of `width` columns fits the `u16` run columns.
+///
+/// # Errors
+///
+/// Returns [`AprilTagError::ImageTooLarge`] if `width` exceeds [`MAX_RLE_WIDTH`].
+pub(crate) fn check_rle_width(width: usize, height: usize) -> Result<(), AprilTagError> {
+    if width > MAX_RLE_WIDTH {
+        return Err(image_too_large(width, height));
+    }
+    Ok(())
+}
+
 /// A single horizontal run of non-Skip pixels.
 #[derive(Clone, Copy)]
 // parent at offset 0 so uf_find's hot load is immediate (no displacement).
@@ -93,22 +115,15 @@ impl RleCC {
         // Worst-case runs per thread: runs start at x >= 1, end at x <= width - 1 and
         // each covers at least one pixel, so a row holds at most `width - 2` runs.
         let max_per_thread = width.saturating_sub(2).saturating_mul(strip_h).max(1);
-        let too_large = || AprilTagError::ImageTooLarge {
-            width,
-            height,
-            max_width: MAX_RLE_WIDTH,
-            max_pixels: u32::MAX as usize,
-        };
         // `Run` columns are u16, and run indices (plus the `u32::MAX` sentinel) are u32.
-        if width > MAX_RLE_WIDTH {
-            return Err(too_large());
-        }
+        check_rle_width(width, height)?;
         match max_per_thread.checked_mul(n_threads) {
             Some(total) if total < u32::MAX as usize => {}
-            _ => return Err(too_large()),
+            _ => return Err(image_too_large(width, height)),
         }
 
         self.reset(height, width);
+        self.max_per_thread = max_per_thread;
 
         if width < 3 || height == 0 {
             // No interior pixels → no runs; every pixel is "skip".
@@ -120,15 +135,8 @@ impl RleCC {
             return Ok(());
         }
 
-        if !self.scan_runs(
-            src.as_slice(),
-            height,
-            width,
-            n_threads,
-            strip_h,
-            max_per_thread,
-        ) {
-            return Err(too_large());
+        if !self.scan_runs(src.as_slice(), height, width, n_threads, strip_h) {
+            return Err(image_too_large(width, height));
         }
 
         for t in 1..n_threads {
@@ -160,7 +168,7 @@ impl RleCC {
 
     /// Scans every row into runs and performs intra-strip union-find.
     ///
-    /// Returns `false` if a thread would have exceeded its `max_per_thread` run
+    /// Returns `false` if a thread would have exceeded its `self.max_per_thread` run
     /// slots (never expected given the caller's sizing; checked defensively so a
     /// sizing mistake can never turn into an out-of-bounds write).
     fn scan_runs(
@@ -170,10 +178,9 @@ impl RleCC {
         width: usize,
         n_threads: usize,
         strip_h: usize,
-        max_per_thread: usize,
     ) -> bool {
         debug_assert!(width >= 3 && src.len() == width * height);
-        self.max_per_thread = max_per_thread;
+        let max_per_thread = self.max_per_thread;
         let total_capacity = max_per_thread * n_threads;
 
         // Grow the shared runs buffer to accommodate all threads' worst-case output.
@@ -195,9 +202,10 @@ impl RleCC {
         let runs_ptr = RunsPtr(self.runs.as_mut_ptr());
         let src_ptr = PixelPtr(src.as_ptr() as *const u8);
 
-        // Each thread returns (local_row_start: Vec<u32>, actual_count: u32, overflowed).
-        // local_row_start[iy] is already a GLOBAL index (base + local_offset).
-        let per_thread: Vec<(Vec<u32>, u32, bool)> = (0..n_threads)
+        // Each thread returns (local_row_start: Vec<u32>, actual_count: u32), or `None`
+        // if it ran out of slots. local_row_start[iy] is already a GLOBAL index
+        // (base + local_offset).
+        let per_thread: Option<Vec<(Vec<u32>, u32)>> = (0..n_threads)
             .into_par_iter()
             .map(move |t| {
                 let y_start = t * strip_h;
@@ -209,10 +217,9 @@ impl RleCC {
 
                 let mut local_row_start = vec![base; strip_rows + 1];
                 let mut run_idx = base;
-                let mut overflowed = false;
 
                 // Phase A: scan rows + write runs directly into the shared buffer.
-                'rows: for iy in 0..strip_rows {
+                for iy in 0..strip_rows {
                     local_row_start[iy] = run_idx;
                     let y = y_start + iy;
                     let row_off = y * width;
@@ -266,8 +273,7 @@ impl RleCC {
                         // Bounds check (once per run, not per pixel): never write past
                         // this thread's region of the shared buffer.
                         if run_idx as usize >= thread_end {
-                            overflowed = true;
-                            break 'rows;
+                            return None;
                         }
                         // Write directly to global slot; parent is the global run index
                         // (self-pointing root). No rebase required later.
@@ -288,9 +294,6 @@ impl RleCC {
                     }
                 }
                 local_row_start[strip_rows] = run_idx;
-                if overflowed {
-                    return (local_row_start, 0, true);
-                }
 
                 // Phase B: intra-strip UF, using global indices into the shared buffer.
                 for iy in 1..strip_rows {
@@ -302,18 +305,17 @@ impl RleCC {
                 }
 
                 let count = run_idx - base;
-                (local_row_start, count, false)
+                Some((local_row_start, count))
             })
             .collect();
 
-        if per_thread.iter().any(|(_, _, overflowed)| *overflowed) {
-            self.thread_counts.clear();
+        self.thread_counts.clear();
+        let Some(per_thread) = per_thread else {
             return false;
-        }
+        };
 
         // Sequential: update row_start from the per-thread global row indices.
-        self.thread_counts.clear();
-        for (t, (local_row_start, count, _)) in per_thread.into_iter().enumerate() {
+        for (t, (local_row_start, count)) in per_thread.into_iter().enumerate() {
             let y_start = t * strip_h;
             let strip_rows = (y_start + strip_h).min(height).saturating_sub(y_start);
             // Guard empty strips: threads whose y_start ≥ height have strip_rows == 0,

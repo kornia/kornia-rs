@@ -12,7 +12,7 @@ use crate::{
     errors::AprilTagError,
     family::{TagFamily, TagFamilyKind},
     quad::{fit_quads, FitQuadConfig},
-    rle_cc::{RleCC, MAX_RLE_WIDTH},
+    rle_cc::{check_rle_width, RleCC},
     segmentation::{find_gradient_clusters_with_cache, GradientInfo},
     threshold::{adaptive_threshold_with_split, TileMinMax},
     utils::Pixel,
@@ -285,14 +285,7 @@ impl AprilTagDecoder {
             (new_size, Some(Image::from_size_val(new_size, 0)?))
         };
         // The run-length connected-components stage stores columns as u16.
-        if img_size.width > MAX_RLE_WIDTH {
-            return Err(AprilTagError::ImageTooLarge {
-                width: img_size.width,
-                height: img_size.height,
-                max_width: MAX_RLE_WIDTH,
-                max_pixels: u32::MAX as usize,
-            });
-        }
+        check_rle_width(img_size.width, img_size.height)?;
 
         // Build the tag family cache once
         let cached_families: Vec<(TagFamilyKind, TagFamily)> = config
@@ -337,38 +330,73 @@ impl AprilTagDecoder {
     /// If you are running this method multiple times on the same decoder instance,
     /// you should call [`AprilTagDecoder::clear`] between runs to reset internal state.
     pub fn decode(&mut self, src: &Image<u8, 1>) -> Result<Vec<Detection>, AprilTagError> {
-        if let Some(downscale_img) = self.downscale_img.as_mut() {
-            // Stride-based subsample matching C's image_u8_decimate: dst[sy][sx] = src[sy*f][sx*f].
-            stride_decimate(src, downscale_img, self.config.downscale_factor)?;
+        let (all, _) = self.detect(src)?;
+        Ok(dedup_detections(all))
+    }
 
-            // Step 1: Adaptive Threshold
-            adaptive_threshold_with_split(
-                downscale_img,
-                &mut self.bin_img,
-                &mut self.tile_min_max,
-                self.config.min_white_black_difference,
-                self.config.threshold_split,
-            )?;
-        } else {
-            // Step 1: Adaptive Threshold
-            adaptive_threshold_with_split(
-                src,
-                &mut self.bin_img,
-                &mut self.tile_min_max,
-                self.config.min_white_black_difference,
-                self.config.threshold_split,
-            )?;
-        }
+    /// Decodes all valid tags in the image without deduplication.
+    ///
+    /// Returns every detection (including multiple copies of the same id if several quads
+    /// decode to it). Use this when you need the full candidate set — e.g. for parity
+    /// testing where you want to find the detection closest to a known reference.
+    pub fn decode_all(&mut self, src: &Image<u8, 1>) -> Result<Vec<Detection>, AprilTagError> {
+        Ok(self.detect(src)?.0)
+    }
+
+    /// Decodes tags and returns per-stage timing (µs) for profiling.
+    /// Returns `(detections, [decimate, threshold, conn_comp, gradient, fit_quads, decode_tags])`.
+    pub fn decode_timed(
+        &mut self,
+        src: &Image<u8, 1>,
+    ) -> Result<(Vec<Detection>, [u64; 6]), AprilTagError> {
+        let (all, us) = self.detect(src)?;
+        Ok((dedup_detections(all), us))
+    }
+
+    // Runs the full pipeline once, returning every (non-deduplicated) detection and the
+    // per-stage timings in µs: [decimate, threshold, conn_comp, gradient, fit_quads,
+    // decode_tags]. The decimate stage is ~0 when no downscaling is configured.
+    fn detect(&mut self, src: &Image<u8, 1>) -> Result<(Vec<Detection>, [u64; 6]), AprilTagError> {
+        let mut us = [0u64; 6];
+        let mut t = std::time::Instant::now();
+        let mut lap = |us: &mut u64| {
+            *us = t.elapsed().as_micros() as u64;
+            t = std::time::Instant::now();
+        };
+
+        // Stride-based subsample matching C's image_u8_decimate: dst[sy][sx] = src[sy*f][sx*f].
+        // `stride_decimate` validates `src` against the size the decoder was built for.
+        let threshold_src = match self.downscale_img.as_mut() {
+            Some(downscale_img) => {
+                stride_decimate(src, downscale_img, self.config.downscale_factor)?;
+                &*downscale_img
+            }
+            None => src,
+        };
+        lap(&mut us[0]);
+
+        // Step 1: Adaptive Threshold
+        adaptive_threshold_with_split(
+            threshold_src,
+            &mut self.bin_img,
+            &mut self.tile_min_max,
+            self.config.min_white_black_difference,
+            self.config.threshold_split,
+        )?;
+        lap(&mut us[1]);
 
         // Step 2(a): Find Connected Components + path-compress + build rep_cache (one fused pass).
         self.rle_cc
             .process(&self.bin_img, &mut self.rep_cache, 25)?;
+        lap(&mut us[2]);
 
         // Step 2(b): Find Clusters (NEON fast-path on aarch64)
         self.clusters = find_gradient_clusters_with_cache(&self.bin_img, &self.rep_cache);
+        lap(&mut us[3]);
 
         // Step 3: Quad Fitting
         let mut quads = fit_quads(&self.bin_img, &self.clusters, &self.config);
+        lap(&mut us[4]);
 
         // Step 4: Tag Decoding
         // D4 fix: refine_edges search range matches C's (quad_decimate + 1).
@@ -381,102 +409,8 @@ impl AprilTagDecoder {
             self.config.decode_sharpening,
             refine_edges_range,
         );
-        Ok(dedup_detections(all))
-    }
-
-    /// Decodes all valid tags in the image without deduplication.
-    ///
-    /// Returns every detection (including multiple copies of the same id if several quads
-    /// decode to it). Use this when you need the full candidate set — e.g. for parity
-    /// testing where you want to find the detection closest to a known reference.
-    pub fn decode_all(&mut self, src: &Image<u8, 1>) -> Result<Vec<Detection>, AprilTagError> {
-        if let Some(downscale_img) = self.downscale_img.as_mut() {
-            stride_decimate(src, downscale_img, self.config.downscale_factor)?;
-            adaptive_threshold_with_split(
-                downscale_img,
-                &mut self.bin_img,
-                &mut self.tile_min_max,
-                self.config.min_white_black_difference,
-                self.config.threshold_split,
-            )?;
-        } else {
-            adaptive_threshold_with_split(
-                src,
-                &mut self.bin_img,
-                &mut self.tile_min_max,
-                self.config.min_white_black_difference,
-                self.config.threshold_split,
-            )?;
-        }
-        self.rle_cc
-            .process(&self.bin_img, &mut self.rep_cache, 25)?;
-        self.clusters = find_gradient_clusters_with_cache(&self.bin_img, &self.rep_cache);
-        let mut quads = fit_quads(&self.bin_img, &self.clusters, &self.config);
-        let refine_edges_range = self.config.downscale_factor as f32 + 1.0;
-        Ok(decode_tags(
-            src,
-            &mut quads,
-            &self.cached_families,
-            self.config.refine_edges_enabled,
-            self.config.decode_sharpening,
-            refine_edges_range,
-        ))
-    }
-
-    /// Decodes tags and returns per-stage timing (µs) for profiling.
-    /// Returns `(detections, [decimate, threshold, conn_comp, gradient, fit_quads, decode_tags])`.
-    pub fn decode_timed(
-        &mut self,
-        src: &Image<u8, 1>,
-    ) -> Result<(Vec<Detection>, [u64; 6]), AprilTagError> {
-        let mut us = [0u64; 6];
-        let t = std::time::Instant::now();
-        if let Some(downscale_img) = self.downscale_img.as_mut() {
-            stride_decimate(src, downscale_img, self.config.downscale_factor)?;
-            us[0] = t.elapsed().as_micros() as u64;
-            let t = std::time::Instant::now();
-            adaptive_threshold_with_split(
-                downscale_img,
-                &mut self.bin_img,
-                &mut self.tile_min_max,
-                self.config.min_white_black_difference,
-                self.config.threshold_split,
-            )?;
-            us[1] = t.elapsed().as_micros() as u64;
-        } else {
-            us[0] = 0;
-            let t = std::time::Instant::now();
-            adaptive_threshold_with_split(
-                src,
-                &mut self.bin_img,
-                &mut self.tile_min_max,
-                self.config.min_white_black_difference,
-                self.config.threshold_split,
-            )?;
-            us[1] = t.elapsed().as_micros() as u64;
-        }
-        let t = std::time::Instant::now();
-        self.rle_cc
-            .process(&self.bin_img, &mut self.rep_cache, 25)?;
-        us[2] = t.elapsed().as_micros() as u64;
-        let t = std::time::Instant::now();
-        self.clusters = find_gradient_clusters_with_cache(&self.bin_img, &self.rep_cache);
-        us[3] = t.elapsed().as_micros() as u64;
-        let t = std::time::Instant::now();
-        let mut quads = fit_quads(&self.bin_img, &self.clusters, &self.config);
-        us[4] = t.elapsed().as_micros() as u64;
-        let refine_edges_range = self.config.downscale_factor as f32 + 1.0;
-        let t = std::time::Instant::now();
-        let all = decode_tags(
-            src,
-            &mut quads,
-            &self.cached_families,
-            self.config.refine_edges_enabled,
-            self.config.decode_sharpening,
-            refine_edges_range,
-        );
-        us[5] = t.elapsed().as_micros() as u64;
-        Ok((dedup_detections(all), us))
+        lap(&mut us[5]);
+        Ok((all, us))
     }
 
     /// Clears the internal state of the decoder for reuse.

@@ -270,11 +270,10 @@ mod tests {
 
     #[test]
     fn test_read_images_txt_short_line() -> Result<(), Box<dyn std::error::Error>> {
-        let path =
-            std::env::temp_dir().join(format!("kornia_3d_{}_images.txt", std::process::id()));
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("images.txt");
         std::fs::write(&path, b"#\n#\n#\n#\n1 2\n\n")?;
         let res = read_images_txt(&path);
-        std::fs::remove_file(&path)?;
         assert!(matches!(res, Err(ColmapError::ParseError(_))));
         Ok(())
     }

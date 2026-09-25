@@ -7777,6 +7777,7 @@ dependencies = [
  "rand 0.10.1",
  "rayon",
  "serde",
+ "tempfile",
  "thiserror 2.0.18",
 ]
 
@@ -7821,6 +7822,7 @@ dependencies = [
  "rayon",
  "serde",
  "serde-big-array",
+ "tempfile",
  "thiserror 2.0.18",
 ]
 

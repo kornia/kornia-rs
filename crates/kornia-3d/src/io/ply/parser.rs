@@ -63,13 +63,10 @@ mod tests {
     #[test]
     fn test_read_ply_missing_end_header() -> Result<(), Box<dyn std::error::Error>> {
         // Regression: a header without `end_header` used to loop forever at EOF.
-        let path = std::env::temp_dir().join(format!(
-            "kornia_3d_{}_no_end_header.ply",
-            std::process::id()
-        ));
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("no_end_header.ply");
         std::fs::write(&path, b"ply\nformat binary_little_endian 1.0\n")?;
         let result = read_ply_binary(&path, PlyType::XYZRgbNormals);
-        std::fs::remove_file(&path)?;
         assert!(matches!(result, Err(PlyError::MalformedHeader)));
         Ok(())
     }

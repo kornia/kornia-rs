@@ -134,7 +134,12 @@ mod tests {
     const D: usize = 4;
 
     /// Writes a hand-crafted vocabulary file: header, block count, blocks, root index.
-    fn write_raw_vocab(name: &str, n_blocks: u64, blocks: &[u8], root_idx: u32) -> String {
+    fn write_raw_vocab(
+        dir: &tempfile::TempDir,
+        n_blocks: u64,
+        blocks: &[u8],
+        root_idx: u32,
+    ) -> String {
         let cfg = bincode::config::standard();
         let mut buf = Vec::new();
         buf.extend(bincode::encode_to_vec(B as u64, cfg).unwrap());
@@ -142,7 +147,7 @@ mod tests {
         buf.extend(bincode::encode_to_vec(n_blocks, cfg).unwrap());
         buf.extend_from_slice(blocks);
         buf.extend(bincode::encode_to_vec(root_idx, cfg).unwrap());
-        let path = std::env::temp_dir().join(format!("kornia_bow_{}_{name}", std::process::id()));
+        let path = dir.path().join("vocab.bow");
         std::fs::write(&path, buf).unwrap();
         path.to_string_lossy().into_owned()
     }
@@ -150,9 +155,9 @@ mod tests {
     #[test]
     fn test_load_rejects_out_of_bounds_root() {
         // Regression: root_idx was never validated and traversal used get_unchecked.
-        let path = write_raw_vocab("root.bow", 0, &[], 0x4000_0000);
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_raw_vocab(&dir, 0, &[], 0x4000_0000);
         let result = Vocabulary::<B, Hamming<D>>::load(&path);
-        std::fs::remove_file(&path).unwrap();
         assert!(matches!(result, Err(BowError::CorruptedVocabulary)));
 
         // Same with a non-empty vocabulary.
@@ -163,12 +168,10 @@ mod tests {
             }],
             root_idx: 1,
         };
-        let path =
-            std::env::temp_dir().join(format!("kornia_bow_{}_root2.bow", std::process::id()));
+        let path = dir.path().join("root2.bow");
         let path = path.to_string_lossy().into_owned();
         vocab.save(&path).unwrap();
         let result = Vocabulary::<B, Hamming<D>>::load(&path);
-        std::fs::remove_file(&path).unwrap();
         assert!(matches!(result, Err(BowError::CorruptedVocabulary)));
     }
 
@@ -176,9 +179,9 @@ mod tests {
     fn test_load_rejects_huge_block_count() {
         // Regression: an attacker-declared Vec length used to be allocated up front
         // (capacity overflow / allocation abort).
-        let path = write_raw_vocab("len.bow", u64::MAX / 1024, &[], 0);
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_raw_vocab(&dir, u64::MAX / 1024, &[], 0);
         let result = Vocabulary::<B, Hamming<D>>::load(&path);
-        std::fs::remove_file(&path).unwrap();
         assert!(matches!(result, Err(BowError::VocabularyTooLarge { .. })));
     }
 
@@ -196,13 +199,11 @@ mod tests {
             blocks,
             root_idx: 0,
         };
-        let path =
-            std::env::temp_dir().join(format!("kornia_bow_{}_cycle.bow", std::process::id()));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cycle.bow");
         let path = path.to_string_lossy().into_owned();
         vocab.save(&path).unwrap();
-        let loaded = Vocabulary::<B, Hamming<D>>::load(&path);
-        std::fs::remove_file(&path).unwrap();
-        let loaded = loaded.unwrap();
+        let loaded = Vocabulary::<B, Hamming<D>>::load(&path).unwrap();
 
         let (_, weight, path) = loaded.traverse(&Feature([0u64; D]), true);
         assert_eq!(weight, 0.0);
