@@ -537,8 +537,8 @@ fn run_gpu_oxide_sweep() {
 
     use cudarc::driver::{CudaContext, CudaSlice, CudaStream};
     use kornia_imgproc::cuda::resize::{
-        CudaResizeError, launch_resize_bilinear_downscale_cuda,
-        launch_resize_nearest_downscale_cuda, PixelMapping,
+        launch_resize_bilinear_downscale_cuda, launch_resize_nearest_downscale_cuda,
+        CudaResizeError, PixelMapping,
     };
     use kornia_imgproc::cuda::resize_oxide::{
         launch_resize_bilinear_noldg_cuda, launch_resize_bilinear_oxide_cuda,
@@ -562,17 +562,29 @@ fn run_gpu_oxide_sweep() {
         (
             "cuda-oxide bilinear sweep",
             &[
-                ("A nvrtc-ldg",  launch_resize_bilinear_downscale_cuda as Launcher),
-                ("B nvrtc-noldg", launch_resize_bilinear_noldg_cuda as Launcher),
-                ("C oxide-ptr",  launch_resize_bilinear_oxide_cuda as Launcher),
-                ("D oxide-slice", launch_resize_bilinear_oxide_slice_cuda as Launcher),
+                (
+                    "A nvrtc-ldg",
+                    launch_resize_bilinear_downscale_cuda as Launcher,
+                ),
+                (
+                    "B nvrtc-noldg",
+                    launch_resize_bilinear_noldg_cuda as Launcher,
+                ),
+                ("C oxide-ptr", launch_resize_bilinear_oxide_cuda as Launcher),
+                (
+                    "D oxide-slice",
+                    launch_resize_bilinear_oxide_slice_cuda as Launcher,
+                ),
             ],
         ),
         (
             "cuda-oxide nearest sweep",
             &[
-                ("E nvrtc-nn",   launch_resize_nearest_downscale_cuda as Launcher),
-                ("F oxide-nn",   launch_resize_nearest_oxide_cuda as Launcher),
+                (
+                    "E nvrtc-nn",
+                    launch_resize_nearest_downscale_cuda as Launcher,
+                ),
+                ("F oxide-nn", launch_resize_nearest_oxide_cuda as Launcher),
             ],
         ),
     ];
@@ -590,10 +602,7 @@ fn run_gpu_oxide_sweep() {
     let stream = ctx.default_stream();
 
     for &(section, arms) in SECTIONS {
-        println!(
-            "\n=== {} (sm_75, {} iters) ===",
-            section, ITERS
-        );
+        println!("\n=== {} (sm_75, {} iters) ===", section, ITERS);
         println!(
             "  {:<14}  {:<24}  {:>10}  {:>10}",
             "arm", "case (src→dst)", "ms/iter", "GB/s"
@@ -609,14 +618,20 @@ fn run_gpu_oxide_sweep() {
                     .map(|i| (i % 256) as f32 / 255.0)
                     .collect();
                 let src_dev = stream.clone_htod(&src_data).expect("H→D src copy");
-                let mut dst_dev =
-                    stream.alloc_zeros::<f32>(npix_dst * nc).expect("alloc dst");
+                let mut dst_dev = stream.alloc_zeros::<f32>(npix_dst * nc).expect("alloc dst");
 
                 let run = |src: &CudaSlice<f32>, dst: &mut CudaSlice<f32>| {
                     launch(
-                        &ctx, &stream, src, dst,
-                        sw, sh, dw, dh,
-                        PixelMapping::HalfPixel, None,
+                        &ctx,
+                        &stream,
+                        src,
+                        dst,
+                        sw,
+                        sh,
+                        dw,
+                        dh,
+                        PixelMapping::HalfPixel,
+                        None,
                     )
                     .map_err(|e| e.to_string())
                 };
@@ -658,4 +673,3 @@ fn run_gpu_oxide_sweep() {
         }
     }
 }
-
