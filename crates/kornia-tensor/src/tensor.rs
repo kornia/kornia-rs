@@ -160,6 +160,44 @@ pub fn validate_layout<const N: usize>(
     Ok(())
 }
 
+/// Computes the storage offset `sum(index[i] * strides[i])` of an element, checking
+/// bounds and overflow.
+///
+/// # Arguments
+///
+/// * `index` - The multi-dimensional index of the element.
+/// * `shape` - The logical shape.
+/// * `strides` - The strides (in elements) of each dimension.
+///
+/// # Returns
+///
+/// `Some(offset)` if `index[i] < shape[i]` for every dimension and the offset
+/// computation does not overflow, `None` otherwise. The offset is not checked against
+/// the storage length; see [`validate_layout`].
+///
+/// # Example
+///
+/// ```rust
+/// use kornia_tensor::tensor::checked_offset;
+///
+/// assert_eq!(checked_offset(&[1, 2], &[2, 3], &[3, 1]), Some(5));
+/// assert_eq!(checked_offset(&[2, 0], &[2, 3], &[3, 1]), None);
+/// ```
+pub fn checked_offset<const N: usize>(
+    index: &[usize; N],
+    shape: &[usize; N],
+    strides: &[usize; N],
+) -> Option<usize> {
+    let mut offset: usize = 0;
+    for ((&idx, &dim), &stride) in index.iter().zip(shape).zip(strides) {
+        if idx >= dim {
+            return None;
+        }
+        offset = offset.checked_add(idx.checked_mul(stride)?)?;
+    }
+    Some(offset)
+}
+
 /// Computes the strides for a row-major (C-contiguous) tensor layout.
 ///
 /// Strides define how many elements to skip in memory to move along each dimension.
@@ -695,7 +733,9 @@ impl<T, const N: usize> Tensor<T, N> {
             return Err(TensorError::InvalidShape(expected_len));
         }
 
-        let len_bytes = checked_len_bytes::<T, N>(&shape)?;
+        let len_bytes = expected_len
+            .checked_mul(std::mem::size_of::<T>())
+            .ok_or_else(|| TensorError::ShapeOverflow(shape.to_vec()))?;
 
         let storage =
             TensorStorage::from_borrowed(data, len_bytes, host_alloc(), domain, keepalive);
@@ -764,7 +804,9 @@ impl<T, const N: usize> Tensor<T, N> {
             return Err(TensorError::InvalidShape(expected_len));
         }
 
-        let len_bytes = checked_len_bytes::<T, N>(&shape)?;
+        let len_bytes = expected_len
+            .checked_mul(std::mem::size_of::<T>())
+            .ok_or_else(|| TensorError::ShapeOverflow(shape.to_vec()))?;
 
         let storage =
             TensorStorage::from_borrowed_readonly(data, len_bytes, host_alloc(), domain, keepalive);
@@ -842,14 +884,7 @@ impl<T, const N: usize> Tensor<T, N> {
     ///
     /// The offset of the element at the given index.
     pub fn get_iter_offset(&self, index: [usize; N]) -> Option<usize> {
-        let mut offset: usize = 0;
-        for ((&idx, dim_size), stride) in index.iter().zip(self.shape).zip(self.strides) {
-            if idx >= dim_size {
-                return None;
-            }
-            offset = offset.checked_add(idx.checked_mul(stride)?)?;
-        }
-        Some(offset)
+        checked_offset(&index, &self.shape, &self.strides)
     }
 
     /// Get the offset of the element at the given index without checking dim sizes.
@@ -1023,7 +1058,7 @@ impl<T, const N: usize> Tensor<T, N> {
     /// assert_eq!(t2.shape, [2, 2]);
     /// assert_eq!(t2.as_slice(), vec![1, 2, 3, 4]);
     /// assert_eq!(t2.strides, [2, 1]);
-    /// assert_eq!(t2.numel(), 4);
+    /// assert_eq!(t2.numel().unwrap(), 4);
     /// ```
     pub fn reshape<const M: usize>(
         &self,
@@ -1679,7 +1714,7 @@ mod tests {
         assert_eq!(view.shape, [2, 2]);
         assert_eq!(view.as_slice(), vec![1, 2, 3, 4]);
         assert_eq!(view.strides, [2, 1]);
-        assert_eq!(view.numel(), 4);
+        assert_eq!(view.numel()?, 4);
         assert_eq!(view.as_contiguous()?.as_slice(), vec![1, 2, 3, 4]);
         Ok(())
     }
@@ -1693,7 +1728,7 @@ mod tests {
         assert_eq!(t2.shape, [4]);
         assert_eq!(t2.as_slice(), vec![1, 2, 3, 4]);
         assert_eq!(t2.strides, [1]);
-        assert_eq!(t2.numel(), 4);
+        assert_eq!(t2.numel()?, 4);
         assert_eq!(t2.as_contiguous()?.as_slice(), vec![1, 2, 3, 4]);
         Ok(())
     }
@@ -1707,7 +1742,7 @@ mod tests {
         assert_eq!(view.get([0, 1]), Some(&2));
         assert_eq!(view.get([1, 0]), Some(&3));
         assert_eq!(view.get([1, 1]), Some(&4));
-        assert_eq!(view.numel(), 4);
+        assert_eq!(view.numel()?, 4);
         assert_eq!(view.as_contiguous()?.as_slice(), vec![1, 2, 3, 4]);
         Ok(())
     }

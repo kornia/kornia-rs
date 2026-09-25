@@ -1,7 +1,7 @@
 use crate::{
     get_strides_from_shape,
     storage::TensorStorage,
-    tensor::{checked_numel, validate_layout},
+    tensor::{checked_numel, checked_offset, validate_layout},
     Tensor, TensorError,
 };
 use rayon::prelude::*;
@@ -97,13 +97,15 @@ impl<T: Send, const N: usize> TensorView<'_, T, N> {
     ///
     /// # Returns
     ///
-    /// The total number of elements (product of all dimensions in the shape),
-    /// saturating at `usize::MAX`.
+    /// The total number of elements (product of all dimensions in the shape).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TensorError::ShapeOverflow`] if the product overflows `usize`, which
+    /// can only happen for a malformed view since the `shape` field is public.
     #[inline]
-    pub fn numel(&self) -> usize {
-        self.shape
-            .iter()
-            .fold(1usize, |acc, &d| acc.saturating_mul(d))
+    pub fn numel(&self) -> Result<usize, TensorError> {
+        checked_numel(&self.shape)
     }
 
     /// Gets the element at the given index, checking bounds.
@@ -130,13 +132,7 @@ impl<T: Send, const N: usize> TensorView<'_, T, N> {
     /// assert_eq!(view.get([2, 0]), None);
     /// ```
     pub fn get(&self, index: [usize; N]) -> Option<&T> {
-        let mut offset: usize = 0;
-        for ((&idx, &dim), &stride) in index.iter().zip(&self.shape).zip(&self.strides) {
-            if idx >= dim {
-                return None;
-            }
-            offset = offset.checked_add(idx.checked_mul(stride)?)?;
-        }
+        let offset = checked_offset(&index, &self.shape, &self.strides)?;
         self.storage.as_slice().get(offset)
     }
 
@@ -276,7 +272,7 @@ mod tests {
             strides: [1],
         };
 
-        assert_eq!(view.numel(), 8);
+        assert_eq!(view.numel().ok(), Some(8));
         assert!(!view.as_ptr().is_null());
 
         // check slice

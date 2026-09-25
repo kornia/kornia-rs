@@ -129,20 +129,41 @@ impl ImageSize {
         let x = idx % self.width;
         (y, x)
     }
-}
 
-/// Computes `height * width * C`, checking for overflow.
-pub(crate) fn checked_image_len<const C: usize>(size: ImageSize) -> Result<usize, ImageError> {
-    size.height
-        .checked_mul(size.width)
-        .and_then(|n| n.checked_mul(C))
-        .ok_or_else(|| {
-            ImageError::InvalidImageShape(kornia_tensor::TensorError::ShapeOverflow(vec![
-                size.height,
-                size.width,
-                C,
-            ]))
-        })
+    /// Computes the number of elements `height * width * channels` of an image
+    /// of this size, checking for overflow.
+    ///
+    /// # Arguments
+    ///
+    /// * `channels` - Number of channels (or elements) per pixel.
+    ///
+    /// # Returns
+    ///
+    /// The total number of elements, or `0` if any dimension is zero.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ImageError::InvalidImageShape`] wrapping
+    /// [`kornia_tensor::TensorError::ShapeOverflow`] if the product overflows `usize`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use kornia_image::ImageSize;
+    ///
+    /// let size = ImageSize { width: 4, height: 2 };
+    /// assert_eq!(size.checked_len(3).unwrap(), 24);
+    ///
+    /// let huge = ImageSize { width: usize::MAX, height: 2 };
+    /// assert!(huge.checked_len(1).is_err());
+    /// ```
+    pub fn checked_len(&self, channels: usize) -> Result<usize, ImageError> {
+        Ok(kornia_tensor::tensor::checked_numel(&[
+            self.height,
+            self.width,
+            channels,
+        ])?)
+    }
 }
 
 #[derive(Clone)]
@@ -224,7 +245,7 @@ impl<T, const C: usize> Image<T, C> {
     /// [`ImageError::InvalidChannelShape`] if it does not match `data.len()`.
     pub fn new_in(size: ImageSize, data: Vec<T>, alloc: AllocHandle) -> Result<Self, ImageError> {
         // check if the data length matches the image size
-        let expected = checked_image_len::<C>(size)?;
+        let expected = size.checked_len(C)?;
         if data.len() != expected {
             return Err(ImageError::InvalidChannelShape(data.len(), expected));
         }
@@ -293,7 +314,7 @@ impl<T, const C: usize> Image<T, C> {
     where
         T: Clone,
     {
-        let data = vec![val; checked_image_len::<C>(size)?];
+        let data = vec![val; size.checked_len(C)?];
         let image = Image::new_in(size, data, alloc)?;
 
         Ok(image)
@@ -394,7 +415,7 @@ impl<T, const C: usize> Image<T, C> {
         domain: kornia_tensor::resource::MemoryDomain,
         keepalive: Arc<dyn Any + Send + Sync>,
     ) -> Result<Self, ImageError> {
-        let len = checked_image_len::<C>(size)?;
+        let len = size.checked_len(C)?;
 
         let tensor =
             Tensor3::from_borrowed([size.height, size.width, C], data, len, domain, keepalive)?;
@@ -422,7 +443,7 @@ impl<T, const C: usize> Image<T, C> {
         domain: kornia_tensor::resource::MemoryDomain,
         keepalive: Arc<dyn Any + Send + Sync>,
     ) -> Result<Self, ImageError> {
-        let len = checked_image_len::<C>(size)?;
+        let len = size.checked_len(C)?;
 
         let tensor = Tensor3::from_borrowed_readonly(
             [size.height, size.width, C],

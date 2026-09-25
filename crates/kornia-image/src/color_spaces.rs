@@ -654,11 +654,7 @@ macro_rules! define_packed_422 {
             #[doc = concat!("Create a ", stringify!($name), " buffer from a size and a packed 4:2:2 byte vector (len = width*height*2).")]
             pub fn from_size_vec(size: ImageSize, data: Vec<u8>) -> Result<Self, ImageError> {
                 // Checked: a wrapped product would let a tiny buffer pass validation.
-                let expected = size
-                    .width
-                    .checked_mul(size.height)
-                    .and_then(|n| n.checked_mul(2))
-                    .unwrap_or(usize::MAX);
+                let expected = size.checked_len(2)?;
                 if data.len() != expected || size.width % 2 != 0 {
                     return Err(ImageError::InvalidImageSize(
                         data.len(),
@@ -740,11 +736,7 @@ macro_rules! define_planar_420 {
             #[doc = concat!("Create a ", stringify!($name), " buffer from a size and a planar 4:2:0 byte vector (len = width*height*3/2).")]
             pub fn from_size_vec(size: ImageSize, data: Vec<u8>) -> Result<Self, ImageError> {
                 // Checked: a wrapped product would let a tiny buffer pass validation.
-                let expected = size
-                    .width
-                    .checked_mul(size.height)
-                    .and_then(|n| n.checked_mul(3))
-                    .map_or(usize::MAX, |n| n / 2);
+                let expected = size.checked_len(3)? / 2;
                 if data.len() != expected || size.width % 2 != 0 || size.height % 2 != 0 {
                     return Err(ImageError::InvalidImageSize(
                         data.len(),

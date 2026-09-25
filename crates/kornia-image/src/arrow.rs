@@ -1,4 +1,3 @@
-use crate::image::checked_image_len;
 use crate::{Image, ImageError, ImageSize};
 use arrow::array::Array;
 use arrow::{
@@ -8,19 +7,21 @@ use arrow::{
 use kornia_tensor::{allocator::TensorAllocatorError, resource::MemoryResource, TensorAllocator};
 use std::{alloc::Layout, any::Any, sync::Arc};
 
-/// Allocator for Arrow arrays.
+/// Former allocator tag for Arrow-backed images.
 ///
-/// Arrow manages the backing buffer's lifetime via reference-counting.
-/// `allocate` returns a [`ForeignResource`] that keeps the `arrow::buffer::Buffer`
-/// alive (via its keepalive `Arc`) and performs a no-op free on drop.
+/// [`TryFromArrow`] now borrows the Arrow value buffer read-only through
+/// [`Image::from_borrowed_host_readonly`], so this type is no longer used. It cannot
+/// allocate: [`TensorAllocator::allocate`] always returns
+/// [`TensorAllocatorError::CannotAllocateForeign`].
+#[deprecated(
+    note = "unused: `TryFromArrow` borrows the Arrow buffer read-only; this type will be removed"
+)]
 #[derive(Clone)]
-#[allow(dead_code)]
-pub struct ArrowAllocator(arrow::buffer::Buffer);
+pub struct ArrowAllocator(#[allow(dead_code)] arrow::buffer::Buffer);
 
+#[allow(deprecated)]
 impl TensorAllocator for ArrowAllocator {
     fn allocate(&self, _layout: Layout) -> Result<Box<dyn MemoryResource>, TensorAllocatorError> {
-        // ArrowAllocator is used only as a type tag for foreign Arrow-managed memory.
-        // Actual allocation never happens here; the buffer is pre-existing.
         Err(TensorAllocatorError::CannotAllocateForeign)
     }
 }
@@ -66,20 +67,24 @@ impl<const C: usize> IntoArrow for Image<u8, C> {
     }
 }
 
-/// Reads the single `u32` value stored in column `idx` of `struct_array`.
-fn read_u32_scalar(struct_array: &StructArray, idx: usize) -> Result<u32, ImageError> {
+/// Returns column `idx` of `struct_array` downcast to `A`, checking that it exists
+/// and that its first element is present.
+fn first_value_column<A: Array + 'static>(
+    struct_array: &StructArray,
+    idx: usize,
+) -> Result<&A, ImageError> {
     if idx >= struct_array.num_columns() {
         return Err(ImageError::CastError);
     }
     let col = struct_array
         .column(idx)
         .as_any()
-        .downcast_ref::<UInt32Array>()
+        .downcast_ref::<A>()
         .ok_or(ImageError::CastError)?;
     if col.is_empty() || col.is_null(0) {
         return Err(ImageError::CastError);
     }
-    Ok(col.value(0))
+    Ok(col)
 }
 
 /// Converts an Arrow struct array (as produced by [`IntoArrow`]) back into an image.
@@ -103,25 +108,15 @@ impl<const C: usize> TryFromArrow for Image<u8, C> {
             .downcast_ref::<StructArray>()
             .ok_or(ImageError::CastError)?;
 
-        let width = read_u32_scalar(struct_array, 0)?;
-        let height = read_u32_scalar(struct_array, 1)?;
-        let channels = read_u32_scalar(struct_array, 2)?;
+        let width = first_value_column::<UInt32Array>(struct_array, 0)?.value(0);
+        let height = first_value_column::<UInt32Array>(struct_array, 1)?.value(0);
+        let channels = first_value_column::<UInt32Array>(struct_array, 2)?.value(0);
 
         if channels as usize != C {
             return Err(ImageError::InvalidChannelShape(C, channels as usize));
         }
 
-        if struct_array.num_columns() < 4 {
-            return Err(ImageError::CastError);
-        }
-        let binary = struct_array
-            .column(3)
-            .as_any()
-            .downcast_ref::<BinaryArray>()
-            .ok_or(ImageError::CastError)?;
-        if binary.is_empty() || binary.is_null(0) {
-            return Err(ImageError::CastError);
-        }
+        let binary = first_value_column::<BinaryArray>(struct_array, 3)?;
 
         // Only the first element's bytes belong to the image: `values()` is the whole
         // (possibly shared, possibly offset) value buffer.
@@ -131,7 +126,7 @@ impl<const C: usize> TryFromArrow for Image<u8, C> {
             width: width as usize,
             height: height as usize,
         };
-        let expected = checked_image_len::<C>(size)?;
+        let expected = size.checked_len(C)?;
         if data.len() != expected {
             return Err(ImageError::InvalidChannelShape(data.len(), expected));
         }
@@ -185,25 +180,40 @@ mod tests {
         Ok(())
     }
 
-    fn make_array(width: u32, height: u32, channels: u32, data: Vec<&[u8]>) -> ArrayRef {
+    // Builds the image struct array from whole columns (one row per element).
+    fn make_array_rows(
+        widths: Vec<u32>,
+        heights: Vec<u32>,
+        channels: Vec<u32>,
+        data: BinaryArray,
+    ) -> ArrayRef {
         Arc::new(StructArray::from(vec![
             (
                 Arc::new(Field::new("width", DataType::UInt32, false)),
-                Arc::new(UInt32Array::from(vec![width])) as ArrayRef,
+                Arc::new(UInt32Array::from(widths)) as ArrayRef,
             ),
             (
                 Arc::new(Field::new("height", DataType::UInt32, false)),
-                Arc::new(UInt32Array::from(vec![height])) as ArrayRef,
+                Arc::new(UInt32Array::from(heights)) as ArrayRef,
             ),
             (
                 Arc::new(Field::new("channels", DataType::UInt32, false)),
-                Arc::new(UInt32Array::from(vec![channels])) as ArrayRef,
+                Arc::new(UInt32Array::from(channels)) as ArrayRef,
             ),
             (
                 Arc::new(Field::new("data", DataType::Binary, false)),
-                Arc::new(BinaryArray::from_vec(data)) as ArrayRef,
+                Arc::new(data) as ArrayRef,
             ),
         ]))
+    }
+
+    fn make_array(width: u32, height: u32, channels: u32, data: Vec<&[u8]>) -> ArrayRef {
+        make_array_rows(
+            vec![width],
+            vec![height],
+            vec![channels],
+            BinaryArray::from_vec(data),
+        )
     }
 
     #[test]
@@ -224,48 +234,18 @@ mod tests {
     fn test_from_arrow_uses_first_value_only() -> Result<(), ImageError> {
         // Regression (F5): `.values()` returned the concatenation of every row, so a
         // 2-row binary array produced an image over both rows.
-        let arr: ArrayRef = Arc::new(StructArray::from(vec![
-            (
-                Arc::new(Field::new("width", DataType::UInt32, false)),
-                Arc::new(UInt32Array::from(vec![2u32, 3])) as ArrayRef,
-            ),
-            (
-                Arc::new(Field::new("height", DataType::UInt32, false)),
-                Arc::new(UInt32Array::from(vec![1u32, 1])) as ArrayRef,
-            ),
-            (
-                Arc::new(Field::new("channels", DataType::UInt32, false)),
-                Arc::new(UInt32Array::from(vec![1u32, 1])) as ArrayRef,
-            ),
-            (
-                Arc::new(Field::new("data", DataType::Binary, false)),
-                Arc::new(BinaryArray::from_vec(vec![&[7u8, 8][..], &[9, 10, 11]])) as ArrayRef,
-            ),
-        ]));
+        let arr = make_array_rows(
+            vec![2, 3],
+            vec![1, 1],
+            vec![1, 1],
+            BinaryArray::from_vec(vec![&[7u8, 8][..], &[9, 10, 11]]),
+        );
         let img = Image::<u8, 1>::try_from_arrow(arr)?;
         assert_eq!(img.as_slice(), &[7, 8]);
 
         // A sliced (offset) binary array must use its own first value.
         let bin = BinaryArray::from_vec(vec![&[1u8, 2][..], &[3, 4]]);
-        let sliced = bin.slice(1, 1);
-        let arr: ArrayRef = Arc::new(StructArray::from(vec![
-            (
-                Arc::new(Field::new("width", DataType::UInt32, false)),
-                Arc::new(UInt32Array::from(vec![2u32])) as ArrayRef,
-            ),
-            (
-                Arc::new(Field::new("height", DataType::UInt32, false)),
-                Arc::new(UInt32Array::from(vec![1u32])) as ArrayRef,
-            ),
-            (
-                Arc::new(Field::new("channels", DataType::UInt32, false)),
-                Arc::new(UInt32Array::from(vec![1u32])) as ArrayRef,
-            ),
-            (
-                Arc::new(Field::new("data", DataType::Binary, false)),
-                Arc::new(sliced) as ArrayRef,
-            ),
-        ]));
+        let arr = make_array_rows(vec![2], vec![1], vec![1], bin.slice(1, 1));
         let img = Image::<u8, 1>::try_from_arrow(arr)?;
         assert_eq!(img.as_slice(), &[3, 4]);
         Ok(())
@@ -274,24 +254,12 @@ mod tests {
     #[test]
     fn test_from_arrow_empty_arrays_do_not_panic() {
         // Regression (F5): `.value(0)` on an empty array panicked.
-        let arr: ArrayRef = Arc::new(StructArray::from(vec![
-            (
-                Arc::new(Field::new("width", DataType::UInt32, false)),
-                Arc::new(UInt32Array::from(Vec::<u32>::new())) as ArrayRef,
-            ),
-            (
-                Arc::new(Field::new("height", DataType::UInt32, false)),
-                Arc::new(UInt32Array::from(Vec::<u32>::new())) as ArrayRef,
-            ),
-            (
-                Arc::new(Field::new("channels", DataType::UInt32, false)),
-                Arc::new(UInt32Array::from(Vec::<u32>::new())) as ArrayRef,
-            ),
-            (
-                Arc::new(Field::new("data", DataType::Binary, false)),
-                Arc::new(BinaryArray::from_vec(Vec::<&[u8]>::new())) as ArrayRef,
-            ),
-        ]));
+        let arr = make_array_rows(
+            vec![],
+            vec![],
+            vec![],
+            BinaryArray::from_vec(Vec::<&[u8]>::new()),
+        );
         assert!(Image::<u8, 1>::try_from_arrow(arr).is_err());
     }
 
