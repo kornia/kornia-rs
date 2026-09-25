@@ -166,6 +166,25 @@ impl ImageSize {
     }
 }
 
+/// Maps `src` element-wise into a new vector in parallel, stopping at the first error.
+///
+/// The output is pre-sized and zipped with the input, so rayon splits both sides by
+/// index and writes in place. (Collecting a `Result<Vec<_>, _>` from a parallel
+/// iterator is not indexed: it goes through a linked list of chunks plus a final copy.)
+fn par_map_try<T, U, F>(src: &[T], f: F) -> Result<Vec<U>, ImageError>
+where
+    T: Copy + Sync,
+    U: num_traits::NumCast + Copy + Send,
+    F: Fn(T) -> Result<U, ImageError> + Sync,
+{
+    let zero = U::from(0u8).ok_or(ImageError::CastError)?;
+    let mut dst = vec![zero; src.len()];
+    src.par_iter()
+        .zip(dst.par_iter_mut())
+        .try_for_each(|(&x, d)| f(x).map(|v| *d = v))?;
+    Ok(dst)
+}
+
 #[derive(Clone)]
 /// Represents an image with pixel data.
 ///
@@ -709,16 +728,9 @@ impl<T, const C: usize> Image<T, C> {
         U: num_traits::NumCast + std::ops::Mul<Output = U> + Clone + Copy + Send + Sync,
         T: num_traits::NumCast + Clone + Copy + Send + Sync,
     {
-        // Indexed parallel collect writes every element exactly once into a
-        // pre-sized buffer; no uninitialized memory is ever exposed.
-        let casted_data = self
-            .as_slice()
-            .par_iter()
-            .map(|&x| {
-                let xu = U::from(x).ok_or(ImageError::CastError)?;
-                Ok(xu * scale)
-            })
-            .collect::<Result<Vec<U>, ImageError>>()?;
+        let casted_data = par_map_try(self.as_slice(), |x| {
+            U::from(x).map(|xu| xu * scale).ok_or(ImageError::CastError)
+        })?;
 
         let alloc = self.storage.alloc();
         Image::new_in(self.size(), casted_data, alloc.clone())
@@ -742,11 +754,9 @@ impl<T, const C: usize> Image<T, C> {
         U: num_traits::NumCast + Clone + Copy + Send + Sync,
         T: num_traits::NumCast + std::ops::Mul<Output = T> + Clone + Copy + Send + Sync,
     {
-        let casted_data = self
-            .as_slice()
-            .par_iter()
-            .map(|&x| U::from(x * scale).ok_or(ImageError::CastError))
-            .collect::<Result<Vec<U>, ImageError>>()?;
+        let casted_data = par_map_try(self.as_slice(), |x| {
+            U::from(x * scale).ok_or(ImageError::CastError)
+        })?;
 
         let alloc = self.storage.alloc();
         Image::new_in(self.size(), casted_data, alloc.clone())
