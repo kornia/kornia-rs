@@ -5,6 +5,23 @@
 //! differs (linear vs rational). This module extracts the common per-pixel
 //! bilinear sample.
 
+/// Whether `src` is a packed `src_h x src_w x C` u8 buffer — the layout
+/// [`bilinear_sample_u8_valid_unchecked`] and the C=3 SIMD samplers require.
+/// Always true for an `Image` slice; callers check it once per call / span so
+/// the per-pixel paths can rely on it.
+#[inline(always)]
+pub(crate) fn is_packed<const C: usize>(
+    src: &[u8],
+    src_w: i32,
+    src_h: i32,
+    src_stride: usize,
+) -> bool {
+    src_w > 0
+        && src_h > 0
+        && src_stride == src_w as usize * C
+        && src.len() >= src_h as usize * src_stride
+}
+
 /// Bilinear sample of a u8 source image at `(xf, yf)` into `dst_pixel`, using
 /// Q10 fixed-point weights. Writes zeros on out-of-bounds. Kept tiny and
 /// `#[inline(always)]` so the hot warp loops get the same codegen as before.

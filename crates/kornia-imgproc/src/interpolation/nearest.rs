@@ -2,12 +2,17 @@ use kornia_image::Image;
 
 /// Kernel for nearest neighbor interpolation
 ///
+/// Bounds-safe for any coordinate: the tap is clamped into the image and read
+/// with a bounds-checked slice index (negative / NaN coordinates saturate to
+/// tap 0). Validating the channel and the image extent is the caller's job
+/// (see `interpolate_pixel`, `remap`).
+///
 /// # Arguments
 ///
-/// * `image` - The input image container.
+/// * `image` - The input image container. Must be non-empty.
 /// * `u` - The x coordinate of the pixel to interpolate.
 /// * `v` - The y coordinate of the pixel to interpolate.
-/// * `c` - The channel of the pixel to interpolate.
+/// * `c` - The channel of the pixel to interpolate. Must be `< C`.
 ///
 /// # Returns
 ///
@@ -19,21 +24,10 @@ pub(crate) fn nearest_neighbor_interpolation<const C: usize>(
     c: usize,
 ) -> f32 {
     let (rows, cols) = (image.rows(), image.cols());
+    debug_assert!(rows > 0 && cols > 0 && c < C);
 
-    // Empty image or out-of-range channel: nothing valid to sample.
-    if rows == 0 || cols == 0 || c >= C {
-        return 0.0;
-    }
-
-    // Negative / NaN coordinates saturate to 0 in the `as usize` cast; the
-    // upper bound is clamped explicitly.
     let iu = (u.round() as usize).min(cols - 1);
     let iv = (v.round() as usize).min(rows - 1);
 
-    // Row-major (H, W, C) read with a single slice bounds check (see bilinear).
-    image
-        .as_slice()
-        .get((iv * cols + iu) * C + c)
-        .copied()
-        .unwrap_or(0.0)
+    image.as_slice()[(iv * cols + iu) * C + c]
 }

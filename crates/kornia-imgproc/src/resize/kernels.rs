@@ -1184,6 +1184,11 @@ fn bilinear_row_u8_scalar<const C: usize>(
 pub(super) struct NearestXMap {
     xmap: Vec<usize>,
     src_w: usize,
+    /// Length of the leading run of entries `< src_w - 1` (not the last
+    /// source pixel): their 3-byte pixel can be moved with a 4-byte load.
+    /// The map is monotonic, so this is every entry but the trailing
+    /// last-pixel ones; it is computed by scanning, so it holds for any map.
+    word_prefix: usize,
 }
 
 impl NearestXMap {
@@ -1197,15 +1202,20 @@ impl NearestXMap {
                 *x = (*x).min(src_w - 1);
             }
         }
-        Self { xmap, src_w }
+        let word_prefix = xmap.iter().take_while(|&&xi| xi + 1 < src_w).count();
+        Self {
+            xmap,
+            src_w,
+            word_prefix,
+        }
     }
 }
 
 /// LUT-gather nearest-neighbour copy for one destination row (any `C`).
 /// `xmap[x]` = source pixel index for destination column `x`.
 ///
-/// Copies `min(xmap.len(), dst_row.len() / C)` pixels. Rows shorter than
-/// `src_w * C` are left untouched (never produced by the callers).
+/// Rows with `src_row.len() < src_w * C` or `dst_row.len() != xmap.len() * C`
+/// are left untouched (never produced by the callers).
 #[inline(always)]
 pub(super) fn nearest_row_u8<const C: usize>(
     src_row: &[u8],
@@ -1214,23 +1224,21 @@ pub(super) fn nearest_row_u8<const C: usize>(
 ) {
     // O(1) per row: with every entry `< src_w` (type invariant) and the row
     // holding `src_w` pixels, each `C`-byte source read is in bounds.
-    if src_row.len() < xmap.src_w * C {
+    if src_row.len() < xmap.src_w * C || dst_row.len() != xmap.xmap.len() * C {
         return;
     }
-    let n = xmap.xmap.len().min(dst_row.len() / C);
-    let xmap = &xmap.xmap[..n];
-    let dst_row = &mut dst_row[..n * C];
     // Irregular gather — SIMD gathers don't beat wide scalar moves here, so the
     // fast path is word-sized loads/stores instead of per-byte copies:
     // 3-channel pixels move as one overlapping u32 (write 4, next pixel
     // overwrites the spare byte), 4-channel as an exact u32.
     match C {
-        3 => nearest_row_u8_w4_c3(src_row, xmap, dst_row),
-        // SAFETY: every entry is `< src_w` (`NearestXMap` invariant),
-        // `src_row.len() >= src_w * C` (checked above) and
-        // `dst_row.len() == xmap.len() * C` (sliced above).
-        4 => unsafe { nearest_row_u8_w4_c4(src_row, xmap, dst_row) },
-        _ => nearest_row_u8_scalar::<C>(src_row, xmap, dst_row),
+        // SAFETY (both arms): every entry is `< src_w` (`NearestXMap`
+        // invariant), the first `word_prefix` entries are `< src_w - 1`
+        // (computed by `NearestXMap::new`), `src_row.len() >= src_w * C` and
+        // `dst_row.len() == xmap.len() * C` (both checked above).
+        3 => unsafe { nearest_row_u8_w4_c3(src_row, &xmap.xmap, xmap.word_prefix, dst_row) },
+        4 => unsafe { nearest_row_u8_w4_c4(src_row, &xmap.xmap, dst_row) },
+        _ => nearest_row_u8_scalar::<C>(src_row, &xmap.xmap, dst_row),
     }
 }
 
@@ -1243,65 +1251,65 @@ fn nearest_row_u8_scalar<const C: usize>(src_row: &[u8], xmap: &[usize], dst_row
     }
 }
 
-// RGB pixels via overlapping 4-byte moves: load u32 / store u32 per pixel (the
-// spare byte is overwritten by the next, strictly-left-to-right pixel). The
-// last destination pixel, and any source pixel whose 4-byte read would spill
-// past the row, move exactly 3 bytes.
-//
-// Called with `dst_row.len() == xmap.len() * 3` and every `xmap` entry a
-// valid pixel of `src_row` (see `nearest_row_u8`).
+/// RGB pixels via overlapping 4-byte moves: load u32 / store u32 per pixel (the
+/// spare byte is overwritten by the next, strictly-left-to-right pixel). The
+/// last destination pixel, and source pixels whose 4-byte read would spill
+/// past the row (the last source pixel), move exactly 3 bytes. The split is
+/// decided once per row, so both loops are branch-free.
+///
+/// # Safety
+///
+/// - `dst_row.len() == xmap.len() * 3`;
+/// - the first `word_prefix` entries of `xmap` satisfy
+///   `xi * 3 + 4 <= src_row.len()` (e.g. `xi + 1 < src_w` with
+///   `src_row.len() >= src_w * 3`);
+/// - the remaining entries are valid pixels of `src_row` (checked copies).
 #[inline]
-fn nearest_row_u8_w4_c3(src_row: &[u8], xmap: &[usize], dst_row: &mut [u8]) {
-    let dst_w = xmap.len().min(dst_row.len() / 3);
-    if dst_w == 0 {
+unsafe fn nearest_row_u8_w4_c3(
+    src_row: &[u8],
+    xmap: &[usize],
+    word_prefix: usize,
+    dst_row: &mut [u8],
+) {
+    debug_assert_eq!(dst_row.len(), xmap.len() * 3);
+    let Some(last) = xmap.len().checked_sub(1) else {
         return;
-    }
-    // A 4-byte source read at pixel `xi` is in bounds iff
-    // `xi*3 + 4 <= src_row.len()`, i.e. `xi < w4_src_px`. (The old cutoff used
-    // `len.saturating_sub(4)` with `>`, which admitted a 4-byte read of a
-    // 3-byte row.)
-    let w4_src_px = match src_row.len().checked_sub(4) {
-        Some(n) => n / 3 + 1,
-        None => 0,
     };
-    let sp = src_row.as_ptr();
-    let dp = dst_row.as_mut_ptr();
     // The last destination pixel always takes the exact 3-byte path, so every
     // 4-byte store below ends at `x*3 + 4 <= (dst_w-1)*3 + 1 + 3 <= dst_row.len()`.
-    for (x, &xi) in xmap.iter().enumerate().take(dst_w - 1) {
-        if xi < w4_src_px {
-            // SAFETY: `xi < w4_src_px` ⇒ `xi*3 + 4 <= src_row.len()`, and
-            // `x < dst_w - 1` ⇒ `x*3 + 4 <= dst_row.len()` (see above). The
-            // buffers are distinct (`&` vs `&mut`), so they do not overlap.
-            unsafe {
-                core::ptr::copy_nonoverlapping(sp.add(xi * 3), dp.add(x * 3), 4);
-            }
-        } else {
-            dst_row[x * 3..x * 3 + 3].copy_from_slice(&src_row[xi * 3..xi * 3 + 3]);
+    let words = word_prefix.min(last);
+    let sp = src_row.as_ptr();
+    let dp = dst_row.as_mut_ptr();
+    for (x, &xi) in xmap[..words].iter().enumerate() {
+        debug_assert!(xi * 3 + 4 <= src_row.len());
+        // SAFETY: `x < word_prefix` ⇒ `xi*3 + 4 <= src_row.len()` (contract),
+        // and `x < dst_w - 1` ⇒ `x*3 + 4 <= dst_row.len()` (see above). The
+        // buffers are distinct (`&` vs `&mut`), so they do not overlap.
+        unsafe {
+            core::ptr::copy_nonoverlapping(sp.add(xi * 3), dp.add(x * 3), 4);
         }
     }
-    let x = dst_w - 1;
-    let xi = xmap[x];
-    dst_row[x * 3..x * 3 + 3].copy_from_slice(&src_row[xi * 3..xi * 3 + 3]);
+    for (x, &xi) in xmap.iter().enumerate().skip(words) {
+        dst_row[x * 3..x * 3 + 3].copy_from_slice(&src_row[xi * 3..xi * 3 + 3]);
+    }
 }
 
 /// RGBA pixels as exact 4-byte moves.
 ///
 /// # Safety
 ///
-/// Every `xmap` entry must satisfy `xi * 4 + 4 <= src_row.len()` (see
-/// `nearest_row_u8`, which guarantees it via `NearestXMap`).
+/// Every `xmap` entry must satisfy `xi * 4 + 4 <= src_row.len()`, and
+/// `dst_row.len() >= xmap.len() * 4` (see `nearest_row_u8`, which guarantees
+/// both via `NearestXMap` and its length checks).
 #[inline]
 unsafe fn nearest_row_u8_w4_c4(src_row: &[u8], xmap: &[usize], dst_row: &mut [u8]) {
     debug_assert!(xmap.iter().all(|&xi| xi * 4 + 4 <= src_row.len()));
-    if dst_row.len() < xmap.len() * 4 {
-        return;
-    }
+    debug_assert!(dst_row.len() >= xmap.len() * 4);
     let sp = src_row.as_ptr();
     let dp = dst_row.as_mut_ptr();
     for (x, &xi) in xmap.iter().enumerate() {
-        // SAFETY: `xi*4 + 4 <= src_row.len()` by this function's contract,
-        // and `x*4 + 4 <= xmap.len()*4 <= dst_row.len()` (checked above).
+        // SAFETY: `xi*4 + 4 <= src_row.len()` and
+        // `x*4 + 4 <= xmap.len()*4 <= dst_row.len()` by this function's contract.
         unsafe {
             core::ptr::copy_nonoverlapping(sp.add(xi * 4), dp.add(x * 4), 4);
         }

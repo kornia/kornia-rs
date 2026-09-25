@@ -32,7 +32,7 @@
 //! backends can be added without touching the callers.
 
 use super::common::{
-    bilinear_sample_u8, bilinear_sample_u8_valid, bilinear_sample_u8_valid_unchecked,
+    bilinear_sample_u8, bilinear_sample_u8_valid, bilinear_sample_u8_valid_unchecked, is_packed,
 };
 
 /// Process a run of `[x_lo, x_hi)` destination columns for one row of a
@@ -110,17 +110,6 @@ pub(super) fn process_perspective_span<const C: usize>(
     );
 }
 
-/// Whether `src` is a packed `src_h x src_w x C` u8 buffer — the layout the
-/// unchecked sampler requires. Always true for an `Image` slice; checked once
-/// per span so the per-pixel paths can rely on it.
-#[inline(always)]
-fn is_packed<const C: usize>(src: &[u8], src_w: i32, src_h: i32, src_stride: usize) -> bool {
-    src_w > 0
-        && src_h > 0
-        && src_stride == src_w as usize * C
-        && src.len() >= src_h as usize * src_stride
-}
-
 /// Direct per-column perspective sample coordinate. Single source of the
 /// expression tree every backend (and the CUDA u8 kernel) reproduces:
 /// plain mul + add (no FMA), exact division, truncating Q10 quantization.
@@ -143,6 +132,10 @@ pub(super) fn perspective_coord_at(
 }
 
 /// Portable scalar implementation — reference for all backends.
+///
+/// Byte-identical to the SIMD lanes: the same direct coordinate, the same Q10
+/// quantization, and the same per-lane integer range check + unchecked sample
+/// ([`sample_lane_checked`]), behind the same once-per-span layout check.
 #[inline]
 #[allow(clippy::too_many_arguments, dead_code)]
 pub(super) fn process_perspective_span_scalar<const C: usize>(
@@ -160,18 +153,67 @@ pub(super) fn process_perspective_span_scalar<const C: usize>(
     dny: f32,
     dnd: f32,
 ) {
+    if !is_packed::<C>(src, src_w, src_h, src_stride) {
+        perspective_span_checked::<C>(
+            src, src_w, src_h, src_stride, dst_row, x_lo, x_hi, nx0, ny0, nd0, dnx, dny, dnd,
+        );
+        return;
+    }
+    let (src_w_f, src_h_f) = (src_w as f32, src_h as f32);
     for x in x_lo..x_hi {
         let (xf, yf) = perspective_coord_at(x, nx0, ny0, nd0, dnx, dny, dnd);
         let dst_pixel = &mut dst_row[x * C..x * C + C];
-        // Bounds-checked sampler: identical bytes to the valid sampler for
-        // in-range coordinates, zeros when the f32 span analysis admitted a
-        // column whose direct coordinate lands outside the source (matches
-        // the CUDA u8 perspective kernel, which bounds-checks every pixel).
+        // Zeros when the f32 span analysis admitted a column whose direct
+        // coordinate lands outside the source (or is NaN — the negated test
+        // rejects it, as the AVX2 lanes' `cvtt` does). In range, `floor` is
+        // plain truncation, so the taps and Q10 fractions match the SIMD
+        // lanes exactly.
+        if !(xf >= 0.0 && xf < src_w_f && yf >= 0.0 && yf < src_h_f) {
+            dst_pixel.fill(0);
+            continue;
+        }
+        let xi = xf as i32;
+        let yi = yf as i32;
+        let fx_q10 = ((xf - xi as f32) * 1024.0) as u32;
+        let fy_q10 = ((yf - yi as f32) * 1024.0) as u32;
+        // SAFETY: `is_packed` holds (checked above) and `dst_pixel` is a
+        // `C`-byte slice; the helper range-checks the integer tap itself.
+        unsafe {
+            sample_lane_checked::<C>(
+                src, src_w, src_h, src_stride, xi, yi, fx_q10, fy_q10, dst_pixel,
+            );
+        }
+    }
+}
+
+/// Fully checked fallback for a `src` that is not a packed
+/// `src_h x src_w x C` buffer (never the case for an `Image`).
+#[cold]
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn perspective_span_checked<const C: usize>(
+    src: &[u8],
+    src_w: i32,
+    src_h: i32,
+    src_stride: usize,
+    dst_row: &mut [u8],
+    x_lo: usize,
+    x_hi: usize,
+    nx0: f32,
+    ny0: f32,
+    nd0: f32,
+    dnx: f32,
+    dny: f32,
+    dnd: f32,
+) {
+    for x in x_lo..x_hi {
+        let (xf, yf) = perspective_coord_at(x, nx0, ny0, nd0, dnx, dny, dnd);
+        let dst_pixel = &mut dst_row[x * C..x * C + C];
         bilinear_sample_u8::<C>(src, src_w, src_h, src_stride, xf, yf, dst_pixel);
     }
 }
 
-/// Per-lane tail of the SIMD perspective paths: zero-fill if the lane's
+/// Per-lane tail of the perspective span kernels: zero-fill if the lane's
 /// integer source tap is outside the image (the span analysis is f32 and can
 /// admit an edge column whose direct coordinate falls just outside), else
 /// sample. Mirrors [`bilinear_sample_u8`]'s bounds check.
@@ -180,7 +222,6 @@ pub(super) fn process_perspective_span_scalar<const C: usize>(
 ///
 /// `src` must be a packed `src_h x src_w x C` buffer (`is_packed`) and
 /// `dst_pixel.len() >= C`.
-#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
 unsafe fn sample_lane_checked<const C: usize>(
@@ -543,5 +584,71 @@ fn affine_span_clamped<const C: usize>(
         );
         sx_q = sx_q.wrapping_add(dsx_q);
         sy_q = sy_q.wrapping_add(dsy_q);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Lcg(u64);
+    impl Lcg {
+        fn next(&mut self) -> u32 {
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (self.0 >> 33) as u32
+        }
+        fn f(&mut self, lo: f32, hi: f32) -> f32 {
+            lo + (hi - lo) * (self.next() % 10_000) as f32 / 10_000.0
+        }
+    }
+
+    type SpanFn = fn(&[u8], i32, i32, usize, &mut [u8], usize, usize, f32, f32, f32, f32, f32, f32);
+
+    fn check<const C: usize>(rng: &mut Lcg) {
+        let (sw, sh) = (1 + rng.next() as usize % 12, 1 + rng.next() as usize % 12);
+        let src: Vec<u8> = (0..sw * sh * C).map(|_| rng.next() as u8).collect();
+        let dst_w = 24;
+        let x_lo = rng.next() as usize % dst_w;
+        let x_hi = x_lo + rng.next() as usize % (dst_w - x_lo + 1);
+        let degenerate = rng.next() & 7 == 0;
+        let (nd0, dnd) = if degenerate {
+            (0.0, 0.0)
+        } else {
+            (rng.f(0.5, 2.0), rng.f(-0.01, 0.01))
+        };
+        let (nx0, ny0) = (rng.f(-3.0, 14.0), rng.f(-3.0, 14.0));
+        let (dnx, dny) = (rng.f(-1.0, 1.0), rng.f(-1.0, 1.0));
+        let args = (sw as i32, sh as i32, sw * C);
+        let run = |f: SpanFn| {
+            let mut dst = vec![0xAAu8; dst_w * C];
+            f(
+                &src, args.0, args.1, args.2, &mut dst, x_lo, x_hi, nx0, ny0, nd0, dnx, dny, dnd,
+            );
+            dst
+        };
+        let scalar = run(process_perspective_span_scalar::<C>);
+        let reference = run(perspective_span_checked::<C>);
+        assert_eq!(scalar, reference, "scalar vs checked reference");
+        if !degenerate {
+            let dispatched = run(process_perspective_span::<C>);
+            assert_eq!(scalar, dispatched, "scalar vs SIMD dispatch");
+        }
+    }
+
+    /// The scalar perspective span (range check + unchecked sampler) must be
+    /// byte-identical to the fully checked float sampler it replaced and to
+    /// the SIMD backends, including columns whose coordinate leaves the
+    /// source (and NaN / infinite coordinates for the reference).
+    #[test]
+    fn perspective_scalar_span_matches_reference_and_simd() {
+        let mut rng = Lcg(0x5EED);
+        for _ in 0..3000 {
+            check::<1>(&mut rng);
+            check::<3>(&mut rng);
+            check::<4>(&mut rng);
+        }
     }
 }

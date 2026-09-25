@@ -69,6 +69,9 @@ pub fn interpolate_pixel<const C: usize>(
 
 /// Fallible-free internal kernel for fast pixel interpolation (must be validated first)
 ///
+/// Preconditions: `image` is non-empty and `c < C`. Any coordinate is memory
+/// safe — the samplers clamp their taps and use bounds-checked reads.
+///
 /// Prefer hoisting the mode dispatch OUT of per-pixel loops (see `resize` /
 /// `warp_perspective`): a call site that keeps the runtime `interpolation`
 /// branch inside its hot loop pays for all four sampler bodies. This function

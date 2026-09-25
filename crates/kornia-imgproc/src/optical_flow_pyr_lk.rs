@@ -1125,6 +1125,12 @@ fn track_feature(
         let ix = &precomputed.grad_x_pyr[lvl];
         let iy = &precomputed.grad_y_pyr[lvl];
 
+        // An empty level has nothing to track against (and the bilinear
+        // sampler behind `sample_at` requires a non-empty image).
+        if prev.cols() == 0 || prev.rows() == 0 {
+            return None;
+        }
+
         let hw = HALF_WIN as f32;
         if params.border_mode == BorderMode::Reject
             && !(xc >= hw

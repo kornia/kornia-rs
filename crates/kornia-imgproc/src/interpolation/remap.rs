@@ -250,11 +250,17 @@ pub fn remap_u8<const C: usize>(
 
     match interpolation {
         InterpolationMode::Bilinear => {
+            // The unchecked samplers need a packed `src_h x src_w x C` buffer
+            // (always the case for an `Image`); checked once per call. Every
+            // pixel below rejects out-of-range taps before sampling, so with
+            // `packed` each sample is in bounds.
+            let packed = crate::warp::is_packed::<C>(src_slice, src_w, src_h, src_stride);
+
             #[cfg(target_arch = "x86_64")]
-            if C == 3 && crate::simd::cpu_features().has_avx2 {
-                // SAFETY: the helper is only compiled on x86_64, we have
-                // already checked AVX2 at runtime, and the helper keeps the
-                // same bounds checks as the scalar path.
+            if C == 3 && packed && crate::simd::cpu_features().has_avx2 {
+                // SAFETY: the helper is only compiled on x86_64, AVX2 was
+                // checked at runtime, and `packed` establishes its buffer-layout
+                // precondition (it range-checks every tap itself).
                 unsafe {
                     remap_u8_bilinear_c3_avx2(
                         src_slice,
@@ -292,9 +298,22 @@ pub fn remap_u8<const C: usize>(
                         }
                         let fx_q10 = ((xf - xi as f32) * 1024.0) as u32;
                         let fy_q10 = ((yf - yi as f32) * 1024.0) as u32;
-                        crate::warp::bilinear_sample_u8_valid::<C>(
-                            src_slice, src_w, src_h, src_stride, xi, yi, fx_q10, fy_q10, dst_pixel,
-                        );
+                        if packed {
+                            // SAFETY: `0 <= xi < src_w` and `0 <= yi < src_h`
+                            // (checked above), `packed` certifies the buffer
+                            // layout, and `dst_pixel` is a `C`-byte slice.
+                            unsafe {
+                                crate::warp::bilinear_sample_u8_valid_unchecked::<C>(
+                                    src_slice, src_w, src_h, src_stride, xi, yi, fx_q10, fy_q10,
+                                    dst_pixel,
+                                );
+                            }
+                        } else {
+                            crate::warp::bilinear_sample_u8_valid::<C>(
+                                src_slice, src_w, src_h, src_stride, xi, yi, fx_q10, fy_q10,
+                                dst_pixel,
+                            );
+                        }
                     }
                 });
         }
@@ -325,6 +344,13 @@ pub fn remap_u8<const C: usize>(
     Ok(())
 }
 
+/// AVX2 C=3 bilinear body of [`remap_u8`].
+///
+/// # Safety
+///
+/// - AVX2 must be available;
+/// - `src_slice` must be a packed `src_h x src_w x C` buffer
+///   (`crate::warp::is_packed`).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 #[allow(clippy::too_many_arguments)]
@@ -369,8 +395,11 @@ unsafe fn remap_u8_bilinear_c3_avx2<const C: usize>(
                 let fy_q10 = ((yf - yi as f32) * 1024.0) as u32;
 
                 if xi < src_w - 2 || yi < src_h - 2 {
-                    // SAFETY: x86_64 + AVX2 were checked by the caller, and
-                    // the bounds condition mirrors the helper's preconditions.
+                    // SAFETY: x86_64 + AVX2 were checked by the caller; the tap
+                    // is in range (checked above) and, with the packed layout
+                    // the caller guarantees, the 4-byte corner reads stay in
+                    // bounds away from the last two columns of the last two
+                    // rows (this condition).
                     unsafe {
                         crate::warp::bilinear_sample_u8_valid_c3_avx2(
                             src_slice.as_ptr(),
@@ -385,9 +414,13 @@ unsafe fn remap_u8_bilinear_c3_avx2<const C: usize>(
                         );
                     }
                 } else {
-                    crate::warp::bilinear_sample_u8_valid::<C>(
-                        src_slice, src_w, src_h, src_stride, xi, yi, fx_q10, fy_q10, dst_pixel,
-                    );
+                    // SAFETY: tap in range (checked above), packed layout per
+                    // this function's contract, `C`-byte `dst_pixel`.
+                    unsafe {
+                        crate::warp::bilinear_sample_u8_valid_unchecked::<C>(
+                            src_slice, src_w, src_h, src_stride, xi, yi, fx_q10, fy_q10, dst_pixel,
+                        );
+                    }
                 }
             }
         });

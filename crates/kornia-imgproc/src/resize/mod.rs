@@ -701,6 +701,41 @@ mod memory_safety_tests {
         Ok(())
     }
 
+    /// The RGB nearest row kernel (4-byte moves for all but the last source
+    /// pixel, exact 3-byte copies for the rest) matches a plain per-pixel
+    /// gather for up- and downscales, including 1-pixel-wide sources.
+    #[test]
+    fn nearest_u8_c3_matches_reference() -> Result<(), ImageError> {
+        for (sw, sh, dw, dh) in [
+            (1, 1, 5, 2),
+            (2, 3, 7, 5),
+            (3, 2, 2, 2),
+            (5, 4, 13, 3),
+            (17, 9, 4, 11),
+            (64, 8, 63, 8),
+        ] {
+            let data: Vec<u8> = (0..sw * sh * 3).map(|i| (i * 37 % 251) as u8).collect();
+            let src = Image::<u8, 3>::new(sz(sw, sh), data.clone())?;
+            let mut dst = Image::<u8, 3>::from_size_val(sz(dw, dh), 0)?;
+            resize_fast_u8::<3>(&src, &mut dst, InterpolationMode::Nearest)?;
+            let (fx, fy) = (sw as f64 / dw as f64, sh as f64 / dh as f64);
+            for y in 0..dh {
+                let yi = nearest::nearest_index(y, fy, sh);
+                for x in 0..dw {
+                    let xi = nearest::nearest_index(x, fx, sw);
+                    let s = (yi * sw + xi) * 3;
+                    let d = (y * dw + x) * 3;
+                    assert_eq!(
+                        &dst.as_slice()[d..d + 3],
+                        &data[s..s + 3],
+                        "{sw}x{sh}->{dw}x{dh} at ({x},{y})"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Zero-sized images: empty destination is a no-op, empty source with a
     /// non-empty destination is an error — never a panic.
     #[test]
