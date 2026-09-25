@@ -55,22 +55,38 @@ pub struct ImageExport {
     pub device: (i32, i32),
 }
 
+/// Release a Python reference from a DLPack deleter / keep-alive `Drop`.
+///
+/// Uses the raw GIL-state API rather than `Python::attach`: the consumer may
+/// release the GIL internally before invoking a deleter (PyTorch does while
+/// tearing down a tensor) while pyo3's thread-local GIL count still says
+/// "attached" from an outer `attach` further up the stack. `Python::attach`
+/// would then skip re-acquiring and the object would be freed without an
+/// attached thread state (a crash on CPython 3.12+). `PyGILState_Ensure`
+/// checks the real thread state. During interpreter finalization the
+/// reference is leaked instead (CPython reclaims everything anyway).
+pub(crate) fn release_py_ref(obj: Py<PyAny>) {
+    // SAFETY: plain query of interpreter state.
+    if unsafe { pyo3::ffi::Py_IsInitialized() } == 0 {
+        std::mem::forget(obj);
+        return;
+    }
+    // SAFETY: the interpreter is initialized; Ensure/Release are paired and the
+    // reference we decref is the one `obj` owns.
+    unsafe {
+        let gil = pyo3::ffi::PyGILState_Ensure();
+        pyo3::ffi::Py_DecRef(obj.into_ptr());
+        pyo3::ffi::PyGILState_Release(gil);
+    }
+}
+
 impl Drop for ImageExport {
     fn drop(&mut self) {
-        // SAFETY: We own this `Py<PyAny>` inside `ManuallyDrop`; we drop it
-        // exactly once here, under the GIL, to prevent `Py_DECREF` off-GIL.
         // The DLPack consumer's deleter may run off-GIL (e.g. from a PyTorch
-        // worker thread), so we must re-acquire it before touching the refcount.
+        // worker thread), so the reference is released via `release_py_ref`.
+        // SAFETY: we own this handle inside `ManuallyDrop` and release it once.
         let keepalive = unsafe { std::mem::ManuallyDrop::take(&mut self.keepalive) };
-        // During `Py_FinalizeEx`, torch may call our capsule destructor after
-        // `Py_IsInitialized()` has returned 0. `Python::attach` asserts the
-        // interpreter is alive, so it would panic. Instead, forget the handle:
-        // CPython will reclaim everything during finalization regardless.
-        if unsafe { pyo3::ffi::Py_IsInitialized() } != 0 {
-            Python::attach(|_py| drop(keepalive));
-        } else {
-            std::mem::forget(keepalive);
-        }
+        release_py_ref(keepalive);
     }
 }
 
@@ -198,8 +214,16 @@ impl Drop for DlManagedOwner {
         // with the GIL attached. During interpreter finalization there is no
         // interpreter to attach to — leak instead (the process is exiting).
         // SAFETY: plain query of interpreter state.
+        // As in `ImageExport::drop`, use the raw GIL-state API: an outer
+        // `Python::attach` may be on the stack while the GIL was released
+        // underneath it, so pyo3's thread-local count cannot be trusted here.
         if unsafe { pyo3::ffi::Py_IsInitialized() } != 0 {
-            Python::attach(|_py| call());
+            // SAFETY: interpreter initialized; Ensure/Release are paired.
+            unsafe {
+                let gil = pyo3::ffi::PyGILState_Ensure();
+                call();
+                pyo3::ffi::PyGILState_Release(gil);
+            }
         }
     }
 }

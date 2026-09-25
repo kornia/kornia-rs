@@ -136,8 +136,7 @@ where
 /// The DLPack consumer may drop the tensor off-GIL (e.g. from a worker
 /// thread), so the handle is released under a re-acquired GIL — same
 /// discipline as `dlpack::ImageExport`. During interpreter finalization the
-/// handle is forgotten instead (CPython reclaims everything anyway and
-/// `Python::attach` would panic).
+/// handle is forgotten instead (see `dlpack::release_py_ref`).
 ///
 /// Also owns the consumed DLPack managed tensor (if any), whose deleter runs
 /// exactly once when the keep-alive drops (see `dlpack::DlManagedOwner`).
@@ -162,11 +161,7 @@ impl Drop for PyKeepalive {
         drop(self.1.take());
         // SAFETY: we own the handle inside ManuallyDrop and drop it exactly once.
         let keepalive = unsafe { std::mem::ManuallyDrop::take(&mut self.0) };
-        if unsafe { pyo3::ffi::Py_IsInitialized() } != 0 {
-            Python::attach(|_py| drop(keepalive));
-        } else {
-            std::mem::forget(keepalive);
-        }
+        crate::dlpack::release_py_ref(keepalive);
     }
 }
 

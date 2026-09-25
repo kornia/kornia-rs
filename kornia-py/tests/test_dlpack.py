@@ -257,3 +257,20 @@ def test_dlpack_copy_true_raises_not_implemented():
     img = Image(arr)
     with pytest.raises(NotImplementedError):
         img.__dlpack__(copy=True)
+
+
+def test_dlpack_torch_roundtrip_drop_order():
+    """Regression: dropping the original Image first, then the torch tensor,
+    then the re-imported Image frees the original Image from inside torch's
+    deleter. That nested release must re-acquire the GIL for real (it used to
+    segfault on CPython 3.12/3.13)."""
+    torch = pytest.importorskip("torch")
+    arr = np.ascontiguousarray(np.random.randint(0, 255, (8, 8, 3), np.uint8))
+    img = Image.from_numpy(arr, copy=True)
+    t = torch.from_dlpack(img)
+    img2 = Image.from_dlpack(t)
+    expected = np.asarray(arr).copy()
+    del img
+    del t
+    np.testing.assert_array_equal(img2.numpy(), expected)
+    del img2
