@@ -31,6 +31,16 @@ pub enum BowError {
     },
     #[error("Corrupted vocabulary: block index out of bounds")]
     CorruptedVocabulary,
+    /// The serialized vocabulary declares more blocks than its file could hold.
+    #[error(
+        "Corrupted vocabulary: declares {declared} blocks but the file is only {file_len} bytes"
+    )]
+    VocabularyTooLarge {
+        /// Number of blocks declared in the file header.
+        declared: u64,
+        /// Size of the file in bytes.
+        file_len: u64,
+    },
 }
 
 pub type BowResult<T> = Result<T, BowError>;
@@ -150,6 +160,11 @@ impl<const B: usize, M: DistanceMetric> Vocabulary<B, M> {
     }
 
     /// Traverses the tree for a single descriptor.
+    ///
+    /// Returns `(word_id, idf_weight, path)`. The vocabulary fields are public, so
+    /// traversal never trusts them: a dangling block index or a cycle (which a
+    /// well-formed tree never contains) ends traversal with weight `0.0` after at
+    /// most `blocks.len()` steps instead of reading out of bounds or looping forever.
     pub fn traverse(&self, feature: &M::Data, collect_path: bool) -> (u32, f32, Vec<u32>) {
         let mut curr_idx = self.root_idx;
         let mut path = if collect_path {
@@ -162,8 +177,12 @@ impl<const B: usize, M: DistanceMetric> Vocabulary<B, M> {
             path.push(curr_idx);
         }
 
-        loop {
-            let block = unsafe { self.blocks.get_unchecked(curr_idx as usize) };
+        // Any root-to-leaf path in an acyclic block graph visits each block at most once.
+        let mut node_id = u32::MAX;
+        for _ in 0..self.blocks.len() {
+            let Some(block) = self.blocks.get(curr_idx as usize) else {
+                break;
+            };
 
             let mut best_dist = M::max_distance();
             let mut best_child_index = 0;
@@ -176,20 +195,25 @@ impl<const B: usize, M: DistanceMetric> Vocabulary<B, M> {
                 }
             }
 
-            let node_id = (curr_idx * B as u32) + best_child_index as u32;
+            node_id = curr_idx
+                .wrapping_mul(B as u32)
+                .wrapping_add(best_child_index as u32);
             if collect_path {
                 path.push(node_id);
             }
 
             match block.content {
                 BlockContent::Internal(meta) => {
-                    curr_idx = meta.children_base_idx + best_child_index as u32;
+                    curr_idx = meta.children_base_idx.wrapping_add(best_child_index as u32);
                 }
                 BlockContent::Leaf(leaf) => {
                     return (node_id, leaf.weights[best_child_index], path);
                 }
             }
         }
+
+        // Malformed vocabulary (dangling index or cycle): terminate with zero weight.
+        (node_id, 0.0, path)
     }
 
     /// Transforms a set of descriptors into a sparse BoW vector.
@@ -329,6 +353,39 @@ mod tests {
     fn generate_random_descriptors(count: usize) -> Vec<Feature<u64, D>> {
         let mut rng = StdRng::from_seed([42; 32]);
         (0..count).map(|_| Feature(rng.random())).collect()
+    }
+
+    #[test]
+    fn test_traverse_malformed_vocabulary_is_safe() {
+        let feature = Feature([0u64; D]);
+
+        // Dangling root on an empty vocabulary: used to be get_unchecked out of bounds.
+        let empty = Vocabulary::<B, Hamming<D>> {
+            blocks: Vec::new(),
+            root_idx: 0x4000_0000,
+        };
+        assert_eq!(empty.traverse(&feature, false).1, 0.0);
+
+        // Self-referencing internal block: used to loop forever.
+        let cyclic = Vocabulary::<B, Hamming<D>> {
+            blocks: vec![BlockCluster::default(); B],
+            root_idx: 0,
+        };
+        let (_, weight, path) = cyclic.traverse(&feature, true);
+        assert_eq!(weight, 0.0);
+        assert!(path.len() <= B + 1);
+
+        // Child index out of bounds.
+        let dangling = Vocabulary::<B, Hamming<D>> {
+            blocks: vec![BlockCluster {
+                content: BlockContent::Internal(InternalMeta {
+                    children_base_idx: u32::MAX,
+                }),
+                ..Default::default()
+            }],
+            root_idx: 0,
+        };
+        assert_eq!(dangling.transform_one(&feature).1, 0.0);
     }
 
     #[test]

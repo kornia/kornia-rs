@@ -212,6 +212,14 @@ fn parse_image_line(line1: &str, line2: &str) -> Result<ColmapImage, ColmapError
     let parts1 = line1.split_whitespace().collect::<Vec<_>>();
     let parts2 = line2.split_whitespace().collect::<Vec<_>>();
 
+    // check if the number of parts is correct (indexed up to parts1[9] below)
+    if parts1.len() < 10 {
+        return Err(ColmapError::ParseError(format!(
+            "Invalid number of image parts: {}",
+            parts1.len()
+        )));
+    }
+
     Ok(ColmapImage {
         image_id: parse_part(parts1[0])?,
         rotation: parts1[1..5]
@@ -243,4 +251,30 @@ fn parse_image_line(line1: &str, line2: &str) -> Result<ColmapImage, ColmapError
             })
             .collect::<Result<Vec<_>, _>>()?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_image_line_too_few_parts() {
+        // Regression: short image lines used to index out of bounds and panic.
+        for line1 in ["", "1 2", "1 0 0 0 1 0 0 0 1"] {
+            let res = parse_image_line(line1, "");
+            assert!(matches!(res, Err(ColmapError::ParseError(_))), "{line1:?}");
+        }
+        let img = parse_image_line("1 1 0 0 0 0.5 0.5 0.5 2 img.png", "1.0 2.0 -1");
+        assert!(img.is_ok());
+    }
+
+    #[test]
+    fn test_read_images_txt_short_line() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("images.txt");
+        std::fs::write(&path, b"#\n#\n#\n#\n1 2\n\n")?;
+        let res = read_images_txt(&path);
+        assert!(matches!(res, Err(ColmapError::ParseError(_))));
+        Ok(())
+    }
 }

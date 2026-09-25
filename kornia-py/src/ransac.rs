@@ -47,6 +47,7 @@ fn parse_two_view_matches(arr: PyReadonlyArray2<'_, f64>) -> PyResult<Vec<Match2
             "expected (N, 4) float64 array of [x1.x, x1.y, x2.x, x2.y] rows",
         ));
     }
+    crate::pyutils::require_aligned(&arr, "matches")?;
     let view = arr.as_array();
     Ok((0..shape[0])
         .map(|i| {

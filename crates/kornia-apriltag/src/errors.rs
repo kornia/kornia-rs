@@ -13,6 +13,32 @@ pub enum AprilTagError {
     #[error("The minimum image size should be tile_size x tile_size")]
     InvalidImageSize,
 
+    /// The image is too small for the requested operation.
+    #[error("Image of size {width}x{height} is too small; at least {min_width}x{min_height} is required")]
+    ImageTooSmall {
+        /// Width of the offending image.
+        width: usize,
+        /// Height of the offending image.
+        height: usize,
+        /// Minimum supported width.
+        min_width: usize,
+        /// Minimum supported height.
+        min_height: usize,
+    },
+
+    /// The image is too large for the connected-components run encoding.
+    #[error("Image of size {width}x{height} is too large; the maximum supported width is {max_width} and at most {max_pixels} pixels")]
+    ImageTooLarge {
+        /// Width of the offending image.
+        width: usize,
+        /// Height of the offending image.
+        height: usize,
+        /// Maximum supported width.
+        max_width: usize,
+        /// Maximum supported number of pixels.
+        max_pixels: usize,
+    },
+
     /// The image length does not match the UnionFind length.
     #[error("The image length {0} mismatches UnionFind length {1}")]
     InvalidUnionFindSize(usize, usize),

@@ -24,6 +24,15 @@ pub struct FastDetector {
     taken: Vec<bool>,
 }
 
+/// Whether a `width x height` image has a pixel whose full 16-pixel
+/// Bresenham ring (radius 3) is inside the image. Smaller images have no
+/// corner candidates, and the corner-response loops' `width - 3` /
+/// `height - 3` bounds would underflow (sending the u8 SIMD block loop out of
+/// bounds in release builds).
+fn has_ring_interior(width: usize, height: usize) -> bool {
+    width >= 7 && height >= 7
+}
+
 impl FastDetector {
     /// Creates a new `FastDetector` with the specified parameters.
     ///
@@ -99,6 +108,10 @@ impl FastDetector {
 
         let width = src.width();
         let height = src.height();
+
+        if !has_ring_interior(width, height) {
+            return &self.corner_response;
+        }
 
         let corner_response = self.corner_response.as_slice_mut();
 
@@ -183,6 +196,9 @@ impl FastDetector {
         let src_slice = src.as_slice();
         let width = src.width();
         let height = src.height();
+        if !has_ring_interior(width, height) {
+            return &self.corner_response;
+        }
         let corner_response = self.corner_response.as_slice_mut();
         let threshold_u8 = (self.threshold * 255.0).round().clamp(1.0, 255.0) as u8;
         let n = self.arc_length;
@@ -1288,6 +1304,32 @@ mod tests {
                 n,
                 s
             );
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod small_image_tests {
+    use super::*;
+
+    /// Regression: images narrower/shorter than 7 px underflowed
+    /// `width - 3` / `height - 3` (in release the u8 SIMD block loop then ran
+    /// out of bounds).
+    #[test]
+    fn corner_response_on_tiny_images() -> Result<(), ImageError> {
+        for (w, h) in [(1, 1), (5, 20), (20, 5), (6, 6), (7, 7)] {
+            let size = ImageSize {
+                width: w,
+                height: h,
+            };
+            let mut det = FastDetector::new(size, 0.1, 9, 1)?;
+            let src = Image::<u8, 1>::from_size_val(size, 100)?;
+            let resp = det.compute_corner_response_u8(&src);
+            assert!(resp.as_slice().iter().all(|&v| v == 0.0));
+            let srcf = Image::<f32, 1>::from_size_val(size, 0.5)?;
+            let resp = det.compute_corner_response(&srcf);
+            assert!(resp.as_slice().iter().all(|&v| v == 0.0));
         }
         Ok(())
     }

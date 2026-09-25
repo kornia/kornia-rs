@@ -654,6 +654,11 @@ pub fn gaussian_blur_u8<const C: usize>(
     let ((kx, ky), (sx, sy)) = resolve_gaussian_params(kernel_size, sigma)?;
     let path = blur_u8_path(kx, ky, sx, sy);
 
+    // Empty image: nothing to blur.
+    if src.cols() == 0 || src.rows() == 0 {
+        return Ok(());
+    }
+
     try_device!(src, dst, |stream| match path {
         BlurU8Path::Binomial3 => super::cuda::binomial3_u8_cuda(src, dst, stream),
         BlurU8Path::GeneralQ8 => {
@@ -884,14 +889,16 @@ fn separable_blur_u8_striped(
             // u8 ring buffer: `ksize_y` H-passed-and-shifted rows. Source row
             // with absolute index `r` lives at slot `r.rem_euclid(ksize_y)`.
             let ring_len = ksize_y * stride;
-            let mut ring: Vec<u8> = Vec::with_capacity(ring_len);
-            // Safety: every slot is written by an H-pass before any V-pass read.
-            #[allow(clippy::uninit_vec)]
-            unsafe {
-                ring.set_len(ring_len)
-            };
+            // Zero-initialised (not `set_len` on uninit memory): every slot is
+            // written by an H-pass before any V-pass read anyway, and the
+            // one-per-strip memset is negligible next to the strip's work.
+            let mut ring: Vec<u8> = vec![0u8; ring_len];
 
             let mut padded = vec![0u8; padded_stride];
+            // Tap pointer table sized to the kernel (a fixed `[_; 32]` used to
+            // panic for 33+ taps); one small allocation per strip, like the
+            // ring buffers above.
+            let mut tap_ptrs = vec![std::ptr::null::<u8>(); ksize_y];
 
             #[cfg(target_arch = "aarch64")]
             let kvecs_x: Vec<_> = kernel_x
@@ -949,13 +956,16 @@ fn separable_blur_u8_striped(
                 }
 
                 // Tap pointers: tap k = src row (out_start + oi - half_y + k),
-                // at ring slot `that.rem_euclid(ksize_y)`.
-                let mut tap_ptrs: [*const u8; 32] = [std::ptr::null(); 32];
+                // at ring slot `that.rem_euclid(ksize_y)`. The table is sized
+                // to the kernel (it used to be a fixed `[_; 32]`, which
+                // panicked for kernels of 33+ taps).
                 let ring_ptr = ring.as_ptr();
-                for k in 0..ksize_y {
+                for (k, tap) in tap_ptrs.iter_mut().enumerate() {
                     let r_abs = out_start as isize + oi as isize - half_y as isize + k as isize;
                     let slot = r_abs.rem_euclid(ksize_y as isize) as usize;
-                    tap_ptrs[k] = unsafe { ring_ptr.add(slot * stride) };
+                    // SAFETY: `slot < ksize_y`, so `slot * stride + stride <=
+                    // ring.len()`; the pointer stays inside `ring`.
+                    *tap = unsafe { ring_ptr.add(slot * stride) };
                 }
 
                 let out_row = &mut strip_dst[oi * stride..(oi + 1) * stride];
@@ -1078,12 +1088,14 @@ fn separable_blur_u8_striped(
 
                 #[cfg(not(target_arch = "aarch64"))]
                 {
-                    for j in 0..stride {
+                    for (j, out) in out_row.iter_mut().enumerate() {
                         let mut acc = 0u32;
-                        for ki in 0..ksize_y {
-                            acc += unsafe { *tap_ptrs[ki].add(j) } as u32 * kernel_y[ki] as u32;
+                        for (&tp, &kw) in tap_ptrs.iter().zip(kernel_y) {
+                            // SAFETY: each tap points at a `stride`-byte ring
+                            // row and `j < stride`.
+                            acc += unsafe { *tp.add(j) } as u32 * kw as u32;
                         }
-                        out_row[j] = ((acc + 128) >> 8) as u8;
+                        *out = ((acc + 128) >> 8) as u8;
                     }
                 }
             }
@@ -1324,11 +1336,8 @@ fn gaussian_blur_7x7_sym_u8<const C: usize>(
         |(strip_dst, &(out_start, out_end))| {
             let out_rows = out_end - out_start;
             let ring_len = KSIZE * stride;
-            let mut ring: Vec<u8> = Vec::with_capacity(ring_len);
-            #[allow(clippy::uninit_vec)]
-            unsafe {
-                ring.set_len(ring_len)
-            };
+            // Zero-initialised: see `separable_blur_u8_striped`.
+            let mut ring: Vec<u8> = vec![0u8; ring_len];
             let mut padded = vec![0u8; padded_stride];
 
             // Prime: H-pass rows [out_start - HALF, out_start + HALF] into the ring.
@@ -1719,11 +1728,8 @@ fn gaussian_blur_7x7_sym_u8_avx2<const C: usize>(
         |(strip_dst, &(out_start, out_end))| {
             let out_rows = out_end - out_start;
             let ring_len = KSIZE * stride;
-            let mut ring: Vec<u8> = Vec::with_capacity(ring_len);
-            #[allow(clippy::uninit_vec)]
-            unsafe {
-                ring.set_len(ring_len)
-            };
+            // Zero-initialised: see `separable_blur_u8_striped`.
+            let mut ring: Vec<u8> = vec![0u8; ring_len];
             let mut padded = vec![0u8; padded_stride];
 
             for k in 0..KSIZE {
@@ -2373,6 +2379,56 @@ mod tests {
         assert_eq!(dx.channel(0)?.as_slice()[12], 1.0000); // 1.0 change per x-pixel
         assert_eq!(dy.channel(0)?.as_slice()[12], 5.0000); // 5.0 change per y-pixel (width=5)
 
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod gaussian_u8_regression_tests {
+    use kornia_image::{Image, ImageError, ImageSize};
+
+    /// Regression: kernels of 33+ taps indexed past a fixed `[_; 32]` tap
+    /// table (panic); empty images panicked on `step_by(0)`.
+    #[test]
+    fn gaussian_blur_u8_large_kernels_and_empty() -> Result<(), ImageError> {
+        let size = ImageSize {
+            width: 64,
+            height: 48,
+        };
+        let src = Image::<u8, 1>::from_size_val(size, 7)?;
+        for (k, sigma) in [
+            ((0, 0), (4.0, 4.0)),
+            ((35, 41), (0.0, 0.0)),
+            ((33, 3), (5.0, 0.8)),
+        ] {
+            let mut dst = Image::<u8, 1>::from_size_val(size, 0)?;
+            super::gaussian_blur_u8(&src, &mut dst, k, sigma)?;
+            assert!(
+                dst.as_slice().iter().all(|&v| v == 7),
+                "constant image must stay constant for k={k:?}"
+            );
+        }
+        let src3 = Image::<u8, 3>::from_size_val(size, 9)?;
+        let mut dst3 = Image::<u8, 3>::from_size_val(size, 0)?;
+        super::gaussian_blur_u8(&src3, &mut dst3, (37, 37), (0.0, 0.0))?;
+        assert!(dst3.as_slice().iter().all(|&v| v == 9));
+
+        for size in [
+            ImageSize {
+                width: 0,
+                height: 5,
+            },
+            ImageSize {
+                width: 5,
+                height: 0,
+            },
+        ] {
+            let src = Image::<u8, 1>::from_size_val(size, 7)?;
+            let mut dst = Image::<u8, 1>::from_size_val(size, 0)?;
+            for k in [3, 5, 7] {
+                super::gaussian_blur_u8(&src, &mut dst, (k, k), (1.0, 1.0))?;
+            }
+        }
         Ok(())
     }
 }

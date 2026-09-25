@@ -37,6 +37,29 @@ impl<const C: usize> NormalizeParams<C> {
     }
 }
 
+/// Check that a buffer of `len` elements holds exactly `h x w x c`
+/// values. The product is checked, so dimensions whose product overflows
+/// `usize` are rejected instead of wrapping to a small value that happens to
+/// match the real buffer length.
+fn expect_len(len: usize, w: usize, h: usize, c: usize) -> Result<(), kornia_image::ImageError> {
+    let expected = kornia_image::ImageSize {
+        width: w,
+        height: h,
+    }
+    .checked_len(c)?;
+    if expected != len {
+        return Err(kornia_image::ImageError::InvalidChannelShape(len, expected));
+    }
+    Ok(())
+}
+
+/// `true` if either image has a zero extent. The fused kernels then have
+/// nothing to write (or nothing to sample from) and return early: their row
+/// chunking and `clamp(0, len - 1)` index math assume non-empty axes.
+fn has_zero_extent(src_w: usize, src_h: usize, dst_w: usize, dst_h: usize) -> bool {
+    src_w == 0 || src_h == 0 || dst_w == 0 || dst_h == 0
+}
+
 /// Fused 2× exact-downscale bilinear + per-channel normalize + `HWC→CHW` layout
 /// conversion for RGB u8 → f32.
 ///
@@ -64,25 +87,18 @@ pub fn resize_normalize_to_tensor_u8_to_f32(
     params: &NormalizeParams<3>,
 ) -> Result<(), kornia_image::ImageError> {
     // Real runtime validation (release-safe)
-    if src_w != 2 * dst_w || src_h != 2 * dst_h {
+    if dst_w.checked_mul(2) != Some(src_w) || dst_h.checked_mul(2) != Some(src_h) {
         return Err(kornia_image::ImageError::InvalidImageSize(
             src_w,
             src_h,
-            dst_w * 2,
-            dst_h * 2,
+            dst_w.saturating_mul(2),
+            dst_h.saturating_mul(2),
         ));
     }
-    if src.len() != src_h * src_w * 3 {
-        return Err(kornia_image::ImageError::InvalidChannelShape(
-            src.len(),
-            src_h * src_w * 3,
-        ));
-    }
-    if dst.len() != 3 * dst_h * dst_w {
-        return Err(kornia_image::ImageError::InvalidChannelShape(
-            dst.len(),
-            3 * dst_h * dst_w,
-        ));
+    expect_len(src.len(), src_w, src_h, 3)?;
+    expect_len(dst.len(), dst_w, dst_h, 3)?;
+    if has_zero_extent(src_w, src_h, dst_w, dst_h) {
+        return Ok(());
     }
 
     debug_assert_eq!(src_w, 2 * dst_w);
@@ -153,17 +169,10 @@ pub fn resize_normalize_to_tensor_u8_to_f32_bilinear(
     dst_h: usize,
     params: &NormalizeParams<3>,
 ) -> Result<(), kornia_image::ImageError> {
-    if src.len() != src_h * src_w * 3 {
-        return Err(kornia_image::ImageError::InvalidChannelShape(
-            src.len(),
-            src_h * src_w * 3,
-        ));
-    }
-    if dst.len() != 3 * dst_h * dst_w {
-        return Err(kornia_image::ImageError::InvalidChannelShape(
-            dst.len(),
-            3 * dst_h * dst_w,
-        ));
+    expect_len(src.len(), src_w, src_h, 3)?;
+    expect_len(dst.len(), dst_w, dst_h, 3)?;
+    if has_zero_extent(src_w, src_h, dst_w, dst_h) {
+        return Ok(());
     }
 
     debug_assert_eq!(src.len(), src_h * src_w * 3);
@@ -172,9 +181,6 @@ pub fn resize_normalize_to_tensor_u8_to_f32_bilinear(
     // Exact 2× downscale → dedicated fused box kernel (fully NEON-vectorized).
     if src_w == 2 * dst_w && src_h == 2 * dst_h {
         return resize_normalize_to_tensor_u8_to_f32(src, src_w, src_h, dst, dst_w, dst_h, params);
-    }
-    if dst_w == 0 || dst_h == 0 || src_w == 0 || src_h == 0 {
-        return Ok(());
     }
 
     let scale_x = src_w as f32 / dst_w as f32;
@@ -891,17 +897,10 @@ pub fn resize_normalize_to_tensor_u8_to_f32_nearest(
     dst_h: usize,
     params: &NormalizeParams<3>,
 ) -> Result<(), kornia_image::ImageError> {
-    if src.len() != src_h * src_w * 3 {
-        return Err(kornia_image::ImageError::InvalidChannelShape(
-            src.len(),
-            src_h * src_w * 3,
-        ));
-    }
-    if dst.len() != 3 * dst_h * dst_w {
-        return Err(kornia_image::ImageError::InvalidChannelShape(
-            dst.len(),
-            3 * dst_h * dst_w,
-        ));
+    expect_len(src.len(), src_w, src_h, 3)?;
+    expect_len(dst.len(), dst_w, dst_h, 3)?;
+    if has_zero_extent(src_w, src_h, dst_w, dst_h) {
+        return Ok(());
     }
     let sx = src_w as f64 / dst_w as f64;
     let sy = src_h as f64 / dst_h as f64;
@@ -949,18 +948,8 @@ pub fn resize_normalize_to_tensor_u8_to_f32_separable(
     use super::common::{build_xsrc_lut, pack_xw_i16, precompute_contribs, FilterKind};
     use super::separable::horizontal_batch;
 
-    if src.len() != src_h * src_w * 3 {
-        return Err(kornia_image::ImageError::InvalidChannelShape(
-            src.len(),
-            src_h * src_w * 3,
-        ));
-    }
-    if dst.len() != 3 * dst_h * dst_w {
-        return Err(kornia_image::ImageError::InvalidChannelShape(
-            dst.len(),
-            3 * dst_h * dst_w,
-        ));
-    }
+    expect_len(src.len(), src_w, src_h, 3)?;
+    expect_len(dst.len(), dst_w, dst_h, 3)?;
     let filt = match filter {
         crate::interpolation::InterpolationMode::Lanczos => FilterKind::Lanczos3,
         crate::interpolation::InterpolationMode::Bicubic => FilterKind::Cubic,
@@ -968,6 +957,9 @@ pub fn resize_normalize_to_tensor_u8_to_f32_separable(
             return Err(kornia_image::ImageError::UnsupportedInterpolation(other));
         }
     };
+    if has_zero_extent(src_w, src_h, dst_w, dst_h) {
+        return Ok(());
+    }
     const Q: i32 = 14;
     let (xofs, xw, kx) = precompute_contribs(src_w, dst_w, filt, antialias);
     let (yofs, yw, ky) = precompute_contribs(src_h, dst_h, filt, antialias);
@@ -1083,6 +1075,97 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Regression: `3 * dst_h * dst_w` must not wrap. With `dst_w = 2^62`,
+    /// `3 * 1 * 2^62` wraps to `2^62` in unchecked arithmetic; a `dst` slice of
+    /// that (virtual) length must still be rejected instead of being written.
+    #[test]
+    fn fused_rejects_overflowing_dst_dims() {
+        let src = vec![0u8; 8 * 8 * 3];
+        let params = NormalizeParams::<3>::from_mean_std([0.0; 3], [1.0; 3]);
+        let mut dst = vec![0f32; 12];
+        // 3 * 1 * (usize::MAX / 2) overflows; must be an error, not a pass.
+        let huge = usize::MAX / 2;
+        assert!(resize_normalize_to_tensor_u8_to_f32_bilinear(
+            &src, 8, 8, &mut dst, huge, 1, &params
+        )
+        .is_err());
+        assert!(resize_normalize_to_tensor_u8_to_f32_nearest(
+            &src, 8, 8, &mut dst, huge, 1, &params
+        )
+        .is_err());
+        assert!(
+            resize_normalize_to_tensor_u8_to_f32(&src, 8, 8, &mut dst, huge, 1, &params).is_err()
+        );
+    }
+
+    /// Regression: zero-extent sources/destinations panicked in the nearest
+    /// (`clamp(0, -1)`), separable and exact-2x (`par_chunks_mut(0)`) kernels;
+    /// they are now a no-op like the bilinear variant.
+    #[test]
+    fn fused_zero_extent_is_noop() -> Result<(), kornia_image::ImageError> {
+        use crate::interpolation::InterpolationMode;
+        let params = NormalizeParams::<3>::from_mean_std([0.0; 3], [1.0; 3]);
+        let src = vec![0u8; 4 * 4 * 3];
+        let mut dst = vec![7f32; 3 * 2 * 2];
+        let mut empty: Vec<f32> = Vec::new();
+        for (src_w, src_h) in [(0, 4), (4, 0)] {
+            resize_normalize_to_tensor_u8_to_f32_nearest(
+                &[],
+                src_w,
+                src_h,
+                &mut dst,
+                2,
+                2,
+                &params,
+            )?;
+            resize_normalize_to_tensor_u8_to_f32_bilinear(
+                &[],
+                src_w,
+                src_h,
+                &mut dst,
+                2,
+                2,
+                &params,
+            )?;
+            for filter in [InterpolationMode::Bicubic, InterpolationMode::Lanczos] {
+                resize_normalize_to_tensor_u8_to_f32_separable(
+                    &[],
+                    src_w,
+                    src_h,
+                    &mut dst,
+                    2,
+                    2,
+                    &params,
+                    filter,
+                    true,
+                )?;
+            }
+        }
+        for (dst_w, dst_h) in [(0, 2), (2, 0)] {
+            resize_normalize_to_tensor_u8_to_f32_nearest(
+                &src, 4, 4, &mut empty, dst_w, dst_h, &params,
+            )?;
+            resize_normalize_to_tensor_u8_to_f32_separable(
+                &src,
+                4,
+                4,
+                &mut empty,
+                dst_w,
+                dst_h,
+                &params,
+                InterpolationMode::Bicubic,
+                false,
+            )?;
+        }
+        resize_normalize_to_tensor_u8_to_f32(&[], 0, 0, &mut empty, 0, 0, &params)?;
+        resize_normalize_to_tensor_u8_to_f32_bilinear(&[], 0, 0, &mut empty, 0, 0, &params)?;
+        assert!(
+            dst.iter().all(|&v| v == 7.0),
+            "an empty source must not write dst"
+        );
+        Ok(())
     }
 
     /// Corner test: a completely zero src image produces `-mean/std` on

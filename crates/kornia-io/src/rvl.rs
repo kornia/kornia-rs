@@ -440,7 +440,7 @@ fn decode_rvl_stream(src: &[u8], magic: &[u8; 4], what: &str) -> Result<RvlStrea
         )));
     }
 
-    let mut pixels = vec![0u16; n_pixels];
+    let mut pixels: Vec<u16> = crate::limits::try_alloc_zeroed(n_pixels)?;
     let mut reader = NibbleReader::new(&src[HEADER_LEN..]);
     let mut previous: i32 = 0;
     let mut i = 0usize;
@@ -473,9 +473,11 @@ fn decode_rvl_stream(src: &[u8], magic: &[u8; 4], what: &str) -> Result<RvlStrea
             ));
         }
         for p in &mut pixels[i..end] {
-            let value = previous + unzigzag(decode_vle(&mut reader)?);
-            *p = value as u16;
-            previous = value;
+            // Valid streams always reconstruct values in `0..=u16::MAX`; wrap and truncate so a
+            // corrupt stream cannot overflow the i32 accumulator.
+            let value = previous.wrapping_add(unzigzag(decode_vle(&mut reader)?)) as u16;
+            *p = value;
+            previous = value as i32;
         }
         i = end;
     }
@@ -768,5 +770,22 @@ mod tests {
 
         assert!(decode_image_rvl(&delta).is_err());
         assert!(decode_image_rvl_delta(&keyframe, &img).is_err());
+    }
+
+    #[test]
+    fn corrupt_deltas_do_not_overflow_the_accumulator() {
+        // Two maximal positive deltas would overflow an unwrapped i32 accumulator (panic in
+        // debug builds). A corrupt stream must decode without panicking.
+        let mut w = NibbleWriter::with_capacity(32);
+        encode_vle(&mut w, 0); // zero run
+        encode_vle(&mut w, 2); // non-zero run of two pixels
+        encode_vle(&mut w, 0xFFFF_FFFE); // zigzag(i32::MAX)
+        encode_vle(&mut w, 0xFFFF_FFFE);
+        let mut src = Vec::new();
+        src.extend_from_slice(MAGIC);
+        src.extend_from_slice(&2u32.to_le_bytes());
+        src.extend_from_slice(&1u32.to_le_bytes());
+        src.extend_from_slice(&w.finish());
+        let _ = decode_image_rvl(&src);
     }
 }

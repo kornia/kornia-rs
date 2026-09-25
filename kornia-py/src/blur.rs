@@ -3,7 +3,8 @@ use pyo3::prelude::*;
 
 use crate::dispatch::cpu_op;
 use crate::image::{
-    alloc_output_pyarray, alloc_output_pyarray_f32, numpy_as_image, numpy_as_image_f32, to_pyerr,
+    alloc_output_pyarray, alloc_output_pyarray_t, numpy_as_image, numpy_as_image_t,
+    numpy_as_out_image, to_pyerr, UNINIT,
 };
 use kornia_imgproc::filter;
 
@@ -112,15 +113,25 @@ pub fn sobel(py: Python<'_>, image: &Bound<'_, PyAny>, kernel_size: usize) -> Py
         let c = arr.bind(py).shape()[2];
         match c {
             1 => {
-                let src = unsafe { numpy_as_image_f32::<1>(py, &arr)? };
-                let (mut dst, out) = unsafe { alloc_output_pyarray_f32::<1>(py, src.size())? };
+                // SAFETY: the view borrows the numpy array, which the caller keeps alive and does
+                // not mutate for the duration of this call.
+                let src = unsafe { numpy_as_image_t::<f32, 1>(py, &arr)? };
+                // SAFETY: `dst` aliases the fresh array `out`, which stays alive and is only
+                // handed to Python after the kernel has written every element through `dst`.
+                let (mut dst, out) =
+                    unsafe { alloc_output_pyarray_t::<f32, 1, UNINIT>(py, src.size())? };
                 py.detach(|| filter::sobel(&src, &mut dst, kernel_size))
                     .map_err(to_pyerr)?;
                 Ok(out)
             }
             3 => {
-                let src = unsafe { numpy_as_image_f32::<3>(py, &arr)? };
-                let (mut dst, out) = unsafe { alloc_output_pyarray_f32::<3>(py, src.size())? };
+                // SAFETY: the view borrows the numpy array, which the caller keeps alive and does
+                // not mutate for the duration of this call.
+                let src = unsafe { numpy_as_image_t::<f32, 3>(py, &arr)? };
+                // SAFETY: `dst` aliases the fresh array `out`, which stays alive and is only
+                // handed to Python after the kernel has written every element through `dst`.
+                let (mut dst, out) =
+                    unsafe { alloc_output_pyarray_t::<f32, 3, UNINIT>(py, src.size())? };
                 py.detach(|| filter::sobel(&src, &mut dst, kernel_size))
                     .map_err(to_pyerr)?;
                 Ok(out)
@@ -132,24 +143,23 @@ pub fn sobel(py: Python<'_>, image: &Bound<'_, PyAny>, kernel_size: usize) -> Py
     })
 }
 
-/// Resolve `out=` (shape-validated view) or allocate a fresh output array.
-/// Shared by the median/bilateral CPU paths.
+/// Resolve `out=` (validated: shape, writeable, contiguous, and not aliasing
+/// `src`) or allocate a fresh output array. Shared by the median/bilateral CPU
+/// paths.
 fn resolve_out<const C: usize>(
     py: Python<'_>,
     op: &str,
-    rows: usize,
-    cols: usize,
+    src: &kornia_image::Image<u8, C>,
     out: Option<crate::image::PyImage>,
 ) -> PyResult<(kornia_image::Image<u8, C>, crate::image::PyImage)> {
+    let (rows, cols) = (src.rows(), src.cols());
     match out {
         Some(out_pyarr) => {
-            if out_pyarr.bind(py).shape() != [rows, cols, C] {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                    "{op}: out shape {:?} must match the source ({rows}, {cols}, {C})",
-                    out_pyarr.bind(py).shape(),
-                )));
-            }
-            let img = unsafe { numpy_as_image::<C>(py, &out_pyarr)? };
+            // SAFETY: `out_pyarr` is returned alongside the Image and kept alive
+            // by the caller for as long as the Image is used.
+            let img = unsafe {
+                numpy_as_out_image::<C>(py, op, &out_pyarr, [rows, cols, C], src.as_slice())?
+            };
             Ok((img, out_pyarr))
         }
         None => unsafe {
@@ -198,8 +208,7 @@ pub fn median_blur(
             out: Option<crate::image::PyImage>,
         ) -> PyResult<crate::image::PyImage> {
             let src = unsafe { numpy_as_image::<C>(py, arr)? };
-            let (mut dst, out_arr) =
-                resolve_out::<C>(py, "median_blur", src.rows(), src.cols(), out)?;
+            let (mut dst, out_arr) = resolve_out::<C>(py, "median_blur", &src, out)?;
             py.detach(|| filter::median_blur(&src, &mut dst, kernel_size))
                 .map_err(to_pyerr)?;
             Ok(out_arr)
@@ -248,8 +257,7 @@ pub fn bilateral_filter(
     }
     cpu_op(py, image, move |py, arr: Py<numpy::PyArray3<u8>>| {
         let src = unsafe { numpy_as_image::<1>(py, &arr)? };
-        let (mut dst, out_arr) =
-            resolve_out::<1>(py, "bilateral_filter", src.rows(), src.cols(), out)?;
+        let (mut dst, out_arr) = resolve_out::<1>(py, "bilateral_filter", &src, out)?;
         py.detach(|| filter::bilateral_filter(&src, &mut dst, d, sigma_color, sigma_space))
             .map_err(to_pyerr)?;
         Ok(out_arr)

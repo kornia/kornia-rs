@@ -26,6 +26,62 @@ pub use crate::stream::video::VideoWriter;
 use std::any::Any;
 use std::sync::Arc;
 
+/// Quotes a user-supplied value for interpolation into a `gst_parse_launch` pipeline string.
+///
+/// Values are wrapped in double quotes so whitespace, `!` and `=` cannot introduce new elements or
+/// properties. Characters that would terminate or escape the quoted string (`"`, `\`) and control
+/// characters are rejected outright.
+///
+/// # Errors
+///
+/// Returns [`StreamCaptureError::InvalidConfig`] if `value` contains `"`, `\` or a control
+/// character.
+pub(crate) fn quote_pipeline_value(value: &str) -> Result<String, StreamCaptureError> {
+    if value
+        .chars()
+        .any(|c| c == '"' || c == '\\' || c.is_control())
+    {
+        return Err(StreamCaptureError::InvalidConfig(format!(
+            "value {value:?} contains characters not allowed in a pipeline description"
+        )));
+    }
+    Ok(format!("\"{value}\""))
+}
+
+/// Sets the `location` property of the element called `name` in `pipeline` to `path`.
+///
+/// File paths are set as a property after parsing instead of being interpolated into the
+/// `gst_parse_launch` description, so any path (spaces, `!`, `"`, Windows `\`
+/// separators, ...) works verbatim and can never inject pipeline syntax.
+///
+/// # Errors
+///
+/// Returns [`StreamCaptureError::GetElementByNameError`] if the pipeline has no element
+/// called `name`, or [`StreamCaptureError::InvalidConfig`] if that element has no
+/// writable string `location` property.
+pub(crate) fn set_location_property(
+    pipeline: &gstreamer::Pipeline,
+    name: &str,
+    path: &std::path::Path,
+) -> Result<(), StreamCaptureError> {
+    use gstreamer::prelude::*;
+    let element = pipeline
+        .by_name(name)
+        .ok_or(StreamCaptureError::GetElementByNameError)?;
+    // `set_property` panics on a missing, read-only or non-string property.
+    let writable_string = element.find_property("location").is_some_and(|p| {
+        p.value_type() == String::static_type()
+            && p.flags().contains(gstreamer::glib::ParamFlags::WRITABLE)
+    });
+    if !writable_string {
+        return Err(StreamCaptureError::InvalidConfig(format!(
+            "element {name:?} has no writable string `location` property"
+        )));
+    }
+    element.set_property("location", path.to_string_lossy().as_ref());
+    Ok(())
+}
+
 use kornia_image::Image;
 use kornia_tensor::resource::{MemoryDomain, MemoryResource};
 
@@ -148,6 +204,63 @@ pub(crate) fn image_from_gst_buffer(
 #[cfg(test)]
 mod tests {
     use crate::stream::StreamCapture;
+
+    /// A quoted value containing pipeline syntax must be parsed as a single property value,
+    /// not as additional elements.
+    #[test]
+    fn quoted_value_cannot_inject_elements() -> Result<(), Box<dyn std::error::Error>> {
+        use gstreamer::prelude::*;
+        gstreamer::init()?;
+        let evil = "/tmp/a b ! fakesink name=injected location=x";
+        let desc = format!(
+            "filesrc name=src location={}",
+            super::quote_pipeline_value(evil)?
+        );
+        let bin = gstreamer::parse::launch(&desc)?
+            .dynamic_cast::<gstreamer::Bin>()
+            .ok();
+        // A single element is returned as-is rather than wrapped in a bin.
+        assert!(bin.is_none(), "value was split into multiple elements");
+        let src = gstreamer::parse::launch(&desc)?;
+        assert_eq!(
+            src.property::<Option<String>>("location").as_deref(),
+            Some(evil)
+        );
+
+        assert!(super::quote_pipeline_value("a\" ! fakesink").is_err());
+        assert!(super::quote_pipeline_value("a\\").is_err());
+        assert!(super::quote_pipeline_value("a\nb").is_err());
+        Ok(())
+    }
+
+    /// File paths are set as a property, so characters that `quote_pipeline_value`
+    /// rejects (e.g. Windows `\` separators) or that are pipeline syntax round-trip.
+    #[test]
+    fn location_property_accepts_any_path() -> Result<(), Box<dyn std::error::Error>> {
+        use gstreamer::prelude::*;
+        gstreamer::init()?;
+        let path = std::path::Path::new(r#"C:\videos\my clip ! fakesink name=x "q".mp4"#);
+        let pipeline = gstreamer::parse::launch("filesrc name=src ! fakesink")?
+            .dynamic_cast::<gstreamer::Pipeline>()
+            .map_err(|_| "not a pipeline")?;
+        super::set_location_property(&pipeline, "src", path)?;
+        let src = pipeline.by_name("src").ok_or("missing src")?;
+        assert_eq!(
+            src.property::<Option<String>>("location").as_deref(),
+            path.to_str()
+        );
+        // Only the two parsed elements exist; nothing was injected.
+        assert_eq!(pipeline.children().len(), 2);
+        assert!(super::set_location_property(&pipeline, "missing", path).is_err());
+        // An element without a `location` property is an error, not a panic.
+        let fakesink = pipeline
+            .children()
+            .into_iter()
+            .find(|e| e.name() != "src")
+            .ok_or("missing fakesink")?;
+        assert!(super::set_location_property(&pipeline, &fakesink.name(), path).is_err());
+        Ok(())
+    }
 
     /// Verifies that capturing N frames with `videotestsrc` succeeds, that the pixel
     /// data is readable through the Image slice (proving the GstResource keepalive is

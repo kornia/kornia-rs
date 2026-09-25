@@ -5,8 +5,7 @@ use kornia_image::{
 use pyo3::prelude::*;
 
 use crate::image::{
-    alloc_output_pyarray, alloc_output_pyarray_u16, numpy_as_image, numpy_as_image_u16, to_pyerr,
-    PyImage, PyImageU16,
+    alloc_output_pyarray_t, numpy_as_image, numpy_as_image_t, to_pyerr, PyImage, PyImageU16, ZEROED,
 };
 use kornia_io::png as P;
 
@@ -77,15 +76,21 @@ pub fn write_image_png_u16(
 ) -> PyResult<()> {
     match mode {
         "rgb" => {
-            let image = unsafe { numpy_as_image_u16::<3>(py, &image)? };
+            // SAFETY: the view borrows the numpy array, which the caller keeps alive and does not
+            // mutate for the duration of this call.
+            let image = unsafe { numpy_as_image_t::<u16, 3>(py, &image)? };
             P::write_image_png_rgb16(file_path, &image).map_err(to_pyerr)?;
         }
         "rgba" => {
-            let image = unsafe { numpy_as_image_u16::<4>(py, &image)? };
+            // SAFETY: the view borrows the numpy array, which the caller keeps alive and does not
+            // mutate for the duration of this call.
+            let image = unsafe { numpy_as_image_t::<u16, 4>(py, &image)? };
             P::write_image_png_rgba16(file_path, &image).map_err(to_pyerr)?;
         }
         "mono" => {
-            let image = unsafe { numpy_as_image_u16::<1>(py, &image)? };
+            // SAFETY: the view borrows the numpy array, which the caller keeps alive and does not
+            // mutate for the duration of this call.
+            let image = unsafe { numpy_as_image_t::<u16, 1>(py, &image)? };
             P::write_image_png_gray16(file_path, &image).map_err(to_pyerr)?;
         }
         _ => {
@@ -105,19 +110,25 @@ fn decode_image_png_u8_inner(
 ) -> PyResult<PyImage> {
     match mode {
         "rgb" => {
-            let (dst, out) = unsafe { alloc_output_pyarray::<3>(py, size)? };
+            // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only
+            // handed to Python after the last write through `dst`.
+            let (dst, out) = unsafe { alloc_output_pyarray_t::<u8, 3, ZEROED>(py, size)? };
             let mut wrapped = Rgb8(dst);
             P::decode_image_png_rgb8(src, &mut wrapped).map_err(to_pyerr)?;
             Ok(out)
         }
         "rgba" => {
-            let (dst, out) = unsafe { alloc_output_pyarray::<4>(py, size)? };
+            // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only
+            // handed to Python after the last write through `dst`.
+            let (dst, out) = unsafe { alloc_output_pyarray_t::<u8, 4, ZEROED>(py, size)? };
             let mut wrapped = Rgba8(dst);
             P::decode_image_png_rgba8(src, &mut wrapped).map_err(to_pyerr)?;
             Ok(out)
         }
         "mono" => {
-            let (dst, out) = unsafe { alloc_output_pyarray::<1>(py, size)? };
+            // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only
+            // handed to Python after the last write through `dst`.
+            let (dst, out) = unsafe { alloc_output_pyarray_t::<u8, 1, ZEROED>(py, size)? };
             let mut wrapped = Gray8(dst);
             P::decode_image_png_mono8(src, &mut wrapped).map_err(to_pyerr)?;
             Ok(out)
@@ -136,19 +147,25 @@ fn decode_image_png_u16_inner(
 ) -> PyResult<PyImageU16> {
     match mode {
         "rgb" => {
-            let (dst, out) = unsafe { alloc_output_pyarray_u16::<3>(py, size)? };
+            // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only
+            // handed to Python after the last write through `dst`.
+            let (dst, out) = unsafe { alloc_output_pyarray_t::<u16, 3, ZEROED>(py, size)? };
             let mut wrapped = Rgb16(dst);
             P::decode_image_png_rgb16(src, &mut wrapped).map_err(to_pyerr)?;
             Ok(out)
         }
         "rgba" => {
-            let (dst, out) = unsafe { alloc_output_pyarray_u16::<4>(py, size)? };
+            // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only
+            // handed to Python after the last write through `dst`.
+            let (dst, out) = unsafe { alloc_output_pyarray_t::<u16, 4, ZEROED>(py, size)? };
             let mut wrapped = Rgba16(dst);
             P::decode_image_png_rgba16(src, &mut wrapped).map_err(to_pyerr)?;
             Ok(out)
         }
         "mono" => {
-            let (dst, out) = unsafe { alloc_output_pyarray_u16::<1>(py, size)? };
+            // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only
+            // handed to Python after the last write through `dst`.
+            let (dst, out) = unsafe { alloc_output_pyarray_t::<u16, 1, ZEROED>(py, size)? };
             let mut wrapped = Gray16(dst);
             P::decode_image_png_mono16(src, &mut wrapped).map_err(to_pyerr)?;
             Ok(out)

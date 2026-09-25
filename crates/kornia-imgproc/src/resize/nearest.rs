@@ -5,7 +5,7 @@
 
 use rayon::prelude::*;
 
-use super::kernels::nearest_row_u8;
+use super::kernels::{nearest_row_u8, NearestXMap};
 
 /// Nearest source index for destination index `i` on an axis sampled at
 /// `scale = src_len / dst_len`: `clamp(floor((i + 0.5) * scale))` in f64 —
@@ -17,7 +17,8 @@ use super::kernels::nearest_row_u8;
 #[inline]
 pub(super) fn nearest_index(i: usize, scale: f64, src_len: usize) -> usize {
     let v = ((i as f64 + 0.5) * scale).floor() as i64;
-    v.clamp(0, src_len as i64 - 1) as usize
+    // `.max(0)`: an empty axis maps to index 0 instead of panicking in clamp.
+    v.clamp(0, (src_len as i64 - 1).max(0)) as usize
 }
 
 /// Generates a per-axis nearest-neighbor lookup table (LUT) as `i32` gathering indices.
@@ -52,7 +53,10 @@ pub(super) fn resize_nearest_u8<const C: usize>(
     let sy = src_h as f64 / dst_h as f64;
 
     let sx = src_w as f64 / dst_w as f64;
-    let xmap: Vec<usize> = (0..dst_w).map(|x| nearest_index(x, sx, src_w)).collect();
+    let xmap = NearestXMap::new(
+        (0..dst_w).map(|x| nearest_index(x, sx, src_w)).collect(),
+        src_w,
+    );
 
     const ROWS_PER_TASK: usize = 16;
     dst.par_chunks_mut(ROWS_PER_TASK * dst_stride)

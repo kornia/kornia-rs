@@ -7,7 +7,7 @@
 use kornia_algebra::{Mat3F64, Vec2F64};
 
 use crate::pose::{fundamental_8point, sampson_distance};
-use crate::ransac::{Estimator, Match2d2d};
+use crate::ransac::{clamp_pair, Estimator, Match2d2d};
 
 /// Estimator for the fundamental matrix from 2D-2D pixel correspondences.
 ///
@@ -75,12 +75,14 @@ impl Estimator for FundamentalEstimator {
     /// All three paths produce identical results to within FMA reordering
     /// noise (≤ 1e-12 relative) — a unit test pins the equivalence.
     fn residual_batch(&self, model: &Self::Model, samples: &[Self::Sample], out: &mut [f64]) {
-        debug_assert_eq!(out.len(), samples.len());
+        // The SIMD kernels below write `out` through raw pointers for every sample;
+        // only the first `min(out.len(), samples.len())` entries are computed.
+        let (samples, out) = clamp_pair(samples, out);
         let f = pack_f(model);
 
         #[cfg(target_arch = "aarch64")]
-        // SAFETY: NEON is architectural on aarch64-unknown-linux-gnu. Caller
-        // upholds `out.len() == samples.len()`; the kernel never reads/writes
+        // SAFETY: NEON is architectural on aarch64-unknown-linux-gnu.
+        // `out.len() == samples.len()` holds after the clamp above; the kernel never reads/writes
         // past `samples.len()` (returns `idx`, scalar tail handles the rest).
         unsafe {
             let idx = sampson_residual_batch_neon(f, samples, out);

@@ -1,24 +1,18 @@
 use numpy::{PyArray, PyArray2, PyArrayMethods, PyUntypedArrayMethods};
 use pyo3::prelude::*;
 
-// ── Internal helpers ──────────────────────────────────────────────────────────
+use crate::pyutils::{c_slice, checked_numel, try_zeroed_vec, value_err};
 
-#[inline]
-fn ensure_c_contiguous(ok: bool, name: &str) -> PyResult<()> {
-    if ok {
-        Ok(())
-    } else {
-        Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-            "{name} must be C-contiguous"
-        )))
-    }
-}
+// ── Internal helpers ──────────────────────────────────────────────────────────
 
 /// Decode COCO column-major RLE into a column-major flat u8 buffer.
 /// flat[x * mh + y] == 1 means pixel (row=y, col=x) is foreground.
-fn decode_rle_flat(rle: &[u32], mh: usize, mw: usize) -> Vec<u8> {
-    let mask_size = mh * mw;
-    let mut flat = vec![0u8; mask_size];
+///
+/// `mask_size` must equal `mh * mw` (validated with checked math by the caller).
+/// Allocation failure is reported as `MemoryError` instead of aborting.
+fn decode_rle_flat(rle: &[u32], mask_size: usize) -> PyResult<Vec<u8>> {
+    // Zeroed: the runs need not cover the whole mask (trailing background).
+    let mut flat: Vec<u8> = try_zeroed_vec(mask_size)?;
     let mut pos = 0usize;
     let mut is_fg = false;
     for &count in rle {
@@ -33,7 +27,7 @@ fn decode_rle_flat(rle: &[u32], mh: usize, mw: usize) -> Vec<u8> {
         }
         is_fg = !is_fg;
     }
-    flat
+    Ok(flat)
 }
 
 // ── NEON 8×8 byte block transpose (aarch64) ───────────────────────────────────
@@ -169,9 +163,22 @@ pub fn rle_to_mask<'py>(
             "shape dimensions must be > 0",
         ));
     }
-    let flat = decode_rle_flat(&rle, mh, mw);
+    // Checked size: an unchecked `mh * mw` could wrap to a small value.
+    let mask_size = checked_numel(&[mh, mw], 1)?;
+    // Validate the runs against the mask size BEFORE allocating anything.
+    let total: u64 = rle.iter().map(|&c| c as u64).sum();
+    if total > mask_size as u64 {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "rle_to_mask: RLE counts sum to {total}, more than the {mh}x{mw} = {mask_size} mask pixels"
+        )));
+    }
+    let flat = decode_rle_flat(&rle, mask_size)?;
+    // SAFETY: `col_major_to_row_major` writes every one of the `mh * mw`
+    // output elements (its block and cleanup loops tile the whole mask).
     let arr = unsafe { PyArray::<u8, _>::new(py, [mh, mw], false) };
-    let out = unsafe { std::slice::from_raw_parts_mut(arr.data(), mh * mw) };
+    // SAFETY: `arr` is a freshly allocated C-contiguous (mh, mw) array
+    // (exactly `mask_size` elements) not yet shared with Python.
+    let out = unsafe { arr.as_slice_mut() }.map_err(value_err)?;
     col_major_to_row_major(&flat, out, mh, mw);
     Ok(arr)
 }
@@ -182,11 +189,10 @@ pub fn rle_to_mask<'py>(
 /// list is always the background run count (may be 0).
 #[pyfunction]
 pub fn mask_to_rle(_py: Python<'_>, mask: &Bound<'_, PyArray2<u8>>) -> PyResult<Vec<u32>> {
-    ensure_c_contiguous(mask.is_c_contiguous(), "mask")?;
+    let src = c_slice(mask, "mask")?;
     let shape = mask.shape();
     let mh = shape[0];
     let mw = shape[1];
-    let src = unsafe { std::slice::from_raw_parts(mask.data(), mh * mw) };
 
     // Iterate in column-major order: x in 0..mw, y in 0..mh.
     // Starting with is_fg = false guarantees the first push is the bg count.

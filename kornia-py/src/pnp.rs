@@ -126,7 +126,12 @@ pub fn solve_pnp_ransac_py<'py>(
         _ => {}
     }
 
-    // SAFETY: only used to read; no aliasing concerns since we copy into samples below.
+    // ndarray views honour strides but assume aligned elements.
+    crate::pyutils::require_aligned(&world, "world")?;
+    crate::pyutils::require_aligned(&image, "image")?;
+    crate::pyutils::require_aligned(&k, "k")?;
+    // SAFETY: only used to read (copied into samples below); element alignment
+    // checked above, and the ndarray view respects the arrays' real strides.
     let world_ro = unsafe { world.as_array() };
     let image_ro = unsafe { image.as_array() };
     let k_ro = unsafe { k.as_array() };

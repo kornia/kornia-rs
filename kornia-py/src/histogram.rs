@@ -89,20 +89,20 @@ pub fn clahe(
     }
 
     crate::dispatch::cpu_op(py, image, move |py, arr: Py<numpy::PyArray3<u8>>| {
-        use numpy::PyUntypedArrayMethods;
         let src = unsafe { numpy_as_image::<1>(py, &arr)? };
         let (mut dst, out_arr) = match out {
             Some(out_pyarr) => {
-                let shape: Vec<usize> = out_pyarr.bind(py).shape().to_vec();
-                if shape != [src.rows(), src.cols(), 1] {
-                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                        "clahe: out shape {:?} must match the source ({}, {}, 1)",
-                        shape,
-                        src.rows(),
-                        src.cols()
-                    )));
-                }
-                let img = unsafe { numpy_as_image::<1>(py, &out_pyarr)? };
+                // Validates shape, writeability, contiguity and no aliasing with `src`.
+                // SAFETY: `out_pyarr` is kept alive (returned) for the Image's lifetime.
+                let img = unsafe {
+                    crate::image::numpy_as_out_image::<1>(
+                        py,
+                        "clahe",
+                        &out_pyarr,
+                        [src.rows(), src.cols(), 1],
+                        src.as_slice(),
+                    )?
+                };
                 (img, out_pyarr)
             }
             None => unsafe { alloc_output_pyarray::<1>(py, src.size())? },

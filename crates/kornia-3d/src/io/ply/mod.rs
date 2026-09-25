@@ -18,4 +18,8 @@ pub enum PlyError {
     /// Unsupported PLY property
     #[error("Unsupported PLY property")]
     UnsupportedProperty,
+
+    /// The PLY header ended (EOF) before an `end_header` line.
+    #[error("Malformed PLY header: missing end_header")]
+    MalformedHeader,
 }

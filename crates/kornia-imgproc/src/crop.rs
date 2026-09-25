@@ -193,14 +193,24 @@ pub fn crop_image<T, const C: usize>(
 where
     T: Copy + Send + Sync,
 {
-    // Bounds check: crop region must fit entirely inside source.
-    if x + dst.cols() > src.cols() || y + dst.rows() > src.rows() {
-        return Err(ImageError::PixelIndexOutOfBounds(
-            x + dst.cols(),
-            y + dst.rows(),
-            src.cols(),
-            src.rows(),
-        ));
+    // Bounds check: crop region must fit entirely inside source. Checked
+    // adds: a huge `x`/`y` must not wrap around and pass the check.
+    let x_end = x.checked_add(dst.cols());
+    let y_end = y.checked_add(dst.rows());
+    match (x_end, y_end) {
+        (Some(xe), Some(ye)) if xe <= src.cols() && ye <= src.rows() => {}
+        _ => {
+            return Err(ImageError::PixelIndexOutOfBounds(
+                x_end.unwrap_or(usize::MAX),
+                y_end.unwrap_or(usize::MAX),
+                src.cols(),
+                src.rows(),
+            ));
+        }
+    }
+    // Empty crop: nothing to copy (a zero row length would panic below).
+    if dst.cols() == 0 || dst.rows() == 0 {
+        return Ok(());
     }
     let dst_cols = dst.cols();
     let src_cols = src.cols();
@@ -434,6 +444,43 @@ mod tests {
             let src_row = &src_data[src_off..src_off + crop_w * 3];
             assert_eq!(dst_row, src_row, "row {} mismatch", r);
         }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod bounds_tests {
+    use kornia_image::{Image, ImageError, ImageSize};
+
+    /// Regression: `x + dst.cols()` could wrap around and pass the bounds
+    /// check; a zero-width crop panicked on a zero chunk size.
+    #[test]
+    fn crop_overflow_and_empty() -> Result<(), ImageError> {
+        let src = Image::<u8, 1>::from_size_val(
+            ImageSize {
+                width: 8,
+                height: 8,
+            },
+            3,
+        )?;
+        let mut dst = Image::<u8, 1>::from_size_val(
+            ImageSize {
+                width: 2,
+                height: 2,
+            },
+            0,
+        )?;
+        assert!(super::crop_image(&src, &mut dst, usize::MAX, 0).is_err());
+        assert!(super::crop_image(&src, &mut dst, 0, usize::MAX - 1).is_err());
+
+        let mut empty = Image::<u8, 1>::from_size_val(
+            ImageSize {
+                width: 0,
+                height: 3,
+            },
+            0,
+        )?;
+        super::crop_image(&src, &mut empty, 8, 0)?;
         Ok(())
     }
 }

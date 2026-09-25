@@ -102,12 +102,13 @@ pub trait Estimator {
     /// driver calls this once per scored model, so any setup amortises across
     /// all `samples.len()` evaluations.
     ///
-    /// `out.len() == samples.len()` must hold; the driver pre-sizes the
-    /// scratch buffer.
+    /// `out.len() == samples.len()` is expected (the driver pre-sizes the
+    /// scratch buffer). If the lengths differ, only the first
+    /// `min(out.len(), samples.len())` residuals are written; implementations
+    /// must never write past either slice.
     fn residual_batch(&self, model: &Self::Model, samples: &[Self::Sample], out: &mut [f64]) {
-        debug_assert_eq!(out.len(), samples.len());
-        for (i, s) in samples.iter().enumerate() {
-            out[i] = self.residual(model, s);
+        for (o, s) in out.iter_mut().zip(samples) {
+            *o = self.residual(model, s);
         }
     }
 }
@@ -195,5 +196,47 @@ impl<R: Rng> Sampler for UniformSampler<R> {
         for (slot, idx) in out.iter_mut().zip(drawn.iter()) {
             *slot = idx;
         }
+    }
+}
+
+/// Clamps `samples` and `out` to their common length, so a batch residual kernel
+/// that walks both slices in lockstep (e.g. through raw SIMD pointers) can never
+/// write past either of them.
+pub(crate) fn clamp_pair<'s, 'o, S>(
+    samples: &'s [S],
+    out: &'o mut [f64],
+) -> (&'s [S], &'o mut [f64]) {
+    let n = samples.len().min(out.len());
+    (&samples[..n], &mut out[..n])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kornia_algebra::{Mat3F64, Vec2F64};
+
+    /// Regression: `out.len() == samples.len()` was only a debug_assert, so in
+    /// release builds the SIMD kernels wrote past a short `out` slice.
+    fn check_residual_batch_stays_in_bounds<E>(est: &E)
+    where
+        E: Estimator<Sample = Match2d2d, Model = Mat3F64>,
+    {
+        let samples = vec![Match2d2d::new(Vec2F64::new(1.0, 2.0), Vec2F64::new(3.0, 4.0)); 64];
+        let sentinel = -12345.0;
+        let mut buf = vec![sentinel; 68];
+        est.residual_batch(&Mat3F64::IDENTITY, &samples, &mut buf[..4]);
+        assert!(buf[..4].iter().all(|&r| r != sentinel));
+        assert!(buf[4..].iter().all(|&r| r == sentinel), "wrote past `out`");
+
+        // Longer `out` than `samples`: only the prefix is written.
+        let mut buf = vec![sentinel; 8];
+        est.residual_batch(&Mat3F64::IDENTITY, &samples[..3], &mut buf);
+        assert!(buf[3..].iter().all(|&r| r == sentinel));
+    }
+
+    #[test]
+    fn residual_batch_short_out_stays_in_bounds() {
+        check_residual_batch_stays_in_bounds(&estimators::FundamentalEstimator);
+        check_residual_batch_stays_in_bounds(&estimators::HomographyEstimator);
     }
 }

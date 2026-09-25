@@ -819,7 +819,7 @@ impl PyPreprocessor {
                 self.format
             )));
         }
-        self.run_cpu(py, img.u8_elems(), width, height, out_height, out_width)
+        self.run_cpu(py, img.u8_elems()?, width, height, out_height, out_width)
     }
 
     /// CPU branch of [`run`](Self::run): interleaved formats only
@@ -1603,7 +1603,7 @@ impl PyPreprocessor {
                         "run: host Image must be uint8 for the fused preprocessor input",
                     ));
                 }
-                let bytes = img.u8_elems();
+                let bytes = img.u8_elems()?;
                 let Some(cuda) = &self.cuda else {
                     if consumer_stream.is_some() {
                         return Err(PyValueError::new_err(

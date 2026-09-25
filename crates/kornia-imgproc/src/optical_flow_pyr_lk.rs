@@ -92,6 +92,21 @@ pub struct PyrLKPrecomputed {
     pub grad_y_pyr: Vec<Image<f32, 1>>,
 }
 
+/// Largest supported `max_level` for pyramidal LK. Level `l` halves each
+/// dimension `l` times, so beyond ~32 levels every image is 1x1; the cap keeps
+/// `max_level + 1` and the pyramid `Vec` capacities from overflowing.
+pub const PYR_LK_MAX_LEVEL: usize = 32;
+
+fn check_max_level(max_level: usize) -> Result<(), PyrLKError> {
+    if max_level > PYR_LK_MAX_LEVEL {
+        return Err(PyrLKError::InvalidMaxLevel {
+            max_level,
+            max_supported: PYR_LK_MAX_LEVEL,
+        });
+    }
+    Ok(())
+}
+
 /// Error type for sparse pyramidal Lucas–Kanade optical flow.
 #[derive(Debug, Error)]
 pub enum PyrLKError {
@@ -126,6 +141,16 @@ pub enum PyrLKError {
     /// Image operation failure from lower-level APIs.
     #[error(transparent)]
     Image(#[from] ImageError),
+    /// `max_level` exceeds [`PYR_LK_MAX_LEVEL`].
+    #[error(
+        "invalid LK max_level {max_level}: at most {max_supported} pyramid levels are supported"
+    )]
+    InvalidMaxLevel {
+        /// Requested maximum pyramid level.
+        max_level: usize,
+        /// Largest supported maximum level.
+        max_supported: usize,
+    },
     /// Invalid precomputed pyramid layout for LK tracking.
     #[error("invalid precomputed pyramids: expected {expected_levels} levels, got prev={prev_levels}, next={next_levels}, grad_x={grad_x_levels}, grad_y={grad_y_levels}")]
     InvalidPrecomputedLevels {
@@ -1100,6 +1125,12 @@ fn track_feature(
         let ix = &precomputed.grad_x_pyr[lvl];
         let iy = &precomputed.grad_y_pyr[lvl];
 
+        // An empty level has nothing to track against (and the bilinear
+        // sampler behind `sample_at` requires a non-empty image).
+        if prev.cols() == 0 || prev.rows() == 0 {
+            return None;
+        }
+
         let hw = HALF_WIN as f32;
         if params.border_mode == BorderMode::Reject
             && !(xc >= hw
@@ -1253,6 +1284,7 @@ pub fn build_lk_precomputed(
             next_height: next_img.height(),
         });
     }
+    check_max_level(max_level)?;
     let mut prev_pyr = Vec::with_capacity(max_level + 1);
     let mut next_pyr = Vec::with_capacity(max_level + 1);
     prev_pyr.push(prev_img.clone());
@@ -1352,6 +1384,7 @@ pub fn calc_optical_flow_pyr_lk_with_precomputed(
         return Err(PyrLKError::InvalidWindowSize(params.win_size));
     }
 
+    check_max_level(params.max_level)?;
     let expected_levels = params.max_level + 1;
     if precomputed.prev_pyr.len() != expected_levels
         || precomputed.next_pyr.len() != expected_levels
@@ -2164,5 +2197,36 @@ mod tests {
             successful_tracks >= 3,
             "At least 3 features should be tracked successfully"
         );
+    }
+}
+
+#[cfg(test)]
+mod max_level_tests {
+    use super::*;
+
+    /// Regression: `max_level + 1` overflowed (capacity overflow panic) for
+    /// huge `max_level`; it is now rejected with a typed error.
+    #[test]
+    fn huge_max_level_is_rejected() -> Result<(), ImageError> {
+        let size = ImageSize {
+            width: 16,
+            height: 16,
+        };
+        let a = Image::<f32, 1>::from_size_val(size, 0.0)?;
+        let b = Image::<f32, 1>::from_size_val(size, 0.0)?;
+        assert!(matches!(
+            build_lk_precomputed(&a, &b, usize::MAX),
+            Err(PyrLKError::InvalidMaxLevel { .. })
+        ));
+        let pre = build_lk_precomputed(&a, &b, 2).map_err(|_| ImageError::CastError)?;
+        let params = PyrLKParams {
+            max_level: usize::MAX,
+            ..Default::default()
+        };
+        assert!(matches!(
+            calc_optical_flow_pyr_lk_with_precomputed(&pre, &[[4.0, 4.0]], None, &params),
+            Err(PyrLKError::InvalidMaxLevel { .. })
+        ));
+        Ok(())
     }
 }

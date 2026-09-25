@@ -3,6 +3,7 @@ use std::any::Any;
 use crate::stream::{
     camera::{CameraCapture, CameraCaptureConfig},
     error::StreamCaptureError,
+    quote_pipeline_value,
 };
 
 /// A configuration object for capturing frames from a Rtsp camera.
@@ -71,6 +72,8 @@ impl RTSPCameraConfig {
         port: &u16,
         stream: &str,
     ) -> Self {
+        let username = percent_encode_userinfo(username);
+        let password = percent_encode_userinfo(password);
         self.url = format!("rtsp://{username}:{password}@{ip}:{port}/{stream}");
         self
     }
@@ -97,8 +100,50 @@ impl Default for RTSPCameraConfig {
 /// # Returns
 ///
 /// A GStreamer pipeline description
-pub fn rtsp_camera_pipeline_description(url: &str, latency: u32) -> String {
-    format!(
+///
+/// # Errors
+///
+/// Returns [`StreamCaptureError::InvalidConfig`] if `url` contains characters that could escape
+/// the quoted `location` property (`"`, `\` or control characters).
+pub fn rtsp_camera_pipeline_description(
+    url: &str,
+    latency: u32,
+) -> Result<String, StreamCaptureError> {
+    let url = quote_pipeline_value(url)?;
+    Ok(format!(
         "rtspsrc location={url} latency={latency} ! rtph264depay ! avdec_h264 ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink"
-    )
+    ))
+}
+
+// Percent-encodes the userinfo part of a URL so credentials containing `@`, `:`, `/` or spaces
+// cannot change how the URL is parsed.
+fn percent_encode_userinfo(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for b in value.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn credentials_are_percent_encoded() {
+        let cfg = RTSPCameraConfig::new().with_settings("us er", "p@ss:!/", "10.0.0.1", &554, "s");
+        assert_eq!(cfg.url, "rtsp://us%20er:p%40ss%3A%21%2F@10.0.0.1:554/s");
+    }
+
+    #[test]
+    fn pipeline_url_is_quoted_and_validated() -> Result<(), StreamCaptureError> {
+        let desc = rtsp_camera_pipeline_description("rtsp://x ! filesink location=/tmp/x", 0)?;
+        assert!(desc.starts_with("rtspsrc location=\"rtsp://x ! filesink location=/tmp/x\" "));
+        assert!(rtsp_camera_pipeline_description("rtsp://x\" ! fakesink", 0).is_err());
+        Ok(())
+    }
 }

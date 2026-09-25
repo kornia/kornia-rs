@@ -52,7 +52,7 @@ impl CameraCapture {
                     "device is empty".to_string(),
                 ));
             }
-            v4l2_camera_pipeline_description(&config.device, config.size, config.fps)
+            v4l2_camera_pipeline_description(&config.device, config.size, config.fps)?
         } else if let Some(config) = config.as_any().downcast_ref::<RTSPCameraConfig>() {
             // check that the url is not empty
             if config.url.is_empty() {
@@ -60,7 +60,7 @@ impl CameraCapture {
                     "url is empty".to_string(),
                 ));
             }
-            rtsp_camera_pipeline_description(&config.url, config.latency)
+            rtsp_camera_pipeline_description(&config.url, config.latency)?
         } else {
             return Err(StreamCaptureError::InvalidConfig(
                 "unknown config type".to_string(),

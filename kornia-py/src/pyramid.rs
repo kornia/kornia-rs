@@ -3,7 +3,8 @@ use pyo3::prelude::*;
 
 use crate::dispatch::cpu_op;
 use crate::image::{
-    alloc_output_pyarray, alloc_output_pyarray_f32, numpy_as_image, numpy_as_image_f32, to_pyerr,
+    alloc_output_pyarray, alloc_output_pyarray_t, numpy_as_image, numpy_as_image_t, to_pyerr,
+    UNINIT,
 };
 use kornia_image::{Image, ImageError, ImageSize};
 use kornia_imgproc::pyramid;
@@ -72,13 +73,17 @@ fn run_cpu_f32<const C: usize>(
     size_fn: SizeFn,
 ) -> PyResult<Py<numpy::PyArray3<f32>>> {
     let shape = arr.bind(py).shape();
-    let src = unsafe { numpy_as_image_f32::<C>(py, arr)? };
+    // SAFETY: the view borrows the numpy array, which the caller keeps alive and does not mutate
+    // for the duration of this call.
+    let src = unsafe { numpy_as_image_t::<f32, C>(py, arr)? };
     let out_shape = size_fn((shape[0], shape[1], shape[2]));
     let out_size = ImageSize {
         width: out_shape.1,
         height: out_shape.0,
     };
-    let (mut dst, out) = unsafe { alloc_output_pyarray_f32::<C>(py, out_size)? };
+    // SAFETY: `dst` aliases the fresh array `out`, which stays alive and is only handed to Python
+    // after the kernel has written every element through `dst`.
+    let (mut dst, out) = unsafe { alloc_output_pyarray_t::<f32, C, UNINIT>(py, out_size)? };
     py.detach(|| op(&src, &mut dst)).map_err(to_pyerr)?;
     Ok(out)
 }

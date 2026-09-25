@@ -1424,15 +1424,51 @@ where
             .downcast_ref::<CudaResource<T>>()
             .ok_or(CudaError::NotCudaBacked)?;
 
-        let numel: usize = self.shape.iter().product();
+        let numel = crate::tensor::checked_numel(&self.shape)
+            .map_err(|e| CudaError::Driver(e.to_string()))?;
+        // The device slice is what gets copied: it must match the logical shape
+        // exactly, otherwise `memcpy_dtoh` would write past `dst` or leave part of
+        // it uninitialized.
+        if cuda_res.slice.len() != numel {
+            return Err(CudaError::Driver(format!(
+                "to_host_in: device buffer has {} elements but shape {:?} needs {numel}",
+                cuda_res.slice.len(),
+                self.shape
+            )));
+        }
         let layout =
             std::alloc::Layout::array::<T>(numel).map_err(|e| CudaError::Driver(e.to_string()))?;
         let owner = alloc
             .allocate(layout)
             .map_err(|e| CudaError::Driver(e.to_string()))?;
-        let ptr = owner.as_ptr() as *mut T;
+        // `alloc` is an arbitrary user-supplied allocator: verify that what it returned
+        // is host-accessible, large enough and non-null before forming a host slice.
+        if !owner.domain().is_host_accessible() {
+            return Err(CudaError::Driver(format!(
+                "to_host_in: allocator returned non-host-accessible memory ({:?})",
+                owner.domain()
+            )));
+        }
+        if owner.len_bytes() < layout.size() {
+            return Err(CudaError::Driver(format!(
+                "to_host_in: allocator returned {} bytes, {} required",
+                owner.len_bytes(),
+                layout.size()
+            )));
+        }
+        if !(owner.as_ptr() as usize).is_multiple_of(layout.align()) {
+            return Err(CudaError::Driver(
+                "to_host_in: allocator returned a misaligned buffer".to_string(),
+            ));
+        }
+        let nn_ptr = NonNull::new(owner.as_ptr() as *mut T).ok_or_else(|| {
+            CudaError::Driver("to_host_in: allocator returned a null pointer".to_string())
+        })?;
+        let ptr = nn_ptr.as_ptr();
 
-        // SAFETY: `owner` holds at least `numel * size_of::<T>()` bytes at `ptr`.
+        // SAFETY: `ptr` is non-null, aligned for `T`, host-accessible and valid for at
+        // least `numel * size_of::<T>()` bytes (all checked above); `owner` keeps it
+        // alive and nothing else references it yet.
         let dst = unsafe { std::slice::from_raw_parts_mut(ptr, numel) };
         stream
             .memcpy_dtoh(&*cuda_res.slice, dst)
@@ -1441,8 +1477,6 @@ where
             .synchronize()
             .map_err(|e| CudaError::Driver(e.to_string()))?;
 
-        // SAFETY: ptr is non-null (checked by the allocator) and owned by `owner`.
-        let nn_ptr = unsafe { NonNull::new_unchecked(ptr) };
         let storage = TensorStorage {
             ptr: nn_ptr,
             len: layout.size(),
@@ -2000,7 +2034,7 @@ mod tests {
 
         let t = zeros_cuda_unified::<f32, 1>([0], &stream)?;
         assert_eq!(t.storage.owner.len_bytes(), 0);
-        assert_eq!(t.storage.layout().size(), 0);
+        assert_eq!(t.storage.layout().unwrap().size(), 0);
         assert!(t.as_slice().is_empty());
 
         let alloc = unified_alloc(&stream);

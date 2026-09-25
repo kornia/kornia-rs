@@ -2,17 +2,28 @@ use kornia_image::Image;
 
 /// Kernel for bilinear interpolation
 ///
+/// This is the single bounds-safe boundary for f32 bilinear sampling: the
+/// integer taps are clamped into the image and every read is a (bounds
+/// checked) slice index, so any coordinate — negative, huge, NaN — stays in
+/// bounds. Negative / NaN coordinates saturate to tap 0 in the `as usize`
+/// cast. An empty image or an out-of-range channel returns `0.0`; public entry
+/// points (`interpolate_pixel`, `remap`) report those as errors first.
+///
 /// # Arguments
 ///
-/// * `image` - The input image container.
+/// * `image` - The input image container. Empty images yield `0.0`.
 /// * `u` - The x coordinate of the pixel to interpolate.
 /// * `v` - The y coordinate of the pixel to interpolate.
-/// * `c` - The channel of the pixel to interpolate.
+/// * `c` - The channel of the pixel to interpolate. Out-of-range channels yield `0.0`.
 ///
 /// # Returns
 ///
 /// The interpolated pixel value.
 // TODO: add support for other data types. Maybe use a trait? or template?
+// Per-pixel, per-channel hot path: the bounds-check panic paths would
+// otherwise push it past the inlining threshold at some call sites (an
+// outlined call per channel measured ~+80% on the f32 bilinear resize).
+#[inline(always)]
 pub(crate) fn bilinear_interpolation<const C: usize>(
     image: &Image<f32, C>,
     u: f32,
@@ -20,25 +31,35 @@ pub(crate) fn bilinear_interpolation<const C: usize>(
     c: usize,
 ) -> f32 {
     let (rows, cols) = (image.rows(), image.cols());
+    // Cheap, well-predicted guard so release builds never read a neighbouring
+    // pixel's channel or index an empty image, whatever the caller did.
+    if rows == 0 || cols == 0 || c >= C {
+        return 0.0;
+    }
 
-    let iu = u.trunc() as usize;
-    let iv = v.trunc() as usize;
+    let iu = (u.trunc() as usize).min(cols - 1);
+    let iv = (v.trunc() as usize).min(rows - 1);
 
     let frac_u = u.fract();
     let frac_v = v.fract();
-    let val00 = *image.get_unchecked([iv, iu, c]);
-    let val01 = if iu + 1 < cols {
-        *image.get_unchecked([iv, iu + 1, c])
+
+    // Row-major (H, W, C). A neighbour past the last column/row replicates
+    // `val00` (the historical rule the CUDA kernels mirror — note `val11`
+    // falls back to `val00`, not to `val01`/`val10`).
+    let data = image.as_slice();
+    let i00 = (iv * cols + iu) * C + c;
+    let has_right = iu + 1 < cols;
+    let has_down = iv + 1 < rows;
+    let row_step = cols * C;
+    let val00 = data[i00];
+    let val01 = if has_right { data[i00 + C] } else { val00 };
+    let val10 = if has_down {
+        data[i00 + row_step]
     } else {
         val00
     };
-    let val10 = if iv + 1 < rows {
-        *image.get_unchecked([iv + 1, iu, c])
-    } else {
-        val00
-    };
-    let val11 = if iu + 1 < cols && iv + 1 < rows {
-        *image.get_unchecked([iv + 1, iu + 1, c])
+    let val11 = if has_right && has_down {
+        data[i00 + row_step + C]
     } else {
         val00
     };

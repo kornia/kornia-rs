@@ -1,4 +1,4 @@
-use crate::image::{alloc_output_pyarray, numpy_as_image, to_pyerr, PyImage};
+use crate::image::{alloc_output_pyarray_t, numpy_as_image, to_pyerr, PyImage, ZEROED};
 use kornia_io::jpeg as J;
 use pyo3::prelude::*;
 
@@ -86,12 +86,18 @@ pub fn decode_image_jpeg(py: Python<'_>, src: &[u8]) -> PyResult<PyImage> {
     let layout = J::decode_image_jpeg_layout(src).map_err(to_pyerr)?;
     match layout.channels {
         3 => {
-            let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, layout.image_size)? };
+            // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only
+            // handed to Python after the last write through `dst`.
+            let (mut dst, out) =
+                unsafe { alloc_output_pyarray_t::<u8, 3, ZEROED>(py, layout.image_size)? };
             J::decode_image_jpeg_rgb8(src, &mut dst).map_err(to_pyerr)?;
             Ok(out)
         }
         1 => {
-            let (mut dst, out) = unsafe { alloc_output_pyarray::<1>(py, layout.image_size)? };
+            // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only
+            // handed to Python after the last write through `dst`.
+            let (mut dst, out) =
+                unsafe { alloc_output_pyarray_t::<u8, 1, ZEROED>(py, layout.image_size)? };
             J::decode_image_jpeg_mono8(src, &mut dst).map_err(to_pyerr)?;
             Ok(out)
         }
@@ -107,12 +113,18 @@ fn decode_image_jpeg_with_mode(py: Python<'_>, src: &[u8], mode: &str) -> PyResu
     let layout = J::decode_image_jpeg_layout(src).map_err(to_pyerr)?;
     match mode {
         "rgb" => {
-            let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, layout.image_size)? };
+            // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only
+            // handed to Python after the last write through `dst`.
+            let (mut dst, out) =
+                unsafe { alloc_output_pyarray_t::<u8, 3, ZEROED>(py, layout.image_size)? };
             J::decode_image_jpeg_rgb8(src, &mut dst).map_err(to_pyerr)?;
             Ok(out)
         }
         "mono" => {
-            let (mut dst, out) = unsafe { alloc_output_pyarray::<1>(py, layout.image_size)? };
+            // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only
+            // handed to Python after the last write through `dst`.
+            let (mut dst, out) =
+                unsafe { alloc_output_pyarray_t::<u8, 1, ZEROED>(py, layout.image_size)? };
             J::decode_image_jpeg_mono8(src, &mut dst).map_err(to_pyerr)?;
             Ok(out)
         }

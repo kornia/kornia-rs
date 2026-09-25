@@ -1,8 +1,7 @@
 use kornia_image::{Image, ImageError};
-use rayon::{
-    iter::{IndexedParallelIterator, ParallelIterator},
-    slice::{ParallelSlice, ParallelSliceMut},
-};
+use rayon::iter::{IndexedParallelIterator, ParallelIterator};
+
+use crate::parallel::{par_row_chunks, par_row_chunks_mut};
 
 /// Flip the input image horizontally.
 ///
@@ -87,9 +86,8 @@ where
                 )
             };
             const ROWS_PER_TASK: usize = 16;
-            dst_bytes
-                .par_chunks_mut(ROWS_PER_TASK * row_bytes)
-                .zip_eq(src_bytes.par_chunks(ROWS_PER_TASK * row_bytes))
+            par_row_chunks_mut(dst_bytes, row_bytes, ROWS_PER_TASK)
+                .zip_eq(par_row_chunks(src_bytes, row_bytes, ROWS_PER_TASK))
                 .for_each(|(dst_big, src_big)| {
                     dst_big
                         .chunks_exact_mut(row_bytes)
@@ -104,9 +102,8 @@ where
 
     const ROWS_PER_TASK: usize = 16;
     let row_len = src.cols() * C;
-    dst.as_slice_mut()
-        .par_chunks_mut(ROWS_PER_TASK * row_len)
-        .zip_eq(src.as_slice().par_chunks(ROWS_PER_TASK * row_len))
+    par_row_chunks_mut(dst.as_slice_mut(), row_len, ROWS_PER_TASK)
+        .zip_eq(par_row_chunks(src.as_slice(), row_len, ROWS_PER_TASK))
         .for_each(|(dst_big, src_big)| {
             dst_big
                 .chunks_exact_mut(row_len)
@@ -326,15 +323,14 @@ where
     // resolution up to 8K. Within a chunk we use raw-ptr copy_nonoverlapping
     // to skip per-row slice-bounds checks (visible at 1080p: ~100 μs of 930).
     const ROWS_PER_TASK: usize = 16;
-    let chunk_elems = ROWS_PER_TASK * row_len;
 
     // Pass src as usize address; raw pointers aren't Send. Each rayon task
     // reconstructs the pointer and reads its own disjoint row ranges.
     let src_addr = src.as_slice().as_ptr() as usize;
     let dst_slice = dst.as_slice_mut();
 
-    dst_slice
-        .par_chunks_mut(chunk_elems)
+    // An empty image yields no chunks, so `row_len` is non-zero below.
+    par_row_chunks_mut(dst_slice, row_len, ROWS_PER_TASK)
         .enumerate()
         .for_each(|(chunk_idx, dst_chunk)| {
             let n_rows_in_chunk = dst_chunk.len() / row_len;
@@ -461,6 +457,37 @@ mod tests {
         super::vertical_flip(&image, &mut flipped)?;
         // Rows reversed: [40, 30, 20, 10]
         assert_eq!(flipped.as_slice(), &[40u8, 30, 20, 10]);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod empty_image_tests {
+    use kornia_image::{Image, ImageError, ImageSize};
+
+    /// Regression: zero-width images made the chunked parallel loops panic
+    /// (`par_chunks_mut(0)`).
+    #[test]
+    fn flips_on_empty_images_are_noops() -> Result<(), ImageError> {
+        for size in [
+            ImageSize {
+                width: 0,
+                height: 4,
+            },
+            ImageSize {
+                width: 4,
+                height: 0,
+            },
+        ] {
+            let src = Image::<u8, 3>::from_size_val(size, 7)?;
+            let mut dst = Image::<u8, 3>::from_size_val(size, 0)?;
+            super::horizontal_flip(&src, &mut dst)?;
+            super::vertical_flip(&src, &mut dst)?;
+            let srcf = Image::<f32, 1>::from_size_val(size, 7.0)?;
+            let mut dstf = Image::<f32, 1>::from_size_val(size, 0.0)?;
+            super::horizontal_flip(&srcf, &mut dstf)?;
+            super::vertical_flip(&srcf, &mut dstf)?;
+        }
         Ok(())
     }
 }

@@ -8,7 +8,7 @@
 use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64};
 
 use crate::pose::{homography_4pt2d, homography_dlt};
-use crate::ransac::{Estimator, Match2d2d};
+use crate::ransac::{clamp_pair, Estimator, Match2d2d};
 
 /// Estimator for a planar homography from 2D-2D pixel correspondences.
 ///
@@ -96,10 +96,14 @@ impl Estimator for HomographyEstimator {
     /// otherwise the portable scalar reference. All three paths produce
     /// byte-equal results to FMA-reordering noise.
     fn residual_batch(&self, model: &Self::Model, samples: &[Self::Sample], out: &mut [f64]) {
-        debug_assert_eq!(out.len(), samples.len());
+        // The SIMD kernels below write `out` through raw pointers for every sample;
+        // only the first `min(out.len(), samples.len())` entries are computed.
+        let (samples, out) = clamp_pair(samples, out);
         let h = pack_h(model);
 
         #[cfg(target_arch = "aarch64")]
+        // SAFETY: NEON is architectural on aarch64. `out.len() == samples.len()`
+        // holds after the clamp above; the kernel stays below `samples.len()`.
         unsafe {
             let idx = transfer_error_batch_neon(h, samples, out);
             transfer_error_batch_scalar_tail(h, samples, out, idx);
@@ -108,6 +112,7 @@ impl Estimator for HomographyEstimator {
 
         #[cfg(target_arch = "x86_64")]
         if kornia_imgproc::simd::cpu_features().has_avx2 {
+            // SAFETY: AVX2 confirmed by the runtime probe; equal slice lengths as above.
             unsafe {
                 let idx = transfer_error_batch_avx2(h, samples, out);
                 transfer_error_batch_scalar_tail(h, samples, out, idx);

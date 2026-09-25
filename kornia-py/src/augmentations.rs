@@ -487,12 +487,17 @@ impl PyColorJitter {
         img.backing.ensure_host()?;
         img.require_u8("ColorJitter")?;
         let (height, width, channels) = img.shape_hwc();
-        let src = img.u8_elems();
+        let src = img.u8_elems()?;
         let npixels = height * width;
         let order_f32: Vec<(u8, f32)> = order.iter().map(|&(op, v)| (op, v as f32)).collect();
 
         // Allocate the output PyArray; write into it directly to avoid a copy.
+        // SAFETY: every path of `fused_color_jitter` writes all of `dst` before
+        // any read of it (full-slice copy / LUT / brightness, or the 3-channel
+        // saturation/hue kernels over all `npixels`).
         let out_arr = unsafe { PyArray::<u8, _>::new(py, [height, width, channels], false) };
+        // SAFETY: fresh C-contiguous (height, width, channels) array, i.e.
+        // exactly `src.len()` bytes, not yet shared with Python.
         let dst = unsafe { std::slice::from_raw_parts_mut(out_arr.data(), src.len()) };
 
         py.detach(|| {
@@ -501,7 +506,7 @@ impl PyColorJitter {
             );
         });
 
-        Ok(img.wrap_u8_result_pub(py, out_arr.unbind()))
+        img.wrap_u8_result_pub(py, out_arr.unbind())
     }
 
     fn __repr__(&self) -> String {

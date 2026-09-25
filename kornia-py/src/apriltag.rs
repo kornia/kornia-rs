@@ -303,7 +303,7 @@ impl PyApriltagDetection {
             Vec2F64::new(self.quad.corners[3].0 as f64, self.quad.corners[3].1 as f64),
         ];
         let pair = estimate_tag_pose(&object_pts, &image_pts, &camera, n_iters)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+            .map_err(crate::pyutils::value_err)?;
 
         let to_py = |tp: &kornia_3d::pose::PlanarPose| -> PyTagPose {
             let r = tp.pose.rotation;

@@ -232,6 +232,17 @@ where
 /// * `npixels` - Number of pixels (height * width).
 /// * `scale` - Per-channel scale factors (typically `1.0 / (std * 255.0)`).
 /// * `offset` - Per-channel offsets (typically `-mean / std`).
+///
+/// # Returns
+///
+/// Nothing; `dst` is written in place.
+///
+/// # Errors
+///
+/// This function does not return errors. If `src` or `dst` hold fewer than
+/// `npixels * 3` elements, only the `min(npixels, src.len() / 3, dst.len() / 3)`
+/// pixels that fit in both buffers are processed; the rest of `dst` is left
+/// untouched.
 pub fn normalize_rgb_u8(
     src: &[u8],
     dst: &mut [f32],
@@ -239,9 +250,14 @@ pub fn normalize_rgb_u8(
     scale: &[f32; 3],
     offset: &[f32; 3],
 ) {
+    // Never trust `npixels`: clamp it to what both buffers can actually hold
+    // so the SIMD kernels below can rely on `len >= npixels * 3`.
+    let npixels = npixels.min(src.len() / 3).min(dst.len() / 3);
+
     #[cfg(target_arch = "aarch64")]
     {
-        // SAFETY: NEON is architectural on aarch64; caller guarantees lengths.
+        // SAFETY: NEON is architectural on aarch64; `npixels` was clamped above
+        // so `src.len() >= npixels * 3` and `dst.len() >= npixels * 3`.
         unsafe { normalize_rgb_u8_neon(src, dst, npixels, scale, offset) };
         return;
     }
@@ -250,7 +266,8 @@ pub fn normalize_rgb_u8(
     {
         let cpu = crate::simd::cpu_features();
         if cpu.has_avx2 && cpu.has_fma {
-            // SAFETY: AVX2+FMA confirmed by the runtime probe above.
+            // SAFETY: AVX2+FMA confirmed by the runtime probe above; `npixels`
+            // was clamped so both slices hold at least `npixels * 3` elements.
             unsafe { normalize_rgb_u8_avx2(src, dst, npixels, scale, offset) };
             return;
         }
@@ -585,6 +602,22 @@ mod tests {
                 b
             );
         }
+    }
+
+    /// Regression: an `npixels` larger than the buffers must not write or read
+    /// out of bounds (previously the SIMD kernels trusted it blindly).
+    #[test]
+    fn normalize_rgb_u8_npixels_larger_than_buffers() {
+        let src = vec![255u8; 3 * 17];
+        let mut dst = vec![-1.0f32; 3 * 9];
+        super::normalize_rgb_u8(&src, &mut dst, 1 << 20, &[1.0; 3], &[0.0; 3]);
+        assert!(dst.iter().all(|&v| v == 255.0));
+
+        let src = vec![7u8; 3 * 2];
+        let mut dst = vec![-1.0f32; 3 * 20];
+        super::normalize_rgb_u8(&src, &mut dst, usize::MAX, &[1.0; 3], &[0.0; 3]);
+        assert!(dst[..6].iter().all(|&v| v == 7.0));
+        assert!(dst[6..].iter().all(|&v| v == -1.0));
     }
 
     #[test]

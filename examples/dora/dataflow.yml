@@ -25,7 +25,7 @@ nodes:
       - frame
     env:
       SOURCE_TYPE: "rtsp"
-      SOURCE_URI: "rtsp://tapo_entrance:123456789@192.168.1.141:554/stream2"
+      SOURCE_URI: "rtsp://<user>:<password>@<camera-ip>:554/stream2"
   - id: sobel
     git: https://github.com/kornia/dora-nodes-hub.git
     rev: 5b309b6c6f95074f8d38f2a236142e2e0751ee19

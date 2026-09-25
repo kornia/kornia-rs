@@ -1,4 +1,7 @@
-use super::{capture::StreamerState, error::VideoReaderError, StreamCapture, StreamCaptureError};
+use super::{
+    capture::StreamerState, error::VideoReaderError, set_location_property, StreamCapture,
+    StreamCaptureError,
+};
 use gstreamer::prelude::*;
 use kornia_image::{Image, ImageSize};
 use std::{path::Path, time::Duration};
@@ -70,22 +73,25 @@ impl VideoWriter {
             ImageFormat::Rgb8 => "RGB",
         };
 
-        let path = path.as_ref().to_owned();
+        if fps <= 0 {
+            return Err(StreamCaptureError::InvalidConfig(format!(
+                "fps must be positive, got {fps}"
+            )));
+        }
 
-        let pipeline_str = format!(
-            "appsrc name=src ! \
+        // The output path is set as a property after parsing (see `set_location_property`).
+        let pipeline_str = "appsrc name=src ! \
             videoconvert ! video/x-raw,format=I420 ! \
             x264enc ! \
             video/x-h264,profile=main ! \
             h264parse ! \
             mp4mux ! \
-            filesink location={}",
-            path.to_string_lossy()
-        );
+            filesink name=filesink";
 
-        let pipeline = gstreamer::parse::launch(&pipeline_str)?
+        let pipeline = gstreamer::parse::launch(pipeline_str)?
             .dynamic_cast::<gstreamer::Pipeline>()
             .map_err(StreamCaptureError::DowncastPipelineError)?;
+        set_location_property(&pipeline, "filesink", path.as_ref())?;
 
         let appsrc = pipeline
             .by_name("src")
@@ -243,17 +249,18 @@ impl VideoReader {
             ImageFormat::Mono8 => "GRAY8",
         };
 
+        // The input path is set as a property after parsing (see `set_location_property`);
+        // the pipeline only starts reading once `start` sets it to PLAYING.
         let pipeline = format!(
-            "filesrc location=\"{}\" ! \
+            "filesrc name=filesrc ! \
             decodebin ! \
             videoconvert ! \
-            video/x-raw,format={} ! \
-            appsink name=sink sync=true",
-            path.as_ref().to_string_lossy(),
-            video_format
+            video/x-raw,format={video_format} ! \
+            appsink name=sink sync=true"
         );
 
         let capture = StreamCapture::new(&pipeline)?;
+        set_location_property(&capture.pipeline, "filesrc", path.as_ref())?;
 
         Ok(Self(capture))
     }
@@ -414,8 +421,27 @@ impl VideoReader {
 
 #[cfg(test)]
 mod tests {
-    use super::{ImageFormat, VideoCodec, VideoWriter};
+    use super::{ImageFormat, VideoCodec, VideoReader, VideoWriter};
     use kornia_image::{Image, ImageSize};
+
+    /// Regression: paths were quoted into the pipeline string, which rejected `\`
+    /// (breaking Windows paths). The path must now reach `filesrc` verbatim.
+    #[test]
+    fn video_reader_accepts_any_path() -> Result<(), Box<dyn std::error::Error>> {
+        use gstreamer::prelude::*;
+        let path = std::path::Path::new(r"C:\my videos\clip ! fakesink name=x.mp4");
+        let reader = VideoReader::new(path, ImageFormat::Rgb8)?;
+        let src = reader
+            .0
+            .pipeline
+            .by_name("filesrc")
+            .ok_or("missing filesrc")?;
+        assert_eq!(
+            src.property::<Option<String>>("location").as_deref(),
+            path.to_str()
+        );
+        Ok(())
+    }
 
     #[ignore = "need gstreamer in CI"]
     #[test]

@@ -33,7 +33,9 @@ pub struct V4lResource {
 }
 
 // SAFETY: V4L2 mmap memory is page-mapped by the kernel and thread-safe for
-// concurrent reads. MmapBuffer is Send + Sync (verified by its own unsafe impls).
+// concurrent reads. The driver cannot write into it while this resource is alive
+// because `MmapStream` only re-queues buffers that no `MmapBuffer` references.
+// MmapBuffer is Send + Sync (verified by its own unsafe impls).
 unsafe impl Send for V4lResource {}
 unsafe impl Sync for V4lResource {}
 

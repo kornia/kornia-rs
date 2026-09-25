@@ -1,6 +1,8 @@
 use numpy::{PyArray, PyArray2, PyArrayMethods, PyUntypedArrayMethods};
 use pyo3::prelude::*;
 
+use crate::pyutils::{c_slice, value_err};
+
 use kornia_imgproc::features::match_descriptors;
 
 /// Brute-force matcher for 32-byte binary descriptors (ORB, BRIEF).
@@ -38,26 +40,25 @@ pub fn match_descriptors_py(
         )));
     }
 
-    let (m, n) = (s1[0], s2[0]);
-
-    // Zero-copy reinterpret — the numpy buffer outlives this call.
-    let d1: &[[u8; 32]] =
-        unsafe { std::slice::from_raw_parts(descriptors1.data() as *const [u8; 32], m) };
-    let d2: &[[u8; 32]] =
-        unsafe { std::slice::from_raw_parts(descriptors2.data() as *const [u8; 32], n) };
+    // Zero-copy reinterpret as 32-byte rows. `c_slice` validates contiguity
+    // and uses the array's real element count, so `as_chunks` can never read
+    // past the numpy buffer.
+    let (d1, _) = c_slice(&descriptors1, "descriptors1")?.as_chunks::<32>();
+    let (d2, _) = c_slice(&descriptors2, "descriptors2")?.as_chunks::<32>();
 
     let matches =
         py.detach(|| match_descriptors::<32>(d1, d2, max_distance, cross_check, max_ratio));
 
     let k = matches.len();
-    let out = unsafe {
-        let arr = PyArray::<i64, _>::new(py, [k, 2], false);
-        let slice = std::slice::from_raw_parts_mut(arr.data(), k * 2);
-        for (i, (q, t)) in matches.iter().enumerate() {
-            slice[i * 2] = *q as i64;
-            slice[i * 2 + 1] = *t as i64;
+    let out = PyArray::<i64, _>::zeros(py, [k, 2], false);
+    {
+        // SAFETY: `out` is a freshly allocated, zero-initialised, C-contiguous
+        // (k, 2) i64 array that no other code references yet.
+        let slice = unsafe { out.as_slice_mut() }.map_err(value_err)?;
+        for (dst, (q, t)) in slice.chunks_exact_mut(2).zip(matches.iter()) {
+            dst[0] = *q as i64;
+            dst[1] = *t as i64;
         }
-        arr
-    };
+    }
     Ok(out.unbind())
 }

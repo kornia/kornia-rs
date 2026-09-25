@@ -11,8 +11,14 @@
 //! prologue exactly — one thread per block-row runs the `warp::span`
 //! constraint math (same f32 expressions, `--fmad=false`) into shared
 //! memory, and every thread derives its coordinate as
-//! `sx_q = sx_q_lo + (x - x_lo) * dsx_q` in wrapping 32-bit arithmetic,
-//! identical to the CPU's repeated `wrapping_add`.
+//! `sx_q = sx_q_lo + (x - x_lo) * dsx_q` in 64-bit arithmetic, identical to
+//! the CPU's i64 accumulation (i32 overflowed for coordinates >= 32768 px).
+//!
+//! The span is f32 and can disagree with the Q16 walk by one pixel at the
+//! edges, so — exactly like the CPU sampler — the integer taps are clamped
+//! into the image before any load: a negative tap becomes 0 with its
+//! fractional weight dropped, a tap past the far edge becomes the last
+//! column/row. In-range taps are unaffected.
 //!
 //! The Q10 sampler transcribes `bilinear_sample_u8_valid`'s scalar form:
 //! `fx = (sx_q & 0xFFFF) >> 6` (truncation), `xi+1` clamped to the last
@@ -69,8 +75,8 @@ extern "C" __global__ void warp_affine_u8_bilinear_c{channels}(
     // anchor computation; blockDim.y <= 8 (see make_config).
     __shared__ int s_xlo[8];
     __shared__ int s_xhi[8];
-    __shared__ int s_sxq[8];
-    __shared__ int s_syq[8];
+    __shared__ long long s_sxq[8];
+    __shared__ long long s_syq[8];
 
     unsigned int x = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -95,8 +101,8 @@ extern "C" __global__ void warp_affine_u8_bilinear_c{channels}(
         s_xlo[threadIdx.y] = xlo;
         s_xhi[threadIdx.y] = xhi;
         // Q16 anchors at x_lo — same f32 expression + truncating cast as CPU.
-        s_sxq[threadIdx.y] = (int)((sx0 + m0 * (float)xlo) * 65536.0f);
-        s_syq[threadIdx.y] = (int)((sy0 + m3 * (float)xlo) * 65536.0f);
+        s_sxq[threadIdx.y] = (long long)((sx0 + m0 * (float)xlo) * 65536.0f);
+        s_syq[threadIdx.y] = (long long)((sy0 + m3 * (float)xlo) * 65536.0f);
     }}
     __syncthreads();
 
@@ -105,21 +111,34 @@ extern "C" __global__ void warp_affine_u8_bilinear_c{channels}(
     size_t d = ((size_t)y * dst_w + x) * C;
     int xlo = s_xlo[threadIdx.y];
     int xhi = s_xhi[threadIdx.y];
-    if ((int)x < xlo || (int)x >= xhi) {{
+    // An empty source has nothing to sample: zero-fill instead of letting the
+    // `src_w - 1` / `src_h - 1` tap clamps below go negative.
+    if (src_w <= 0 || src_h <= 0 || (int)x < xlo || (int)x >= xhi) {{
         #pragma unroll
     for (unsigned int ch = 0; ch < C; ++ch) dst[d + ch] = 0;
         return;
     }}
 
-    // Wrapping i32 coordinate, identical to the CPU's repeated wrapping_add.
-    unsigned int rel = x - (unsigned int)xlo;
-    int sx_q = (int)((unsigned int)s_sxq[threadIdx.y] + rel * (unsigned int)dsx_q);
-    int sy_q = (int)((unsigned int)s_syq[threadIdx.y] + rel * (unsigned int)dsy_q);
+    // 64-bit Q16 coordinate, identical to the CPU's i64 accumulation.
+    long long rel = (long long)(x - (unsigned int)xlo);
+    long long sx_q = s_sxq[threadIdx.y] + rel * (long long)dsx_q;
+    long long sy_q = s_syq[threadIdx.y] + rel * (long long)dsy_q;
 
-    int xi = sx_q >> 16;                                  // arithmetic shift
-    int yi = sy_q >> 16;
+    // Arithmetic shift, then clamp to [-1, src] before narrowing (CPU:
+    // `(sx_q >> 16).clamp(-1, src_w) as i32`).
+    long long xl = sx_q >> 16;
+    long long yl = sy_q >> 16;
+    xl = xl < -1ll ? -1ll : (xl > (long long)src_w ? (long long)src_w : xl);
+    yl = yl < -1ll ? -1ll : (yl > (long long)src_h ? (long long)src_h : yl);
+    int xi = (int)xl;
+    int yi = (int)yl;
     unsigned int fx = ((unsigned int)(sx_q & 0xFFFF)) >> 6; // Q10, truncation
     unsigned int fy = ((unsigned int)(sy_q & 0xFFFF)) >> 6;
+    // Clamp taps into the image — mirror of bilinear_sample_u8_valid.
+    if (xi < 0) {{ xi = 0; fx = 0u; }}
+    if (yi < 0) {{ yi = 0; fy = 0u; }}
+    if (xi > src_w - 1) xi = src_w - 1;
+    if (yi > src_h - 1) yi = src_h - 1;
     unsigned int fx1 = 1024u - fx;
     unsigned int fy1 = 1024u - fy;
 

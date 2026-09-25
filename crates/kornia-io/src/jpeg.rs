@@ -1,4 +1,4 @@
-use crate::error::IoError;
+use crate::{error::IoError, limits::check_image_dimensions};
 use jpeg_encoder::{ColorType, Encoder};
 use kornia_image::{
     color_spaces::{Gray8, Rgb8},
@@ -66,13 +66,9 @@ pub fn encode_image_jpeg_rgb8(
     quality: u8,
     buffer: &mut Vec<u8>,
 ) -> Result<(), IoError> {
+    let (width, height) = jpeg_dimensions(image.width(), image.height())?;
     let encoder = Encoder::new(buffer, quality);
-    encoder.encode(
-        image.as_slice(),
-        image.width() as u16,
-        image.height() as u16,
-        ColorType::Rgb,
-    )?;
+    encoder.encode(image.as_slice(), width, height, ColorType::Rgb)?;
     Ok(())
 }
 
@@ -113,13 +109,9 @@ pub fn encode_image_jpeg_bgra8(
     quality: u8,
     buffer: &mut Vec<u8>,
 ) -> Result<(), IoError> {
+    let (width, height) = jpeg_dimensions(image.width(), image.height())?;
     let encoder = Encoder::new(buffer, quality);
-    encoder.encode(
-        image.as_slice(),
-        image.width() as u16,
-        image.height() as u16,
-        ColorType::Bgra,
-    )?;
+    encoder.encode(image.as_slice(), width, height, ColorType::Bgra)?;
     Ok(())
 }
 
@@ -142,14 +134,22 @@ pub fn encode_image_jpeg_gray8(
     quality: u8,
     buffer: &mut Vec<u8>,
 ) -> Result<(), IoError> {
+    let (width, height) = jpeg_dimensions(image.width(), image.height())?;
     let encoder = Encoder::new(buffer, quality);
-    encoder.encode(
-        image.as_slice(),
-        image.width() as u16,
-        image.height() as u16,
-        ColorType::Luma,
-    )?;
+    encoder.encode(image.as_slice(), width, height, ColorType::Luma)?;
     Ok(())
+}
+
+// JPEG stores dimensions as u16; reject larger images instead of silently truncating them.
+fn jpeg_dimensions(width: usize, height: usize) -> Result<(u16, u16), IoError> {
+    match (u16::try_from(width), u16::try_from(height)) {
+        (Ok(w), Ok(h)) => Ok((w, h)),
+        _ => Err(IoError::DimensionTooLarge {
+            width,
+            height,
+            max_side: u16::MAX as usize,
+        }),
+    }
 }
 
 fn write_image_jpeg_imp<const N: usize>(
@@ -158,14 +158,9 @@ fn write_image_jpeg_imp<const N: usize>(
     color_type: ColorType,
     quality: u8,
 ) -> Result<(), IoError> {
-    let image_size = image.size();
+    let (width, height) = jpeg_dimensions(image.width(), image.height())?;
     let encoder = Encoder::new_file(file_path, quality)?;
-    encoder.encode(
-        image.as_slice(),
-        image_size.width as u16,
-        image_size.height as u16,
-        color_type,
-    )?;
+    encoder.encode(image.as_slice(), width, height, color_type)?;
     Ok(())
 }
 
@@ -246,6 +241,8 @@ fn read_image_jpeg_impl<const N: usize>(
             "Failed to find image info from its metadata",
         )))
     })?;
+    // Reject decompression bombs before the decoder allocates the pixel buffer.
+    check_image_dimensions(image_info.width as usize, image_info.height as usize)?;
 
     // Infer colorspace from actual image components
     let colorspace = match image_info.components {
@@ -297,6 +294,8 @@ fn decode_jpeg_impl<const C: usize>(src: &[u8], dst: &mut Image<u8, C>) -> Resul
             "Failed to find image info from its metadata",
         )))
     })?;
+    // Reject decompression bombs before the decoder allocates the pixel buffer.
+    check_image_dimensions(image_info.width as usize, image_info.height as usize)?;
 
     // Infer colorspace from actual image components
     let colorspace = match image_info.components {
@@ -358,11 +357,14 @@ pub fn decode_image_jpeg_layout(src: &[u8]) -> Result<ImageLayout, IoError> {
         )))
     })?;
 
+    let size = ImageSize {
+        width: image_info.width as usize,
+        height: image_info.height as usize,
+    };
+    check_image_dimensions(size.width, size.height)?;
+
     Ok(ImageLayout::new(
-        ImageSize {
-            width: image_info.width as usize,
-            height: image_info.height as usize,
-        },
+        size,
         image_info.components,
         PixelFormat::U8,
     ))
@@ -463,6 +465,20 @@ mod tests {
         assert_eq!(decoded.cols(), 258);
         assert_eq!(decoded.rows(), 195);
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_encode_jpeg_rejects_side_above_u16() -> Result<(), IoError> {
+        let image = Image::<u8, 1>::from_size_val([u16::MAX as usize + 1, 1].into(), 0)?;
+        let mut buffer = Vec::new();
+        assert!(matches!(
+            encode_image_jpeg_gray8(&image, 90, &mut buffer),
+            Err(IoError::DimensionTooLarge {
+                max_side: 65535,
+                ..
+            })
+        ));
         Ok(())
     }
 
