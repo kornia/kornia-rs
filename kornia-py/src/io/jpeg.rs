@@ -86,12 +86,16 @@ pub fn decode_image_jpeg(py: Python<'_>, src: &[u8]) -> PyResult<PyImage> {
     let layout = J::decode_image_jpeg_layout(src).map_err(to_pyerr)?;
     match layout.channels {
         3 => {
+            // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only
+            // handed to Python after the last write through `dst`.
             let (mut dst, out) =
                 unsafe { alloc_output_pyarray_t::<u8, 3, ZEROED>(py, layout.image_size)? };
             J::decode_image_jpeg_rgb8(src, &mut dst).map_err(to_pyerr)?;
             Ok(out)
         }
         1 => {
+            // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only
+            // handed to Python after the last write through `dst`.
             let (mut dst, out) =
                 unsafe { alloc_output_pyarray_t::<u8, 1, ZEROED>(py, layout.image_size)? };
             J::decode_image_jpeg_mono8(src, &mut dst).map_err(to_pyerr)?;
@@ -109,12 +113,16 @@ fn decode_image_jpeg_with_mode(py: Python<'_>, src: &[u8], mode: &str) -> PyResu
     let layout = J::decode_image_jpeg_layout(src).map_err(to_pyerr)?;
     match mode {
         "rgb" => {
+            // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only
+            // handed to Python after the last write through `dst`.
             let (mut dst, out) =
                 unsafe { alloc_output_pyarray_t::<u8, 3, ZEROED>(py, layout.image_size)? };
             J::decode_image_jpeg_rgb8(src, &mut dst).map_err(to_pyerr)?;
             Ok(out)
         }
         "mono" => {
+            // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only
+            // handed to Python after the last write through `dst`.
             let (mut dst, out) =
                 unsafe { alloc_output_pyarray_t::<u8, 1, ZEROED>(py, layout.image_size)? };
             J::decode_image_jpeg_mono8(src, &mut dst).map_err(to_pyerr)?;

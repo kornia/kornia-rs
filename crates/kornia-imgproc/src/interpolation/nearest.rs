@@ -4,15 +4,15 @@ use kornia_image::Image;
 ///
 /// Bounds-safe for any coordinate: the tap is clamped into the image and read
 /// with a bounds-checked slice index (negative / NaN coordinates saturate to
-/// tap 0). Validating the channel and the image extent is the caller's job
-/// (see `interpolate_pixel`, `remap`).
+/// tap 0). An empty image or an out-of-range channel returns `0.0`; public entry
+/// points (`interpolate_pixel`, `remap`) report those as errors first.
 ///
 /// # Arguments
 ///
-/// * `image` - The input image container. Must be non-empty.
+/// * `image` - The input image container. Empty images yield `0.0`.
 /// * `u` - The x coordinate of the pixel to interpolate.
 /// * `v` - The y coordinate of the pixel to interpolate.
-/// * `c` - The channel of the pixel to interpolate. Must be `< C`.
+/// * `c` - The channel of the pixel to interpolate. Out-of-range channels yield `0.0`.
 ///
 /// # Returns
 ///
@@ -24,7 +24,11 @@ pub(crate) fn nearest_neighbor_interpolation<const C: usize>(
     c: usize,
 ) -> f32 {
     let (rows, cols) = (image.rows(), image.cols());
-    debug_assert!(rows > 0 && cols > 0 && c < C);
+    // Cheap, well-predicted guard so release builds never read a neighbouring
+    // pixel's channel or index an empty image, whatever the caller did.
+    if rows == 0 || cols == 0 || c >= C {
+        return 0.0;
+    }
 
     let iu = (u.round() as usize).min(cols - 1);
     let iv = (v.round() as usize).min(rows - 1);

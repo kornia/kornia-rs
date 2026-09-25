@@ -557,3 +557,15 @@ def test_preprocessor_survives_readonly_output_buffer():
     out2 = pp(np.full((64, 64, 3), 255, np.uint8))
     np.testing.assert_allclose(out, 0.0)  # frozen buffer untouched
     np.testing.assert_allclose(out2, 1.0, atol=1e-5)
+
+
+def test_from_numpy_strided_misaligned_elements_are_copied_safely():
+    """A field view of a packed record array has an aligned base pointer but a
+    5-byte stride, so its f32 elements are misaligned. Copying it must not read
+    them through a typed view (UB); the values must still round-trip."""
+    rec = np.zeros((2, 2, 3), dtype=np.dtype([("b", "<f4"), ("a", "u1")], align=False))
+    rec["b"] = np.arange(12, dtype=np.float32).reshape(2, 2, 3)
+    view = rec["b"]
+    assert not view.flags.aligned
+    img = Image.from_numpy(view, copy=True)
+    np.testing.assert_array_equal(np.asarray(img), np.arange(12, dtype=np.float32).reshape(2, 2, 3))

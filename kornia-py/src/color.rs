@@ -40,7 +40,11 @@ pub fn bgr_from_rgb(py: Python<'_>, image: &Bound<'_, PyAny>) -> PyResult<Py<PyA
 /// GIL is released for the NEON/AVX2/scalar kernel invocation.
 #[pyfunction]
 pub fn gray_from_rgb_f32(py: Python<'_>, image: PyImageF32) -> PyResult<PyImageF32> {
+    // SAFETY: the view borrows the numpy array, which the caller keeps alive and does not mutate
+    // for the duration of this call.
     let src = unsafe { numpy_as_image_t::<f32, 3>(py, &image)? };
+    // SAFETY: `dst` aliases the fresh array `out`, which stays alive and is only handed to Python
+    // after the kernel has written every element through `dst`.
     let (mut dst, out) = unsafe { alloc_output_pyarray_t::<f32, 1, UNINIT>(py, src.size())? };
     py.detach(|| color::gray_from_rgb_f32(&src, &mut dst))
         .map_err(to_pyerr)?;
@@ -150,7 +154,11 @@ macro_rules! py_f32_3to3 {
         pub fn $name(py: Python<'_>, image: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
             crate::dispatch::require_f32_host(image, stringify!($name))?;
             cpu_op(py, image, |py, image| {
+                // SAFETY: the view borrows the numpy array, which the caller keeps alive and does
+                // not mutate for the duration of this call.
                 let src = unsafe { numpy_as_image_t::<f32, 3>(py, &image)? };
+                // SAFETY: `dst` aliases the fresh array `out`, which stays alive and is only
+                // handed to Python after the kernel has written every element through `dst`.
                 let (mut dst, out) =
                     unsafe { alloc_output_pyarray_t::<f32, 3, UNINIT>(py, src.size())? };
                 py.detach(|| $func(&src, &mut dst)).map_err(to_pyerr)?;
@@ -165,7 +173,11 @@ macro_rules! py_f32_3to3 {
             try_dispatch_device!(py, image, $dev);
             crate::dispatch::require_f32_host(image, stringify!($name))?;
             cpu_op(py, image, |py, image| {
+                // SAFETY: the view borrows the numpy array, which the caller keeps alive and does
+                // not mutate for the duration of this call.
                 let src = unsafe { numpy_as_image_t::<f32, 3>(py, &image)? };
+                // SAFETY: `dst` aliases the fresh array `out`, which stays alive and is only
+                // handed to Python after the kernel has written every element through `dst`.
                 let (mut dst, out) =
                     unsafe { alloc_output_pyarray_t::<f32, 3, UNINIT>(py, src.size())? };
                 py.detach(|| $func(&src, &mut dst)).map_err(to_pyerr)?;
@@ -196,7 +208,11 @@ macro_rules! py_ycbcr_family {
                 }
                 "float32" => {
                     let arr: Py<numpy::PyArray3<f32>> = view.extract()?;
+                    // SAFETY: the view borrows the numpy array, which the caller keeps alive and
+                    // does not mutate for the duration of this call.
                     let src = unsafe { numpy_as_image_t::<f32, 3>(py, &arr)? };
+                    // SAFETY: `dst` aliases the fresh array `out`, which stays alive and is only
+                    // handed to Python after the kernel has written every element through `dst`.
                     let (mut dst, out) =
                         unsafe { alloc_output_pyarray_t::<f32, 3, UNINIT>(py, src.size())? };
                     py.detach(|| $func(&src, &mut dst)).map_err(to_pyerr)?;

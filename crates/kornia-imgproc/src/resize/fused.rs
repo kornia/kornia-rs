@@ -42,13 +42,15 @@ impl<const C: usize> NormalizeParams<C> {
 /// `usize` are rejected instead of wrapping to a small value that happens to
 /// match the real buffer length.
 fn expect_len(len: usize, w: usize, h: usize, c: usize) -> Result<(), kornia_image::ImageError> {
-    match kornia_tensor::tensor::checked_numel(&[h, w, c]) {
-        Ok(n) if n == len => Ok(()),
-        n => Err(kornia_image::ImageError::InvalidChannelShape(
-            len,
-            n.unwrap_or(usize::MAX),
-        )),
+    let expected = kornia_image::ImageSize {
+        width: w,
+        height: h,
     }
+    .checked_len(c)?;
+    if expected != len {
+        return Err(kornia_image::ImageError::InvalidChannelShape(len, expected));
+    }
+    Ok(())
 }
 
 /// `true` if either image has a zero extent. The fused kernels then have

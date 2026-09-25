@@ -52,6 +52,8 @@ impl PyImageDecoder {
     /// * `Exception`: If decoding fails.
     pub fn decode(&self, py: Python<'_>, jpeg_data: &[u8]) -> PyResult<PyImage> {
         let size = self.0.read_header(jpeg_data).map_err(to_pyerr)?;
+        // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only handed
+        // to Python after the last write through `dst`.
         let (dst, out) = unsafe { alloc_output_pyarray_t::<u8, 3, ZEROED>(py, size)? };
         let mut wrapped = Rgb8(dst);
         self.0
@@ -72,6 +74,8 @@ impl PyImageDecoder {
     /// * `Exception`: If decoding fails.
     pub fn decode_gray8(&self, py: Python<'_>, jpeg_data: &[u8]) -> PyResult<PyImage> {
         let size = self.0.read_header(jpeg_data).map_err(to_pyerr)?;
+        // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only handed
+        // to Python after the last write through `dst`.
         let (dst, out) = unsafe { alloc_output_pyarray_t::<u8, 1, ZEROED>(py, size)? };
         let mut wrapped = Gray8(dst);
         self.0
@@ -182,6 +186,8 @@ pub fn read_image_jpegturbo(py: Python<'_>, file_path: &str) -> PyResult<PyImage
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string()))?;
     let decoder = JpegTurboDecoder::new().map_err(to_pyerr)?;
     let size = decoder.read_header(&bytes).map_err(to_pyerr)?;
+    // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only handed to
+    // Python after the last write through `dst`.
     let (dst, out) = unsafe { alloc_output_pyarray_t::<u8, 3, ZEROED>(py, size)? };
     let mut wrapped = Rgb8(dst);
     decoder
@@ -234,6 +240,8 @@ pub fn decode_image_jpegturbo(py: Python<'_>, jpeg_data: &[u8], mode: &str) -> P
     let size = decoder.read_header(jpeg_data).map_err(to_pyerr)?;
     match mode {
         "rgb" => {
+            // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only
+            // handed to Python after the last write through `dst`.
             let (dst, out) = unsafe { alloc_output_pyarray_t::<u8, 3, ZEROED>(py, size)? };
             let mut wrapped = Rgb8(dst);
             decoder
@@ -242,6 +250,8 @@ pub fn decode_image_jpegturbo(py: Python<'_>, jpeg_data: &[u8], mode: &str) -> P
             Ok(out)
         }
         "mono" => {
+            // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only
+            // handed to Python after the last write through `dst`.
             let (dst, out) = unsafe { alloc_output_pyarray_t::<u8, 1, ZEROED>(py, size)? };
             let mut wrapped = Gray8(dst);
             decoder

@@ -48,6 +48,8 @@ pub fn connected_components_op(
         image.extract()?
     };
     let src = unsafe { numpy_as_image::<1>(py, &arr)? };
+    // SAFETY: `dst` aliases the fresh array `out`, which stays alive and is only handed to Python
+    // after the kernel has written every element through `dst`.
     let (mut dst, out) = unsafe { alloc_output_pyarray_t::<i32, 1, UNINIT>(py, src.size())? };
     let n = py
         .detach(|| connected_components(&src, &mut dst, conn))

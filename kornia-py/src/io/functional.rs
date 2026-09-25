@@ -80,6 +80,8 @@ fn read_image_png_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<Py
 
     match (layout.channels, layout.pixel_format) {
         (1, PixelFormat::U8) => {
+            // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only
+            // handed to Python after the last write through `dst`.
             let (dst, out) =
                 unsafe { alloc_output_pyarray_t::<u8, 1, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Gray8(dst);
@@ -87,6 +89,8 @@ fn read_image_png_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<Py
             Ok(out.into())
         }
         (1, PixelFormat::U16) => {
+            // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only
+            // handed to Python after the last write through `dst`.
             let (dst, out) =
                 unsafe { alloc_output_pyarray_t::<u16, 1, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Gray16(dst);
@@ -94,6 +98,8 @@ fn read_image_png_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<Py
             Ok(out.into())
         }
         (3, PixelFormat::U8) => {
+            // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only
+            // handed to Python after the last write through `dst`.
             let (dst, out) =
                 unsafe { alloc_output_pyarray_t::<u8, 3, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Rgb8(dst);
@@ -101,6 +107,8 @@ fn read_image_png_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<Py
             Ok(out.into())
         }
         (3, PixelFormat::U16) => {
+            // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only
+            // handed to Python after the last write through `dst`.
             let (dst, out) =
                 unsafe { alloc_output_pyarray_t::<u16, 3, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Rgb16(dst);
@@ -108,6 +116,8 @@ fn read_image_png_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<Py
             Ok(out.into())
         }
         (4, PixelFormat::U8) => {
+            // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only
+            // handed to Python after the last write through `dst`.
             let (dst, out) =
                 unsafe { alloc_output_pyarray_t::<u8, 4, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Rgba8(dst);
@@ -115,6 +125,8 @@ fn read_image_png_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<Py
             Ok(out.into())
         }
         (4, PixelFormat::U16) => {
+            // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only
+            // handed to Python after the last write through `dst`.
             let (dst, out) =
                 unsafe { alloc_output_pyarray_t::<u16, 4, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Rgba16(dst);
@@ -135,6 +147,8 @@ fn read_image_tiff_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<P
 
     match (layout.channels, layout.pixel_format) {
         (1, PixelFormat::U8) => {
+            // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only
+            // handed to Python after the last write through `dst`.
             let (dst, out) =
                 unsafe { alloc_output_pyarray_t::<u8, 1, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Gray8(dst);
@@ -142,6 +156,8 @@ fn read_image_tiff_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<P
             Ok(out.into())
         }
         (1, PixelFormat::U16) => {
+            // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only
+            // handed to Python after the last write through `dst`.
             let (dst, out) =
                 unsafe { alloc_output_pyarray_t::<u16, 1, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Gray16(dst);
@@ -149,6 +165,8 @@ fn read_image_tiff_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<P
             Ok(out.into())
         }
         (3, PixelFormat::U8) => {
+            // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only
+            // handed to Python after the last write through `dst`.
             let (dst, out) =
                 unsafe { alloc_output_pyarray_t::<u8, 3, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Rgb8(dst);
@@ -156,6 +174,8 @@ fn read_image_tiff_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<P
             Ok(out.into())
         }
         (3, PixelFormat::U16) => {
+            // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only
+            // handed to Python after the last write through `dst`.
             let (dst, out) =
                 unsafe { alloc_output_pyarray_t::<u16, 3, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Rgb16(dst);
@@ -163,6 +183,8 @@ fn read_image_tiff_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<P
             Ok(out.into())
         }
         (1, PixelFormat::F32) => {
+            // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only
+            // handed to Python after the last write through `dst`.
             let (dst, out) =
                 unsafe { alloc_output_pyarray_t::<f32, 1, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Grayf32(dst);
@@ -170,6 +192,8 @@ fn read_image_tiff_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<P
             Ok(out.into())
         }
         (3, PixelFormat::F32) => {
+            // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only
+            // handed to Python after the last write through `dst`.
             let (dst, out) =
                 unsafe { alloc_output_pyarray_t::<f32, 3, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Rgbf32(dst);
@@ -190,6 +214,8 @@ fn read_image_webp_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<P
 
     match layout.channels {
         1 => {
+            // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only
+            // handed to Python after the last write through `dst`.
             let (dst, out) =
                 unsafe { alloc_output_pyarray_t::<u8, 1, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Gray8(dst);
@@ -197,6 +223,8 @@ fn read_image_webp_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<P
             Ok(out.into())
         }
         3 => {
+            // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only
+            // handed to Python after the last write through `dst`.
             let (dst, out) =
                 unsafe { alloc_output_pyarray_t::<u8, 3, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Rgb8(dst);
@@ -204,6 +232,8 @@ fn read_image_webp_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<P
             Ok(out.into())
         }
         4 => {
+            // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only
+            // handed to Python after the last write through `dst`.
             let (dst, out) =
                 unsafe { alloc_output_pyarray_t::<u8, 4, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Rgba8(dst);
@@ -230,6 +260,8 @@ fn read_image_jpeg_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<P
         let decoder = jpegturbo_io::JpegTurboDecoder::new().map_err(to_pyerr)?;
         match (layout.channels, layout.pixel_format) {
             (1, PixelFormat::U8) => {
+                // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is
+                // only handed to Python after the last write through `dst`.
                 let (mut dst, out) =
                     unsafe { alloc_output_pyarray_t::<u8, 1, ZEROED>(py, layout.image_size)? };
                 decoder
@@ -238,6 +270,8 @@ fn read_image_jpeg_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<P
                 Ok(out.into())
             }
             (3, PixelFormat::U8) => {
+                // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is
+                // only handed to Python after the last write through `dst`.
                 let (mut dst, out) =
                     unsafe { alloc_output_pyarray_t::<u8, 3, ZEROED>(py, layout.image_size)? };
                 decoder
@@ -259,12 +293,16 @@ fn read_image_jpeg_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<P
     // Pure-Rust fallback.
     match (layout.channels, layout.pixel_format) {
         (1, PixelFormat::U8) => {
+            // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only
+            // handed to Python after the last write through `dst`.
             let (mut dst, out) =
                 unsafe { alloc_output_pyarray_t::<u8, 1, ZEROED>(py, layout.image_size)? };
             jpeg_io::decode_image_jpeg_mono8(&jpeg_data, &mut dst).map_err(to_pyerr)?;
             Ok(out.into())
         }
         (3, PixelFormat::U8) => {
+            // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only
+            // handed to Python after the last write through `dst`.
             let (mut dst, out) =
                 unsafe { alloc_output_pyarray_t::<u8, 3, ZEROED>(py, layout.image_size)? };
             jpeg_io::decode_image_jpeg_rgb8(&jpeg_data, &mut dst).map_err(to_pyerr)?;

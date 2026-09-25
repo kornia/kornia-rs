@@ -35,6 +35,8 @@ pub fn read_image_tiff_u8(py: Python<'_>, file_path: &str, mode: &str) -> PyResu
     let layout = k_tiff::decode_image_tiff_layout(&bytes).map_err(to_pyerr)?;
     match mode {
         "rgb" => {
+            // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only
+            // handed to Python after the last write through `dst`.
             let (dst, out) =
                 unsafe { alloc_output_pyarray_t::<u8, 3, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Rgb8(dst);
@@ -42,6 +44,8 @@ pub fn read_image_tiff_u8(py: Python<'_>, file_path: &str, mode: &str) -> PyResu
             Ok(out)
         }
         "mono" => {
+            // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only
+            // handed to Python after the last write through `dst`.
             let (dst, out) =
                 unsafe { alloc_output_pyarray_t::<u8, 1, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Gray8(dst);
@@ -61,6 +65,8 @@ pub fn read_image_tiff_u16(py: Python<'_>, file_path: &str, mode: &str) -> PyRes
     let layout = k_tiff::decode_image_tiff_layout(&bytes).map_err(to_pyerr)?;
     match mode {
         "rgb" => {
+            // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only
+            // handed to Python after the last write through `dst`.
             let (dst, out) =
                 unsafe { alloc_output_pyarray_t::<u16, 3, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Rgb16(dst);
@@ -68,6 +74,8 @@ pub fn read_image_tiff_u16(py: Python<'_>, file_path: &str, mode: &str) -> PyRes
             Ok(out)
         }
         "mono" => {
+            // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only
+            // handed to Python after the last write through `dst`.
             let (dst, out) =
                 unsafe { alloc_output_pyarray_t::<u16, 1, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Gray16(dst);
@@ -87,12 +95,16 @@ pub fn read_image_tiff_f32(py: Python<'_>, file_path: &str, mode: &str) -> PyRes
     let layout = k_tiff::decode_image_tiff_layout(&bytes).map_err(to_pyerr)?;
     match mode {
         "mono" => {
+            // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only
+            // handed to Python after the last write through `dst`.
             let (dst, out) = unsafe { alloc_output_pyarray_t::<f32, 1, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Grayf32(dst);
             k_tiff::decode_image_tiff_mono32f(&bytes, &mut wrapped).map_err(to_pyerr)?;
             Ok(out)
         }
         "rgb" => {
+            // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only
+            // handed to Python after the last write through `dst`.
             let (dst, out) = unsafe { alloc_output_pyarray_t::<f32, 3, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Rgbf32(dst);
             k_tiff::decode_image_tiff_rgb32f(&bytes, &mut wrapped).map_err(to_pyerr)?;
@@ -140,10 +152,14 @@ pub fn write_image_tiff_u16(
 ) -> PyResult<()> {
     match mode {
         "rgb" => {
+            // SAFETY: the view borrows the numpy array, which the caller keeps alive and does not
+            // mutate for the duration of this call.
             let image = unsafe { numpy_as_image_t::<u16, 3>(py, &image)? };
             k_tiff::write_image_tiff_rgb16(file_path, &image).map_err(to_pyerr)?;
         }
         "mono" => {
+            // SAFETY: the view borrows the numpy array, which the caller keeps alive and does not
+            // mutate for the duration of this call.
             let image = unsafe { numpy_as_image_t::<u16, 1>(py, &image)? };
             k_tiff::write_image_tiff_mono16(file_path, &image).map_err(to_pyerr)?;
         }
@@ -166,10 +182,14 @@ pub fn write_image_tiff_f32(
 ) -> PyResult<()> {
     match mode {
         "mono" => {
+            // SAFETY: the view borrows the numpy array, which the caller keeps alive and does not
+            // mutate for the duration of this call.
             let image = unsafe { numpy_as_image_t::<f32, 1>(py, &image)? };
             k_tiff::write_image_tiff_mono32f(file_path, &image).map_err(to_pyerr)?;
         }
         "rgb" => {
+            // SAFETY: the view borrows the numpy array, which the caller keeps alive and does not
+            // mutate for the duration of this call.
             let image = unsafe { numpy_as_image_t::<f32, 3>(py, &image)? };
             k_tiff::write_image_tiff_rgb32f(file_path, &image).map_err(to_pyerr)?;
         }

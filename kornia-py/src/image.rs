@@ -1281,7 +1281,13 @@ impl PyImageApi {
             let bytes = backing::AlignedBytes::from_slice(src)?;
             return Ok(Self::from_owned_bytes(bytes, dtype, [h, w, c], cs, mode));
         }
-        if !crate::pyutils::is_ptr_aligned(b.data() as *const u8, std::mem::align_of::<T>()) {
+        // Every element must be aligned, not just the base: check the strides
+        // too (numpy's ALIGNED flag semantics), e.g. a field view of a packed
+        // record array has an aligned base but a 5-byte stride.
+        let align = std::mem::align_of::<T>();
+        let elems_aligned = crate::pyutils::is_ptr_aligned(b.data() as *const u8, align)
+            && b.strides().iter().all(|&st| st.unsigned_abs() % align == 0);
+        if !elems_aligned {
             // Rare: a strided view that is also misaligned cannot be read through
             // an ndarray view. Let numpy make an aligned C-contiguous copy, which
             // then takes the single-memcpy path above.
@@ -1305,7 +1311,8 @@ impl PyImageApi {
                 b.len(),
             )
         };
-        // SAFETY: the data pointer is aligned for `T` (checked above) and numpy
+        // SAFETY: the data pointer and every stride are aligned for `T` (checked
+        // above), so every element is aligned; numpy
         // guarantees every in-shape strided index is in bounds; the GIL is held
         // and nothing mutates the array while the read-only view is alive.
         let view = unsafe { b.as_array() };
@@ -2287,21 +2294,27 @@ impl PyImageApi {
             let size = layout.image_size;
             return match mode {
                 "RGB" => {
-                    let (dst, out) = unsafe { alloc_output_pyarray::<3>(py, size)? };
+                    // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is
+                    // only handed to Python after the last write through `dst`.
+                    let (dst, out) = unsafe { alloc_output_pyarray_t::<u8, 3, ZEROED>(py, size)? };
                     let mut wrapped = kornia_image::color_spaces::Rgb8(dst);
                     kornia_io::webp::decode_image_webp_rgb8(data, &mut wrapped)
                         .map_err(to_pyerr)?;
                     Ok(Self::wrap(py, out, Some(mode.to_string()))?.with_format("WEBP"))
                 }
                 "RGBA" => {
-                    let (dst, out) = unsafe { alloc_output_pyarray::<4>(py, size)? };
+                    // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is
+                    // only handed to Python after the last write through `dst`.
+                    let (dst, out) = unsafe { alloc_output_pyarray_t::<u8, 4, ZEROED>(py, size)? };
                     let mut wrapped = kornia_image::color_spaces::Rgba8(dst);
                     kornia_io::webp::decode_image_webp_rgba8(data, &mut wrapped)
                         .map_err(to_pyerr)?;
                     Ok(Self::wrap(py, out, Some(mode.to_string()))?.with_format("WEBP"))
                 }
                 "L" => {
-                    let (dst, out) = unsafe { alloc_output_pyarray::<1>(py, size)? };
+                    // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is
+                    // only handed to Python after the last write through `dst`.
+                    let (dst, out) = unsafe { alloc_output_pyarray_t::<u8, 1, ZEROED>(py, size)? };
                     let mut wrapped = kornia_image::color_spaces::Gray8(dst);
                     kornia_io::webp::decode_image_webp_gray8(data, &mut wrapped)
                         .map_err(to_pyerr)?;
@@ -2327,13 +2340,19 @@ impl PyImageApi {
             return match layout.pixel_format {
                 PixelFormat::U8 => {
                     if want_channels == 3 {
-                        let (dst, out) = unsafe { alloc_output_pyarray::<3>(py, size)? };
+                        // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive
+                        // and is only handed to Python after the last write through `dst`.
+                        let (dst, out) =
+                            unsafe { alloc_output_pyarray_t::<u8, 3, ZEROED>(py, size)? };
                         let mut wrapped = kornia_image::color_spaces::Rgb8(dst);
                         kornia_io::tiff::decode_image_tiff_rgb8(data, &mut wrapped)
                             .map_err(to_pyerr)?;
                         Ok(Self::wrap(py, out, Some(mode.to_string()))?.with_format("TIFF"))
                     } else if want_channels == 1 {
-                        let (dst, out) = unsafe { alloc_output_pyarray::<1>(py, size)? };
+                        // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive
+                        // and is only handed to Python after the last write through `dst`.
+                        let (dst, out) =
+                            unsafe { alloc_output_pyarray_t::<u8, 1, ZEROED>(py, size)? };
                         let mut wrapped = kornia_image::color_spaces::Gray8(dst);
                         kornia_io::tiff::decode_image_tiff_mono8(data, &mut wrapped)
                             .map_err(to_pyerr)?;
@@ -2348,15 +2367,19 @@ impl PyImageApi {
                 PixelFormat::U16 => {
                     let mode_u16 = mode_from_channels(want_channels, true);
                     if want_channels == 3 {
+                        // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive
+                        // and is only handed to Python after the last write through `dst`.
                         let (dst, out) =
-                            unsafe { alloc_output_pyarray_t::<u16, 3, UNINIT>(py, size)? };
+                            unsafe { alloc_output_pyarray_t::<u16, 3, ZEROED>(py, size)? };
                         let mut wrapped = kornia_image::color_spaces::Rgb16(dst);
                         kornia_io::tiff::decode_image_tiff_rgb16(data, &mut wrapped)
                             .map_err(to_pyerr)?;
                         Ok(Self::wrap_u16(py, out, Some(mode_u16))?.with_format("TIFF"))
                     } else if want_channels == 1 {
+                        // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive
+                        // and is only handed to Python after the last write through `dst`.
                         let (dst, out) =
-                            unsafe { alloc_output_pyarray_t::<u16, 1, UNINIT>(py, size)? };
+                            unsafe { alloc_output_pyarray_t::<u16, 1, ZEROED>(py, size)? };
                         let mut wrapped = kornia_image::color_spaces::Gray16(dst);
                         kornia_io::tiff::decode_image_tiff_mono16(data, &mut wrapped)
                             .map_err(to_pyerr)?;

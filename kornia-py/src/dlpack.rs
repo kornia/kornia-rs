@@ -168,6 +168,7 @@ impl DlManagedOwner {
                     ManagedTensorPtr::Versioned(p.cast())
                 })
             }
+            // SAFETY: the name pointer is valid while the capsule is alive and not yet renamed.
             Some(n) if unsafe { n.as_cstr() } == c"dltensor" => {
                 (c"dltensor", c"used_dltensor", |p| {
                     ManagedTensorPtr::Legacy(p.cast())

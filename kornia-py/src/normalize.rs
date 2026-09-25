@@ -15,6 +15,8 @@ pub fn normalize_mean_std(
 ) -> PyResult<PyImageF32> {
     let src_f32 = numpy_to_f32_image::<3>(py, &image)?;
     let size = src_f32.size();
+    // SAFETY: `dst` aliases the fresh array `out`, which stays alive and is only handed to Python
+    // after the kernel has written every element through `dst`.
     let (mut out_img, out) = unsafe { alloc_output_pyarray_t::<f32, 3, UNINIT>(py, size)? };
 
     py.detach(|| -> Result<(), ImageError> {

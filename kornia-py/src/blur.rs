@@ -113,7 +113,11 @@ pub fn sobel(py: Python<'_>, image: &Bound<'_, PyAny>, kernel_size: usize) -> Py
         let c = arr.bind(py).shape()[2];
         match c {
             1 => {
+                // SAFETY: the view borrows the numpy array, which the caller keeps alive and does
+                // not mutate for the duration of this call.
                 let src = unsafe { numpy_as_image_t::<f32, 1>(py, &arr)? };
+                // SAFETY: `dst` aliases the fresh array `out`, which stays alive and is only
+                // handed to Python after the kernel has written every element through `dst`.
                 let (mut dst, out) =
                     unsafe { alloc_output_pyarray_t::<f32, 1, UNINIT>(py, src.size())? };
                 py.detach(|| filter::sobel(&src, &mut dst, kernel_size))
@@ -121,7 +125,11 @@ pub fn sobel(py: Python<'_>, image: &Bound<'_, PyAny>, kernel_size: usize) -> Py
                 Ok(out)
             }
             3 => {
+                // SAFETY: the view borrows the numpy array, which the caller keeps alive and does
+                // not mutate for the duration of this call.
                 let src = unsafe { numpy_as_image_t::<f32, 3>(py, &arr)? };
+                // SAFETY: `dst` aliases the fresh array `out`, which stays alive and is only
+                // handed to Python after the kernel has written every element through `dst`.
                 let (mut dst, out) =
                     unsafe { alloc_output_pyarray_t::<f32, 3, UNINIT>(py, src.size())? };
                 py.detach(|| filter::sobel(&src, &mut dst, kernel_size))
