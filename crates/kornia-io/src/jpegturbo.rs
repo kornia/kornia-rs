@@ -1,4 +1,7 @@
-use crate::error::IoError;
+use crate::{
+    error::IoError,
+    limits::{alloc_image, check_image_dimensions},
+};
 use kornia_image::{Image, ImageError, ImageSize};
 use std::{path::Path, sync::Mutex};
 use turbojpeg;
@@ -36,27 +39,46 @@ pub enum JpegTurboError {
     },
 
     /// The JPEG header declares more pixels than [`crate::limits::MAX_IMAGE_PIXELS`].
-    #[error("JPEG of {width}x{height} exceeds the maximum decodable size")]
+    #[error("JPEG of {width}x{height} exceeds the maximum of {max_pixels} pixels")]
     ImageTooLarge {
         /// Declared width in pixels.
         width: usize,
         /// Declared height in pixels.
         height: usize,
+        /// Maximum number of pixels allowed.
+        max_pixels: usize,
     },
+
+    /// Failed to allocate the output buffer.
+    #[error("Failed to allocate {0} bytes for the decoded image")]
+    AllocationFailed(usize),
 
     /// I/O error, e.g. when reading a JPEG file from disk.
     #[error(transparent)]
     IoError(#[from] std::io::Error),
 }
 
-// Rejects headers declaring more pixels than the crate-wide decode limit before allocating.
-fn check_decode_size(size: ImageSize) -> Result<(), JpegTurboError> {
-    crate::limits::check_image_dimensions(size.width, size.height).map_err(|_| {
-        JpegTurboError::ImageTooLarge {
-            width: size.width,
-            height: size.height,
+impl JpegTurboError {
+    // Converts the errors of the crate-wide decode limits (`crate::limits`) without
+    // losing information. `IoError` cannot be embedded directly since it already
+    // wraps `JpegTurboError`.
+    fn from_limits(err: IoError) -> Self {
+        match err {
+            IoError::ImageTooLarge {
+                width,
+                height,
+                max_pixels,
+            } => Self::ImageTooLarge {
+                width,
+                height,
+                max_pixels,
+            },
+            IoError::AllocationFailed(bytes) => Self::AllocationFailed(bytes),
+            IoError::ImageCreationError(e) => Self::ImageCreationError(e),
+            IoError::JpegTurboError(e) => e,
+            other => Self::IoError(std::io::Error::other(other)),
         }
-    })
+    }
 }
 
 /// A JPEG decoder using the turbojpeg library.
@@ -113,14 +135,7 @@ impl JpegTurboEncoder {
         pixels: &[u8],
         size: ImageSize,
     ) -> Result<Vec<u8>, JpegTurboError> {
-        let expected = size
-            .width
-            .checked_mul(size.height)
-            .and_then(|n| n.checked_mul(3))
-            .ok_or(JpegTurboError::InvalidBufferLength {
-                got: pixels.len(),
-                expected: usize::MAX,
-            })?;
+        let expected = size.checked_len(3)?;
         if pixels.len() != expected {
             return Err(JpegTurboError::InvalidBufferLength {
                 got: pixels.len(),
@@ -190,9 +205,11 @@ impl JpegTurboDecoder {
     ///
     /// The image size.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if the header cannot be read.
+    /// Returns an error if the header cannot be read, or
+    /// [`JpegTurboError::ImageTooLarge`] if it declares more pixels than
+    /// [`crate::limits::MAX_IMAGE_PIXELS`].
     pub fn read_header(&self, jpeg_data: &[u8]) -> Result<ImageSize, JpegTurboError> {
         // read the JPEG header with image size
         let header = self
@@ -200,6 +217,9 @@ impl JpegTurboDecoder {
             .lock()
             .map_err(|_| JpegTurboError::MutexPoisoned)?
             .read_header(jpeg_data)?;
+
+        // Reject headers declaring more pixels than the decode limit before any allocation.
+        check_image_dimensions(header.width, header.height).map_err(JpegTurboError::from_limits)?;
 
         Ok(ImageSize {
             width: header.width,
@@ -209,18 +229,16 @@ impl JpegTurboDecoder {
 
     /// Decodes the given JPEG data as RGB8 image.
     pub fn decode_rgb8(&self, jpeg_data: &[u8]) -> Result<Image<u8, 3>, JpegTurboError> {
-        let image_size = self.read_header(jpeg_data)?;
-        check_decode_size(image_size)?;
-        let mut dst = Image::from_size_val(image_size, 0u8)?;
+        let mut dst =
+            alloc_image(self.read_header(jpeg_data)?).map_err(JpegTurboError::from_limits)?;
         self.decode_rgb8_into(jpeg_data, &mut dst)?;
         Ok(dst)
     }
 
     /// Decodes the given JPEG data as Gray/Mono8 image.
     pub fn decode_gray8(&self, jpeg_data: &[u8]) -> Result<Image<u8, 1>, JpegTurboError> {
-        let image_size = self.read_header(jpeg_data)?;
-        check_decode_size(image_size)?;
-        let mut dst = Image::from_size_val(image_size, 0u8)?;
+        let mut dst =
+            alloc_image(self.read_header(jpeg_data)?).map_err(JpegTurboError::from_limits)?;
         self.decode_gray8_into(jpeg_data, &mut dst)?;
         Ok(dst)
     }

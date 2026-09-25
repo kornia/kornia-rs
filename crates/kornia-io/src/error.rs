@@ -86,6 +86,18 @@ pub enum IoError {
         max_pixels: usize,
     },
 
+    /// A dimension exceeds the largest side length supported by the format
+    /// (e.g. JPEG stores width and height as 16-bit integers).
+    #[error("Image of {width}x{height} exceeds the maximum side length of {max_side} pixels")]
+    DimensionTooLarge {
+        /// Image width in pixels.
+        width: usize,
+        /// Image height in pixels.
+        height: usize,
+        /// Maximum width or height supported by the format.
+        max_side: usize,
+    },
+
     /// Failed to allocate the output buffer.
     #[error("Failed to allocate {0} bytes for the decoded image")]
     AllocationFailed(usize),

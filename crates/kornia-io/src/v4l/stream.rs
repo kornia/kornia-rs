@@ -366,14 +366,10 @@ impl MmapStream {
             ));
         }
 
-        // Dequeue the next available buffer
+        // Dequeue the next available buffer. `dequeue_buffer` rejects out-of-range
+        // indices, and `buffers`, `buf_meta` and `queued` all have one entry per buffer.
         let index = self.dequeue_buffer()?;
-        let buffer = self.buffers.get(index).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "driver returned an invalid buffer index",
-            )
-        })?;
+        let buffer = &self.buffers[index];
         self.queued[index] = false;
         let metadata = self.buf_meta[index];
 

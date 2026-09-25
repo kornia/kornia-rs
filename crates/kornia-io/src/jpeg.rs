@@ -1,4 +1,4 @@
-use crate::error::IoError;
+use crate::{error::IoError, limits::check_image_dimensions};
 use jpeg_encoder::{ColorType, Encoder};
 use kornia_image::{
     color_spaces::{Gray8, Rgb8},
@@ -144,10 +144,10 @@ pub fn encode_image_jpeg_gray8(
 fn jpeg_dimensions(width: usize, height: usize) -> Result<(u16, u16), IoError> {
     match (u16::try_from(width), u16::try_from(height)) {
         (Ok(w), Ok(h)) => Ok((w, h)),
-        _ => Err(IoError::ImageTooLarge {
+        _ => Err(IoError::DimensionTooLarge {
             width,
             height,
-            max_pixels: (u16::MAX as usize) * (u16::MAX as usize),
+            max_side: u16::MAX as usize,
         }),
     }
 }
@@ -353,11 +353,14 @@ pub fn decode_image_jpeg_layout(src: &[u8]) -> Result<ImageLayout, IoError> {
         )))
     })?;
 
+    let size = ImageSize {
+        width: image_info.width as usize,
+        height: image_info.height as usize,
+    };
+    check_image_dimensions(size.width, size.height)?;
+
     Ok(ImageLayout::new(
-        ImageSize {
-            width: image_info.width as usize,
-            height: image_info.height as usize,
-        },
+        size,
         image_info.components,
         PixelFormat::U8,
     ))
@@ -458,6 +461,20 @@ mod tests {
         assert_eq!(decoded.cols(), 258);
         assert_eq!(decoded.rows(), 195);
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_encode_jpeg_rejects_side_above_u16() -> Result<(), IoError> {
+        let image = Image::<u8, 1>::from_size_val([u16::MAX as usize + 1, 1].into(), 0)?;
+        let mut buffer = Vec::new();
+        assert!(matches!(
+            encode_image_jpeg_gray8(&image, 90, &mut buffer),
+            Err(IoError::DimensionTooLarge {
+                max_side: 65535,
+                ..
+            })
+        ));
         Ok(())
     }
 

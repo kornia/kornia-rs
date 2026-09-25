@@ -7,6 +7,7 @@
 //! instead of aborting the process.
 
 use crate::error::IoError;
+use kornia_image::{Image, ImageSize};
 
 /// Maximum number of pixels (`width * height`) accepted by the decoders.
 ///
@@ -40,13 +41,27 @@ pub fn check_image_dimensions(width: usize, height: usize) -> Result<(), IoError
     }
 }
 
-/// Allocates a zero-initialized byte buffer, reporting allocation failure as an error.
-pub(crate) fn try_alloc_zeroed(len: usize) -> Result<Vec<u8>, IoError> {
+/// Allocates `len` default-initialized elements, reporting allocation failure as an
+/// error instead of aborting.
+pub(crate) fn try_alloc_zeroed<T: Clone + Default>(len: usize) -> Result<Vec<T>, IoError> {
     let mut buf = Vec::new();
     buf.try_reserve_exact(len)
-        .map_err(|_| IoError::AllocationFailed(len))?;
-    buf.resize(len, 0);
+        .map_err(|_| IoError::AllocationFailed(len.saturating_mul(std::mem::size_of::<T>())))?;
+    buf.resize(len, T::default());
     Ok(buf)
+}
+
+/// Allocates a zero-initialized output image for a decoder.
+///
+/// This is the single allocation point of the decoders: it validates the declared
+/// dimensions against [`MAX_IMAGE_PIXELS`], computes the element count with checked
+/// arithmetic and allocates fallibly.
+pub(crate) fn alloc_image<T: Clone + Default, const C: usize>(
+    size: ImageSize,
+) -> Result<Image<T, C>, IoError> {
+    check_image_dimensions(size.width, size.height)?;
+    let data = try_alloc_zeroed(size.checked_len(C)?)?;
+    Ok(Image::new(size, data)?)
 }
 
 #[cfg(test)]
@@ -58,5 +73,22 @@ mod tests {
         assert!(check_image_dimensions(32768, 32768).is_ok());
         assert!(check_image_dimensions(65535, 65535).is_err());
         assert!(check_image_dimensions(usize::MAX, 2).is_err());
+    }
+
+    #[test]
+    fn alloc_image_checks_limits() -> Result<(), IoError> {
+        let img = alloc_image::<u16, 3>(ImageSize {
+            width: 4,
+            height: 2,
+        })?;
+        assert_eq!(img.as_slice(), &[0u16; 24]);
+        assert!(matches!(
+            alloc_image::<u8, 1>(ImageSize {
+                width: 65535,
+                height: 65535,
+            }),
+            Err(IoError::ImageTooLarge { .. })
+        ));
+        Ok(())
     }
 }

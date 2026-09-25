@@ -240,21 +240,15 @@ macro_rules! define_image_type {
             // Constructor: from size and fill value
             fn [<$prefix _new>](width: usize, height: usize, value: $dtype) -> Result<Box<$wrapper>, ImageError> {
                 let size = kornia_image::ImageSize { width, height };
-                                let image = kornia_image::Image::<$dtype, $ch>::from_size_val(size, value)?;
+                let image = kornia_image::Image::<$dtype, $ch>::from_size_val(size, value)?;
                 Ok(Box::new($wrapper(image)))
             }
 
             // Constructor: from existing data
             fn [<$prefix _from_data>](width: usize, height: usize, data: &[$dtype]) -> Result<Box<$wrapper>, ImageError> {
                 let size = kornia_image::ImageSize { width, height };
-                let expected_len = width
-                    .checked_mul(height)
-                    .and_then(|n| n.checked_mul($ch))
-                    .ok_or(ImageError::InvalidChannelShape(data.len(), usize::MAX))?;
-                if data.len() != expected_len {
-                    return Err(ImageError::InvalidChannelShape(data.len(), expected_len));
-                }
-                                let image = kornia_image::Image::<$dtype, $ch>::from_size_slice(size, data)?;
+                // `from_size_slice` validates `data.len()` against the checked size.
+                let image = kornia_image::Image::<$dtype, $ch>::from_size_slice(size, data)?;
                 Ok(Box::new($wrapper(image)))
             }
         }
@@ -331,10 +325,7 @@ fn decode_image_jpeg_rgb8(jpeg_bytes: &[u8]) -> Result<Box<ImageU8C3>, Box<dyn s
         .into());
     }
 
-    // Reject headers declaring more pixels than the decoder limit before allocating
-    kornia_io::limits::check_image_dimensions(layout.image_size.width, layout.image_size.height)?;
-
-    // Create output image
+    // Create output image (the layout is already checked against the decoder limit)
     let mut image = kornia_image::Image::<u8, 3>::from_size_val(layout.image_size, 0)?;
 
     // Decode into it (zero-copy from slice)

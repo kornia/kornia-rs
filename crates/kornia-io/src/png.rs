@@ -1,7 +1,7 @@
 use crate::{
-    conv_utils::{convert_buf_u16_u8, convert_buf_u8_u16, convert_buf_u8_u16_into_slice},
+    conv_utils::{convert_buf_u16_u8, convert_buf_u8_u16_into_slice},
     error::IoError,
-    limits::{check_image_dimensions, try_alloc_zeroed},
+    limits::{alloc_image, check_image_dimensions, try_alloc_zeroed},
 };
 use kornia_image::{
     color_spaces::{Gray16, Gray8, Rgb16, Rgb8, Rgba16, Rgba8},
@@ -25,8 +25,7 @@ use std::{
 ///
 /// A grayscale image (Gray8).
 pub fn read_image_png_mono8(file_path: impl AsRef<Path>) -> Result<Gray8, IoError> {
-    let (buf, size) = read_png_impl(file_path, 1, BitDepth::Eight)?;
-    Ok(Gray8::from_size_vec(size.into(), buf)?)
+    Ok(Gray8(read_png_u8(file_path)?))
 }
 
 /// Read a PNG image as RGB8.
@@ -39,8 +38,7 @@ pub fn read_image_png_mono8(file_path: impl AsRef<Path>) -> Result<Gray8, IoErro
 ///
 /// An RGB8 typed image.
 pub fn read_image_png_rgb8(file_path: impl AsRef<Path>) -> Result<Rgb8, IoError> {
-    let (buf, size) = read_png_impl(file_path, 3, BitDepth::Eight)?;
-    Ok(Rgb8::from_size_vec(size.into(), buf)?)
+    Ok(Rgb8(read_png_u8(file_path)?))
 }
 
 /// Read a PNG image as RGBA8.
@@ -53,8 +51,7 @@ pub fn read_image_png_rgb8(file_path: impl AsRef<Path>) -> Result<Rgb8, IoError>
 ///
 /// An RGBA8 typed image.
 pub fn read_image_png_rgba8(file_path: impl AsRef<Path>) -> Result<Rgba8, IoError> {
-    let (buf, size) = read_png_impl(file_path, 4, BitDepth::Eight)?;
-    Ok(Rgba8::from_size_vec(size.into(), buf)?)
+    Ok(Rgba8(read_png_u8(file_path)?))
 }
 
 /// Read a PNG image as RGB16.
@@ -67,10 +64,7 @@ pub fn read_image_png_rgba8(file_path: impl AsRef<Path>) -> Result<Rgba8, IoErro
 ///
 /// An RGB16 typed image.
 pub fn read_image_png_rgb16(file_path: impl AsRef<Path>) -> Result<Rgb16, IoError> {
-    let (buf, size) = read_png_impl(file_path, 3, BitDepth::Sixteen)?;
-    let buf_u16 = convert_buf_u8_u16(buf);
-
-    Ok(Rgb16::from_size_vec(size.into(), buf_u16)?)
+    Ok(Rgb16(read_png_u16(file_path)?))
 }
 
 /// Read a PNG image as RGBA16.
@@ -83,10 +77,7 @@ pub fn read_image_png_rgb16(file_path: impl AsRef<Path>) -> Result<Rgb16, IoErro
 ///
 /// An RGBA16 typed image.
 pub fn read_image_png_rgba16(file_path: impl AsRef<Path>) -> Result<Rgba16, IoError> {
-    let (buf, size) = read_png_impl(file_path, 4, BitDepth::Sixteen)?;
-    let buf_u16 = convert_buf_u8_u16(buf);
-
-    Ok(Rgba16::from_size_vec(size.into(), buf_u16)?)
+    Ok(Rgba16(read_png_u16(file_path)?))
 }
 
 /// Read a PNG image as grayscale (Gray16).
@@ -99,10 +90,7 @@ pub fn read_image_png_rgba16(file_path: impl AsRef<Path>) -> Result<Rgba16, IoEr
 ///
 /// A Gray16 typed image.
 pub fn read_image_png_mono16(file_path: impl AsRef<Path>) -> Result<Gray16, IoError> {
-    let (buf, size) = read_png_impl(file_path, 1, BitDepth::Sixteen)?;
-    let buf_u16 = convert_buf_u8_u16(buf);
-
-    Ok(Gray16::from_size_vec(size.into(), buf_u16)?)
+    Ok(Gray16(read_png_u16(file_path)?))
 }
 
 /// Decodes a PNG image with as grayscale (Gray8) from Raw Bytes.
@@ -262,40 +250,61 @@ fn check_png_output<R: std::io::BufRead + std::io::Seek>(
         .ok_or_else(|| IoError::PngDecodeError("PNG output buffer size overflowed".into()))
 }
 
-// utility function to read the png file
-fn read_png_impl(
-    file_path: impl AsRef<Path>,
-    channels: usize,
-    bit_depth: BitDepth,
-) -> Result<(Vec<u8>, [usize; 2]), IoError> {
-    // verify the file exists
+// Opens a PNG file after validating that it exists and has a `.png` extension.
+fn open_png(file_path: impl AsRef<Path>) -> Result<png::Reader<BufReader<File>>, IoError> {
     let file_path = file_path.as_ref();
     if !file_path.exists() {
         return Err(IoError::FileDoesNotExist(file_path.to_path_buf()));
     }
-
-    // verify the file extension
-    if let Some(extension) = file_path.extension() {
-        if extension != "png" {
-            return Err(IoError::InvalidFileExtension(file_path.to_path_buf()));
-        }
-    } else {
+    if file_path.extension().is_none_or(|ext| ext != "png") {
         return Err(IoError::InvalidFileExtension(file_path.to_path_buf()));
     }
 
     let file = fs::File::open(file_path)?;
-    let reader = BufReader::new(file);
-    let mut reader = Decoder::new(reader)
+    Decoder::new(BufReader::new(file))
         .read_info()
-        .map_err(|e| IoError::PngDecodeError(e.to_string()))?;
+        .map_err(|e| IoError::PngDecodeError(e.to_string()))
+}
 
-    let buffer_size = check_png_output(&reader, channels, bit_depth)?;
-    let mut buf = try_alloc_zeroed(buffer_size)?;
-    let info = reader
+// Validates the output format of `reader` against a `C`-channel image of `T` samples and
+// allocates it. Returns the image and the decoder's output size in bytes.
+fn alloc_png_output<R: std::io::BufRead + std::io::Seek, T: Clone + Default, const C: usize>(
+    reader: &png::Reader<R>,
+    bit_depth: BitDepth,
+) -> Result<(Image<T, C>, usize), IoError> {
+    let buffer_size = check_png_output(reader, C, bit_depth)?;
+    let (width, height) = reader.info().size();
+    let img = alloc_image::<T, C>(ImageSize {
+        width: width as usize,
+        height: height as usize,
+    })?;
+    let expected = std::mem::size_of_val(img.as_slice());
+    if buffer_size != expected {
+        return Err(IoError::InvalidBufferSize(buffer_size, expected));
+    }
+    Ok((img, buffer_size))
+}
+
+// Reads an 8-bit PNG file straight into a newly allocated image.
+fn read_png_u8<const C: usize>(file_path: impl AsRef<Path>) -> Result<Image<u8, C>, IoError> {
+    let mut reader = open_png(file_path)?;
+    let (mut img, _) = alloc_png_output::<_, u8, C>(&reader, BitDepth::Eight)?;
+    reader
+        .next_frame(img.as_slice_mut())
+        .map_err(|e| IoError::PngDecodeError(e.to_string()))?;
+    Ok(img)
+}
+
+// Reads a 16-bit PNG file (big-endian samples) into a newly allocated image.
+fn read_png_u16<const C: usize>(file_path: impl AsRef<Path>) -> Result<Image<u16, C>, IoError> {
+    let mut reader = open_png(file_path)?;
+    let (mut img, buffer_size) = alloc_png_output::<_, u16, C>(&reader, BitDepth::Sixteen)?;
+    let mut buf = try_alloc_zeroed::<u8>(buffer_size)?;
+    reader
         .next_frame(&mut buf)
         .map_err(|e| IoError::PngDecodeError(e.to_string()))?;
-
-    Ok((buf, [info.width as usize, info.height as usize]))
+    convert_buf_u8_u16_into_slice(&buf, img.as_slice_mut());
+    Ok(img)
 }
 
 // Utility function to decode png files from raw bytes
