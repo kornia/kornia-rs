@@ -3,8 +3,8 @@ use pyo3::prelude::*;
 
 use crate::dispatch::cpu_op;
 use crate::image::{
-    alloc_output_pyarray, alloc_output_pyarray_f32, numpy_as_image, numpy_as_image_f32,
-    numpy_as_out_image, to_pyerr,
+    alloc_output_pyarray, alloc_output_pyarray_t, numpy_as_image, numpy_as_image_t,
+    numpy_as_out_image, to_pyerr, UNINIT,
 };
 use kornia_imgproc::filter;
 
@@ -113,15 +113,17 @@ pub fn sobel(py: Python<'_>, image: &Bound<'_, PyAny>, kernel_size: usize) -> Py
         let c = arr.bind(py).shape()[2];
         match c {
             1 => {
-                let src = unsafe { numpy_as_image_f32::<1>(py, &arr)? };
-                let (mut dst, out) = unsafe { alloc_output_pyarray_f32::<1>(py, src.size())? };
+                let src = unsafe { numpy_as_image_t::<f32, 1>(py, &arr)? };
+                let (mut dst, out) =
+                    unsafe { alloc_output_pyarray_t::<f32, 1, UNINIT>(py, src.size())? };
                 py.detach(|| filter::sobel(&src, &mut dst, kernel_size))
                     .map_err(to_pyerr)?;
                 Ok(out)
             }
             3 => {
-                let src = unsafe { numpy_as_image_f32::<3>(py, &arr)? };
-                let (mut dst, out) = unsafe { alloc_output_pyarray_f32::<3>(py, src.size())? };
+                let src = unsafe { numpy_as_image_t::<f32, 3>(py, &arr)? };
+                let (mut dst, out) =
+                    unsafe { alloc_output_pyarray_t::<f32, 3, UNINIT>(py, src.size())? };
                 py.detach(|| filter::sobel(&src, &mut dst, kernel_size))
                     .map_err(to_pyerr)?;
                 Ok(out)

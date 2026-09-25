@@ -1,7 +1,6 @@
 use crate::image::{
-    alloc_output_pyarray_f32_zeroed, alloc_output_pyarray_u16_zeroed, alloc_output_pyarray_zeroed,
-    numpy_as_image, numpy_as_image_f32, numpy_as_image_u16, to_pyerr, PyImage, PyImageF32,
-    PyImageU16,
+    alloc_output_pyarray_t, numpy_as_image, numpy_as_image_t, to_pyerr, PyImage, PyImageF32,
+    PyImageU16, ZEROED,
 };
 use kornia_image::color_spaces::{Gray16, Gray8, Grayf32, Rgb16, Rgb8, Rgbf32};
 use kornia_io::tiff as k_tiff;
@@ -36,13 +35,15 @@ pub fn read_image_tiff_u8(py: Python<'_>, file_path: &str, mode: &str) -> PyResu
     let layout = k_tiff::decode_image_tiff_layout(&bytes).map_err(to_pyerr)?;
     match mode {
         "rgb" => {
-            let (dst, out) = unsafe { alloc_output_pyarray_zeroed::<3>(py, layout.image_size)? };
+            let (dst, out) =
+                unsafe { alloc_output_pyarray_t::<u8, 3, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Rgb8(dst);
             k_tiff::decode_image_tiff_rgb8(&bytes, &mut wrapped).map_err(to_pyerr)?;
             Ok(out)
         }
         "mono" => {
-            let (dst, out) = unsafe { alloc_output_pyarray_zeroed::<1>(py, layout.image_size)? };
+            let (dst, out) =
+                unsafe { alloc_output_pyarray_t::<u8, 1, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Gray8(dst);
             k_tiff::decode_image_tiff_mono8(&bytes, &mut wrapped).map_err(to_pyerr)?;
             Ok(out)
@@ -61,14 +62,14 @@ pub fn read_image_tiff_u16(py: Python<'_>, file_path: &str, mode: &str) -> PyRes
     match mode {
         "rgb" => {
             let (dst, out) =
-                unsafe { alloc_output_pyarray_u16_zeroed::<3>(py, layout.image_size)? };
+                unsafe { alloc_output_pyarray_t::<u16, 3, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Rgb16(dst);
             k_tiff::decode_image_tiff_rgb16(&bytes, &mut wrapped).map_err(to_pyerr)?;
             Ok(out)
         }
         "mono" => {
             let (dst, out) =
-                unsafe { alloc_output_pyarray_u16_zeroed::<1>(py, layout.image_size)? };
+                unsafe { alloc_output_pyarray_t::<u16, 1, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Gray16(dst);
             k_tiff::decode_image_tiff_mono16(&bytes, &mut wrapped).map_err(to_pyerr)?;
             Ok(out)
@@ -86,13 +87,13 @@ pub fn read_image_tiff_f32(py: Python<'_>, file_path: &str, mode: &str) -> PyRes
     let layout = k_tiff::decode_image_tiff_layout(&bytes).map_err(to_pyerr)?;
     match mode {
         "mono" => {
-            let (dst, out) = unsafe { alloc_output_pyarray_f32_zeroed::<1>(py, layout.image_size)? };
+            let (dst, out) = unsafe { alloc_output_pyarray_t::<f32, 1, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Grayf32(dst);
             k_tiff::decode_image_tiff_mono32f(&bytes, &mut wrapped).map_err(to_pyerr)?;
             Ok(out)
         }
         "rgb" => {
-            let (dst, out) = unsafe { alloc_output_pyarray_f32_zeroed::<3>(py, layout.image_size)? };
+            let (dst, out) = unsafe { alloc_output_pyarray_t::<f32, 3, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Rgbf32(dst);
             k_tiff::decode_image_tiff_rgb32f(&bytes, &mut wrapped).map_err(to_pyerr)?;
             Ok(out)
@@ -139,11 +140,11 @@ pub fn write_image_tiff_u16(
 ) -> PyResult<()> {
     match mode {
         "rgb" => {
-            let image = unsafe { numpy_as_image_u16::<3>(py, &image)? };
+            let image = unsafe { numpy_as_image_t::<u16, 3>(py, &image)? };
             k_tiff::write_image_tiff_rgb16(file_path, &image).map_err(to_pyerr)?;
         }
         "mono" => {
-            let image = unsafe { numpy_as_image_u16::<1>(py, &image)? };
+            let image = unsafe { numpy_as_image_t::<u16, 1>(py, &image)? };
             k_tiff::write_image_tiff_mono16(file_path, &image).map_err(to_pyerr)?;
         }
         _ => {
@@ -165,11 +166,11 @@ pub fn write_image_tiff_f32(
 ) -> PyResult<()> {
     match mode {
         "mono" => {
-            let image = unsafe { numpy_as_image_f32::<1>(py, &image)? };
+            let image = unsafe { numpy_as_image_t::<f32, 1>(py, &image)? };
             k_tiff::write_image_tiff_mono32f(file_path, &image).map_err(to_pyerr)?;
         }
         "rgb" => {
-            let image = unsafe { numpy_as_image_f32::<3>(py, &image)? };
+            let image = unsafe { numpy_as_image_t::<f32, 3>(py, &image)? };
             k_tiff::write_image_tiff_rgb32f(file_path, &image).map_err(to_pyerr)?;
         }
         _ => {

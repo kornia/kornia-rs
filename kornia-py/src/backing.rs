@@ -180,8 +180,8 @@ pub enum BorrowGuard {
         buffer: Option<Box<pyo3::ffi::Py_buffer>>,
         /// Managed tensor taken from a consumed DLPack capsule (`from_dlpack`).
         /// Its deleter runs exactly once when the guard drops.
-        #[allow(dead_code)] // held only for its `Drop`
-        dl_managed: Option<crate::dlpack::DlManagedOwner>,
+        /// Held only for its `Drop`.
+        _dl_managed: Option<crate::dlpack::DlManagedOwner>,
     },
 }
 impl Drop for BorrowGuard {
@@ -330,20 +330,16 @@ pub unsafe fn borrow_image<T: Clone, const C: usize>(
 /// Compute the total byte length for an image with dimensions `(h, w, c)` and
 /// element type `dtype`, using checked arithmetic to detect overflow.
 ///
-/// Returns `PyOverflowError` if the product would exceed `usize::MAX`.
+/// Returns `PyOverflowError` if the byte count would exceed `isize::MAX`
+/// (see [`crate::pyutils::checked_numel`]).
 pub fn byte_len(h: usize, w: usize, c: usize, dtype: Dtype) -> pyo3::PyResult<usize> {
-    h.checked_mul(w)
-        .and_then(|x| x.checked_mul(c))
-        .and_then(|x| x.checked_mul(dtype.itemsize()))
-        .ok_or_else(|| {
-            pyo3::exceptions::PyOverflowError::new_err("image dimensions overflow usize")
-        })
+    crate::pyutils::checked_bytes(&[h, w, c], dtype.itemsize())
 }
 
 /// Allocate a zeroed owned output buffer for an op of channel count C.
 ///
 /// Uses checked arithmetic via [`byte_len`]; returns `PyOverflowError` if
-/// dimensions would overflow `usize`.
+/// dimensions would overflow.
 pub fn alloc_output_owned<const C: usize>(
     dtype: Dtype,
     size: ImageSize,

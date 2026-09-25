@@ -144,7 +144,6 @@ where
 #[cfg(feature = "cuda")]
 struct PyKeepalive(
     std::mem::ManuallyDrop<Py<PyAny>>,
-    #[allow(dead_code)] // held only for its `Drop`
     Option<crate::dlpack::DlManagedOwner>,
 );
 

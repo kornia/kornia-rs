@@ -1,6 +1,8 @@
 use pyo3::prelude::*;
 
-use crate::image::{alloc_output_pyarray_f32, numpy_to_f32_image, to_pyerr, PyImage, PyImageF32};
+use crate::image::{
+    alloc_output_pyarray_t, numpy_to_f32_image, to_pyerr, PyImage, PyImageF32, UNINIT,
+};
 use kornia_image::{Image, ImageError};
 use kornia_imgproc::normalize;
 
@@ -13,7 +15,7 @@ pub fn normalize_mean_std(
 ) -> PyResult<PyImageF32> {
     let src_f32 = numpy_to_f32_image::<3>(py, &image)?;
     let size = src_f32.size();
-    let (mut out_img, out) = unsafe { alloc_output_pyarray_f32::<3>(py, size)? };
+    let (mut out_img, out) = unsafe { alloc_output_pyarray_t::<f32, 3, UNINIT>(py, size)? };
 
     py.detach(|| -> Result<(), ImageError> {
         let mut dst_f32 = Image::from_size_val(size, 0.0f32)?;

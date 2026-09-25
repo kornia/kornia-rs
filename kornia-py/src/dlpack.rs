@@ -7,7 +7,7 @@
 //! **Import (`from_dlpack`)** — zero-copy via non-consuming capsule keep-alive.
 //! See `image.rs::from_dlpack` for the import path.
 
-use std::ffi::c_void;
+use std::ffi::{c_void, CStr};
 
 use dlpack_rs::{
     ffi::{DLDataType, DLDevice},
@@ -140,33 +140,30 @@ impl DlManagedOwner {
         capsule: &Bound<'_, pyo3::types::PyCapsule>,
     ) -> PyResult<DlManagedOwner> {
         use pyo3::types::PyCapsuleMethods;
+        type Ctor = fn(std::ptr::NonNull<c_void>) -> ManagedTensorPtr;
         let name = capsule.name()?;
+        // Branch on the capsule kind once: the name to check the pointer
+        // against, the name to rename it to, and how to type the pointer.
         // SAFETY: the name pointer is valid for as long as the capsule is alive
         // and not renamed; we only compare it before renaming below.
-        let versioned = match &name {
-            Some(n) if unsafe { n.as_cstr() } == c"dltensor_versioned" => true,
-            Some(n) if unsafe { n.as_cstr() } == c"dltensor" => false,
+        let (expected, consumed, ctor): (&'static CStr, &'static CStr, Ctor) = match &name {
+            Some(n) if unsafe { n.as_cstr() } == c"dltensor_versioned" => {
+                (c"dltensor_versioned", c"used_dltensor_versioned", |p| {
+                    ManagedTensorPtr::Versioned(p.cast())
+                })
+            }
+            Some(n) if unsafe { n.as_cstr() } == c"dltensor" => {
+                (c"dltensor", c"used_dltensor", |p| {
+                    ManagedTensorPtr::Legacy(p.cast())
+                })
+            }
             _ => {
                 return Err(pyo3::exceptions::PyValueError::new_err(
                     "from_dlpack: capsule is not an unconsumed DLPack tensor",
                 ))
             }
         };
-        let raw = if versioned {
-            capsule.pointer_checked(Some(c"dltensor_versioned"))?
-        } else {
-            capsule.pointer_checked(Some(c"dltensor"))?
-        };
-        let ptr = if versioned {
-            ManagedTensorPtr::Versioned(raw.cast())
-        } else {
-            ManagedTensorPtr::Legacy(raw.cast())
-        };
-        let consumed: &'static std::ffi::CStr = if versioned {
-            c"used_dltensor_versioned"
-        } else {
-            c"used_dltensor"
-        };
+        let ptr = ctor(capsule.pointer_checked(Some(expected))?);
         // SAFETY: `capsule` is a live PyCapsule and `consumed` is a 'static C
         // string, as PyCapsule_SetName requires.
         if unsafe { pyo3::ffi::PyCapsule_SetName(capsule.as_ptr(), consumed.as_ptr()) } != 0 {

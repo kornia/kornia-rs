@@ -1,7 +1,7 @@
 use numpy::{PyArray, PyArray2, PyArrayMethods, PyUntypedArrayMethods};
 use pyo3::prelude::*;
 
-use crate::pyutils::{c_slice, to_value_err};
+use crate::pyutils::{c_slice, value_err};
 
 use kornia_imgproc::features::match_descriptors;
 
@@ -54,7 +54,7 @@ pub fn match_descriptors_py(
     {
         // SAFETY: `out` is a freshly allocated, zero-initialised, C-contiguous
         // (k, 2) i64 array that no other code references yet.
-        let slice = unsafe { out.as_slice_mut() }.map_err(to_value_err)?;
+        let slice = unsafe { out.as_slice_mut() }.map_err(value_err)?;
         for (dst, (q, t)) in slice.chunks_exact_mut(2).zip(matches.iter()) {
             dst[0] = *q as i64;
             dst[1] = *t as i64;

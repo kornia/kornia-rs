@@ -52,7 +52,7 @@ macro_rules! __try_dispatch_device {
 /// kind: numpy → numpy, host `Image` → host `Image`. (Device images are handled
 /// by [`dispatch_device`] before this is reached.) `E` is pinned by the
 /// concrete `Py<PyArray3<E>>` type the caller's closure body operates on
-/// (`numpy_as_image`/`numpy_as_image_f32` etc. each fix one element type), so
+/// (`numpy_as_image_t::<T, C>` fixes one element type per call), so
 /// call sites need no turbofish.
 pub(crate) fn cpu_op<E, C>(py: Python<'_>, image: &Bound<'_, PyAny>, cpu: C) -> PyResult<Py<PyAny>>
 where

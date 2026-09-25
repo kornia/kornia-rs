@@ -127,19 +127,19 @@ def test_resize_normalize_to_tensor_still_works():
 
 def test_frombytes_overflowing_dims():
     # 2**62 * 4 * 1 * 1 wraps to 0 == len(b"")
-    with pytest.raises((OverflowError, ValueError)):
+    with pytest.raises(OverflowError):
         Image.frombytes(b"", 1 << 62, 4, channels=1)
 
 
 def test_resize_nearest_overflowing_dims():
     img = Image(np.zeros((4, 4, 1), np.uint8))
-    with pytest.raises((OverflowError, ValueError, MemoryError)):
+    with pytest.raises(OverflowError):
         img.resize(1 << 62, 1 << 62)
 
 
 def test_pipeline_overflowing_dims():
     a = np.zeros((4, 4, 3), np.uint8)
-    with pytest.raises((OverflowError, ValueError)):
+    with pytest.raises(OverflowError):
         K.pipeline.resize_normalize_to_tensor(a, (1 << 62, 4), [0.0] * 3, [1.0] * 3)
 
 
@@ -469,7 +469,7 @@ def test_legacy_dlpack_writable_image_still_exports():
 
 
 def test_rle_to_mask_overflowing_shape():
-    with pytest.raises((ValueError, OverflowError)):
+    with pytest.raises(OverflowError):
         K.segmentation.rle_to_mask([0], (1 << 62, 8))
 
 

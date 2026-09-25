@@ -16,7 +16,7 @@ use kornia_algebra::{Mat3F64, Vec3F64};
 use numpy::{PyArray, PyArray1, PyArray2, PyArrayMethods, PyUntypedArrayMethods};
 use pyo3::prelude::*;
 
-use crate::pyutils::{c_slice, to_value_err};
+use crate::pyutils::{c_slice, value_err};
 
 /// Build a `Pose3d` from a (3, 3) row-major rotation + (3,) translation slice.
 fn pose_from_slice(r: &[f64], t: &[f64]) -> Pose3d {
@@ -324,9 +324,9 @@ pub fn bundle_adjust_py<'py>(
     let t_out = PyArray2::<f64>::zeros(py, [n_poses, 3], false);
     // SAFETY: `r_out` is a freshly allocated, zero-initialised, C-contiguous
     // (n_poses, 3, 3) f64 array not yet shared with Python.
-    let r_out_data = unsafe { r_out.as_slice_mut() }.map_err(to_value_err)?;
+    let r_out_data = unsafe { r_out.as_slice_mut() }.map_err(value_err)?;
     // SAFETY: as above, for the fresh (n_poses, 3) `t_out`.
-    let t_out_data = unsafe { t_out.as_slice_mut() }.map_err(to_value_err)?;
+    let t_out_data = unsafe { t_out.as_slice_mut() }.map_err(value_err)?;
     for (i, p) in result.poses.iter().enumerate() {
         let cols = p.rotation.to_cols_array(); // column-major
                                                // To row-major
@@ -342,7 +342,7 @@ pub fn bundle_adjust_py<'py>(
 
     let p_out = PyArray2::<f64>::zeros(py, [n_points, 3], false);
     // SAFETY: fresh, zero-initialised, C-contiguous (n_points, 3) array.
-    let p_out_data = unsafe { p_out.as_slice_mut() }.map_err(to_value_err)?;
+    let p_out_data = unsafe { p_out.as_slice_mut() }.map_err(value_err)?;
     for (i, pt) in result.points.iter().enumerate() {
         p_out_data[i * 3] = pt.x;
         p_out_data[i * 3 + 1] = pt.y;

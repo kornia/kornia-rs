@@ -11,14 +11,50 @@
 
 use numpy::ndarray::Dimension;
 use numpy::{Element, PyArray, PyArray1, PyArray2, PyArrayMethods, PyUntypedArrayMethods};
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyMemoryError, PyOverflowError, PyValueError};
 use pyo3::prelude::*;
 
 use kornia_algebra::{Mat3F64, Vec2F64};
 
-/// Map any displayable error to a Python `ValueError`.
-pub(crate) fn to_value_err(e: impl std::fmt::Display) -> PyErr {
+/// Map any displayable error (or message) to a Python `ValueError`.
+pub(crate) fn value_err(e: impl std::fmt::Display) -> PyErr {
     PyValueError::new_err(e.to_string())
+}
+
+/// `true` if `ptr` is a multiple of `align` (which must be non-zero).
+#[inline]
+pub(crate) fn is_ptr_aligned(ptr: *const u8, align: usize) -> bool {
+    (ptr as usize).is_multiple_of(align)
+}
+
+/// Require `ptr` to be aligned to `align` bytes.
+///
+/// Typed (`u16`/`f32`/...) access through a misaligned pointer is undefined
+/// behaviour, so every raw buffer that is reinterpreted as `&[T]` goes through
+/// this. Returns a `ValueError` naming `what` otherwise.
+pub(crate) fn require_ptr_aligned(
+    ptr: *const u8,
+    align: usize,
+    what: impl std::fmt::Display,
+) -> PyResult<()> {
+    if is_ptr_aligned(ptr, align) {
+        return Ok(());
+    }
+    Err(PyValueError::new_err(format!(
+        "{what} data pointer is not aligned to {align} bytes for its dtype; pass a copy \
+         (np.ascontiguousarray(...) / .copy())"
+    )))
+}
+
+/// Require the data pointer of `arr` to be aligned for `T`.
+///
+/// Needed before `as_array()` (ndarray views, which honour arbitrary strides
+/// but assume aligned elements) on arrays that may be misaligned views.
+pub(crate) fn require_aligned<T: Element, D: Dimension>(
+    arr: &Bound<'_, PyArray<T, D>>,
+    what: impl std::fmt::Display,
+) -> PyResult<()> {
+    require_ptr_aligned(arr.data() as *const u8, std::mem::align_of::<T>(), what)
 }
 
 /// Require `arr` to be C-contiguous with a data pointer aligned for `T`.
@@ -29,7 +65,7 @@ pub(crate) fn to_value_err(e: impl std::fmt::Display) -> PyErr {
 /// over it undefined behaviour.
 pub(crate) fn require_c_contig_aligned<T: Element, D: Dimension>(
     arr: &Bound<'_, PyArray<T, D>>,
-    what: &str,
+    what: impl std::fmt::Display,
 ) -> PyResult<()> {
     if !arr.is_c_contiguous() {
         return Err(PyValueError::new_err(format!(
@@ -37,30 +73,7 @@ pub(crate) fn require_c_contig_aligned<T: Element, D: Dimension>(
              pass np.ascontiguousarray(...))"
         )));
     }
-    if !(arr.data() as usize).is_multiple_of(std::mem::align_of::<T>()) {
-        return Err(PyValueError::new_err(format!(
-            "{what} data pointer is not aligned for its dtype; pass a copy \
-             (np.ascontiguousarray(...) / .copy())"
-        )));
-    }
-    Ok(())
-}
-
-/// Require the data pointer of `arr` to be aligned for `T`.
-///
-/// Needed before `as_array()` (ndarray views, which honour arbitrary strides
-/// but assume aligned elements) on arrays that may be misaligned views.
-pub(crate) fn require_aligned<T: Element, D: Dimension>(
-    arr: &Bound<'_, PyArray<T, D>>,
-    what: &str,
-) -> PyResult<()> {
-    if !(arr.data() as usize).is_multiple_of(std::mem::align_of::<T>()) {
-        return Err(PyValueError::new_err(format!(
-            "{what} data pointer is not aligned for its dtype; pass a copy \
-             (np.ascontiguousarray(...) / .copy())"
-        )));
-    }
-    Ok(())
+    require_aligned(arr, what)
 }
 
 /// Borrow the elements of a numpy array as a flat row-major slice.
@@ -70,7 +83,7 @@ pub(crate) fn require_aligned<T: Element, D: Dimension>(
 /// element count, never a caller-computed product.
 pub(crate) fn c_slice<'a, T: Element, D: Dimension>(
     arr: &'a Bound<'_, PyArray<T, D>>,
-    what: &str,
+    what: impl std::fmt::Display,
 ) -> PyResult<&'a [T]> {
     require_c_contig_aligned(arr, what)?;
     let len = arr.len();
@@ -92,7 +105,7 @@ pub(crate) fn c_slice<'a, T: Element, D: Dimension>(
 /// bypass numpy's read-only protection (e.g. an `np.frombuffer(bytes)` view).
 pub(crate) fn require_writeable<T: Element, D: Dimension>(
     arr: &Bound<'_, PyArray<T, D>>,
-    what: &str,
+    what: impl std::fmt::Display,
 ) -> PyResult<()> {
     // SAFETY: `as_array_ptr` returns the live `PyArrayObject` behind `arr`
     // (kept alive by the `Bound`); reading its `flags` field is a plain load.
@@ -117,18 +130,78 @@ pub(crate) fn ranges_overlap(a: *const u8, a_len: usize, b: *const u8, b_len: us
 /// Checked element count of an array with `dims`, whose total byte size with
 /// `itemsize`-byte elements must also fit in `isize` (Rust's allocation limit).
 ///
-/// Returns a `ValueError` on overflow instead of silently wrapping.
+/// Returns an `OverflowError` instead of silently wrapping. This is the single
+/// size check behind every user-controlled shape in the bindings (see also
+/// [`checked_bytes`] and `backing::byte_len`), so the same overflow raises the
+/// same exception everywhere.
 pub(crate) fn checked_numel(dims: &[usize], itemsize: usize) -> PyResult<usize> {
-    let n = dims
-        .iter()
-        .try_fold(1usize, |acc, &d| acc.checked_mul(d))
-        .ok_or_else(|| PyValueError::new_err(format!("array dimensions {dims:?} overflow")))?;
-    match n.checked_mul(itemsize) {
-        Some(bytes) if bytes <= isize::MAX as usize => Ok(n),
-        _ => Err(PyValueError::new_err(format!(
+    let n = dims.iter().try_fold(1usize, |acc, &d| acc.checked_mul(d));
+    match n {
+        Some(n)
+            if n.checked_mul(itemsize)
+                .is_some_and(|b| b <= isize::MAX as usize) =>
+        {
+            Ok(n)
+        }
+        _ => Err(PyOverflowError::new_err(format!(
             "array dimensions {dims:?} are too large"
         ))),
     }
+}
+
+/// Checked total byte size of an array with `dims` and `itemsize`-byte
+/// elements; see [`checked_numel`].
+pub(crate) fn checked_bytes(dims: &[usize], itemsize: usize) -> PyResult<usize> {
+    // Cannot overflow: `checked_numel` bounds `n * itemsize` by `isize::MAX`.
+    Ok(checked_numel(dims, itemsize)? * itemsize)
+}
+
+/// Validate a caller-provided `out=` array before writing through its pointer.
+///
+/// Checks, in order: the shape is exactly `expected`; the array is writeable
+/// (a raw-pointer write would otherwise silently mutate e.g. an immutable
+/// `bytes` buffer); it is C-contiguous and aligned for `T`; and its bytes do
+/// not overlap `[src_ptr, src_ptr + src_bytes)` (the kernels read the source
+/// while writing `out`, so aliasing them is a data race / Rust aliasing
+/// violation). Error messages are prefixed with `"{op}: out"`, which is only
+/// formatted on the error path.
+pub(crate) fn validate_out<T: Element, D: Dimension>(
+    arr: &Bound<'_, PyArray<T, D>>,
+    expected: &[usize],
+    src_ptr: *const u8,
+    src_bytes: usize,
+    op: &str,
+) -> PyResult<()> {
+    if arr.shape() != expected {
+        return Err(PyValueError::new_err(format!(
+            "{op}: out shape {:?} must be {expected:?}",
+            arr.shape()
+        )));
+    }
+    require_writeable(arr, format_args!("{op}: out"))?;
+    require_c_contig_aligned(arr, format_args!("{op}: out"))?;
+    let out_bytes = arr.len() * std::mem::size_of::<T>();
+    if ranges_overlap(arr.data() as *const u8, out_bytes, src_ptr, src_bytes) {
+        return Err(PyValueError::new_err(format!(
+            "{op}: out must not share memory with the input image"
+        )));
+    }
+    Ok(())
+}
+
+/// Allocate a zero-filled `Vec<T>` of `n` elements, reporting allocation
+/// failure as a Python `MemoryError` instead of aborting the interpreter
+/// (`n` is often user-controlled).
+pub(crate) fn try_zeroed_vec<T: Clone + Default>(n: usize) -> PyResult<Vec<T>> {
+    let mut v: Vec<T> = Vec::new();
+    v.try_reserve_exact(n).map_err(|_| {
+        PyMemoryError::new_err(format!(
+            "cannot allocate a buffer of {n} x {}-byte elements",
+            std::mem::size_of::<T>()
+        ))
+    })?;
+    v.resize(n, T::default());
+    Ok(v)
 }
 
 /// Reshape a flat row-major block into `(len / cols, cols)`.
@@ -145,7 +218,7 @@ pub(crate) fn rows_to_numpy<T: numpy::Element>(
     let rows = flat.len() / cols;
     numpy::PyArray1::from_vec(py, flat)
         .reshape([rows, cols])
-        .map_err(|e| PyValueError::new_err(e.to_string()))
+        .map_err(value_err)
 }
 
 /// Copy a `(N, 2)` C-contiguous float64 numpy array into a `Vec<Vec2F64>`.

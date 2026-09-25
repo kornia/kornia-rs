@@ -187,5 +187,5 @@ def test_from_buffer_size_overflow_raises():
     """Requesting width*height*channels that overflows usize raises OverflowError."""
     data = bytearray(3)
     big = sys.maxsize  # 2^63-1 on 64-bit
-    with pytest.raises((OverflowError, ValueError)):
+    with pytest.raises(OverflowError):
         Image.from_buffer(data, width=big, height=big, channels=3)

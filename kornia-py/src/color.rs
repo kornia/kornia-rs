@@ -4,8 +4,8 @@ use pyo3::prelude::*;
 use crate::dispatch::{cpu_op, try_dispatch_device};
 
 use crate::image::{
-    alloc_output_pyarray, alloc_output_pyarray_f32, alloc_output_pyarray_zeroed, numpy_as_image,
-    numpy_as_image_f32, to_pyerr, PyImage, PyImageF32,
+    alloc_output_pyarray, alloc_output_pyarray_t, numpy_as_image, numpy_as_image_t, to_pyerr,
+    PyImage, PyImageF32, UNINIT, ZEROED,
 };
 use kornia_image::ImageSize;
 use kornia_imgproc::color;
@@ -40,8 +40,8 @@ pub fn bgr_from_rgb(py: Python<'_>, image: &Bound<'_, PyAny>) -> PyResult<Py<PyA
 /// GIL is released for the NEON/AVX2/scalar kernel invocation.
 #[pyfunction]
 pub fn gray_from_rgb_f32(py: Python<'_>, image: PyImageF32) -> PyResult<PyImageF32> {
-    let src = unsafe { numpy_as_image_f32::<3>(py, &image)? };
-    let (mut dst, out) = unsafe { alloc_output_pyarray_f32::<1>(py, src.size())? };
+    let src = unsafe { numpy_as_image_t::<f32, 3>(py, &image)? };
+    let (mut dst, out) = unsafe { alloc_output_pyarray_t::<f32, 1, UNINIT>(py, src.size())? };
     py.detach(|| color::gray_from_rgb_f32(&src, &mut dst))
         .map_err(to_pyerr)?;
     Ok(out)
@@ -150,8 +150,9 @@ macro_rules! py_f32_3to3 {
         pub fn $name(py: Python<'_>, image: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
             crate::dispatch::require_f32_host(image, stringify!($name))?;
             cpu_op(py, image, |py, image| {
-                let src = unsafe { numpy_as_image_f32::<3>(py, &image)? };
-                let (mut dst, out) = unsafe { alloc_output_pyarray_f32::<3>(py, src.size())? };
+                let src = unsafe { numpy_as_image_t::<f32, 3>(py, &image)? };
+                let (mut dst, out) =
+                    unsafe { alloc_output_pyarray_t::<f32, 3, UNINIT>(py, src.size())? };
                 py.detach(|| $func(&src, &mut dst)).map_err(to_pyerr)?;
                 Ok(out)
             })
@@ -164,8 +165,9 @@ macro_rules! py_f32_3to3 {
             try_dispatch_device!(py, image, $dev);
             crate::dispatch::require_f32_host(image, stringify!($name))?;
             cpu_op(py, image, |py, image| {
-                let src = unsafe { numpy_as_image_f32::<3>(py, &image)? };
-                let (mut dst, out) = unsafe { alloc_output_pyarray_f32::<3>(py, src.size())? };
+                let src = unsafe { numpy_as_image_t::<f32, 3>(py, &image)? };
+                let (mut dst, out) =
+                    unsafe { alloc_output_pyarray_t::<f32, 3, UNINIT>(py, src.size())? };
                 py.detach(|| $func(&src, &mut dst)).map_err(to_pyerr)?;
                 Ok(out)
             })
@@ -194,8 +196,9 @@ macro_rules! py_ycbcr_family {
                 }
                 "float32" => {
                     let arr: Py<numpy::PyArray3<f32>> = view.extract()?;
-                    let src = unsafe { numpy_as_image_f32::<3>(py, &arr)? };
-                    let (mut dst, out) = unsafe { alloc_output_pyarray_f32::<3>(py, src.size())? };
+                    let src = unsafe { numpy_as_image_t::<f32, 3>(py, &arr)? };
+                    let (mut dst, out) =
+                        unsafe { alloc_output_pyarray_t::<f32, 3, UNINIT>(py, src.size())? };
                     py.detach(|| $func(&src, &mut dst)).map_err(to_pyerr)?;
                     out.into_any()
                 }
@@ -400,8 +403,9 @@ macro_rules! py_video_decode {
             // `data` is owned for the call, keeping the buffer alive; the slice is
             // only read inside `py.detach` while `arr` remains valid.
             let src = crate::pyutils::c_slice(arr, "YUV buffer")?;
-            let (mut dst, out) =
-                unsafe { alloc_output_pyarray_zeroed::<3>(py, ImageSize { width, height })? };
+            let (mut dst, out) = unsafe {
+                alloc_output_pyarray_t::<u8, 3, ZEROED>(py, ImageSize { width, height })?
+            };
             // Length validation happens inside the kernel (returns InvalidImageSize).
             py.detach(|| $func(src, &mut dst)).map_err(to_pyerr)?;
             Ok(out)

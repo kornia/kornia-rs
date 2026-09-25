@@ -9,7 +9,7 @@ use kornia_algebra::{Mat3F64, Vec3AF32, Vec3F64, SE3F32, SO3F32};
 use numpy::{PyArray, PyArray2, PyArrayMethods, PyUntypedArrayMethods};
 use pyo3::prelude::*;
 
-use crate::pyutils::{c_slice, to_value_err};
+use crate::pyutils::{c_slice, value_err};
 
 /// Build a [`Pose3d`] from row-major (3, 3) rotation + (3,) translation slices.
 fn pose_from_slice(r: &[f64], t: &[f64]) -> Pose3d {
@@ -133,9 +133,9 @@ pub fn pose_graph_optimize_py<'py>(
     let t_out = PyArray2::<f64>::zeros(py, [n_poses, 3], false);
     // SAFETY: `r_out` is a freshly allocated, zero-initialised, C-contiguous
     // (n_poses, 3, 3) f64 array not yet shared with Python.
-    let r_out_data = unsafe { r_out.as_slice_mut() }.map_err(to_value_err)?;
+    let r_out_data = unsafe { r_out.as_slice_mut() }.map_err(value_err)?;
     // SAFETY: as above, for the fresh (n_poses, 3) `t_out`.
-    let t_out_data = unsafe { t_out.as_slice_mut() }.map_err(to_value_err)?;
+    let t_out_data = unsafe { t_out.as_slice_mut() }.map_err(value_err)?;
     for (i, p) in result.poses.iter().enumerate() {
         let cols = p.rotation.to_cols_array();
         for r in 0..3 {
