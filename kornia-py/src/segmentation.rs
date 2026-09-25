@@ -173,9 +173,11 @@ pub fn rle_to_mask<'py>(
         )));
     }
     let flat = decode_rle_flat(&rle, mask_size)?;
-    let arr = PyArray::<u8, _>::zeros(py, [mh, mw], false);
-    // SAFETY: `arr` is a freshly allocated, zero-initialised, C-contiguous
-    // (mh, mw) array (exactly `mask_size` elements) not yet shared with Python.
+    // SAFETY: `col_major_to_row_major` writes every one of the `mh * mw`
+    // output elements (its block and cleanup loops tile the whole mask).
+    let arr = unsafe { PyArray::<u8, _>::new(py, [mh, mw], false) };
+    // SAFETY: `arr` is a freshly allocated C-contiguous (mh, mw) array
+    // (exactly `mask_size` elements) not yet shared with Python.
     let out = unsafe { arr.as_slice_mut() }.map_err(value_err)?;
     col_major_to_row_major(&flat, out, mh, mw);
     Ok(arr)

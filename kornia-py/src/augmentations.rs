@@ -492,7 +492,12 @@ impl PyColorJitter {
         let order_f32: Vec<(u8, f32)> = order.iter().map(|&(op, v)| (op, v as f32)).collect();
 
         // Allocate the output PyArray; write into it directly to avoid a copy.
-        let out_arr = PyArray::<u8, _>::zeros(py, [height, width, channels], false);
+        // SAFETY: every path of `fused_color_jitter` writes all of `dst` before
+        // any read of it (full-slice copy / LUT / brightness, or the 3-channel
+        // saturation/hue kernels over all `npixels`).
+        let out_arr = unsafe { PyArray::<u8, _>::new(py, [height, width, channels], false) };
+        // SAFETY: fresh C-contiguous (height, width, channels) array, i.e.
+        // exactly `src.len()` bytes, not yet shared with Python.
         let dst = unsafe { std::slice::from_raw_parts_mut(out_arr.data(), src.len()) };
 
         py.detach(|| {

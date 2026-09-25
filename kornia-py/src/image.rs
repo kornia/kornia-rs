@@ -491,18 +491,37 @@ fn resize_nearest(
     if n > 0 && (src_h == 0 || src_w == 0) {
         return Err(value_err("resize: cannot resize an empty image"));
     }
-    let mut out: Vec<u8> = crate::pyutils::try_zeroed_vec(n)?;
-    // Index math in u128 so `y * src_h` cannot overflow for huge targets.
+    if n == 0 {
+        return Ok(Vec::new());
+    }
+    // Source index of output coordinate `i`: `floor(i * src / dst)`, clamped.
+    // Evaluated only `dst_w + dst_h` times (column map + once per row), so the
+    // u128 math that rules out `i * src` overflow is off the per-pixel path.
     let scale = |i: usize, src: usize, dst: usize| -> usize {
         (((i as u128) * (src as u128) / (dst as u128)) as usize).min(src - 1)
     };
+    // Byte offset of each output column's source pixel within a source row.
+    let mut xmap: Vec<usize> = crate::pyutils::try_zeroed_vec(dst_w)?;
+    for (x, sx) in xmap.iter_mut().enumerate() {
+        *sx = scale(x, src_w, dst_w) * c;
+    }
+    let src_row = src_w * c;
+    let dst_row = dst_w * c;
+    let mut out: Vec<u8> = Vec::new();
+    out.try_reserve_exact(n)
+        .map_err(|_| pyo3::exceptions::PyMemoryError::new_err("resize: output too large"))?;
+    let mut prev_sy = usize::MAX;
     for y in 0..dst_h {
         let sy = scale(y, src_h, dst_h);
-        for x in 0..dst_w {
-            let sx = scale(x, src_w, dst_w);
-            let si = (sy * src_w + sx) * c;
-            let di = (y * dst_w + x) * c;
-            out[di..di + c].copy_from_slice(&src[si..si + c]);
+        if sy == prev_sy {
+            // Upscaling repeats source rows: copy the previous output row.
+            out.extend_from_within(out.len() - dst_row..);
+        } else {
+            let srow = &src[sy * src_row..(sy + 1) * src_row];
+            for &sx in &xmap {
+                out.extend_from_slice(&srow[sx..sx + c]);
+            }
+            prev_sy = sy;
         }
     }
     Ok(out)
@@ -1239,7 +1258,7 @@ impl PyImageApi {
     /// Generic helper: copy a typed 3-D numpy array into a fresh owned aligned buffer.
     /// This is the single implementation body shared by `wrap`, `wrap_u16`, `wrap_f32`,
     /// and `owned_from_numpy_u8`.
-    fn copy_numpy_into_owned<T: numpy::Element>(
+    fn copy_numpy_into_owned<T: numpy::Element + Copy>(
         py: Python<'_>,
         arr: &Py<PyArray3<T>>,
         dtype: backing::Dtype,
@@ -1247,29 +1266,53 @@ impl PyImageApi {
         mode: String,
     ) -> PyResult<Self> {
         let b = arr.bind(py);
-        // A strided / broadcast / reversed view cannot be read as a flat run of
-        // bytes; normalise it to a C-contiguous copy first (the result is copied
-        // into an owned buffer anyway).
-        let contig: Bound<'_, PyArray3<T>> = if b.is_c_contiguous() {
-            b.clone()
-        } else {
-            py.import("numpy")?
-                .call_method1("ascontiguousarray", (b,))?
-                .cast_into::<PyArray3<T>>()?
-        };
-        let s = contig.shape();
+        let s = b.shape();
         let (h, w, c) = (s[0], s[1], s[2]);
         let n_bytes = backing::byte_len(h, w, c, dtype)?;
-        if n_bytes != contig.len() * std::mem::size_of::<T>() {
+        if n_bytes != b.len() * std::mem::size_of::<T>() {
             return Err(value_err("array dtype does not match the image dtype"));
         }
-        // SAFETY: `contig` is C-contiguous (checked, or produced by
-        // `np.ascontiguousarray`) with exactly `n_bytes` bytes of element data
-        // starting at `data()` (checked above; a byte view needs no
-        // alignment). It is kept alive by the `Bound` for the duration of the
-        // copy below.
-        let src = unsafe { std::slice::from_raw_parts(contig.data() as *const u8, n_bytes) };
-        let bytes = backing::AlignedBytes::from_slice(src)?;
+        if b.is_c_contiguous() {
+            // SAFETY: `b` is C-contiguous with exactly `n_bytes` bytes of element
+            // data starting at `data()` (checked above; a byte view needs no
+            // alignment). It is kept alive by the `Bound` for the duration of
+            // the copy below.
+            let src = unsafe { std::slice::from_raw_parts(b.data() as *const u8, n_bytes) };
+            let bytes = backing::AlignedBytes::from_slice(src)?;
+            return Ok(Self::from_owned_bytes(bytes, dtype, [h, w, c], cs, mode));
+        }
+        if !crate::pyutils::is_ptr_aligned(b.data() as *const u8, std::mem::align_of::<T>()) {
+            // Rare: a strided view that is also misaligned cannot be read through
+            // an ndarray view. Let numpy make an aligned C-contiguous copy, which
+            // then takes the single-memcpy path above.
+            let contig = py
+                .import("numpy")?
+                .call_method1("ascontiguousarray", (b,))?
+                .cast_into::<PyArray3<T>>()?
+                .unbind();
+            return Self::copy_numpy_into_owned(py, &contig, dtype, cs, mode);
+        }
+        // Strided / broadcast / reversed but aligned view: gather it straight
+        // into the owned buffer in logical (row-major) order — one copy, no
+        // intermediate contiguous numpy array.
+        let mut bytes = backing::AlignedBytes::uninit(n_bytes)?;
+        // SAFETY: `bytes` uniquely owns `n_bytes = b.len() * size_of::<T>()`
+        // bytes at a 64-byte (hence `T`-) aligned address; viewing them as
+        // `MaybeUninit<T>` makes no initialisation claim.
+        let dst = unsafe {
+            std::slice::from_raw_parts_mut(
+                bytes.as_mut_ptr() as *mut std::mem::MaybeUninit<T>,
+                b.len(),
+            )
+        };
+        // SAFETY: the data pointer is aligned for `T` (checked above) and numpy
+        // guarantees every in-shape strided index is in bounds; the GIL is held
+        // and nothing mutates the array while the read-only view is alive.
+        let view = unsafe { b.as_array() };
+        for (d, &v) in dst.iter_mut().zip(view.iter()) {
+            d.write(v);
+        }
+        // Every element was written: `view` yields exactly `b.len()` items.
         Ok(Self::from_owned_bytes(bytes, dtype, [h, w, c], cs, mode))
     }
 
@@ -4565,6 +4608,57 @@ impl PyImageApi {
         {
             let _ = (py, stream);
             Err(cuda_not_compiled())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resize_nearest;
+
+    /// The pre-optimisation per-pixel formula, kept as the oracle.
+    fn resize_nearest_reference(
+        src: &[u8],
+        src_h: usize,
+        src_w: usize,
+        dst_h: usize,
+        dst_w: usize,
+        c: usize,
+    ) -> Vec<u8> {
+        let scale = |i: usize, src: usize, dst: usize| -> usize {
+            (((i as u128) * (src as u128) / (dst as u128)) as usize).min(src - 1)
+        };
+        let mut out = vec![0u8; dst_h * dst_w * c];
+        for y in 0..dst_h {
+            let sy = scale(y, src_h, dst_h);
+            for x in 0..dst_w {
+                let sx = scale(x, src_w, dst_w);
+                let si = (sy * src_w + sx) * c;
+                let di = (y * dst_w + x) * c;
+                out[di..di + c].copy_from_slice(&src[si..si + c]);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn resize_nearest_matches_reference() {
+        let cases = [
+            (4, 4, 4, 4, 1),
+            (5, 7, 13, 3, 1),
+            (7, 5, 2, 11, 4),
+            (1, 1, 3, 5, 2),
+            (9, 17, 9, 16, 4),
+            (16, 9, 33, 31, 1),
+            (3, 3, 0, 5, 1),
+        ];
+        for (src_h, src_w, dst_h, dst_w, c) in cases {
+            let src: Vec<u8> = (0..src_h * src_w * c)
+                .map(|i| (i * 37 % 251) as u8)
+                .collect();
+            let got = resize_nearest(&src, src_h, src_w, dst_h, dst_w, c).unwrap();
+            let want = resize_nearest_reference(&src, src_h, src_w, dst_h, dst_w, c);
+            assert_eq!(got, want, "{src_h}x{src_w} -> {dst_h}x{dst_w} (c={c})");
         }
     }
 }

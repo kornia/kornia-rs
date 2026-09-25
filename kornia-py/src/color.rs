@@ -5,7 +5,7 @@ use crate::dispatch::{cpu_op, try_dispatch_device};
 
 use crate::image::{
     alloc_output_pyarray, alloc_output_pyarray_t, numpy_as_image, numpy_as_image_t, to_pyerr,
-    PyImage, PyImageF32, UNINIT, ZEROED,
+    PyImage, PyImageF32, UNINIT,
 };
 use kornia_image::ImageSize;
 use kornia_imgproc::color;
@@ -403,8 +403,11 @@ macro_rules! py_video_decode {
             // `data` is owned for the call, keeping the buffer alive; the slice is
             // only read inside `py.detach` while `arr` remains valid.
             let src = crate::pyutils::c_slice(arr, "YUV buffer")?;
+            // SAFETY: with the even-size checks above (repeated by the kernel)
+            // the decoder writes every output pixel; on any kernel error the
+            // array is dropped without reaching Python.
             let (mut dst, out) = unsafe {
-                alloc_output_pyarray_t::<u8, 3, ZEROED>(py, ImageSize { width, height })?
+                alloc_output_pyarray_t::<u8, 3, UNINIT>(py, ImageSize { width, height })?
             };
             // Length validation happens inside the kernel (returns InvalidImageSize).
             py.detach(|| $func(src, &mut dst)).map_err(to_pyerr)?;
@@ -464,9 +467,12 @@ macro_rules! py_video_encode {
             let src = unsafe { numpy_as_image::<3>(py, &image)? };
             let (w, h) = (src.width(), src.height());
             let len = $len_expr(w, h);
-            let out = PyArray::<u8, _>::zeros(py, [len], false);
-            // SAFETY: freshly-allocated, zero-initialised, contiguous 1-D uint8
-            // array of `len` elements, not yet shared with Python.
+            // SAFETY: the encoder writes every one of the `len` bytes (it
+            // rejects any size it cannot fill exactly); on error the array is
+            // dropped without reaching Python.
+            let out = unsafe { PyArray::<u8, _>::new(py, [len], false) };
+            // SAFETY: freshly-allocated, contiguous 1-D uint8 array of `len`
+            // elements, not yet shared with Python.
             let out_slice = unsafe { out.as_slice_mut() }.map_err(to_pyerr)?;
             py.detach(|| $func(&src, out_slice)).map_err(to_pyerr)?;
             Ok(out.unbind())
