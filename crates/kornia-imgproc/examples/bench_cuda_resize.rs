@@ -537,12 +537,13 @@ fn run_gpu_oxide_sweep() {
 
     use cudarc::driver::{CudaContext, CudaSlice, CudaStream};
     use kornia_imgproc::cuda::resize::{
-        launch_resize_bilinear_downscale_cuda, launch_resize_nearest_downscale_cuda,
-        CudaResizeError, PixelMapping,
+        launch_resize_bicubic_cuda, launch_resize_bilinear_downscale_cuda,
+        launch_resize_nearest_downscale_cuda, CudaResizeError, PixelMapping,
     };
     use kornia_imgproc::cuda::resize_oxide::{
-        launch_resize_bilinear_noldg_cuda, launch_resize_bilinear_oxide_cuda,
-        launch_resize_bilinear_oxide_slice_cuda, launch_resize_nearest_oxide_cuda,
+        launch_resize_bicubic_oxide_cuda, launch_resize_bilinear_noldg_cuda,
+        launch_resize_bilinear_oxide_cuda, launch_resize_bilinear_oxide_slice_cuda,
+        launch_resize_nearest_oxide_cuda,
     };
 
     type Launcher = fn(
@@ -585,6 +586,16 @@ fn run_gpu_oxide_sweep() {
                     launch_resize_nearest_downscale_cuda as Launcher,
                 ),
                 ("F oxide-nn", launch_resize_nearest_oxide_cuda as Launcher),
+            ],
+        ),
+        (
+            "cuda-oxide bicubic sweep",
+            &[
+                ("H nvrtc-bicubic", launch_resize_bicubic_cuda as Launcher),
+                (
+                    "G oxide-bicubic",
+                    launch_resize_bicubic_oxide_cuda as Launcher,
+                ),
             ],
         ),
     ];

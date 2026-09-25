@@ -17,6 +17,11 @@
 //!   costing ~12% on upscale.
 //! * [`resize_nearest_oxide_3c`] — nearest-neighbour interpolation, raw-pointer
 //!   variant.  Parameter list identical to `resize_nearest_downscale_3c`.
+//! * [`resize_bicubic_oxide_3c`] — Keys cubic (a = -0.5) interpolation,
+//!   raw-pointer variant.  Uses plain `*` and `+` throughout (no `f32::mul_add`;
+//!   backend gap #4: FMA intrinsics trigger NVVM IR mode, no PTX emitted).
+//!   Results differ from the NVRTC kernel by ~1 ULP; parity tests compare against
+//!   a no-FMA CPU reference.
 //!
 //! # Build
 //!
@@ -269,6 +274,189 @@ pub unsafe fn resize_nearest_oxide_3c(
         *dst.add(out) = p0;
         *dst.add(out + 1) = p1;
         *dst.add(out + 2) = p2;
+    }
+}
+
+// ── Bicubic — raw pointers ────────────────────────────────────────────────────
+
+/// Keys cubic (a = -0.5) resize, raw-pointer variant.
+///
+/// **Note on FMA**: `f32::mul_add` lowers to `llvm.fma.f32`, which causes the
+/// c8b3103 cuda-oxide backend to switch to NVVM IR mode and skip PTX emission
+/// (it requires `libnvvm` at the consumer side, which kornia does not wire up).
+/// This kernel uses plain `*` and `+` throughout.  The Horner weight values and
+/// accumulated outputs will differ in the last bit from the NVRTC kernel, which
+/// uses `fmaf` explicitly.  Parity tests compare against CPU (not NVRTC).
+///
+/// This is backend gap #4: any `f32::mul_add` / `llvm.fma.f32` causes the
+/// backend to emit NVVM IR instead of PTX.
+///
+/// Row-by-row load hoist: 12 values per row are loaded into registers before any
+/// accumulation for that row.  This caps register pressure at ~35 while still
+/// preventing the no-`noalias` serialisation that costs ~2× on upscale.
+///
+/// # Safety
+///
+/// Same invariants as [`resize_bilinear_oxide_3c`].
+#[kernel]
+pub unsafe fn resize_bicubic_oxide_3c(
+    src: *const f32,
+    dst: *mut f32,
+    src_w: u32,
+    src_h: u32,
+    dst_w: u32,
+    dst_h: u32,
+    ax: f32,
+    bx: f32,
+    ay: f32,
+    by: f32,
+) {
+    let dst_x = thread::blockIdx_x() * thread::blockDim_x() + thread::threadIdx_x();
+    let dst_y = thread::blockIdx_y() * thread::blockDim_y() + thread::threadIdx_y();
+    if dst_x >= dst_w || dst_y >= dst_h {
+        return;
+    }
+
+    // Continuous source coordinate, clamped to [0, src_dim-1].
+    // Explicit comparisons replace fmaxf/fminf (same reason as bilinear).
+    let hix = (src_w - 1) as f32;
+    let hiy = (src_h - 1) as f32;
+    let cx = ax * dst_x as f32 + bx;
+    let cy = ay * dst_y as f32 + by;
+    let cx = if cx < hix { cx } else { hix };
+    let cy = if cy < hiy { cy } else { hiy };
+    let sx = if cx > 0.0 { cx } else { 0.0_f32 };
+    let sy = if cy > 0.0 { cy } else { 0.0_f32 };
+
+    // sx/sy ≥ 0 after clamping, so truncation == floor.  `floorf` is not
+    // used: it calls libnvvm, which would add an `__nv_floorf` symbol and
+    // break the self-contained PTX contract.
+    let x0 = sx as i32;
+    let y0 = sy as i32;
+    let frac_x = sx - x0 as f32;
+    let frac_y = sy - y0 as f32;
+
+    // Horner-form Keys cubic weights (a = -0.5), plain mul+add.
+    // wx[0] / wx[3]: ((-0.5*t + 2.5)*t - 4.0)*t + 2.0
+    // wx[1] / wx[2]: ((1.5*t - 2.5)*t)*t + 1.0
+    // f32::mul_add is NOT used: it triggers the backend's NVVM IR mode (gap #4).
+    // Results differ in the last bit from the NVRTC fmaf path; parity is
+    // verified against CPU, not NVRTC.
+    let wx0 = {
+        let t = 1.0_f32 + frac_x;
+        ((-0.5_f32 * t + 2.5_f32) * t - 4.0_f32) * t + 2.0_f32
+    };
+    let wx1 = {
+        let t = frac_x;
+        ((1.5_f32 * t - 2.5_f32) * t) * t + 1.0_f32
+    };
+    let wx2 = {
+        let t = 1.0_f32 - frac_x;
+        ((1.5_f32 * t - 2.5_f32) * t) * t + 1.0_f32
+    };
+    let wx3 = {
+        let t = 2.0_f32 - frac_x;
+        ((-0.5_f32 * t + 2.5_f32) * t - 4.0_f32) * t + 2.0_f32
+    };
+    let wy0 = {
+        let t = 1.0_f32 + frac_y;
+        ((-0.5_f32 * t + 2.5_f32) * t - 4.0_f32) * t + 2.0_f32
+    };
+    let wy1 = {
+        let t = frac_y;
+        ((1.5_f32 * t - 2.5_f32) * t) * t + 1.0_f32
+    };
+    let wy2 = {
+        let t = 1.0_f32 - frac_y;
+        ((1.5_f32 * t - 2.5_f32) * t) * t + 1.0_f32
+    };
+    let wy3 = {
+        let t = 2.0_f32 - frac_y;
+        ((-0.5_f32 * t + 2.5_f32) * t - 4.0_f32) * t + 2.0_f32
+    };
+
+    // Clamped row bases.  y0 ≥ 0 (sx was clamped); y0-1 is the only case that
+    // can reach -1.  `i32::max`/`min` share the Ord::min drop-glue issue —
+    // explicit comparisons used throughout.
+    let sw3 = src_w * 3;
+    let hi_y = (src_h as i32) - 1;
+    let hi_x = (src_w as i32) - 1;
+
+    let ry0 = (if y0 - 1 < 0 { 0_i32 } else { y0 - 1 }) as u32 * sw3;
+    let ry1 = y0 as u32 * sw3;
+    let ry2 = (if y0 + 1 > hi_y { hi_y } else { y0 + 1 }) as u32 * sw3;
+    let ry3 = (if y0 + 2 > hi_y { hi_y } else { y0 + 2 }) as u32 * sw3;
+
+    let cx0 = (if x0 - 1 < 0 { 0_i32 } else { x0 - 1 }) as u32 * 3;
+    let cx1 = x0 as u32 * 3;
+    let cx2 = (if x0 + 1 > hi_x { hi_x } else { x0 + 1 }) as u32 * 3;
+    let cx3 = (if x0 + 2 > hi_x { hi_x } else { x0 + 2 }) as u32 * 3;
+
+    let out = ((dst_y * dst_w + dst_x) * 3) as usize;
+
+    // Row-by-row load hoist.  12 src values (4 cols × 3 channels) are issued
+    // per row before that row's fma accumulation begins.  All stores follow the
+    // final row — no src read is ordered after a dst write.
+    unsafe {
+        let mut acc0 = 0.0_f32;
+        let mut acc1 = 0.0_f32;
+        let mut acc2 = 0.0_f32;
+
+        // ── row 0, wy = wy0 ────────────────────────────────────────────────
+        let b0 = (ry0 + cx0) as usize; let b1 = (ry0 + cx1) as usize;
+        let b2 = (ry0 + cx2) as usize; let b3 = (ry0 + cx3) as usize;
+        let v00 = *src.add(b0);   let v01 = *src.add(b0+1); let v02 = *src.add(b0+2);
+        let v10 = *src.add(b1);   let v11 = *src.add(b1+1); let v12 = *src.add(b1+2);
+        let v20 = *src.add(b2);   let v21 = *src.add(b2+1); let v22 = *src.add(b2+2);
+        let v30 = *src.add(b3);   let v31 = *src.add(b3+1); let v32 = *src.add(b3+2);
+        let w0 = wx0*wy0; let w1 = wx1*wy0; let w2 = wx2*wy0; let w3 = wx3*wy0;
+        acc0 += w0*v00; acc1 += w0*v01; acc2 += w0*v02;
+        acc0 += w1*v10; acc1 += w1*v11; acc2 += w1*v12;
+        acc0 += w2*v20; acc1 += w2*v21; acc2 += w2*v22;
+        acc0 += w3*v30; acc1 += w3*v31; acc2 += w3*v32;
+
+        // ── row 1, wy = wy1 ────────────────────────────────────────────────
+        let b0 = (ry1 + cx0) as usize; let b1 = (ry1 + cx1) as usize;
+        let b2 = (ry1 + cx2) as usize; let b3 = (ry1 + cx3) as usize;
+        let v00 = *src.add(b0);   let v01 = *src.add(b0+1); let v02 = *src.add(b0+2);
+        let v10 = *src.add(b1);   let v11 = *src.add(b1+1); let v12 = *src.add(b1+2);
+        let v20 = *src.add(b2);   let v21 = *src.add(b2+1); let v22 = *src.add(b2+2);
+        let v30 = *src.add(b3);   let v31 = *src.add(b3+1); let v32 = *src.add(b3+2);
+        let w0 = wx0*wy1; let w1 = wx1*wy1; let w2 = wx2*wy1; let w3 = wx3*wy1;
+        acc0 += w0*v00; acc1 += w0*v01; acc2 += w0*v02;
+        acc0 += w1*v10; acc1 += w1*v11; acc2 += w1*v12;
+        acc0 += w2*v20; acc1 += w2*v21; acc2 += w2*v22;
+        acc0 += w3*v30; acc1 += w3*v31; acc2 += w3*v32;
+
+        // ── row 2, wy = wy2 ────────────────────────────────────────────────
+        let b0 = (ry2 + cx0) as usize; let b1 = (ry2 + cx1) as usize;
+        let b2 = (ry2 + cx2) as usize; let b3 = (ry2 + cx3) as usize;
+        let v00 = *src.add(b0);   let v01 = *src.add(b0+1); let v02 = *src.add(b0+2);
+        let v10 = *src.add(b1);   let v11 = *src.add(b1+1); let v12 = *src.add(b1+2);
+        let v20 = *src.add(b2);   let v21 = *src.add(b2+1); let v22 = *src.add(b2+2);
+        let v30 = *src.add(b3);   let v31 = *src.add(b3+1); let v32 = *src.add(b3+2);
+        let w0 = wx0*wy2; let w1 = wx1*wy2; let w2 = wx2*wy2; let w3 = wx3*wy2;
+        acc0 += w0*v00; acc1 += w0*v01; acc2 += w0*v02;
+        acc0 += w1*v10; acc1 += w1*v11; acc2 += w1*v12;
+        acc0 += w2*v20; acc1 += w2*v21; acc2 += w2*v22;
+        acc0 += w3*v30; acc1 += w3*v31; acc2 += w3*v32;
+
+        // ── row 3, wy = wy3 ────────────────────────────────────────────────
+        let b0 = (ry3 + cx0) as usize; let b1 = (ry3 + cx1) as usize;
+        let b2 = (ry3 + cx2) as usize; let b3 = (ry3 + cx3) as usize;
+        let v00 = *src.add(b0);   let v01 = *src.add(b0+1); let v02 = *src.add(b0+2);
+        let v10 = *src.add(b1);   let v11 = *src.add(b1+1); let v12 = *src.add(b1+2);
+        let v20 = *src.add(b2);   let v21 = *src.add(b2+1); let v22 = *src.add(b2+2);
+        let v30 = *src.add(b3);   let v31 = *src.add(b3+1); let v32 = *src.add(b3+2);
+        let w0 = wx0*wy3; let w1 = wx1*wy3; let w2 = wx2*wy3; let w3 = wx3*wy3;
+        acc0 += w0*v00; acc1 += w0*v01; acc2 += w0*v02;
+        acc0 += w1*v10; acc1 += w1*v11; acc2 += w1*v12;
+        acc0 += w2*v20; acc1 += w2*v21; acc2 += w2*v22;
+        acc0 += w3*v30; acc1 += w3*v31; acc2 += w3*v32;
+
+        *dst.add(out)   = acc0;
+        *dst.add(out+1) = acc1;
+        *dst.add(out+2) = acc2;
     }
 }
 
