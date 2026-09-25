@@ -1,0 +1,23 @@
+// PLACEHOLDER — regenerate with:
+//
+//   export PATH=/usr/local/cuda/bin:$PATH   # needs CUDA 13.0+ for cuda-bindings
+//   cd oxide-kernels
+//   cargo oxide build resize_oxide --arch sm_75 --no-fmad
+//   cp resize_bilinear_oxide.ptx \
+//      ../crates/kornia-imgproc/src/cuda/resize_bilinear_oxide_sm75.ptx
+//
+// Gate checks after copy (both must print 0):
+//   grep -cE 'fma\.rn\.f32|mad\.f32' resize_bilinear_oxide_sm75.ptx
+//   grep -c '__nv_' resize_bilinear_oxide_sm75.ptx
+//
+// cuda-oxide version: c8b3103 (f819f23 on Edgar's Orin spike).
+// Nightly pin: nightly-2026-04-03  (oxide-kernels/rust-toolchain.toml).
+// On cuda-oxide main (≥ v0.2): also pass --no-fmad to keep byte-exactness.
+//
+// This stub is valid PTX and loads without error but exposes no functions;
+// the resize_oxide launchers will return CudaResizeError::Cuda("failed to
+// load …") until replaced with the real artifact.
+
+.version 7.5
+.target sm_75
+.address_size 64
