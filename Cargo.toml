@@ -10,7 +10,7 @@ exclude = ["examples/dora"]
 default-members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.15-rc.5"
+version = "0.1.15"
 authors = ["kornia.org <edgar@kornia.org>"]
 edition = "2021"
 rust-version = "1.89"
@@ -59,18 +59,18 @@ kiddo = "5.3"
 # with it on every release — locally `path` wins so a stale pin builds fine
 # and only ships a wrong dependency requirement at publish time. Enforced by
 # scripts/check_version_pins.py (pre-commit hook on this file).
-kornia = { path = "crates/kornia", version = "0.1.15-rc.5" }
-kornia-3d = { path = "crates/kornia-3d", version = "0.1.15-rc.5" }
-kornia-algebra = { path = "crates/kornia-algebra", version = "0.1.15-rc.5" }
-kornia-apriltag = { path = "crates/kornia-apriltag", version = "0.1.15-rc.5" }
-kornia-bow = { path = "crates/kornia-bow", version = "0.1.15-rc.5" }
-kornia-calib = { path = "crates/kornia-calib", version = "0.1.15-rc.5" }
-kornia-image = { path = "crates/kornia-image", version = "0.1.15-rc.5" }
-kornia-imgproc = { path = "crates/kornia-imgproc", version = "0.1.15-rc.5" }
-kornia-io = { path = "crates/kornia-io", version = "0.1.15-rc.5" }
-kornia-tensor = { path = "crates/kornia-tensor", version = "0.1.15-rc.5" }
-kornia-tensor-ops = { path = "crates/kornia-tensor-ops", version = "0.1.15-rc.5" }
-kornia-vlm = { path = "crates/kornia-vlm", version = "0.1.15-rc.5" }
+kornia = { path = "crates/kornia", version = "0.1.15" }
+kornia-3d = { path = "crates/kornia-3d", version = "0.1.15" }
+kornia-algebra = { path = "crates/kornia-algebra", version = "0.1.15" }
+kornia-apriltag = { path = "crates/kornia-apriltag", version = "0.1.15" }
+kornia-bow = { path = "crates/kornia-bow", version = "0.1.15" }
+kornia-calib = { path = "crates/kornia-calib", version = "0.1.15" }
+kornia-image = { path = "crates/kornia-image", version = "0.1.15" }
+kornia-imgproc = { path = "crates/kornia-imgproc", version = "0.1.15" }
+kornia-io = { path = "crates/kornia-io", version = "0.1.15" }
+kornia-tensor = { path = "crates/kornia-tensor", version = "0.1.15" }
+kornia-tensor-ops = { path = "crates/kornia-tensor-ops", version = "0.1.15" }
+kornia-vlm = { path = "crates/kornia-vlm", version = "0.1.15" }
 log = "0.4"
 minijinja = { version = "2.20", features = ["loader"] }
 nalgebra = "0.35"
