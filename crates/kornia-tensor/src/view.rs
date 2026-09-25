@@ -98,14 +98,11 @@ impl<T: Send, const N: usize> TensorView<'_, T, N> {
     /// # Returns
     ///
     /// The total number of elements (product of all dimensions in the shape).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TensorError::ShapeOverflow`] if the product overflows `usize`, which
-    /// can only happen for a malformed view since the `shape` field is public.
+    /// Saturates at `usize::MAX` for a malformed view whose (public) `shape`
+    /// overflows; use [`checked_numel`] to detect that case.
     #[inline]
-    pub fn numel(&self) -> Result<usize, TensorError> {
-        checked_numel(&self.shape)
+    pub fn numel(&self) -> usize {
+        checked_numel(&self.shape).unwrap_or(usize::MAX)
     }
 
     /// Gets the element at the given index, checking bounds.
@@ -272,7 +269,7 @@ mod tests {
             strides: [1],
         };
 
-        assert_eq!(view.numel().ok(), Some(8));
+        assert_eq!(view.numel(), 8);
         assert!(!view.as_ptr().is_null());
 
         // check slice

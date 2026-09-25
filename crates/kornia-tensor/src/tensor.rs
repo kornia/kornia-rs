@@ -1058,7 +1058,7 @@ impl<T, const N: usize> Tensor<T, N> {
     /// assert_eq!(t2.shape, [2, 2]);
     /// assert_eq!(t2.as_slice(), vec![1, 2, 3, 4]);
     /// assert_eq!(t2.strides, [2, 1]);
-    /// assert_eq!(t2.numel().unwrap(), 4);
+    /// assert_eq!(t2.numel(), 4);
     /// ```
     pub fn reshape<const M: usize>(
         &self,
@@ -1714,7 +1714,7 @@ mod tests {
         assert_eq!(view.shape, [2, 2]);
         assert_eq!(view.as_slice(), vec![1, 2, 3, 4]);
         assert_eq!(view.strides, [2, 1]);
-        assert_eq!(view.numel()?, 4);
+        assert_eq!(view.numel(), 4);
         assert_eq!(view.as_contiguous()?.as_slice(), vec![1, 2, 3, 4]);
         Ok(())
     }
@@ -1728,7 +1728,7 @@ mod tests {
         assert_eq!(t2.shape, [4]);
         assert_eq!(t2.as_slice(), vec![1, 2, 3, 4]);
         assert_eq!(t2.strides, [1]);
-        assert_eq!(t2.numel()?, 4);
+        assert_eq!(t2.numel(), 4);
         assert_eq!(t2.as_contiguous()?.as_slice(), vec![1, 2, 3, 4]);
         Ok(())
     }
@@ -1742,7 +1742,7 @@ mod tests {
         assert_eq!(view.get([0, 1]), Some(&2));
         assert_eq!(view.get([1, 0]), Some(&3));
         assert_eq!(view.get([1, 1]), Some(&4));
-        assert_eq!(view.numel()?, 4);
+        assert_eq!(view.numel(), 4);
         assert_eq!(view.as_contiguous()?.as_slice(), vec![1, 2, 3, 4]);
         Ok(())
     }
