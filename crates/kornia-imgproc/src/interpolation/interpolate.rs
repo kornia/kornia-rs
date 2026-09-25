@@ -57,6 +57,13 @@ pub fn interpolate_pixel<const C: usize>(
             1,
         ));
     }
+    // Clamp into `[0, cols] x [0, rows]`: a no-op for in-range coordinates and,
+    // past the far edge, every sampler already replicates the last pixel. Below
+    // zero the samplers would otherwise blend/extrapolate (bilinear truncates
+    // toward zero, so `u = -0.5` returned `1.5 * p0 - 0.5 * p1`), and an infinite
+    // coordinate overflowed the bicubic/lanczos tap arithmetic. NaN passes through.
+    let u = u.clamp(0.0, image.cols() as f32);
+    let v = v.clamp(0.0, image.rows() as f32);
     Ok(interpolate_pixel_fast(image, u, v, c, interpolation))
 }
 
@@ -123,6 +130,20 @@ mod tests {
         // Negative / NaN coordinates stay in bounds (no panic, finite or NaN).
         let _ = interpolate_pixel(&src, -1.0e9, f32::NAN, 0, InterpolationMode::Bilinear)?;
         let _ = interpolate_pixel(&src, f32::NAN, -3.0, 0, InterpolationMode::Nearest)?;
+        // Every mode replicates the border: slightly left of column 0 is pixel 0
+        // (bilinear used to extrapolate to -0.5 here), and +inf is the last
+        // column (bicubic/lanczos used to overflow their tap arithmetic).
+        for mode in [
+            InterpolationMode::Nearest,
+            InterpolationMode::Bilinear,
+            InterpolationMode::Bicubic,
+            InterpolationMode::Lanczos,
+        ] {
+            let left = interpolate_pixel(&src, -0.5, 0.0, 0, mode)?;
+            assert!(left.abs() < 1e-4, "{mode:?}: u=-0.5 gave {left}");
+            let right = interpolate_pixel(&src, f32::INFINITY, 0.0, 0, mode)?;
+            assert!((right - 3.0).abs() < 1e-4, "{mode:?}: u=inf gave {right}");
+        }
 
         let empty = Image::<f32, 1>::from_size_val(
             ImageSize {

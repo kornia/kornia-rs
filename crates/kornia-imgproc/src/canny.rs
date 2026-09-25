@@ -408,14 +408,16 @@ fn hysteresis_parallel(map: &mut [u8], w: usize, h: usize, mstep: usize, seeds: 
         }
     };
 
-    // Round 1: seed-driven.
-    let changed_tiles: Vec<usize> = (0..ntiles)
-        .into_par_iter()
-        .filter(|&t| !tile_seeds[t].is_empty())
-        .filter(|&t| flood_tile(t, &tile_seeds[t], false))
-        .collect();
+    // Round 1: seed-driven. Every seeded tile wakes its neighbours, not only
+    // the ones that converted something: a seed on a tile's boundary ring can
+    // reach a candidate in the neighbouring tile, and `flood_tile` never writes
+    // outside its own tile, so only that neighbour's boundary scan converts it.
+    let seeded_tiles: Vec<usize> = (0..ntiles).filter(|&t| !tile_seeds[t].is_empty()).collect();
+    seeded_tiles.par_iter().for_each(|&t| {
+        flood_tile(t, &tile_seeds[t], false);
+    });
     let mut active = vec![false; ntiles];
-    for t in changed_tiles {
+    for &t in &seeded_tiles {
         wake_neighbors(t, &mut active);
     }
 
@@ -878,6 +880,35 @@ mod hysteresis_tests {
             hysteresis_serial(&mut expect, mstep, &seeds);
             hysteresis_parallel(&mut map, w, h, mstep, &seeds);
             assert!(map == expect, "round {round}: parallel != serial");
+        }
+    }
+
+    /// Regression: a seed on a tile's boundary ring whose own tile converts
+    /// nothing must still reach a candidate in the neighbouring tile. Round 1
+    /// used to wake only tiles that changed, so the neighbour was never scanned
+    /// (e.g. a contour that is strong up to column 256 and weak from 257).
+    #[test]
+    fn parallel_hysteresis_seed_on_tile_border() {
+        let (w, h) = (2 * TILE_W, 2 * TILE_H);
+        let mstep = w + 2;
+        // Last column of tile 0 -> first column of tile 1, and last row of
+        // tile 0 -> first row of the tile below (diagonal neighbour too).
+        let right_seed = 2 * mstep + TILE_W;
+        let down_seed = TILE_H * mstep + 5;
+        let corner_seed = TILE_H * mstep + TILE_W;
+        for (seed, cand) in [
+            (right_seed, right_seed + 1),
+            (down_seed, down_seed + mstep),
+            (corner_seed, corner_seed + mstep + 1),
+        ] {
+            let mut map = vec![NON_EDGE; mstep * (h + 2)];
+            map[seed] = EDGE;
+            map[cand] = CANDIDATE;
+            let mut expect = map.clone();
+            hysteresis_serial(&mut expect, mstep, &[seed]);
+            hysteresis_parallel(&mut map, w, h, mstep, &[seed]);
+            assert_eq!(map[cand], EDGE, "seed {seed}: cross-tile candidate missed");
+            assert!(map == expect, "seed {seed}: parallel != serial");
         }
     }
 

@@ -148,23 +148,31 @@ def test_pipeline_overflowing_dims():
 # ---------------------------------------------------------------------------
 
 
+YUV_422 = ["rgb_from_yuyv", "rgb_from_uyvy", "rgb_from_yvyu"]
+YUV_420 = ["rgb_from_nv12", "rgb_from_nv21", "rgb_from_i420", "rgb_from_yv12"]
+
+
 @pytest.mark.parametrize(
-    "fn,factor",
-    [
-        ("rgb_from_yuyv", 2.0),
-        ("rgb_from_uyvy", 2.0),
-        ("rgb_from_yvyu", 2.0),
-        ("rgb_from_nv12", 1.5),
-        ("rgb_from_nv21", 1.5),
-        ("rgb_from_i420", 1.5),
-        ("rgb_from_yv12", 1.5),
-    ],
+    "fn,factor,w,h",
+    # 4:2:2 decodes 2-pixel groups per row: only the width must be even.
+    [(fn, 2.0, w, h) for fn in YUV_422 for (w, h) in [(101, 50), (5, 5)]]
+    # 4:2:0 decodes 2x2 blocks: both dimensions must be even.
+    + [(fn, 1.5, w, h) for fn in YUV_420 for (w, h) in [(101, 50), (100, 51), (5, 5)]],
 )
-@pytest.mark.parametrize("w,h", [(101, 50), (100, 51), (5, 5)])
 def test_yuv_decode_rejects_odd_dims(fn, factor, w, h):
     src = np.full(int(w * h * factor), 128, np.uint8)
     with pytest.raises(ValueError, match="even"):
         getattr(K.imgproc, fn)(src, w, h)
+
+
+@pytest.mark.parametrize("fn", YUV_422)
+def test_yuv422_decode_odd_height_fully_written(fn):
+    # Packed 4:2:2 has no vertical subsampling, so an odd height is valid and
+    # every row (including the last) must be written.
+    w, h = 100, 51
+    out = getattr(K.imgproc, fn)(np.full(w * h * 2, 128, np.uint8), w, h)
+    assert out.shape == (h, w, 3)
+    assert len(np.unique(out.reshape(-1, 3), axis=0)) == 1
 
 
 def test_yuv_decode_even_dims_fully_written():

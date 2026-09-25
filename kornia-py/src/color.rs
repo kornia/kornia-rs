@@ -371,7 +371,7 @@ pub fn rgb_from_bayer(
 /// (`nv12`/`nv21`/`i420`/`yv12`) needs `W*H*3/2` bytes (Y plane followed by chroma).
 /// BT.601 limited range, matching OpenCV's `COLOR_YUV2RGB_*`.
 macro_rules! py_video_decode {
-    ($name:ident, $func:path, $doc:expr) => {
+    ($name:ident, $func:path, $even_height:expr, $doc:expr) => {
         #[doc = $doc]
         #[pyfunction]
         pub fn $name(
@@ -381,12 +381,20 @@ macro_rules! py_video_decode {
             height: usize,
         ) -> PyResult<PyImage> {
             let arr = data.bind(py);
-            // The decoders work on 2-pixel (4:2:2) / 2x2 (4:2:0) groups; an odd
-            // dimension would leave the last column/row of the output unwritten.
-            if !width.is_multiple_of(2) || !height.is_multiple_of(2) {
+            // The decoders work on 2-pixel groups (4:2:2, row by row) or 2x2
+            // blocks (4:2:0); an odd width (or, for 4:2:0, an odd height) would
+            // leave the last column/row of the output unwritten. Packed 4:2:2 has
+            // no vertical subsampling, so odd heights are valid there.
+            let even_height: bool = $even_height;
+            if !width.is_multiple_of(2) || (even_height && !height.is_multiple_of(2)) {
                 return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                    "{}: width and height must be even, got {width}x{height}",
-                    stringify!($name)
+                    "{}: {} must be even, got {width}x{height}",
+                    stringify!($name),
+                    if even_height {
+                        "width and height"
+                    } else {
+                        "width"
+                    }
                 )));
             }
             // `data` is owned for the call, keeping the buffer alive; the slice is
@@ -404,36 +412,43 @@ macro_rules! py_video_decode {
 py_video_decode!(
     rgb_from_yuyv,
     color::rgb_from_yuyv,
+    false,
     "Decode packed 4:2:2 YUYV to RGB."
 );
 py_video_decode!(
     rgb_from_uyvy,
     color::rgb_from_uyvy,
+    false,
     "Decode packed 4:2:2 UYVY to RGB."
 );
 py_video_decode!(
     rgb_from_yvyu,
     color::rgb_from_yvyu,
+    false,
     "Decode packed 4:2:2 YVYU to RGB."
 );
 py_video_decode!(
     rgb_from_nv12,
     color::rgb_from_nv12,
+    true,
     "Decode planar 4:2:0 NV12 to RGB."
 );
 py_video_decode!(
     rgb_from_nv21,
     color::rgb_from_nv21,
+    true,
     "Decode planar 4:2:0 NV21 to RGB."
 );
 py_video_decode!(
     rgb_from_i420,
     color::rgb_from_i420,
+    true,
     "Decode planar 4:2:0 I420 to RGB."
 );
 py_video_decode!(
     rgb_from_yv12,
     color::rgb_from_yv12,
+    true,
     "Decode planar 4:2:0 YV12 to RGB."
 );
 

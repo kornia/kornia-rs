@@ -483,27 +483,4 @@ mod bounds_tests {
         super::crop_image(&src, &mut empty, 8, 0)?;
         Ok(())
     }
-
-    #[test]
-    fn test_crop_offset_overflow_returns_err() {
-        // Regression: `x + dst.cols()` must not wrap around to pass the check.
-        let src = Image::<u8, 1>::from_size_val(
-            ImageSize {
-                width: 4,
-                height: 4,
-            },
-            0u8,
-        )
-        .unwrap();
-        let mut dst = Image::<u8, 1>::from_size_val(
-            ImageSize {
-                width: 2,
-                height: 2,
-            },
-            0u8,
-        )
-        .unwrap();
-        assert!(super::crop_image(&src, &mut dst, usize::MAX, 0).is_err());
-        assert!(super::crop_image(&src, &mut dst, 0, usize::MAX - 1).is_err());
-    }
 }

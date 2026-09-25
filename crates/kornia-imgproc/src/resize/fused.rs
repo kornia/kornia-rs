@@ -66,6 +66,13 @@ fn check_rgb_buffer_lens(
     Ok(())
 }
 
+/// `true` if either image has a zero extent. The fused kernels then have
+/// nothing to write (or nothing to sample from) and return early: their row
+/// chunking and `clamp(0, len - 1)` index math assume non-empty axes.
+fn has_zero_extent(src_w: usize, src_h: usize, dst_w: usize, dst_h: usize) -> bool {
+    src_w == 0 || src_h == 0 || dst_w == 0 || dst_h == 0
+}
+
 /// Fused 2× exact-downscale bilinear + per-channel normalize + `HWC→CHW` layout
 /// conversion for RGB u8 → f32.
 ///
@@ -102,6 +109,9 @@ pub fn resize_normalize_to_tensor_u8_to_f32(
         ));
     }
     check_rgb_buffer_lens(src.len(), src_w, src_h, dst.len(), dst_w, dst_h)?;
+    if has_zero_extent(src_w, src_h, dst_w, dst_h) {
+        return Ok(());
+    }
 
     debug_assert_eq!(src_w, 2 * dst_w);
     debug_assert_eq!(src_h, 2 * dst_h);
@@ -172,6 +182,9 @@ pub fn resize_normalize_to_tensor_u8_to_f32_bilinear(
     params: &NormalizeParams<3>,
 ) -> Result<(), kornia_image::ImageError> {
     check_rgb_buffer_lens(src.len(), src_w, src_h, dst.len(), dst_w, dst_h)?;
+    if has_zero_extent(src_w, src_h, dst_w, dst_h) {
+        return Ok(());
+    }
 
     debug_assert_eq!(src.len(), src_h * src_w * 3);
     debug_assert_eq!(dst.len(), 3 * dst_h * dst_w);
@@ -179,9 +192,6 @@ pub fn resize_normalize_to_tensor_u8_to_f32_bilinear(
     // Exact 2× downscale → dedicated fused box kernel (fully NEON-vectorized).
     if src_w == 2 * dst_w && src_h == 2 * dst_h {
         return resize_normalize_to_tensor_u8_to_f32(src, src_w, src_h, dst, dst_w, dst_h, params);
-    }
-    if dst_w == 0 || dst_h == 0 || src_w == 0 || src_h == 0 {
-        return Ok(());
     }
 
     let scale_x = src_w as f32 / dst_w as f32;
@@ -899,6 +909,9 @@ pub fn resize_normalize_to_tensor_u8_to_f32_nearest(
     params: &NormalizeParams<3>,
 ) -> Result<(), kornia_image::ImageError> {
     check_rgb_buffer_lens(src.len(), src_w, src_h, dst.len(), dst_w, dst_h)?;
+    if has_zero_extent(src_w, src_h, dst_w, dst_h) {
+        return Ok(());
+    }
     let sx = src_w as f64 / dst_w as f64;
     let sy = src_h as f64 / dst_h as f64;
     let xmap: Vec<usize> = (0..dst_w)
@@ -953,6 +966,9 @@ pub fn resize_normalize_to_tensor_u8_to_f32_separable(
             return Err(kornia_image::ImageError::UnsupportedInterpolation(other));
         }
     };
+    if has_zero_extent(src_w, src_h, dst_w, dst_h) {
+        return Ok(());
+    }
     const Q: i32 = 14;
     let (xofs, xw, kx) = precompute_contribs(src_w, dst_w, filt, antialias);
     let (yofs, yw, ky) = precompute_contribs(src_h, dst_h, filt, antialias);
@@ -1091,6 +1107,74 @@ mod tests {
         assert!(
             resize_normalize_to_tensor_u8_to_f32(&src, 8, 8, &mut dst, huge, 1, &params).is_err()
         );
+    }
+
+    /// Regression: zero-extent sources/destinations panicked in the nearest
+    /// (`clamp(0, -1)`), separable and exact-2x (`par_chunks_mut(0)`) kernels;
+    /// they are now a no-op like the bilinear variant.
+    #[test]
+    fn fused_zero_extent_is_noop() -> Result<(), kornia_image::ImageError> {
+        use crate::interpolation::InterpolationMode;
+        let params = NormalizeParams::<3>::from_mean_std([0.0; 3], [1.0; 3]);
+        let src = vec![0u8; 4 * 4 * 3];
+        let mut dst = vec![7f32; 3 * 2 * 2];
+        let mut empty: Vec<f32> = Vec::new();
+        for (src_w, src_h) in [(0, 4), (4, 0)] {
+            resize_normalize_to_tensor_u8_to_f32_nearest(
+                &[],
+                src_w,
+                src_h,
+                &mut dst,
+                2,
+                2,
+                &params,
+            )?;
+            resize_normalize_to_tensor_u8_to_f32_bilinear(
+                &[],
+                src_w,
+                src_h,
+                &mut dst,
+                2,
+                2,
+                &params,
+            )?;
+            for filter in [InterpolationMode::Bicubic, InterpolationMode::Lanczos] {
+                resize_normalize_to_tensor_u8_to_f32_separable(
+                    &[],
+                    src_w,
+                    src_h,
+                    &mut dst,
+                    2,
+                    2,
+                    &params,
+                    filter,
+                    true,
+                )?;
+            }
+        }
+        for (dst_w, dst_h) in [(0, 2), (2, 0)] {
+            resize_normalize_to_tensor_u8_to_f32_nearest(
+                &src, 4, 4, &mut empty, dst_w, dst_h, &params,
+            )?;
+            resize_normalize_to_tensor_u8_to_f32_separable(
+                &src,
+                4,
+                4,
+                &mut empty,
+                dst_w,
+                dst_h,
+                &params,
+                InterpolationMode::Bicubic,
+                false,
+            )?;
+        }
+        resize_normalize_to_tensor_u8_to_f32(&[], 0, 0, &mut empty, 0, 0, &params)?;
+        resize_normalize_to_tensor_u8_to_f32_bilinear(&[], 0, 0, &mut empty, 0, 0, &params)?;
+        assert!(
+            dst.iter().all(|&v| v == 7.0),
+            "an empty source must not write dst"
+        );
+        Ok(())
     }
 
     /// Corner test: a completely zero src image produces `-mean/std` on

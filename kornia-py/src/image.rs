@@ -3838,16 +3838,15 @@ impl PyImageApi {
         // so the capsule's C destructor will NOT call the producer's deleter when
         // the capsule is later GC'd.
         //
-        // Instead, `obj` (the original producer: numpy array, torch tensor, etc.)
-        // is stored as our BorrowGuard::PyObject keep-alive.  While `obj` is alive,
-        // the buffer is valid.  When our Image drops, `obj` is dropped (its Python
-        // refcount decrements), and the GC eventually frees the producer and its buffer.
+        // Per the DLPack protocol, consuming the capsule transfers ownership of the
+        // managed tensor to us: we must call its deleter exactly once, after we are
+        // done with the data. `DlManagedOwner` (stored in our
+        // BorrowGuard::PyObject) does that when the Image drops. `obj` (the original
+        // producer: numpy array, torch tensor, etc.) is kept alive alongside it, so
+        // the buffer stays valid for the Image's whole lifetime.
         //
-        // Consuming the capsule prevents double-free: if the capsule were not renamed,
-        // its C destructor would also call the producer's internal deleter (e.g.
-        // decrement `at::Storage` refcount), which could free the buffer while `obj`
-        // still holds it — undefined behaviour.  Renaming disables the destructor path
-        // and transfers lifetime management to `obj` exclusively.
+        // Renaming also prevents a double free: the capsule destructor would
+        // otherwise call the same deleter a second time.
 
         // 1. Call `obj.__dlpack__(max_version=(1,0))` to get the capsule.
         //    Passing max_version lets compliant producers (NumPy ≥1.24, PyTorch ≥2.0) return

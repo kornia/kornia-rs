@@ -356,10 +356,6 @@ mod tests {
         }
     }
 
-    /// `residual_batch` (whichever kernel the dispatcher picks) must match
-    /// the scalar `residual` path element-wise on identical input.
-    /// Catches lane-ordering bugs in the AoS→SoA loads (NEON `vld4q_f64`,
-    /// AVX2 4×4 transpose) and bad branchless masking on the denom guard.
     /// Regression: `out.len() == samples.len()` was only a debug_assert, so in
     /// release builds the SIMD kernels wrote past a short `out` slice.
     #[test]
@@ -378,6 +374,10 @@ mod tests {
         assert!(buf[3..].iter().all(|&r| r == sentinel));
     }
 
+    /// `residual_batch` (whichever kernel the dispatcher picks) must match
+    /// the scalar `residual` path element-wise on identical input.
+    /// Catches lane-ordering bugs in the AoS→SoA loads (NEON `vld4q_f64`,
+    /// AVX2 4×4 transpose) and bad branchless masking on the denom guard.
     #[test]
     fn batch_dispatcher_matches_scalar_residual() {
         let pair = synthetic_pair();

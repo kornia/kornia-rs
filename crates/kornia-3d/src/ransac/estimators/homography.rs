@@ -346,8 +346,6 @@ mod tests {
         }
     }
 
-    /// SIMD `residual_batch` must match scalar `residual` element-wise.
-    /// Catches lane-ordering / mask bugs on either NEON or AVX2 paths.
     /// Regression: `out.len() == samples.len()` was only a debug_assert, so in
     /// release builds the SIMD kernels wrote past a short `out` slice.
     #[test]
@@ -366,6 +364,8 @@ mod tests {
         assert!(buf[3..].iter().all(|&r| r == sentinel));
     }
 
+    /// SIMD `residual_batch` must match scalar `residual` element-wise.
+    /// Catches lane-ordering / mask bugs on either NEON or AVX2 paths.
     #[test]
     fn batch_dispatcher_matches_scalar_residual() {
         let h_true = Mat3F64::from_cols(
