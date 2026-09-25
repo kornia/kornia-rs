@@ -1,0 +1,15 @@
+// PLACEHOLDER — regenerate with:
+//
+//   export PATH=/usr/local/cuda/bin:$PATH   # needs CUDA 13.0+ for cuda-bindings
+//   cd oxide-kernels
+//   cargo oxide build resize_oxide --arch sm_75 --no-fmad
+//   cp resize_nearest_oxide.ptx \
+//      ../crates/kornia-imgproc/src/cuda/resize_nearest_oxide_sm75.ptx
+//
+// Gate checks after copy (both must print 0):
+//   grep -cE 'fma\.rn\.f32|mad\.f32' resize_nearest_oxide_sm75.ptx
+//   grep -c '__nv_' resize_nearest_oxide_sm75.ptx
+
+.version 7.5
+.target sm_75
+.address_size 64

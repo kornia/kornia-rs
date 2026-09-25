@@ -7,6 +7,14 @@
 /// Native CUDA downscale kernels using `__ldg` read-only cache.
 pub mod resize;
 
+/// cuda-oxide comparison arms for the resize interpolation sweep (sm_75).
+///
+/// Bilinear (arms B/C/D) and nearest-neighbour (arm E) benchmarked against
+/// the shipping NVRTC kernels for downscale and upscale across dyadic and
+/// non-dyadic sizes.  PTX is precompiled and committed; kornia's stable crates
+/// never need the nightly oxide toolchain.
+pub mod resize_oxide;
+
 /// Native CUDA u8 resize kernels (integer LUT-driven, byte-exact with the
 /// CPU u8 fast paths).
 pub mod filter;

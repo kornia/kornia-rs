@@ -63,6 +63,9 @@ fn main() {
     #[cfg(feature = "cuda")]
     run_gpu_cuda_fused_normalize();
 
+    #[cfg(feature = "cuda")]
+    run_gpu_oxide_sweep();
+
     #[cfg(not(feature = "cuda"))]
     println!("(native CUDA downscale section skipped — build with --features cuda to enable)");
 
@@ -511,3 +514,148 @@ fn run_gpu_cuda_fused_normalize() {
     );
     println!("  estimated pipeline savings: 1080p ~0.13 ms, 4K ~0.52 ms per call.");
 }
+
+// --------------------------------------------------------------------------
+// cuda-oxide interp sweep (feature cuda)
+// --------------------------------------------------------------------------
+//
+// Arms:
+//   A  — NVRTC bilinear with __ldg  (shipping kernel)
+//   B  — NVRTC bilinear without __ldg (isolates __ldg contribution)
+//   C  — cuda-oxide bilinear, raw pointers  (byte-exact twin of A)
+//   D  — cuda-oxide bilinear, slice params  (negative result: ~12% upscale penalty)
+//   E  — NVRTC nearest-neighbour (shipping kernel)
+//   F  — cuda-oxide nearest-neighbour, raw pointers (byte-exact twin of E)
+//
+// PTX for arms C/D/F are pre-compiled to resize_*_oxide_sm75.ptx.
+// Until those files are regenerated on a CUDA 13+ host the launchers return
+// a runtime error; the bench prints a note and skips the arm.
+
+#[cfg(feature = "cuda")]
+fn run_gpu_oxide_sweep() {
+    use std::sync::Arc;
+
+    use cudarc::driver::{CudaContext, CudaSlice, CudaStream};
+    use kornia_imgproc::cuda::resize::{
+        CudaResizeError, launch_resize_bilinear_downscale_cuda,
+        launch_resize_nearest_downscale_cuda, PixelMapping,
+    };
+    use kornia_imgproc::cuda::resize_oxide::{
+        launch_resize_bilinear_noldg_cuda, launch_resize_bilinear_oxide_cuda,
+        launch_resize_bilinear_oxide_slice_cuda, launch_resize_nearest_oxide_cuda,
+    };
+
+    type Launcher = fn(
+        &Arc<CudaContext>,
+        &Arc<CudaStream>,
+        &CudaSlice<f32>,
+        &mut CudaSlice<f32>,
+        u32,
+        u32,
+        u32,
+        u32,
+        PixelMapping,
+        Option<(u32, u32)>,
+    ) -> Result<(), CudaResizeError>;
+
+    const SECTIONS: &[(&str, &[(&str, Launcher)])] = &[
+        (
+            "cuda-oxide bilinear sweep",
+            &[
+                ("A nvrtc-ldg",  launch_resize_bilinear_downscale_cuda as Launcher),
+                ("B nvrtc-noldg", launch_resize_bilinear_noldg_cuda as Launcher),
+                ("C oxide-ptr",  launch_resize_bilinear_oxide_cuda as Launcher),
+                ("D oxide-slice", launch_resize_bilinear_oxide_slice_cuda as Launcher),
+            ],
+        ),
+        (
+            "cuda-oxide nearest sweep",
+            &[
+                ("E nvrtc-nn",   launch_resize_nearest_downscale_cuda as Launcher),
+                ("F oxide-nn",   launch_resize_nearest_oxide_cuda as Launcher),
+            ],
+        ),
+    ];
+
+    // Covers downscale, upscale and HD variants.
+    const SWEEP_CASES: &[(u32, u32, u32, u32)] = &[
+        (1024, 1024, 512, 512),   // 2× downscale
+        (512, 512, 1024, 1024),   // 2× upscale
+        (1920, 1080, 960, 540),   // HD downscale
+        (960, 540, 1920, 1080),   // HD upscale
+        (3840, 2160, 1920, 1080), // 4K downscale
+    ];
+
+    let ctx = std::sync::Arc::new(CudaContext::new(0).expect("CUDA context"));
+    let stream = ctx.default_stream();
+
+    for &(section, arms) in SECTIONS {
+        println!(
+            "\n=== {} (sm_75, {} iters) ===",
+            section, ITERS
+        );
+        println!(
+            "  {:<14}  {:<24}  {:>10}  {:>10}",
+            "arm", "case (src→dst)", "ms/iter", "GB/s"
+        );
+        println!("  {}", "-".repeat(64));
+
+        for &(arm_label, launch) in arms {
+            for &(sw, sh, dw, dh) in SWEEP_CASES {
+                let npix_src = (sw * sh) as usize;
+                let npix_dst = (dw * dh) as usize;
+                let nc = NC as usize;
+                let src_data: Vec<f32> = (0..npix_src * nc)
+                    .map(|i| (i % 256) as f32 / 255.0)
+                    .collect();
+                let src_dev = stream.clone_htod(&src_data).expect("H→D src copy");
+                let mut dst_dev =
+                    stream.alloc_zeros::<f32>(npix_dst * nc).expect("alloc dst");
+
+                let run = |src: &CudaSlice<f32>, dst: &mut CudaSlice<f32>| {
+                    launch(
+                        &ctx, &stream, src, dst,
+                        sw, sh, dw, dh,
+                        PixelMapping::HalfPixel, None,
+                    )
+                    .map_err(|e| e.to_string())
+                };
+
+                // Warmup — catches PTX-stub runtime errors before timing.
+                let warmup_result = (0..WARMUP).try_for_each(|_| run(&src_dev, &mut dst_dev));
+                if let Err(e) = warmup_result {
+                    println!(
+                        "  {:<14}  {:<24}  {:>10}  {:>10}  [skip: {}]",
+                        arm_label,
+                        format!("{sw}×{sh}→{dw}×{dh}"),
+                        "—",
+                        "—",
+                        if e.contains("failed to load") {
+                            "PTX stub — regen on CUDA 13+ host"
+                        } else {
+                            &e
+                        },
+                    );
+                    continue;
+                }
+                stream.synchronize().expect("sync");
+
+                let t = std::time::Instant::now();
+                for _ in 0..ITERS {
+                    run(&src_dev, &mut dst_dev).expect("timed launch");
+                }
+                stream.synchronize().expect("sync");
+                let ms = t.elapsed().as_secs_f64() * 1e3 / ITERS as f64;
+
+                println!(
+                    "  {:<14}  {:<24}  {:>10.3}  {:>10.2}",
+                    arm_label,
+                    format!("{sw}×{sh}→{dw}×{dh}"),
+                    ms,
+                    gb_per_sec(npix_dst, ms),
+                );
+            }
+        }
+    }
+}
+

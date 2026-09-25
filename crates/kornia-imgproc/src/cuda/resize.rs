@@ -455,7 +455,7 @@ pub enum PixelMapping {
 
 impl PixelMapping {
     /// Per-axis affine coefficients `(a, b)` of `src = a*dst + b`.
-    fn coeffs(self, src_len: u32, dst_len: u32) -> (f32, f32) {
+    pub(crate) fn coeffs(self, src_len: u32, dst_len: u32) -> (f32, f32) {
         match self {
             PixelMapping::HalfPixel => {
                 let a = src_len as f32 / dst_len as f32;
