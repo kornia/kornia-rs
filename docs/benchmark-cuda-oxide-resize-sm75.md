@@ -42,9 +42,9 @@ change and its `llc` invocation never contracts floats.
 
 Kernels live in `oxide-kernels/`, a standalone crate with an empty `[workspace]`
 table so it does not pull nightly into kornia's workspace.  `cargo oxide build`
-emits `resize_oxide.ptx` containing all three kernel entry points:
+emits `resize_oxide.ptx` containing all four kernel entry points:
 `resize_bilinear_oxide_3c`, `resize_bilinear_oxide_slice_3c`,
-`resize_nearest_oxide_3c`.
+`resize_nearest_oxide_3c`, `resize_bicubic_oxide_3c`.
 
 The PTX is committed to
 `crates/kornia-imgproc/src/cuda/resize_bilinear_oxide_sm75.ptx` (and the
@@ -71,13 +71,15 @@ PTX gates (all pass):
 | D | cuda-oxide bilinear, `&[f32]` / `DisjointSlice` params | measured negative result |
 | E | NVRTC nearest-neighbour | shipping kernel |
 | F | cuda-oxide nearest-neighbour, raw-pointer params | new on sm\_75 |
+| G | cuda-oxide bicubic (Keys, a = -0.5), raw-pointer params | plain mul+add, no FMA (backend gap #4) |
+| H | NVRTC bicubic (Keys, a = -0.5) | reference for arm G |
 
 All arms use the same 32×8 block, `div_ceil` grid, `PixelMapping::coeffs`
 coefficients, and `CU_FUNC_CACHE_PREFER_L1` cache config.
 
 ## Correctness
 
-Parity tests in `cuda::resize_oxide::tests` (7/7 pass, `--release`, assert on
+Parity tests in `cuda::resize_oxide::tests` (8/8 pass, `--release`, assert on
 raw bits with no tolerance):
 
 ```
@@ -85,13 +87,16 @@ test cuda::resize_oxide::tests::bilinear_noldg_matches_cpu_bit_exact ... ok
 test cuda::resize_oxide::tests::bilinear_oxide_matches_cpu_bit_exact ... ok
 test cuda::resize_oxide::tests::bilinear_oxide_matches_nvrtc         ... ok
 test cuda::resize_oxide::tests::bilinear_oxide_slice_matches_cpu_bit_exact ... ok
+test cuda::resize_oxide::tests::bicubic_oxide_matches_cpu_bit_exact  ... ok
 test cuda::resize_oxide::tests::nearest_oxide_matches_cpu_bit_exact  ... ok
 test cuda::resize_oxide::tests::nearest_oxide_matches_nvrtc          ... ok
 test cuda::resize_oxide::tests::all_bilinear_arms_agree              ... ok
 ```
 
-`*_matches_nvrtc` compares oxide output against NVRTC output directly —
-a CPU-only comparison cannot catch "both drifted from the CPU together."
+`*_matches_nvrtc` compares oxide output against NVRTC output directly.
+`bicubic_oxide_matches_cpu_bit_exact` uses a no-FMA CPU reference (matching
+the oxide kernel's plain-`*`/`+` arithmetic) rather than the production
+`bicubic_sample`, which uses `mul_add` / `fmaf` and differs by ~1 ULP.
 
 ## Throughput
 
@@ -124,6 +129,24 @@ Wall clock, 200 iterations after 50 warmup, queue-all-then-synchronize.
 Arm F is within ±0.002 ms of arm E on every case.  The 4K downscale shows a
 0.5% lead for oxide; that is within noise but consistent across runs.
 
+### Bicubic sweep
+
+| case (src→dst) | H nvrtc-bicubic | G oxide-bicubic | delta |
+|---|---|---|---|
+| 1024×1024→512×512   | 0.119 ms | 0.125 ms | +5.0% |
+| 512×512→1024×1024   | 0.209 ms | 0.217 ms | +3.8% |
+| 1920×1080→960×540   | 0.244 ms | 0.249 ms | +2.0% |
+| 960×540→1920×1080   | 0.430 ms | 0.444 ms | +3.3% |
+| 3840×2160→1920×1080 | 0.972 ms | 0.987 ms | +1.5% |
+
+Arm G is 2–5% slower than arm H.  The penalty is systematic across all sizes
+and confirms the prediction from Finding 5: backend gap #2 (`f32::min`/`max` →
+`setp`/`selp` branch pairs) is visible in compute-bound kernels.  The bicubic
+kernel clamps four tap coordinates per axis in a 4×4 neighbourhood — 8 clamp
+sites, each a branch pair instead of a single `min.f32`/`max.f32`.  The nearest
+and bilinear kernels clamp only 2 coordinates total; the same number of extra
+branches is invisible against their bandwidth-bound runtime.
+
 ## Instruction mix
 
 `ptxas -v --gpu-name sm_75 -O3`.
@@ -148,6 +171,11 @@ backend-gap workarounds.
 
 Nearest arm F: 16 registers, 56 instructions, 0 spills.  Minimal instruction
 count reflects the simpler coordinate logic.
+
+Bicubic arm G: 64 registers, 354 instructions, 0 spills, 48 `ld.global.b32`,
+3 `st.global.b32`, 0 `fma.rn.f32`, 0 `__nv_` symbols.  Register count is
+2× the bilinear arm C (32), consistent with hoisting 12 source values per
+row × 4 rows = 48 live registers at peak plus Horner temporaries.
 
 ## Findings
 
@@ -196,18 +224,27 @@ count.  The backend gaps that affect bilinear (clamp branches, `as u32`
 saturation) are present here too but immeasurable given the bandwidth-bound
 nature of the kernel.
 
-### 5. Backend gaps are the same three as sm_87
+### 5. Backend gaps — four total (gap #4 is new on bicubic)
 
-| Construct | Failure | Workaround |
-|---|---|---|
-| `Ord::min` on `u32` | `drop of RigidTy(Uint(U32)) is not supported` | explicit `if a < b { a } else { b }` |
-| `f32::min` / `f32::max` | LLVM verifier rejects `minimumnum`/`maximumnum` | explicit `setp` + `selp` |
-| `f32::to_int_unchecked::<u32>()` | verifier rejects `float_to_int_unchecked` | plain `as u32` |
+| # | Construct | Failure | Workaround |
+|---|---|---|---|
+| 1 | `Ord::min` on `u32` | `drop of RigidTy(Uint(U32)) is not supported` | explicit `if a < b { a } else { b }` |
+| 2 | `f32::min` / `f32::max` | LLVM verifier rejects `minimumnum`/`maximumnum` | explicit `setp` + `selp` |
+| 3 | `f32::to_int_unchecked::<u32>()` | verifier rejects `float_to_int_unchecked` | plain `as u32` |
+| 4 | `f32::mul_add` | backend emits NVVM IR (`.ll`), skips `llc`, requires `libnvvm` at consumer | plain `*` and `+` |
 
-All three are workarounds in value, not in semantics.  `f32::min`/`max` is the
-most consequential gap for future kernels: any kernel with frequent clamping
-loses `min.f32`/`max.f32` to a branch pair.  This is measurable on compute-bound
-kernels (bicubic, Lanczos) but invisible here.
+Gap #2 is the most consequential for throughput: any kernel with frequent clamping
+loses `min.f32`/`max.f32` to a branch pair.  It is invisible for bandwidth-bound
+kernels (bilinear, nearest) but produces the 2–5% penalty measured in arm G.
+
+Gap #4 was discovered while writing the bicubic kernel.  `f32::mul_add` lowers to
+`llvm.fma.f32`, which the c8b3103 backend intercepts as a signal to switch to NVVM
+IR mode and bypass `llc` entirely.  The emitted `.ll` file requires `libnvvm` to
+compile to PTX; kornia's `include_str!` workflow is incompatible with this path.
+The workaround (plain `*` and `+`) means the bicubic oxide kernel is NOT bit-exact
+with the NVRTC bicubic (which uses `fmaf` explicitly) — results differ by ~1 ULP
+in the Horner weight evaluation and the 16-tap accumulation.  Bit-exactness is
+established against a no-FMA CPU reference instead.
 
 ### 6. Byte-exactness comes from the language default
 
@@ -219,10 +256,11 @@ anyone regenerating on main must pass `--no-fmad`.
 
 ## Open questions
 
-- **Bicubic**: the backend gaps (branch pairs for clamping, `setp`/`selp`
-  instead of `min.f32`/`max.f32`) are invisible for bandwidth-bound kernels but
-  would show up in bicubic, which does more arithmetic per output pixel and has
-  a 4×4 tap clamp.  This is the next planned arm sweep.
+- **Bicubic parity**: arm G is ~2–5% behind NVRTC.  The gap is explained by
+  8 setp/selp branch pairs (gap #2) plus 64 vs ~40 registers (lower occupancy).
+  If gap #2 were fixed upstream (LLVM 17+ `min.f32`/`max.f32` support or a
+  patched NVVM translator), the branch overhead would vanish and the performance
+  gap would narrow to noise.
 
 - **Multi-arch PTX**: the committed `.ptx` is pinned to sm_75.  Shipping for
   both sm_75 and sm_87 means two committed artifacts, or NVRTC as fallback for
@@ -250,7 +288,7 @@ grep -cE 'fma\.rn\.f32|mad\.f32' resize_bilinear_oxide_sm75.ptx  # 0
 # register counts
 ptxas -v --gpu-name sm_75 -O3 resize_bilinear_oxide_sm75.ptx -o /dev/null
 
-# parity tests
+# parity tests (8 total: bilinear A-D, nearest E-F, bicubic G)
 cd ..
 cargo test --release -p kornia-imgproc --features cuda --lib cuda::resize_oxide
 
