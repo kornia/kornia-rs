@@ -2,9 +2,10 @@
 //!
 //! Image headers declare their own dimensions, so a few bytes of input can request
 //! gigabytes of output memory ("decompression bomb"). Every decoder in this crate
-//! validates the declared dimensions against [`MAX_IMAGE_PIXELS`] before allocating,
-//! and allocates fallibly so that an out-of-memory condition is reported as an error
-//! instead of aborting the process.
+//! validates the declared dimensions against [`MAX_IMAGE_PIXELS`] before allocating
+//! or decoding pixel data, and allocates fallibly wherever this crate owns the output
+//! buffer, so that an out-of-memory condition is reported as an error instead of
+//! aborting the process.
 
 use crate::error::IoError;
 use kornia_image::{Image, ImageSize};

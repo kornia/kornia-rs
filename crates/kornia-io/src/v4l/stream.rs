@@ -338,24 +338,15 @@ impl MmapStream {
     /// has buffers therefore makes this call fail with [`io::ErrorKind::WouldBlock`]
     /// until older frames are released.
     pub fn next_frame(&mut self) -> io::Result<(MmapBuffer, Metadata)> {
-        if !self.active {
-            // Queue all buffers and start streaming
-            for i in 0..self.buffers.len() {
-                if !self.queued[i] {
-                    self.queue_buffer(i)?;
-                    self.queued[i] = true;
-                }
-            }
-            self.start()?;
-        } else {
-            // Hand back every dequeued buffer that no frame references anymore. The
-            // stream's own `MmapBuffer` accounts for one strong reference; `&mut self`
-            // guarantees it cannot be cloned concurrently.
-            for i in 0..self.buffers.len() {
-                if !self.queued[i] && Arc::strong_count(&self.buffers[i]._mmap_info) == 1 {
-                    self.queue_buffer(i)?;
-                    self.queued[i] = true;
-                }
+        // Hand every buffer the driver does not own back to it, unless a frame still
+        // references it. The stream's own `MmapBuffer` accounts for one strong
+        // reference; `&mut self` guarantees it cannot be cloned concurrently. This
+        // gate also applies on (re)start: after `stop()` (VIDIOC_STREAMOFF returns
+        // every buffer to user space) a frame from before the stop may still be alive.
+        for i in 0..self.buffers.len() {
+            if !self.queued[i] && Arc::strong_count(&self.buffers[i]._mmap_info) == 1 {
+                self.queue_buffer(i)?;
+                self.queued[i] = true;
             }
         }
 
@@ -364,6 +355,9 @@ impl MmapStream {
                 io::ErrorKind::WouldBlock,
                 "all capture buffers are still referenced by previous frames",
             ));
+        }
+        if !self.active {
+            self.start()?;
         }
 
         // Dequeue the next available buffer. `dequeue_buffer` rejects out-of-range
@@ -421,6 +415,8 @@ impl StreamTrait for MmapStream {
             )?;
         }
 
+        // VIDIOC_STREAMOFF dequeues every buffer: none is owned by the driver now.
+        self.queued.fill(false);
         self.active = false;
         Ok(())
     }

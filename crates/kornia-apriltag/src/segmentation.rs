@@ -360,7 +360,9 @@ pub fn find_connected_components(
     let width = src.width();
     let height = src.height();
     let src_data = src.as_slice();
-    let n_pixels = width * height;
+    // Checked: `width`/`height` come from the (public) image layout, and a
+    // wrapped product could pass the length checks below with a short buffer.
+    let n_pixels = width.saturating_mul(height);
 
     // The row scans below index `width - 2` inner columns.
     if width < 2 || height < 1 {
@@ -374,6 +376,12 @@ pub fn find_connected_components(
 
     if n_pixels != uf.len() {
         return Err(AprilTagError::InvalidUnionFindSize(n_pixels, uf.len()));
+    }
+    if src_data.len() != n_pixels {
+        return Err(AprilTagError::InvalidUnionFindSize(
+            src_data.len(),
+            uf.len(),
+        ));
     }
 
     let n_threads = rayon::current_num_threads().max(1);
@@ -526,7 +534,9 @@ pub fn find_gradient_clusters(
     let height = src.height();
     let width = src.width();
     let src_slice = src.as_slice();
-    if width < 3 || height < 3 {
+    // Checked: a wrapped `width * height` must not pass the length checks.
+    let n_pixels = width.checked_mul(height);
+    if width < 3 || height < 3 || n_pixels.is_none_or(|n| src_slice.len() < n || uf.len() < n) {
         return FxHashMap::default();
     }
 
@@ -1111,7 +1121,13 @@ pub(crate) fn find_gradient_clusters_with_cache(
     let height = src.height();
     let width = src.width();
     let src_slice = src.as_slice();
-    if width < 3 || height < 3 || rep_cache.len() < width * height {
+    // Checked: a wrapped `width * height` must not pass the length checks
+    // guarding the unchecked scans below.
+    let n_pixels = width.checked_mul(height);
+    if width < 3
+        || height < 3
+        || n_pixels.is_none_or(|n| rep_cache.len() < n || src_slice.len() < n)
+    {
         return Vec::new();
     }
 

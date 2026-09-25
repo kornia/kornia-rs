@@ -183,8 +183,10 @@ fn read_image_tiff_impl(
     let tiff_data = fs::File::open(file_path)?;
     let mut decoder = tiff::decoder::Decoder::new(tiff_data)?;
 
-    let result = decoder.read_image()?;
+    // Reject decompression bombs before the decoder allocates the pixel buffer.
     let (width, height) = decoder.dimensions()?;
+    check_image_dimensions(width as usize, height as usize)?;
+    let result = decoder.read_image()?;
 
     Ok((result, [width as usize, height as usize]))
 }
@@ -559,6 +561,56 @@ mod tests {
     use super::*;
     use crate::error::IoError;
     use std::fs::{create_dir_all, read};
+
+    // A minimal little-endian TIFF whose header declares a 100000x100000 8-bit
+    // grayscale image backed by a single byte of pixel data.
+    fn tiff_bomb() -> Vec<u8> {
+        let entries: [(u16, u16, u32, u32); 7] = [
+            (256, 4, 1, 100_000), // ImageWidth (LONG)
+            (257, 4, 1, 100_000), // ImageLength (LONG)
+            (258, 3, 1, 8),       // BitsPerSample
+            (262, 3, 1, 1),       // PhotometricInterpretation = BlackIsZero
+            (273, 4, 1, 8),       // StripOffsets
+            (277, 3, 1, 1),       // SamplesPerPixel
+            (279, 4, 1, 1),       // StripByteCounts
+        ];
+        let ifd_offset = 16u32;
+        let mut b = Vec::new();
+        b.extend_from_slice(b"II");
+        b.extend_from_slice(&42u16.to_le_bytes());
+        b.extend_from_slice(&ifd_offset.to_le_bytes());
+        b.resize(ifd_offset as usize, 0);
+        b.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+        for (tag, ty, count, value) in entries {
+            b.extend_from_slice(&tag.to_le_bytes());
+            b.extend_from_slice(&ty.to_le_bytes());
+            b.extend_from_slice(&count.to_le_bytes());
+            if ty == 3 {
+                b.extend_from_slice(&(value as u16).to_le_bytes());
+                b.extend_from_slice(&[0, 0]);
+            } else {
+                b.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        b.extend_from_slice(&0u32.to_le_bytes());
+        b
+    }
+
+    #[test]
+    fn read_rejects_decompression_bomb_before_decoding() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("bomb.tiff");
+        std::fs::write(&path, tiff_bomb())?;
+        assert!(matches!(
+            read_image_tiff_mono8(&path),
+            Err(IoError::ImageTooLarge { .. })
+        ));
+        assert!(matches!(
+            decode_image_tiff_layout(&tiff_bomb()),
+            Err(IoError::ImageTooLarge { .. })
+        ));
+        Ok(())
+    }
 
     #[test]
     fn decode_rejects_mismatched_pixel_format() -> Result<(), Box<dyn std::error::Error>> {

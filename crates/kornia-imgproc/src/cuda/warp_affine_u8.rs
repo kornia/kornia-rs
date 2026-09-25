@@ -111,7 +111,9 @@ extern "C" __global__ void warp_affine_u8_bilinear_c{channels}(
     size_t d = ((size_t)y * dst_w + x) * C;
     int xlo = s_xlo[threadIdx.y];
     int xhi = s_xhi[threadIdx.y];
-    if ((int)x < xlo || (int)x >= xhi) {{
+    // An empty source has nothing to sample: zero-fill instead of letting the
+    // `src_w - 1` / `src_h - 1` tap clamps below go negative.
+    if (src_w <= 0 || src_h <= 0 || (int)x < xlo || (int)x >= xhi) {{
         #pragma unroll
     for (unsigned int ch = 0; ch < C; ++ch) dst[d + ch] = 0;
         return;

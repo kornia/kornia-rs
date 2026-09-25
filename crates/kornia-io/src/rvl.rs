@@ -440,7 +440,7 @@ fn decode_rvl_stream(src: &[u8], magic: &[u8; 4], what: &str) -> Result<RvlStrea
         )));
     }
 
-    let mut pixels = vec![0u16; n_pixels];
+    let mut pixels: Vec<u16> = crate::limits::try_alloc_zeroed(n_pixels)?;
     let mut reader = NibbleReader::new(&src[HEADER_LEN..]);
     let mut previous: i32 = 0;
     let mut i = 0usize;

@@ -290,7 +290,16 @@ pub(crate) fn dlpack_to_device_arc(py: Python<'_>, obj: &Bound<'_, PyAny>) -> Py
     // `device::dl_owned`) can silently wrap to an undersized allocation. Guard
     // with the largest supported itemsize (f32 = 4B) so it holds for any dtype.
     crate::backing::byte_len(h, w, c, crate::backing::Dtype::F32)?;
-    let ptr = t.data as u64 + t.byte_offset;
+    // Producer-controlled pointer metadata: reject a null base and an offset
+    // that would wrap, before aliasing the address as device memory.
+    if t.data.is_null() {
+        return Err(PyValueError::new_err(
+            "from_dlpack: DLPack tensor has a null data pointer",
+        ));
+    }
+    let ptr = (t.data as u64).checked_add(t.byte_offset).ok_or_else(|| {
+        PyValueError::new_err("from_dlpack: DLPack data pointer + byte_offset overflows")
+    })?;
 
     /// Zero-copy alias of the producer's `h*w*C` elements at `ptr` as a device
     /// image, kept valid by holding `obj` (the producer) alive.

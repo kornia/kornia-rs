@@ -241,6 +241,8 @@ fn read_image_jpeg_impl<const N: usize>(
             "Failed to find image info from its metadata",
         )))
     })?;
+    // Reject decompression bombs before the decoder allocates the pixel buffer.
+    check_image_dimensions(image_info.width as usize, image_info.height as usize)?;
 
     // Infer colorspace from actual image components
     let colorspace = match image_info.components {
@@ -292,6 +294,8 @@ fn decode_jpeg_impl<const C: usize>(src: &[u8], dst: &mut Image<u8, C>) -> Resul
             "Failed to find image info from its metadata",
         )))
     })?;
+    // Reject decompression bombs before the decoder allocates the pixel buffer.
+    check_image_dimensions(image_info.width as usize, image_info.height as usize)?;
 
     // Infer colorspace from actual image components
     let colorspace = match image_info.components {
