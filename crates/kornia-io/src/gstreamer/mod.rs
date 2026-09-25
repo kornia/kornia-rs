@@ -48,6 +48,40 @@ pub(crate) fn quote_pipeline_value(value: &str) -> Result<String, StreamCaptureE
     Ok(format!("\"{value}\""))
 }
 
+/// Sets the `location` property of the element called `name` in `pipeline` to `path`.
+///
+/// File paths are set as a property after parsing instead of being interpolated into the
+/// `gst_parse_launch` description, so any path (spaces, `!`, `"`, Windows `\`
+/// separators, ...) works verbatim and can never inject pipeline syntax.
+///
+/// # Errors
+///
+/// Returns [`StreamCaptureError::GetElementByNameError`] if the pipeline has no element
+/// called `name`, or [`StreamCaptureError::InvalidConfig`] if that element has no
+/// writable string `location` property.
+pub(crate) fn set_location_property(
+    pipeline: &gstreamer::Pipeline,
+    name: &str,
+    path: &std::path::Path,
+) -> Result<(), StreamCaptureError> {
+    use gstreamer::prelude::*;
+    let element = pipeline
+        .by_name(name)
+        .ok_or(StreamCaptureError::GetElementByNameError)?;
+    // `set_property` panics on a missing, read-only or non-string property.
+    let writable_string = element.find_property("location").is_some_and(|p| {
+        p.value_type() == String::static_type()
+            && p.flags().contains(gstreamer::glib::ParamFlags::WRITABLE)
+    });
+    if !writable_string {
+        return Err(StreamCaptureError::InvalidConfig(format!(
+            "element {name:?} has no writable string `location` property"
+        )));
+    }
+    element.set_property("location", path.to_string_lossy().as_ref());
+    Ok(())
+}
+
 use kornia_image::Image;
 use kornia_tensor::resource::{MemoryDomain, MemoryResource};
 
@@ -196,6 +230,35 @@ mod tests {
         assert!(super::quote_pipeline_value("a\" ! fakesink").is_err());
         assert!(super::quote_pipeline_value("a\\").is_err());
         assert!(super::quote_pipeline_value("a\nb").is_err());
+        Ok(())
+    }
+
+    /// File paths are set as a property, so characters that `quote_pipeline_value`
+    /// rejects (e.g. Windows `\` separators) or that are pipeline syntax round-trip.
+    #[test]
+    fn location_property_accepts_any_path() -> Result<(), Box<dyn std::error::Error>> {
+        use gstreamer::prelude::*;
+        gstreamer::init()?;
+        let path = std::path::Path::new(r#"C:\videos\my clip ! fakesink name=x "q".mp4"#);
+        let pipeline = gstreamer::parse::launch("filesrc name=src ! fakesink")?
+            .dynamic_cast::<gstreamer::Pipeline>()
+            .map_err(|_| "not a pipeline")?;
+        super::set_location_property(&pipeline, "src", path)?;
+        let src = pipeline.by_name("src").ok_or("missing src")?;
+        assert_eq!(
+            src.property::<Option<String>>("location").as_deref(),
+            path.to_str()
+        );
+        // Only the two parsed elements exist; nothing was injected.
+        assert_eq!(pipeline.children().len(), 2);
+        assert!(super::set_location_property(&pipeline, "missing", path).is_err());
+        // An element without a `location` property is an error, not a panic.
+        let fakesink = pipeline
+            .children()
+            .into_iter()
+            .find(|e| e.name() != "src")
+            .ok_or("missing fakesink")?;
+        assert!(super::set_location_property(&pipeline, &fakesink.name(), path).is_err());
         Ok(())
     }
 
