@@ -52,7 +52,9 @@ jobs:
 
       - name: Yank every published crate
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          # crates.io tokens are scoped; a publish-only token gets 403 on yank. Prefer a
+          # yank-scoped CARGO_YANK_TOKEN, else a CARGO_REGISTRY_TOKEN that also has `yank`.
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_YANK_TOKEN || secrets.CARGO_REGISTRY_TOKEN }}
           VERSION: ${{ inputs.version }}
           UNDO: ${{ inputs.undo }}
         run: |
