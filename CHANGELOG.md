@@ -13,6 +13,51 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
 
 ## [Unreleased]
 
+## [0.1.15] — 2026-09-25
+
+First stable 0.1.15. Everything in the `0.1.15-rc.*` entries below ships here,
+plus the following changes since rc.5.
+
+**Security hardening across the workspace.** A repo-wide audit fixed
+memory-safety bugs that untrusted input could reach, each with a regression
+test; upgrading is recommended for anyone decoding untrusted images or files.
+- AprilTag detection: heap overflow in the RLE run buffer on images with
+  1-pixel stripes.
+- `kornia-bow`: out-of-bounds read and unbounded allocation from crafted
+  vocabulary files; cyclic vocabularies no longer hang traversal.
+- `kornia-tensor` / `kornia-image`: shape and size arithmetic is checked
+  everywhere; serde/bincode and Arrow imports validate layouts;
+  `permute_axes` rejects non-permutations; `sum_elements` no longer writes out
+  of bounds on strided tensors.
+- `kornia-imgproc`: out-of-bounds reads/writes in `normalize_rgb_u8`,
+  `warp_affine_u8`/`warp_perspective_u8` (CPU and the CUDA affine kernel),
+  f32 `remap`/`interpolate_pixel`, and the nearest/bicubic resize row
+  kernels; a data race in Canny's parallel hysteresis; panics on empty images
+  and oversized kernels.
+- `kornia-io`: decoders cap declared images at 2^30 pixels and allocate
+  fallibly (decompression bombs no longer abort the process); PNG/TIFF reject
+  mismatched bit depth / channel counts; GStreamer URLs, device paths and file
+  paths can no longer inject pipeline elements (file locations are set as
+  element properties, so Windows paths work); V4L2 never re-queues a buffer a
+  live frame still references.
+- Python bindings: non-contiguous or misaligned numpy arrays, size overflow in
+  `resize_normalize_to_tensor`, uninitialised YUV decoder output, read-only or
+  aliased `out=` arrays, and a DLPack import leak are fixed.
+- C++ bindings: overflow-checked dimensions and null-pointer checks at the FFI
+  boundary.
+- CI and supply chain: actions pinned to commit SHAs, read-only default
+  workflow token, release jobs gated behind `pypi` / `crates-io` environments,
+  a weekly `cargo audit` job, and `SECURITY.md` with a private reporting
+  channel.
+
+**Breaking (security-related):** `Tensor::get_unchecked` /
+`TensorView::get_unchecked` are now `unsafe fn`; `permute_axes`,
+`as_contiguous` and `TensorStorage::layout` return `Result`; `from_raw_parts`
+and `TryFrom<Tensor3> for Image` reject mismatched layouts; Arrow imports are
+read-only; the GStreamer `*_pipeline_description` helpers return `Result`;
+several error enums gained variants; f32 `remap` zero-fills out-of-range
+samples.
+
 **Stereo rectification runs on CUDA, byte-exact with the CPU path.**
 `StereoRectifier` now resamples through the residency-dispatched `remap_u8`, and
 `StereoRectifier::to_cuda(&stream)` returns a `CudaStereoRectifier` that keeps
@@ -28,6 +73,43 @@ both), and blending is Q10 fixed point.
 `(&self, src, &mut dst) -> Result<(), StereoError>` — matching imgproc's into-style convention;
 `left_map()/right_map()` became `left_maps()/right_maps()` returning the x/y
 planes `remap_u8` consumes directly.
+
+**CUDA and NEON SIFT, bit-exact with `cv::SIFT`.** Scale space, detection,
+orientation and descriptors reproduce OpenCV bit-for-bit on CPU (NEON) and
+CUDA, with deterministic keypoint and matcher output order; the vertical blur
+is register-tiled and descriptor atomics are warp-aggregated.
+
+**`kornia-calib`: multi-camera extrinsic calibration.** New crate calibrating a
+rig from an AprilTag grid plus optional natural-feature tracks via bundle
+adjustment, now publishable (planar pose moved to
+`kornia_3d::pose::planar`). It returns the full reconstruction, bundle-adjusts
+during incremental growth, picks the bootstrap pair on geometry, filters
+outlier observations, and supports depth/orientation/motion priors and a
+`sequential()` preset for video capture. **Breaking:**
+`ReconstructionConfig` is split out of `CalibConfig`.
+
+**Bundle adjustment and pose.** The Schur BA gains intrinsics (radial term,
+free focal and k1), a block-sparse reduced camera system, orientation and
+constant-velocity priors, and per-phase instrumentation; PnP refinement
+supports robust (Huber) losses, and RANSAC gains SPRT early rejection
+(`use_sprt` in Python). `Sim3::exp`/`log` are now true inverses.
+
+**CUDA remap and new filters.** `remap` (f32 and u8) dispatches to CUDA when
+images and maps are device-resident; Laplacian and integral-image filters run
+on CPU and GPU; OpenCV parity checks now cover resize, warp-affine and
+morphology on CUDA.
+
+**Tensors and memory.** Element-wise and reduction ops dispatch on
+`MemoryDomain` (CPU/GPU); `UnifiedResource` / `CudaUnifiedAllocator` add CUDA
+managed memory and `PinnedWcAllocator` write-combined pinned host memory for
+CPU→GPU streaming; tensors and images can borrow host buffers zero-copy.
+
+**I/O.** RVL gains its run-length phase (5.7× instead of 3.0× compression on
+live depth), a temporal-delta variant (`RVLD`) and a slice encoder; zero-copy
+slice encoders for turbojpeg RGB and gray16 PNG.
+
+**Python.** Windows ARM64 wheels; histogram, colour-check and pyramid APIs
+filled in.
 
 ## [0.1.15-rc.5] — 2026-07-19 (pre-release)
 
@@ -472,6 +554,7 @@ linear layer / kornia-nn, kornia-apriltag, zero-copy gstreamer images. See the
 [GitHub release](https://github.com/kornia/kornia-rs/releases/tag/v0.1.10) for
 the full per-PR list.
 
+[0.1.15]: https://github.com/kornia/kornia-rs/compare/v0.1.15-rc.5...v0.1.15
 [0.1.15-rc.5]: https://github.com/kornia/kornia-rs/compare/v0.1.15-rc.4...v0.1.15-rc.5
 [0.1.15-rc.4]: https://github.com/kornia/kornia-rs/compare/v0.1.15-rc.3...v0.1.15-rc.4
 [0.1.15-rc.3]: https://github.com/kornia/kornia-rs/compare/v0.1.15-rc.2...v0.1.15-rc.3
