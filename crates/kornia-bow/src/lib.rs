@@ -88,6 +88,32 @@ impl<const B: usize, M: DistanceMetric> Default for BlockCluster<B, M> {
     }
 }
 
+impl<const B: usize, M: DistanceMetric> BlockCluster<B, M> {
+    /// Returns a zero-weight leaf block for block slots that no tree node occupies.
+    ///
+    /// A default block is `Internal` with `children_base_idx` 0, so it points back at the
+    /// root and a traversal that entered it would never terminate. A leaf ends traversal.
+    pub(crate) fn terminator() -> Self {
+        Self {
+            descriptors: [M::padding(); B],
+            content: BlockContent::Leaf(LeafData { weights: [0.0; B] }),
+        }
+    }
+
+    /// Fills the descriptor slots from index `n_children` onwards with a copy of slot 0.
+    ///
+    /// Traversal keeps the first strict minimum, so a copied slot can tie with slot 0 but
+    /// never beat it, and no query is routed into an unused slot. A fixed filler such as
+    /// [`DistanceMetric::padding`] gives no such guarantee: an all-ones query is at
+    /// Hamming distance 0 from `u64::MAX`.
+    pub(crate) fn pad_unused_slots(&mut self, n_children: usize) {
+        let first = self.descriptors[0];
+        for descriptor in self.descriptors.iter_mut().skip(n_children) {
+            *descriptor = first;
+        }
+    }
+}
+
 /// The content of a block, either metadata for internal nodes or weights for leaves.
 #[derive(Clone, Copy, Serialize, Deserialize, Encode, Decode)]
 pub enum BlockContent<const B: usize> {

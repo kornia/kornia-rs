@@ -184,8 +184,8 @@ fn convert_to_vocabulary<const B: usize, M: DistanceMetric>(
     root: BuilderNode<M>,
     total_features: usize,
 ) -> Vocabulary<B, M> {
-    let mut flat_blocks: Vec<BlockCluster<B, M>> = Vec::new();
-    flat_blocks.push(BlockCluster::default());
+    let terminator = BlockCluster::terminator();
+    let mut flat_blocks: Vec<BlockCluster<B, M>> = vec![terminator];
 
     let mut queue = VecDeque::new();
     queue.push_back((root, 0u32));
@@ -194,9 +194,7 @@ fn convert_to_vocabulary<const B: usize, M: DistanceMetric>(
 
     while let Some((node, block_idx)) = queue.pop_front() {
         let mut block = BlockCluster::default();
-        for d in block.descriptors.iter_mut() {
-            *d = M::padding();
-        }
+        let n_children = node.children.len().min(B);
 
         let is_leaf_layer = node.children.iter().all(|c| c.children.is_empty());
 
@@ -222,7 +220,7 @@ fn convert_to_vocabulary<const B: usize, M: DistanceMetric>(
 
             next_free_idx += B as u32;
             if flat_blocks.len() < next_free_idx as usize {
-                flat_blocks.resize(next_free_idx as usize, BlockCluster::default());
+                flat_blocks.resize(next_free_idx as usize, terminator);
             }
 
             for (i, child) in node.children.into_iter().enumerate() {
@@ -246,8 +244,10 @@ fn convert_to_vocabulary<const B: usize, M: DistanceMetric>(
             }
         }
 
+        block.pad_unused_slots(n_children);
+
         if block_idx as usize >= flat_blocks.len() {
-            flat_blocks.resize(block_idx as usize + 1, BlockCluster::default());
+            flat_blocks.resize(block_idx as usize + 1, terminator);
         }
         flat_blocks[block_idx as usize] = block;
     }
@@ -374,5 +374,36 @@ mod tests {
         let (id2, _) = vocab.transform_one(&f2);
 
         assert_ne!(id1, id2);
+    }
+
+    /// `B` copies each of two distinct descriptors, so every trained node has
+    /// fewer than `B` children and every block has unused slots.
+    fn two_duplicate_groups() -> (Vec<Feature<u64, D>>, Feature<u64, D>) {
+        let pattern = Feature([0x00FF_00FF_00FF_00FF; D]);
+        let mut data = vec![Feature([0; D]); B];
+        data.extend(vec![pattern; B]);
+        (data, pattern)
+    }
+
+    #[test]
+    fn test_unused_leaf_slot_is_never_selected() {
+        let (data, pattern) = two_duplicate_groups();
+        // With max_depth 1 the root is a leaf block with 2 of B slots in use.
+        let vocab = train::<B, Hamming<D>>(&data, 1).unwrap();
+
+        // An all-ones query equals `Hamming::padding()`, and its nearest word is
+        // `pattern` (distance 128, versus 256 to the zero descriptor).
+        let query = Feature([u64::MAX; D]);
+        assert_eq!(vocab.transform_one(&query), vocab.transform_one(&pattern));
+    }
+
+    #[test]
+    fn test_unused_internal_slot_is_never_selected() {
+        let (data, pattern) = two_duplicate_groups();
+        // With max_depth 2 the root is an internal block with 2 of B slots in use.
+        let vocab = train::<B, Hamming<D>>(&data, 2).unwrap();
+
+        let query = Feature([u64::MAX; D]);
+        assert_eq!(vocab.transform_one(&query), vocab.transform_one(&pattern));
     }
 }
