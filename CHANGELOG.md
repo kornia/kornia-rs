@@ -13,6 +13,11 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
 
 ## [Unreleased]
 
+- **C++:** `KORNIA_VERSION_PATCH` in the generated `kornia/version.hpp` is now always an integer.
+  On a pre-release it used to expand to `16-rc`, which broke any C++ code using it as a number.
+  The pre-release tag is exposed separately as `KORNIA_VERSION_PRERELEASE` (`"rc.1"`, empty on a
+  release).
+
 ## [0.1.15] — 2026-09-25
 
 First stable 0.1.15. Everything in the `0.1.15-rc.*` entries below ships here,
