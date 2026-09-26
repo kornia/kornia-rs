@@ -13,10 +13,33 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-09-26
+
+**0.2.0 is 0.1.15 re-released under the right version.** 0.1.15 shipped breaking API changes as a
+patch-level bump, so every crate depending on `kornia-* = "0.1"` picked them up on its next
+`cargo update` and stopped compiling (Copper among them). 0.1.15 is yanked on crates.io; `^0.1`
+now resolves to 0.1.14 again. To get the 0.1.15 work, depend on `"0.2"`.
+
+The breaking changes, all described under 0.1.15 and its release candidates below:
+- `Image`/`Tensor` lost the compile-time allocator type parameter:
+  `Image<f32, 3, CpuAllocator>` → `Image<f32, 3>`.
+- `Tensor::get_unchecked` / `TensorView::get_unchecked` are `unsafe fn`; `permute_axes`,
+  `as_contiguous`, `TensorStorage::layout` and the GStreamer `*_pipeline_description` helpers return
+  `Result`; several error enums gained variants.
+- f32 `resize_native` samples on the half-pixel grid (pixel values change); f32 `remap` zero-fills
+  out-of-range samples.
+- `StereoRectifier::rectify_left/right` are into-style; `left_map()/right_map()` became
+  `left_maps()/right_maps()`.
+- `ReconstructionConfig` is split out of `CalibConfig`.
+
+Also since 0.1.15:
+
 - **C++:** `KORNIA_VERSION_PATCH` in the generated `kornia/version.hpp` is now always an integer.
   On a pre-release it used to expand to `16-rc`, which broke any C++ code using it as a number.
   The pre-release tag is exposed separately as `KORNIA_VERSION_PRERELEASE` (`"rc.1"`, empty on a
   release), with `KORNIA_VERSION_IS_PRERELEASE` (0/1) for `#if` checks.
+
+**Full changelog:** https://github.com/kornia/kornia-rs/compare/v0.1.15...v0.2.0
 
 ## [0.1.15] — 2026-09-25
 
