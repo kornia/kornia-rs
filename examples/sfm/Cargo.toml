@@ -1,0 +1,23 @@
+[package]
+name = "sfm"
+version = { workspace = true }
+edition = { workspace = true }
+publish = false
+
+[dependencies]
+argh = { workspace = true }
+cudarc = { workspace = true }
+kiddo = { workspace = true }
+kornia = { workspace = true }
+kornia-3d = { workspace = true }
+kornia-algebra = { workspace = true }
+kornia-calib = { workspace = true }
+kornia-image = { workspace = true, features = ["cuda"] }
+kornia-imgproc = { workspace = true, features = ["cuda"] }
+kornia-io = { workspace = true, features = ["gstreamer"] }
+rayon = { workspace = true }
+rerun = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
