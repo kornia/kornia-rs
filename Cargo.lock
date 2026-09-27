@@ -4460,6 +4460,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "divrem"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69dde51e8fef5e12c1d65e0929b03d66e4c0c18282bc30ed2ca050ad6f44dd82"
+
+[[package]]
 name = "dlib"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7863,22 +7869,22 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "kiddo"
-version = "6.3.0"
+version = "5.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "032f79d801e9c4308f7aa16456bdd1b05deb43eb96f07d08c0a4f70db3b393b9"
+checksum = "5053bc2cb3ed5739b2ef170e00d40ecca487612fa0ee1535a912424ac18d2bb2"
 dependencies = [
  "aligned-vec",
  "array-init",
  "az",
  "cmov",
+ "divrem",
  "fixed",
  "generator",
- "nonmax",
  "num-traits",
- "rayon",
+ "ordered-float 5.3.0",
  "sorted-vec",
  "tracing",
- "yep-cache-line-size",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -9381,12 +9387,6 @@ checksum = "e216d0e8cf9d54fa66e5780f6e1d5dc96d1c1b3c25aeba3b6758548bcbbd8b9d"
 dependencies = [
  "serde",
 ]
-
-[[package]]
-name = "nonmax"
-version = "0.5.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "610a5acd306ec67f907abe5567859a3c693fb9886eb1f012ab8f2a47bef3db51"
 
 [[package]]
 name = "noop_proc_macro"
@@ -19057,16 +19057,6 @@ checksum = "b5f6765e852b9b4dc8e2a76843e4d64d1cea8e79bcde0b6901aea8e7c7f08282"
 dependencies = [
  "bit-vec 0.9.1",
  "time",
-]
-
-[[package]]
-name = "yep-cache-line-size"
-version = "0.9.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "59dea97e5518f64cbb9468f2cd1ac59c9d0186eeb5ee6198d4bb8adfa1465499"
-dependencies = [
- "libc",
- "raw-cpuid",
 ]
 
 [[package]]

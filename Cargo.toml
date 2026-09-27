@@ -53,7 +53,11 @@ hf-hub = "0.5.0"
 image = "0.25"
 imageproc = "0.27"
 indicatif = { version = "0.18.4", features = ["rayon"] }
-kiddo = "6.3"
+# Held at 5.x: kiddo 6's build script detects the cache-line size via
+# yep-cache-line-size, which reads `ctr_el0` and dies with
+# STATUS_ILLEGAL_INSTRUCTION on native aarch64-pc-windows-msvc builds (our
+# wheel-windows-arm64 job). v6 also has a new query API; port when fixed upstream.
+kiddo = "5.3"
 # RELEASE NOTE: these kornia-* version pins CANNOT inherit
 # workspace.package.version (Cargo limitation) and must be bumped together
 # with it on every release — locally `path` wins so a stale pin builds fine
