@@ -89,7 +89,7 @@ pub trait DistanceMetric:
     /// Returns the identifier for the metric type.
     fn metric_type() -> MetricType;
 
-    /// Returns a value used to pad unused slots in a block.
+    /// Returns the descriptor that fills blocks no tree node occupies.
     fn padding() -> Self::Data;
 }
 
