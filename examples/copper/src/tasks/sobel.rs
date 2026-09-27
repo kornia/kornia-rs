@@ -3,6 +3,7 @@ use kornia::{image::Image, imgproc};
 
 use super::cu_image::{ImageGray8Msg, ImageRgb8Msg};
 
+#[derive(Reflect)]
 pub struct Sobel;
 
 impl Freezable for Sobel {}

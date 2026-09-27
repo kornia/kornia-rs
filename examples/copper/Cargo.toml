@@ -3,7 +3,8 @@ name = "copper"
 version = { workspace = true }
 authors = { workspace = true }
 edition = { workspace = true }
-rust-version = { workspace = true }
+# cu29 1.x requires rustc 1.95 (workspace MSRV is lower; this example is not published).
+rust-version = "1.95"
 description = { workspace = true }
 readme = { workspace = true }
 homepage = { workspace = true }
@@ -14,7 +15,7 @@ include = { workspace = true }
 publish = false
 
 [dependencies]
-cu29 = "0.15.0"
+cu29 = "1.2.1"
 kornia = { workspace = true, features = ["gstreamer"] }
 rerun = { workspace = true }
 serde = { workspace = true }

@@ -4,6 +4,7 @@ use cu29::prelude::*;
 const RERUN_HOST: &str = "127.0.0.1";
 const RERUN_PORT: u32 = 9876;
 
+#[derive(Reflect)]
 pub struct RerunViz(rerun::RecordingStream);
 
 impl std::ops::Deref for RerunViz {

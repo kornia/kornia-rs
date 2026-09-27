@@ -460,7 +460,7 @@ reading: `l2_sq` NEON 9,612 instructions against the scalar twin's 52,493 —
 between those two numbers is memory behaviour, and that is the point of having
 both.
 
-Needs `valgrind` and `cargo install iai-callgrind-runner --version 0.14.2`
+Needs `valgrind` and `cargo install iai-callgrind-runner --version 0.16.1`
 (the runner version must match the `iai-callgrind` dev-dependency exactly).
 
 ### Rust benchmarks (criterion, CPU)

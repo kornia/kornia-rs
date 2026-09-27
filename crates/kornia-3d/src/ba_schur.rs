@@ -5554,6 +5554,12 @@ mod tests {
     /// Cholesky permutes the matrix and does not perform the dense one's operations in the dense
     /// one's order, so the steps differ at roundoff and the difference compounds over LM
     /// iterations. What must not differ is where the two land.
+    ///
+    /// Runs 60 iterations, not 25, so both paths have actually landed before the ground-truth
+    /// check: at 25 neither has converged on any target, and the snapshot depends on the
+    /// arithmetic. With glam ≥ 0.33.8 using FMA on aarch64 (NEON), the 25-iteration snapshot
+    /// sits at 2.78× improvement against 3.87× on x86_64 (SSE2, no FMA). At 60 iterations both
+    /// sit at the f32 noise floor (cost ~1e-8) with 3.96× and 4.29×.
     #[test]
     fn sparse_reduced_system_matches_dense_on_a_sequential_capture() {
         let cam = test_camera();
@@ -5566,7 +5572,7 @@ mod tests {
                 &obs,
                 &cam,
                 &BaParams {
-                    max_iterations: 25,
+                    max_iterations: 60,
                     sparse_reduced_system: sparse,
                     ..BaParams::default()
                 },
@@ -5828,7 +5834,17 @@ mod tests {
 
         // Fixture 2: `walkthrough(&cam, 10, 2)` with motion priors, both storage paths. The two
         // agreed bit-for-bit at the frozen commit and must still.
+        //
+        // aarch64 has its own constant. From 0.33.8 glam's NEON back-end uses fused
+        // multiply-add (bitshifter/glam-rs#853), which rounds the f32 residual maths differently
+        // from x86_64's SSE2 path. The x86_64 constant is still the one captured at `45e0a846`.
+        // This code reproduces it bit for bit on x86_64, so the solver itself is unchanged, and
+        // the aarch64 constant is that same solver built against an FMA glam. The two-view values
+        // above are unaffected on both targets.
+        #[cfg(not(target_arch = "aarch64"))]
         const WALKTHROUGH_DIGEST: u64 = 0x456e_57e0_0176_46b6;
+        #[cfg(target_arch = "aarch64")]
+        const WALKTHROUGH_DIGEST: u64 = 0x968c_5cb0_c993_bf05;
         let cam2 = test_camera();
         let (_gt, poses_init, _pgt, points_init, obs2, motion) = walkthrough(&cam2, 10, 2);
         for sparse in [false, true] {
