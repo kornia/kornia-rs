@@ -140,7 +140,7 @@ wide = { workspace = true }
 argh = { workspace = true }
 criterion = { workspace = true }
 # Deterministic instruction counts, immune to machine load. Needs valgrind and
-# `cargo install iai-callgrind-runner --version 0.14.0`.
+# `cargo install iai-callgrind-runner --version 0.16.1`.
 iai-callgrind = "0.16.1"
 image = { workspace = true }
 imageproc = { workspace = true }
