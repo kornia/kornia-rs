@@ -1,6 +1,6 @@
 use core::f64;
 
-use kiddo::immutable::float::kdtree::ImmutableKdTree;
+use kiddo::ImmutableKdTree;
 
 use super::ops::{find_correspondences, fit_transformation, update_transformation};
 use crate::{linalg::transform_points3d, pointcloud::PointCloud};
@@ -58,7 +58,7 @@ pub fn icp_vanilla(
     };
 
     // build kdtree for target points to speed up the nearest neighbor search
-    let kdtree: ImmutableKdTree<f64, u32, 3, 32> = ImmutableKdTree::new_from_slice(target.points());
+    let kdtree: ImmutableKdTree<f64, 3> = ImmutableKdTree::new_from_slice(target.points())?;
 
     // perform transformation using the initial rotation and translation
     let mut transformed_points = vec![[0.0; 3]; source.points().len()];

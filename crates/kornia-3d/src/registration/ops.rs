@@ -1,5 +1,5 @@
 use crate::linalg;
-use kiddo::immutable::float::kdtree::ImmutableKdTree;
+use kiddo::ImmutableKdTree;
 
 /// Compute the transformation between two point clouds.
 pub(crate) fn fit_transformation(
@@ -92,12 +92,17 @@ pub(crate) fn compute_centroids(
 pub(crate) fn find_correspondences(
     source: &[[f64; 3]],
     target: &[[f64; 3]],
-    kdtree: &ImmutableKdTree<f64, u32, 3, 32>,
+    kdtree: &ImmutableKdTree<f64, 3>,
 ) -> (Vec<[f64; 3]>, Vec<[f64; 3]>, Vec<f64>) {
     // find nearest neighbors for each point in source
     let nn_results = source
         .iter()
-        .map(|p| kdtree.nearest_one::<kiddo::SquaredEuclidean>(p))
+        .map(|p| {
+            kdtree
+                .query(p)
+                .nearest_one::<kiddo::SquaredEuclidean<f64>>()
+                .execute()
+        })
         .collect::<Vec<_>>();
 
     let mut distances = nn_results.iter().map(|nn| nn.distance).collect::<Vec<_>>();
@@ -161,7 +166,7 @@ mod tests {
     use super::*;
     use crate::{linalg::transform_points3d, transforms::axis_angle_to_rotation_matrix};
     use approx::assert_relative_eq;
-    use kiddo::immutable::float::kdtree::ImmutableKdTree;
+    use kiddo::ImmutableKdTree;
 
     fn create_random_points(num_points: usize) -> Vec<[f64; 3]> {
         (0..num_points)
@@ -318,7 +323,7 @@ mod tests {
         ];
         let points_dst = vec![[1.0, 0.0, 0.0], [1.0, 1.0, 0.0]];
 
-        let kdtree = ImmutableKdTree::new_from_slice(&points_dst);
+        let kdtree = ImmutableKdTree::new_from_slice(&points_dst)?;
 
         let (points_in_src, points_in_dst, distances) =
             find_correspondences(&points_src, &points_dst, &kdtree);

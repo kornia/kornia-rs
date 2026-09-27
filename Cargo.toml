@@ -6,7 +6,7 @@ members = [
   "kornia-cpp",  # kornia-rs C++ bindings
   "kornia-py",  # kornia-rs python bindings
 ]
-exclude = ["examples/dora"]
+exclude = ["examples/dora", "third_party/yep-cache-line-size"]
 default-members = ["crates/*"]
 
 [workspace.package]
@@ -29,15 +29,10 @@ argh = "0.1"
 arrow = "60"
 # TODO: update to version 3 but it requires some changes in the codebase
 bincode = { version = "2", features = ["derive"] }
-# Pinned below 0.11: candle-core 0.11.0's NEON f16 path references the unstable
-# `float16x8_t` type without a nightly gate, breaking builds wherever the `fp16`
-# target feature is enabled (macOS CI, and aarch64 Linux since we force +fp16 there).
-# Still unfixed upstream as of https://github.com/huggingface/candle/commit/39355c6c.
-# Bump back to "0.11" once that's resolved.
-candle-core = { version = "0.10.2" }
-candle-flash-attn = { version = "0.10.2" }
-candle-nn = { version = "0.10.2" }
-candle-transformers = { version = "0.10.2" }
+candle-core = { version = "0.11.0" }
+candle-flash-attn = { version = "0.11.0" }
+candle-nn = { version = "0.11.0" }
+candle-transformers = { version = "0.11.0" }
 circular-buffer = "2.0"
 criterion = "0.8"
 ctrlc = "3.5"
@@ -53,11 +48,7 @@ hf-hub = "0.5.0"
 image = "0.25"
 imageproc = "0.27"
 indicatif = { version = "0.18.4", features = ["rayon"] }
-# Held at 5.x: kiddo 6's build script detects the cache-line size via
-# yep-cache-line-size, which reads `ctr_el0` and dies with
-# STATUS_ILLEGAL_INSTRUCTION on native aarch64-pc-windows-msvc builds (our
-# wheel-windows-arm64 job). v6 also has a new query API; port when fixed upstream.
-kiddo = "5.3"
+kiddo = "6.3"
 # RELEASE NOTE: these kornia-* version pins CANNOT inherit
 # workspace.package.version (Cargo limitation) and must be bumped together
 # with it on every release — locally `path` wins so a stale pin builds fine
@@ -107,6 +98,11 @@ wide = "1.4"
 
 [workspace.lints.rust]
 unsafe_code = "warn"
+
+# kiddo 6's build script crashes on native aarch64 Windows through this crate;
+# see third_party/yep-cache-line-size/Cargo.toml. Remove once fixed upstream.
+[patch.crates-io]
+yep-cache-line-size = { path = "third_party/yep-cache-line-size" }
 
 # Release wheels and binaries ship the SIMD-vectorized hot paths with
 # cross-crate inlining enabled. ThinLTO + single codegen unit lets the
