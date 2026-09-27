@@ -6,7 +6,7 @@ members = [
   "kornia-cpp",  # kornia-rs C++ bindings
   "kornia-py",  # kornia-rs python bindings
 ]
-exclude = ["examples/dora", "third_party/yep-cache-line-size"]
+exclude = ["examples/dora"]
 default-members = ["crates/*"]
 
 [workspace.package]
@@ -48,7 +48,11 @@ hf-hub = "0.5.0"
 image = "0.25"
 imageproc = "0.27"
 indicatif = { version = "0.18.4", features = ["rayon"] }
-kiddo = "6.3"
+# Held on 5.x: kiddo 6's build script probes the cache-line size via
+# yep-cache-line-size, which reads ctr_el0 and crashes on native aarch64
+# Windows (STATUS_ILLEGAL_INSTRUCTION). kiddo 5 has no build script and is as
+# fast for our ICP nearest-neighbour queries. Also ignored in dependabot.yml.
+kiddo = "5.3"
 # RELEASE NOTE: these kornia-* version pins CANNOT inherit
 # workspace.package.version (Cargo limitation) and must be bumped together
 # with it on every release — locally `path` wins so a stale pin builds fine
@@ -98,11 +102,6 @@ wide = "1.4"
 
 [workspace.lints.rust]
 unsafe_code = "warn"
-
-# kiddo 6's build script crashes on native aarch64 Windows through this crate;
-# see third_party/yep-cache-line-size/Cargo.toml. Remove once fixed upstream.
-[patch.crates-io]
-yep-cache-line-size = { path = "third_party/yep-cache-line-size" }
 
 # Release wheels and binaries ship the SIMD-vectorized hot paths with
 # cross-crate inlining enabled. ThinLTO + single codegen unit lets the

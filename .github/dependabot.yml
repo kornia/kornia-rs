@@ -4,6 +4,11 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    ignore:
+      # kiddo 6's build script crashes on native aarch64 Windows; see the
+      # kiddo entry in the root Cargo.toml.
+      - dependency-name: "kiddo"
+        update-types: ["version-update:semver-major"]
     groups:
       cargo-updates:
         patterns:
