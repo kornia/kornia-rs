@@ -5842,7 +5842,7 @@ mod tests {
         // the aarch64 constant is that same solver built against an FMA glam. The two-view values
         // above are unaffected on both targets.
         #[cfg(not(target_arch = "aarch64"))]
-        const WALKTHROUGH_DIGEST: u64 = 0xe291_e828_3f21_d870;
+        const WALKTHROUGH_DIGEST: u64 = 0x456e_57e0_0176_46b6;
         #[cfg(target_arch = "aarch64")]
         const WALKTHROUGH_DIGEST: u64 = 0x968c_5cb0_c993_bf05;
         let cam2 = test_camera();

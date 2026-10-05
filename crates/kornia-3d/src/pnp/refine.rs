@@ -329,7 +329,8 @@ impl Factor for ReprojectionFactor {
 fn build_robust_loss(params: &LMRefineParams) -> Result<Option<Arc<dyn RobustLoss>>, PnPError> {
     if params.robust == RobustKernelKind::Identity
         || !params.robust_scale_sq.is_finite()
-        || params.robust_scale_sq <= 0.0 {
+        || params.robust_scale_sq <= 0.0
+    {
         return Ok(None);
     }
 
@@ -802,44 +803,79 @@ mod tests {
         ];
         let k = Mat3AF32::from_diagonal(Vec3AF32::new(1.0, 1.0, 1.0));
         let initial_rotation = Mat3AF32::from_diagonal(Vec3AF32::new(1.0, 1.0, 1.0));
-        let initial_translation = Vec3AF32::new(0.0, 0.0, 0.0);
+        let initial_translation = Vec3AF32::new(0.1, 0.1, 0.1);
 
-        let params = LMRefineParams {
+        let params_identity = LMRefineParams {
+            robust: RobustKernelKind::Identity,
+            ..LMRefineParams::default()
+        };
+        let result_identity = refine_pose_lm(
+            &points_world,
+            &points_image,
+            &k,
+            &initial_rotation,
+            &initial_translation,
+            None,
+            &params_identity,
+        )
+        .unwrap();
+        assert!(
+            result_identity.translation.x.is_finite(),
+            "Identity Translation should be finite"
+        );
+
+        let params_huber_neg = LMRefineParams {
             robust: RobustKernelKind::Huber,
             robust_scale_sq: -25.0,
             ..LMRefineParams::default()
         };
-        // Use .unwrap() instead of ?
-        let result = refine_pose_lm(
+
+        let result_huber_neg = refine_pose_lm(
             &points_world,
             &points_image,
             &k,
             &initial_rotation,
             &initial_translation,
             None,
-            &params
-        ).unwrap();
-        assert!(result.translation.x.is_finite(),
-            "Translation should be finite for negative scale, got NaN"
-        ); // currently passes
+            &params_huber_neg,
+        )
+        .unwrap();
+        assert!(
+            result_huber_neg.translation.x.is_finite(),
+            "Huber (negative scale) should be finite"
+        );
+        assert_eq!(
+            result_identity.translation, result_huber_neg.translation,
+            "Huber with negative scale should fallback to Identity"
+        );
+        assert_eq!(
+            result_identity.rotation, result_huber_neg.rotation,
+            "Huber with negative scale should fallback to Identity"
+        );
 
-        let params_zero = LMRefineParams {
+        let params_huber_zero = LMRefineParams {
             robust: RobustKernelKind::Huber,
             robust_scale_sq: 0.0,
             ..LMRefineParams::default()
         };
-
-        let result2 = refine_pose_lm(
+        let result_huber_zero = refine_pose_lm(
             &points_world,
             &points_image,
             &k,
             &initial_rotation,
             &initial_translation,
             None,
-            &params_zero
-        ).unwrap();
-        assert!(result2.translation.x.is_finite(),
-            "Translation should be finite for zero scale, got NaN"
+            &params_huber_zero,
+        )
+        .unwrap();
+
+        assert!(
+            result_huber_zero.translation.x.is_finite(),
+            "Huber (zero scale) should be finite"
+        );
+        assert_eq!(
+            result_identity.translation, result_huber_zero.translation,
+            "Huber with zero scale should fallback to Identity"
         );
     }
 }
