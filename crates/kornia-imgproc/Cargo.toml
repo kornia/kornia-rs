@@ -131,7 +131,7 @@ kornia-algebra = { workspace = true }
 kornia-image = { workspace = true }
 kornia-tensor = { workspace = true }
 num-traits = { workspace = true }
-opencv = { version = "0.100", optional = true }
+opencv = { version = "0.101", optional = true }
 rayon = { workspace = true }
 thiserror = { workspace = true }
 wide = { workspace = true }
