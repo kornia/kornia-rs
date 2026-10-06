@@ -125,6 +125,16 @@ this example's `--view` flag (requires the [rerun](https://rerun.io) viewer,
   surface.
 - **Requires `gstreamer`**: the `kornia-io` gstreamer feature must be enabled
   (it is in this example's `Cargo.toml`).
+- **Intrinsics must match the decoded frame.** Phone videos shot in portrait are
+  often coded 1280x720 landscape with a `rotation=-90` metadata tag, and
+  GStreamer decodes them unrotated — so supply intrinsics for the *decoded*
+  resolution (principal point at its centre), not the displayed portrait frame.
+  The focal length can be derived from the EXIF 35 mm-equivalent:
+  `fx = f_35mm / 36 * frame_width`.
+- **Frame width must satisfy `3*W % 4 == 0`.** GStreamer pads RGB rows to a
+  4-byte boundary and `kornia-io` currently ignores the stride, so other widths
+  (e.g. 854x480) would be read sheared with no error; the example rejects them
+  until the core fix lands.
 - **No distortion model**: the supplied intrinsics are treated as an ideal
   pinhole (zero distortion).
 
