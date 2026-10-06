@@ -48,7 +48,7 @@ cargo run -p sfm -- sample.mp4 out.ply \
 | `--ratio` | `0.8` | Lowe's ratio-test threshold (lower = stricter). |
 | `--frame-step` | `1` | Process every Nth frame (1 = all frames). |
 | `--threads` | `0` | Worker threads for parallel feature extraction and matching (`0` = auto-detect CPU count). |
-| `--view` | off | Open the output PLY in the rerun viewer after writing. |
+| `--view` | off | Log the point cloud + camera poses to a rerun viewer, then return. The viewer is spawned detached and stays open after the CLI exits. |
 | `--max-ba-iterations` | `100` | Bundle-adjustment LM iterations. Lower = faster but less accurate. |
 | `--min-registration-inliers` | `30` | Min PnP inliers to register a view. Lower admits more cameras (looser). |
 | `--motion-prior-sigma` | `0.0` | Constant-velocity motion prior (`0.0` = off). Use for smooth walkthroughs. |
@@ -161,9 +161,10 @@ frames per raw observation (before reconstruction), and each point takes the
 colour of a surviving observation; normals are estimated from the k nearest
 neighbours via PCA and oriented toward the point's own observing cameras.
 
-View the result in MeshLab, CloudCompare, the `ply_rerun` example, or with
-this example's `--view` flag (requires the [rerun](https://rerun.io) viewer,
-`pip install rerun-sdk`).
+View the result in MeshLab, CloudCompare, the `ply_rerun` example, or with this
+example's `--view` flag (requires the [rerun](https://rerun.io) viewer). `--view`
+logs the cloud + camera poses and returns immediately; the viewer is spawned
+detached, so closing the CLI does not close the viewer.
 
 ## Notes and limitations
 
