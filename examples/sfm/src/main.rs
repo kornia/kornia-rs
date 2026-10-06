@@ -158,8 +158,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         .map(|f| (f.width(), f.height()))
         .unwrap_or((0, 0));
     eprintln!(
-        "[1/6] decoded {} frames in {:.1}s",
+        "[1/6] decoded {} frames ({}x{}) in {:.1}s",
         n_frames,
+        frame_w,
+        frame_h,
         t.elapsed().as_secs_f64()
     );
     if n_frames < 2 {
