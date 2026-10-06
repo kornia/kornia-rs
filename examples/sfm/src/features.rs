@@ -8,7 +8,7 @@
 use std::error::Error;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use cudarc::driver::CudaContext;
 use kornia_image::Image;
@@ -111,6 +111,18 @@ impl FeatureExtractor for OrbExtractor {
 pub struct SiftExtractor {
     /// Maximum number of keypoints to retain per frame (`0` = unlimited).
     pub n_features: usize,
+    /// Reusable scratch buffers, popped and pushed back per call. Bounds
+    /// allocations to peak concurrency instead of one workspace per frame.
+    workspaces: Mutex<Vec<SiftWorkspace>>,
+}
+
+impl SiftExtractor {
+    fn new(n_features: usize) -> Self {
+        Self {
+            n_features,
+            workspaces: Mutex::new(Vec::new()),
+        }
+    }
 }
 
 impl FeatureExtractor for SiftExtractor {
@@ -125,7 +137,13 @@ impl FeatureExtractor for SiftExtractor {
             n_features: self.n_features,
             ..SiftConfig::default()
         };
-        let mut ws = SiftWorkspace::new();
+        // Pop one reusable workspace (or make one); push it back after use.
+        let mut ws = self
+            .workspaces
+            .lock()
+            .map_err(|_| "sift workspace mutex poisoned")?
+            .pop()
+            .unwrap_or_default();
         let feats = sift_detect_and_compute(
             &mut ws,
             &buf,
@@ -135,7 +153,12 @@ impl FeatureExtractor for SiftExtractor {
             FirstOctave::Native,
             usize::MAX,
             false,
-        )?;
+        );
+        self.workspaces
+            .lock()
+            .map_err(|_| "sift workspace mutex poisoned")?
+            .push(ws);
+        let feats = feats?;
 
         let keypoints: Vec<[f32; 2]> = feats
             .keypoints
@@ -154,16 +177,16 @@ impl FeatureExtractor for SiftExtractor {
 
 /// SIFT feature extractor running on a CUDA device (via `kornia_imgproc::cuda::sift`).
 ///
-/// Creates a fresh [`SiftCuda`] plan per frame (the plan owns the scratch
-/// buffers; building one per call keeps the extractor `Send + Sync` so it can
-/// be shared across rayon threads). NVRTC kernels are JIT-compiled on the first
-/// call and cached by cudarc, so warm frames are fast. Run extraction
-/// *sequentially* when using this extractor: sharing one CUDA stream across
-/// concurrent `extract` calls is not safe.
+/// Holds one reusable [`SiftCuda`] plan, rebuilt only when the image size
+/// changes (extraction is sequential, so a `Mutex` keeps it `Send + Sync`
+/// without contention). NVRTC kernels are JIT-compiled on the first call and
+/// cached by cudarc, so warm frames are fast.
 pub struct SiftCudaExtractor {
     /// Maximum number of keypoints to retain per frame (`0` = unlimited).
     pub n_features: usize,
     ctx: Arc<CudaContext>,
+    /// Reusable plan plus the image size it was built for.
+    plan: Mutex<Option<(usize, usize, SiftCuda)>>,
 }
 
 impl SiftCudaExtractor {
@@ -175,7 +198,11 @@ impl SiftCudaExtractor {
     /// be created.
     pub fn new(n_features: usize) -> Result<Self, Box<dyn Error>> {
         let ctx = CudaContext::new(0)?;
-        Ok(Self { n_features, ctx })
+        Ok(Self {
+            n_features,
+            ctx,
+            plan: Mutex::new(None),
+        })
     }
 }
 
@@ -194,7 +221,20 @@ impl FeatureExtractor for SiftCudaExtractor {
             n_features: self.n_features,
             ..SiftCudaConfig::default()
         };
-        let mut sift = SiftCuda::new(&self.ctx, &stream, w, h, cfg, FirstOctave::Native, 8)?;
+        // Reuse one plan per image size (extraction is sequential).
+        let mut guard = self
+            .plan
+            .lock()
+            .map_err(|_| "sift cuda plan mutex poisoned")?;
+        let rebuild = !matches!(guard.as_ref(), Some((pw, ph, _)) if *pw == w && *ph == h);
+        if rebuild {
+            *guard = Some((
+                w,
+                h,
+                SiftCuda::new(&self.ctx, &stream, w, h, cfg, FirstOctave::Native, 8)?,
+            ));
+        }
+        let (_, _, sift) = guard.as_mut().expect("plan was just built");
         let feats = sift.detect_and_compute(&self.ctx, &stream, &dev)?;
 
         // Download the descriptor block to host.
@@ -239,7 +279,7 @@ pub fn make_extractor(
             if use_cuda {
                 Ok(Box::new(SiftCudaExtractor::new(n_features)?))
             } else {
-                Ok(Box::new(SiftExtractor { n_features }))
+                Ok(Box::new(SiftExtractor::new(n_features)))
             }
         }
     }
@@ -359,7 +399,7 @@ mod tests {
     #[test]
     fn sift_extractor_finds_features_on_checkerboard() {
         let img = make_checkerboard(200, 200, 20);
-        let extractor = SiftExtractor { n_features: 0 };
+        let extractor = SiftExtractor::new(0);
         let feats = extractor.extract(&img).unwrap();
 
         assert!(feats.n_keypoints() > 0, "SIFT should find corners");
