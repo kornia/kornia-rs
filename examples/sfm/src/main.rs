@@ -122,8 +122,9 @@ struct Args {
     #[argh(option, default = "3.0")]
     geo_threshold: f64,
 
-    /// min inliers for a pair's fundamental matrix to be trusted (default: 8)
-    #[argh(option, default = "8")]
+    /// min inliers for a pair's fundamental matrix to be trusted (default: 15;
+    /// values below 15 warn — an 8-point model validates its own minimal sample)
+    #[argh(option, default = "15")]
     geo_min_inliers: usize,
 
     /// use CUDA for SIFT extraction (requires an NVIDIA GPU)
@@ -287,6 +288,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
             "[3.5/6] geometric verification (threshold={} px, min_inliers={})",
             args.geo_threshold, args.geo_min_inliers
         );
+        if let Some(w) = matching::min_inliers_warning(args.geo_min_inliers) {
+            eprintln!("  {w}");
+        }
         let t = Instant::now();
         let before = edges.len();
         let edges = matching::verify_matches_geometrically(

@@ -15,6 +15,27 @@ use rayon::prelude::*;
 
 use crate::features::FrameFeatures;
 
+/// Safe floor for the epipolar-RANSAC inlier count used by
+/// [`verify_matches_geometrically`].
+///
+/// The 8-point algorithm fits a fundamental matrix to 8 correspondences, so a
+/// minimal-sample model trivially explains its own sample: an acceptance test of
+/// `inliers >= 8` passes even for pure-outlier pairs. Requiring a margin above
+/// the minimal sample (`15`) rejects those without discarding genuine pairs.
+pub const MIN_SAFE_GEO_INLIERS: usize = 15;
+
+/// Returns a warning when the requested `--geo-min-inliers` is below the safe
+/// floor, else `None`.
+pub fn min_inliers_warning(requested: usize) -> Option<String> {
+    (requested < MIN_SAFE_GEO_INLIERS).then(|| {
+        format!(
+            "warning: --geo-min-inliers {requested} is below the safe floor \
+             {MIN_SAFE_GEO_INLIERS}; the epipolar RANSAC can accept pure-outlier \
+             pairs. Consider {MIN_SAFE_GEO_INLIERS}."
+        )
+    })
+}
+
 /// Match every frame `i` against frames `i+1 ..= i+window` and collect the
 /// resulting [`TrackEdge`]s.
 ///
@@ -148,14 +169,19 @@ pub fn verify_matches_geometrically(
     threshold: f64,
     min_inliers: usize,
 ) -> Vec<TrackEdge> {
-    // Group edge indices by camera pair.
+    // Group input indices per camera pair. A group's internal order is the input
+    // order (indices are pushed while scanning `edges`), and each pair fits its
+    // own independent model, so the *order pairs are processed in* cannot change
+    // any pair's result. Emitting via `keep` below in input order therefore makes
+    // the output a deterministic function of `edges` alone — HashMap iteration
+    // order can never leak into it (it previously did).
     let mut pairs: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
     for (i, e) in edges.iter().enumerate() {
         pairs.entry((e.cam_a, e.cam_b)).or_default().push(i);
     }
 
     let min_inliers = min_inliers.max(8);
-    let mut verified = Vec::new();
+    let mut keep = vec![false; edges.len()];
     for indices in pairs.into_values() {
         if indices.len() < min_inliers {
             continue;
@@ -174,11 +200,17 @@ pub fn verify_matches_geometrically(
         };
         for (&idx, &is_inlier) in indices.iter().zip(result.inliers.iter()) {
             if is_inlier {
-                verified.push(edges[idx].clone());
+                keep[idx] = true;
             }
         }
     }
-    verified
+
+    edges
+        .iter()
+        .enumerate()
+        .filter(|&(i, _)| keep[i])
+        .map(|(_, e)| e.clone())
+        .collect()
 }
 
 /// Append wide-baseline matches to `edges`: for every frame `i`, also match it
@@ -479,5 +511,74 @@ mod tests {
             0
         );
         assert!(edges.is_empty());
+    }
+
+    #[test]
+    fn geo_min_inliers_below_floor_warns() {
+        assert!(min_inliers_warning(8).is_some());
+        assert!(min_inliers_warning(14).is_some());
+        assert!(min_inliers_warning(MIN_SAFE_GEO_INLIERS).is_none());
+        assert!(min_inliers_warning(30).is_none());
+    }
+
+    #[test]
+    fn geometric_verification_preserves_input_order() {
+        use crate::reconstruction::make_camera;
+        use crate::test_util;
+        use kornia_3d::pose::Pose3d;
+        use kornia_algebra::Vec3F64;
+
+        let cam = make_camera(500.0, 500.0, 320.0, 240.0);
+        let poses = [
+            Pose3d::new(test_util::rot(0.0, 0.05), Vec3F64::new(0.0, 0.0, 0.0)),
+            Pose3d::new(test_util::rot(0.40, 0.05), Vec3F64::new(-0.6, 0.0, 0.10)),
+            Pose3d::new(test_util::rot(-0.40, 0.05), Vec3F64::new(0.6, 0.0, 0.15)),
+        ];
+
+        // 40 non-planar points, so each pair's fundamental matrix is well-constrained.
+        let mut pts = Vec::new();
+        for i in 0..8 {
+            for j in 0..5 {
+                let z = 1.4 + 0.3 * ((i * 5 + j) % 3) as f64;
+                pts.push(Vec3F64::new(
+                    -0.4 + 0.1 * i as f64,
+                    -0.3 + 0.15 * j as f64,
+                    z,
+                ));
+            }
+        }
+
+        // Interleave edges from pair (0,1) and pair (1,2): a pair-grouped emit
+        // (the HashMap bug) cannot reproduce this order.
+        let mut edges = Vec::new();
+        for (idx, p) in pts.iter().enumerate() {
+            let kp = idx as u32;
+            edges.push(TrackEdge {
+                cam_a: 0,
+                kpt_a: kp,
+                uv_a: test_util::project(*p, &poses[0], &cam),
+                cam_b: 1,
+                kpt_b: kp,
+                uv_b: test_util::project(*p, &poses[1], &cam),
+            });
+            edges.push(TrackEdge {
+                cam_a: 1,
+                kpt_a: kp,
+                uv_a: test_util::project(*p, &poses[1], &cam),
+                cam_b: 2,
+                kpt_b: kp,
+                uv_b: test_util::project(*p, &poses[2], &cam),
+            });
+        }
+
+        let verified = verify_matches_geometrically(&edges, 3.0, 8);
+        assert_eq!(verified.len(), edges.len(), "all synthetic inliers kept");
+        for (got, want) in verified.iter().zip(edges.iter()) {
+            assert_eq!(
+                (got.cam_a, got.cam_b, got.kpt_a, got.kpt_b),
+                (want.cam_a, want.cam_b, want.kpt_a, want.kpt_b),
+                "verified edges must preserve input order, not be grouped by pair"
+            );
+        }
     }
 }
