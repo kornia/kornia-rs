@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use kornia_3d::pose::{ransac_fundamental, RansacParams};
 use kornia_algebra::Vec2F64;
 use kornia_calib::TrackEdge;
-use kornia_imgproc::features::{match_orb_descriptors, sift_match_descriptors, OrbMatchConfig};
+use kornia_imgproc::features::{match_descriptors, sift_match_descriptors};
 use rayon::prelude::*;
 
 use crate::features::FrameFeatures;
@@ -49,14 +49,10 @@ pub fn min_inliers_warning(requested: usize) -> Option<String> {
 ///   Frames `i` and `j` are only matched when `0 < j - i <= window`.
 /// * `ratio` - Lowe's ratio-test threshold (e.g. `0.8`). Matches whose best
 ///   distance is not comfortably below the second-best are rejected.
-/// * `orb_check_orientation` - Apply ORB-SLAM3's orientation-histogram
-///   consistency filtering. Disable for orbit/turntable captures where the
-///   camera rotates systematically (e.g. `swiss_knife.mp4`).
 pub fn match_sequential_pairs(
     features: &[FrameFeatures],
     window: usize,
     ratio: f32,
-    orb_check_orientation: bool,
 ) -> Vec<TrackEdge> {
     if features.len() < 2 {
         return Vec::new();
@@ -66,7 +62,7 @@ pub fn match_sequential_pairs(
     for i in 0..features.len() {
         let end = (i + 1 + window).min(features.len());
         for j in (i + 1)..end {
-            let matches = match_pair(&features[i], &features[j], ratio, orb_check_orientation);
+            let matches = match_pair(&features[i], &features[j], ratio);
             for (kpt_a, kpt_b) in matches {
                 edges.push(TrackEdge {
                     cam_a: i,
@@ -99,13 +95,10 @@ fn keypoint_to_uv(kp: [f32; 2]) -> Vec2F64 {
 /// * `features` - Per-frame features, indexed by frame number.
 /// * `window` - How many following frames each frame is matched against.
 /// * `ratio` - Lowe's ratio-test threshold.
-/// * `orb_check_orientation` - Apply ORB-SLAM3 orientation-histogram
-///   consistency filtering (see [`match_sequential_pairs`]).
 pub fn match_pairs_parallel(
     features: &[FrameFeatures],
     window: usize,
     ratio: f32,
-    orb_check_orientation: bool,
 ) -> Vec<TrackEdge> {
     if features.len() < 2 {
         return Vec::new();
@@ -129,7 +122,7 @@ pub fn match_pairs_parallel(
             if n.is_multiple_of(100) || n == total_pairs {
                 eprintln!("  matching: {n}/{total_pairs} pairs");
             }
-            let matches = match_pair(&features[i], &features[j], ratio, orb_check_orientation);
+            let matches = match_pair(&features[i], &features[j], ratio);
             let pair_edges: Vec<TrackEdge> = matches
                 .into_iter()
                 .map(|(kpt_a, kpt_b)| TrackEdge {
@@ -227,7 +220,6 @@ pub fn append_wide_baseline_edges(
     window: usize,
     stride: usize,
     ratio: f32,
-    orb_check_orientation: bool,
     edges: &mut Vec<TrackEdge>,
 ) -> usize {
     if stride == 0 || features.len() <= window + 1 {
@@ -239,7 +231,7 @@ pub fn append_wide_baseline_edges(
         let start = i + window + 1;
         let first = start + ((stride - (start - i) % stride) % stride);
         for j in (first..features.len()).step_by(stride) {
-            let matches = match_pair(&features[i], &features[j], ratio, orb_check_orientation);
+            let matches = match_pair(&features[i], &features[j], ratio);
             for (kpt_a, kpt_b) in matches {
                 edges.push(TrackEdge {
                     cam_a: i,
@@ -257,29 +249,17 @@ pub fn append_wide_baseline_edges(
 }
 
 /// Match a single frame pair; returns `(idx_in_a, idx_in_b)` pairs.
-fn match_pair(
-    a: &FrameFeatures,
-    b: &FrameFeatures,
-    ratio: f32,
-    orb_check_orientation: bool,
-) -> Vec<(usize, usize)> {
-    // ORB path: ORB-SLAM3 style matcher with optional orientation-histogram
-    // filtering. Filtering assumes the camera rotates (features rotate
-    // together); disable it for orbit/turntable captures where that breaks.
-    if let (Some(d1), Some(o1), Some(d2), Some(o2)) = (
-        &a.descriptors_orb,
-        &a.orientations_orb,
-        &b.descriptors_orb,
-        &b.orientations_orb,
-    ) {
-        let config = OrbMatchConfig {
-            nn_ratio: ratio,
-            check_orientation: orb_check_orientation,
-            ..OrbMatchConfig::default()
-        };
-        return match_orb_descriptors(o1, d1, o2, d2, config);
+///
+/// Both paths use mutual nearest neighbours (cross-check). This is required:
+/// `kornia_calib::build_tracks` assumes one-to-one pair matches, and a
+/// forward-only many-to-one matcher lets two keypoints of one camera share a
+/// neighbour, which `build_tracks` then drops as an inconsistent track.
+fn match_pair(a: &FrameFeatures, b: &FrameFeatures, ratio: f32) -> Vec<(usize, usize)> {
+    // ORB path: binary descriptors, Hamming distance, mutual NN + Lowe's ratio.
+    if let (Some(d1), Some(d2)) = (&a.descriptors_orb, &b.descriptors_orb) {
+        return match_descriptors::<32>(d1, d2, None, true, Some(ratio));
     }
-    // SIFT path: L2 matching with Lowe's ratio test.
+    // SIFT path: L2 matching with ratio test + mutual NN.
     if let (Some(d1), Some(d2)) = (&a.descriptors_sift, &b.descriptors_sift) {
         return sift_match_descriptors(d1, a.n_keypoints(), d2, b.n_keypoints(), ratio, true)
             .into_iter()
@@ -341,7 +321,7 @@ mod tests {
     fn matches_identical_orb_descriptors_between_consecutive_frames() {
         let a = orb_features(keypoints(3), &[1, 2, 4]);
         let b = orb_features(keypoints(3), &[1, 2, 4]);
-        let edges = match_sequential_pairs(&[a, b], 1, 0.8, true);
+        let edges = match_sequential_pairs(&[a, b], 1, 0.8);
 
         assert_eq!(edges.len(), 3);
         let mut kpts: Vec<(u32, u32)> = edges.iter().map(|e| (e.kpt_a, e.kpt_b)).collect();
@@ -357,7 +337,7 @@ mod tests {
     fn matches_identical_sift_descriptors_between_consecutive_frames() {
         let a = sift_features(keypoints(2), &[1, 2]);
         let b = sift_features(keypoints(2), &[1, 2]);
-        let edges = match_sequential_pairs(&[a, b], 1, 0.8, true);
+        let edges = match_sequential_pairs(&[a, b], 1, 0.8);
 
         assert_eq!(edges.len(), 2);
         let mut kpts: Vec<(u32, u32)> = edges.iter().map(|e| (e.kpt_a, e.kpt_b)).collect();
@@ -371,10 +351,10 @@ mod tests {
         let f1 = orb_features(keypoints(3), &[1, 2, 4]);
         let f2 = orb_features(keypoints(3), &[1, 2, 4]);
 
-        let edges_w1 = match_sequential_pairs(&[f0.clone(), f1.clone(), f2.clone()], 1, 0.8, true);
+        let edges_w1 = match_sequential_pairs(&[f0.clone(), f1.clone(), f2.clone()], 1, 0.8);
         assert_eq!(pair_set(&edges_w1), vec![(0, 1), (1, 2)]);
 
-        let edges_w2 = match_sequential_pairs(&[f0, f1, f2], 2, 0.8, true);
+        let edges_w2 = match_sequential_pairs(&[f0, f1, f2], 2, 0.8);
         assert_eq!(pair_set(&edges_w2), vec![(0, 1), (0, 2), (1, 2)]);
     }
 
@@ -386,14 +366,14 @@ mod tests {
             orientations_orb: Some(Vec::new()),
             descriptors_sift: None,
         };
-        let edges = match_sequential_pairs(&[empty.clone(), empty], 1, 0.8, true);
+        let edges = match_sequential_pairs(&[empty.clone(), empty], 1, 0.8);
         assert!(edges.is_empty());
     }
 
     #[test]
     fn returns_empty_for_single_frame() {
         let f = orb_features(keypoints(3), &[1, 2, 4]);
-        let edges = match_sequential_pairs(&[f], 5, 0.8, true);
+        let edges = match_sequential_pairs(&[f], 5, 0.8);
         assert!(edges.is_empty());
     }
 
@@ -405,10 +385,10 @@ mod tests {
         let a = orb_features(vec![[0.0, 0.0]], &[1]);
         let b = orb_features(vec![[0.0, 0.0], [0.0, 0.0]], &[2, 4]);
 
-        let strict = match_sequential_pairs(&[a.clone(), b.clone()], 1, 0.8, true);
+        let strict = match_sequential_pairs(&[a.clone(), b.clone()], 1, 0.8);
         assert!(strict.is_empty(), "ambiguous match must be rejected");
 
-        let loose = match_sequential_pairs(&[a, b], 1, 1.5, true);
+        let loose = match_sequential_pairs(&[a, b], 1, 1.5);
         assert_eq!(loose.len(), 1);
         assert_eq!((loose[0].kpt_a, loose[0].kpt_b), (0, 0));
     }
@@ -490,7 +470,7 @@ mod tests {
         let frames: Vec<FrameFeatures> = (0..5).map(|_| f()).collect();
 
         let mut edges = Vec::new();
-        let added = append_wide_baseline_edges(&frames, 1, 2, 0.8, true, &mut edges);
+        let added = append_wide_baseline_edges(&frames, 1, 2, 0.8, &mut edges);
         assert_eq!(added, 4 * 2, "pairs (0,2),(0,4),(1,3),(2,4) x 2 matches");
         let pairs: Vec<(usize, usize)> = edges.iter().map(|e| (e.cam_a, e.cam_b)).collect();
         for (a, b) in &pairs {
@@ -507,7 +487,7 @@ mod tests {
         let frames = vec![f.clone(), f];
         let mut edges = Vec::new();
         assert_eq!(
-            append_wide_baseline_edges(&frames, 1, 0, 0.8, true, &mut edges),
+            append_wide_baseline_edges(&frames, 1, 0, 0.8, &mut edges),
             0
         );
         assert!(edges.is_empty());
@@ -580,5 +560,31 @@ mod tests {
                 "verified edges must preserve input order, not be grouped by pair"
             );
         }
+    }
+
+    #[test]
+    fn orb_many_to_one_matches_do_not_drop_multiview_tracks() {
+        use kornia_calib::build_tracks;
+
+        // Frame A has two near-duplicate keypoints (2 px apart) whose descriptors
+        // both choose B's single keypoint as their nearest neighbour. Frame C
+        // sees the same physical point.
+        //
+        // A forward-only matcher emits a1->b1 and a2->b1, so the union-find
+        // component reaches camera A twice at two different pixels and
+        // build_tracks drops the whole track. A mutual (cross-check) matcher
+        // keeps only a1->b1 and the 3-view track survives.
+        let a = orb_features(vec![[50.0, 50.0], [52.0, 50.0]], &[1, 3]);
+        let b = orb_features(vec![[51.0, 50.0]], &[0]);
+        let c = orb_features(vec![[51.0, 50.0]], &[0]);
+
+        let edges = match_sequential_pairs(&[a, b, c], 1, 0.8);
+        let tracks = build_tracks(&edges);
+        assert_eq!(
+            tracks.len(),
+            1,
+            "the multi-view track must survive: {tracks:?}"
+        );
+        assert_eq!(tracks[0].obs.len(), 3, "seen by all three cameras");
     }
 }

@@ -52,8 +52,15 @@ pub struct FrameFeatures {
     pub keypoints: Vec<[f32; 2]>,
     /// ORB descriptors: 256-bit packed binary, one per keypoint.
     pub descriptors_orb: Option<Vec<[u8; 32]>>,
-    /// ORB keypoint orientations (radians), one per keypoint. Used by the
-    /// ORB-SLAM3 style matcher for orientation-histogram consistency filtering.
+    /// ORB keypoint orientations (radians), one per keypoint.
+    ///
+    /// Retained for the planned mutual-NN + orientation-histogram matcher (see
+    /// the README's "Matching model and future upgrades"). The current ORB
+    /// matcher is mutual-nearest-neighbour only, so nothing reads this yet.
+    #[expect(
+        dead_code,
+        reason = "reserved for the planned mutual-NN + orientation matcher"
+    )]
     pub orientations_orb: Option<Vec<f32>>,
     /// SIFT descriptors: flat buffer, `keypoints.len() * 128` floats (row-major).
     pub descriptors_sift: Option<Vec<f32>>,
