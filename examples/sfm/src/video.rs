@@ -23,6 +23,30 @@ pub type VideoFrames = (Vec<Image<u8, 3>>, Vec<Image<u8, 1>>);
 /// How often (in frames) the live progress line is refreshed.
 const PROGRESS_INTERVAL: usize = 10;
 
+/// Reject frame widths whose RGB rows GStreamer pads.
+///
+/// GStreamer pads each `video/x-raw,format=RGB` row to a 4-byte boundary, so a
+/// width where `3 * W` is not a multiple of 4 has a row stride larger than
+/// `3 * W`. `kornia-io`'s reader currently assumes tightly packed rows (it
+/// ignores `GstVideoMeta` strides), so such frames are read sheared with no
+/// error. Refuse them until the core fix lands.
+///
+/// # Errors
+///
+/// Returns a message when `3 * width` is not a multiple of 4.
+pub fn validate_frame_width(width: usize) -> Result<(), String> {
+    if (width * 3).is_multiple_of(4) {
+        Ok(())
+    } else {
+        Err(format!(
+            "unsupported frame width {width}: GStreamer pads RGB rows to a 4-byte \
+             boundary and kornia-io's reader assumes tightly packed rows, so frames \
+             would be read sheared. Re-encode or scale to a width where 3*W is a \
+             multiple of 4 (e.g. a multiple of 4)."
+        ))
+    }
+}
+
 /// Cumulative timing and progress counters for one `read_frames` call.
 struct ReadStats {
     /// Time to construct and start the GStreamer pipeline.
@@ -156,6 +180,11 @@ pub fn read_frames(path: &Path, frame_step: usize) -> Result<VideoFrames, Box<dy
 
         match grabbed {
             Some(frame) => {
+                if frame_idx == 0 {
+                    // Fail fast on widths whose RGB rows GStreamer pads.
+                    validate_frame_width(frame.width())
+                        .map_err(|e| -> Box<dyn Error> { e.into() })?;
+                }
                 seen_any = true;
                 consecutive_none = 0;
                 stats.frames_grabbed += 1;
@@ -226,5 +255,16 @@ mod tests {
     #[should_panic(expected = "frame_step must be >= 1")]
     fn read_frames_rejects_zero_frame_step() {
         let _ = read_frames(Path::new("x.mp4"), 0);
+    }
+
+    #[test]
+    fn validate_frame_width_rejects_padded_widths() {
+        // 3*W divisible by 4 => GStreamer adds no padding.
+        assert!(validate_frame_width(1280).is_ok());
+        assert!(validate_frame_width(640).is_ok());
+        // 3*W % 4 != 0 => rows are padded and would be read sheared.
+        assert!(validate_frame_width(854).is_err());
+        assert!(validate_frame_width(426).is_err());
+        assert!(validate_frame_width(1366).is_err());
     }
 }
