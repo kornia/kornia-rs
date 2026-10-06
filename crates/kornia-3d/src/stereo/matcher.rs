@@ -57,9 +57,9 @@ pub enum StereoMatchError {
         side: &'static str,
         /// Which array.
         what: &'static str,
-        /// Entries found.
+        /// Elements found (keypoints, bytes or floats, per `what`).
         got: usize,
-        /// Entries expected.
+        /// Elements expected.
         expected: usize,
     },
     /// SAD refinement is on but the pyramids are missing, mismatched, or too deep.
