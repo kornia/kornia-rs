@@ -90,10 +90,6 @@ struct Args {
     #[argh(switch)]
     view: bool,
 
-    /// disable ORB orientation-histogram filtering (helps for orbit captures)
-    #[argh(switch)]
-    orb_no_orientation_check: bool,
-
     /// max bundle adjustment iterations (default: 100)
     #[argh(option, default = "100")]
     max_ba_iterations: usize,
@@ -241,19 +237,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     let t = Instant::now();
     let mut edges = if args.async_video {
-        matching::match_pairs_parallel(
-            &all_features,
-            args.match_window,
-            args.ratio,
-            !args.orb_no_orientation_check,
-        )
+        matching::match_pairs_parallel(&all_features, args.match_window, args.ratio)
     } else {
-        matching::match_sequential_pairs(
-            &all_features,
-            args.match_window,
-            args.ratio,
-            !args.orb_no_orientation_check,
-        )
+        matching::match_sequential_pairs(&all_features, args.match_window, args.ratio)
     };
     eprintln!(
         "[3/6] found {} matched correspondences in {:.1}s",
@@ -273,7 +259,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
             args.match_window,
             args.wide_baseline,
             args.ratio,
-            !args.orb_no_orientation_check,
             &mut edges,
         );
         eprintln!(

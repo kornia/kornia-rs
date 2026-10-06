@@ -59,7 +59,6 @@ cargo run -p sfm -- sample.mp4 out.ply \
 | `--threads` | `0` | Worker threads for parallel stages (`0` = auto-detect CPU count). |
 | `--buffer-size` | `32` | Channel buffer (frames) for async video reading; larger = less backpressure, more memory. |
 | `--view` | off | Open the output PLY in the rerun viewer after writing. |
-| `--orb-no-orientation-check` | off | Disable ORB-SLAM3 orientation-histogram filtering. Helps on orbit/turntable captures where the camera rotates systematically. |
 | `--max-ba-iterations` | `100` | Bundle-adjustment LM iterations. Lower = faster but less accurate. |
 | `--min-registration-inliers` | `30` | Min PnP inliers to register a view. Lower admits more cameras (looser). |
 | `--motion-prior-sigma` | `0.0` | Constant-velocity motion prior (`0.0` = off). Use for smooth walkthroughs. |
@@ -72,8 +71,6 @@ cargo run -p sfm -- sample.mp4 out.ply \
 
 ### Recommended flags by capture type
 
-- **Orbit/turntable captures** (camera circles a static object): add
-  `--orb-no-orientation-check` for ORB.
 - **SIFT speed**: add `--cuda` to run SIFT on the GPU (needs the CUDA runtime
   on `LD_LIBRARY_PATH`). NVRTC kernels are JIT-compiled on the first frame.
 - **Noisy matches / poor ORB reconstruction**: add `--geo-verify`.
