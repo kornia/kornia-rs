@@ -14,7 +14,7 @@ MP4 ─► RGB+gray frames ─► features (ORB/SIFT) ─► pairwise matches
 
 | Stage | Module |
 |---|---|
-| Frame decoding (GStreamer, sync or async) | `video.rs` |
+| Frame decoding (GStreamer) | `video.rs` |
 | Feature extraction (ORB / SIFT, sync or parallel) | `features.rs` |
 | Sliding-window matching (sync or parallel) | `matching.rs` |
 | Track building | `kornia_calib::build_tracks` |
@@ -92,7 +92,7 @@ Planned upgrades (each belongs in a core crate, not this example):
 | `build_tracks` conflict recovery (split instead of drop) | `kornia-calib` | Recover the consistent sub-track instead of discarding the whole component. |
 | Pose-guided matching | `kornia-imgproc` (`match_orb_by_projection`) | Already exists; use it once incremental poses are available. |
 
-### Performance notes
+## Performance notes
 
 - Feature extraction and frame-pair matching run on a rayon thread pool;
   `--threads` sizes it (`0` = auto-detect).
@@ -102,6 +102,55 @@ Planned upgrades (each belongs in a core crate, not this example):
   is tracked as future work (it needs a fast-read path in `kornia-io`).
 - Results are deterministic for a given input: matching, track building, and
   the reconstruction do not depend on run-to-run ordering.
+
+## Benchmarks
+
+`swiss_knife.mp4` — 628 frames, 1280x720 HEVC orbit. Intrinsics
+`--fx 895 --fy 895 --cx 640 --cy 360`, `--n-features 500`, `--frame-step 10`
+(63 frames) unless noted. CUDA rows use `--cuda` (device SIFT extraction *and*
+matching). Decode is clock-paced at ~24 s and is included in `Total`.
+
+| Config | Detector | Extract (s) | Match (s) | Geo (s) | Matches (raw→verified) | Tracks | Recon (s) | Points | Views | RMSE (px) | Total (s) |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `orb_base` | ORB | 2.6 | 4.3 | — | 19810 | 4048 | 1.8 | 125 | 2/63 | 0.761 | 32.3 |
+| `orb_geo` | ORB | 2.5 | 4.4 | 3.6 | 19810→14286 | 4011 | 0.7 | 137 | 2/63 | 0.803 | 34.7 |
+| `orb_geo --geo-min-inliers 8` | ORB | 2.7 | 4.6 | 3.7 | 19810→15385 | 4148 | 3.7 | 670 | 10/63 | 1.072 | 38.3 |
+| `orb_geo --wide-baseline 20` | ORB | 2.9 | 5.0 | 4.4 | 20973→14428 | 3985 | 4.6 | 697 | 12/63 | 1.111 | 40.5 |
+| `sift_base` | SIFT (CUDA) | 0.8 | 0.1 | — | 21667 | 3483 | 3.1 | 520 | 9/63 | 2.244 | 27.9 |
+| `sift_geo` | SIFT (CUDA) | 1.1 | 0.1 | 2.1 | 21667→16935 | 3774 | 8.0 | 806 | 16/63 | 1.842 | 35.1 |
+| `sift_geo_sprt` (champion) | SIFT (CUDA) | 0.8 | 0.1 | 2.2 | 21667→16935 | 3774 | 8.4 | 805 | 16/63 | 1.848 | 35.1 |
+| champion, no `--cuda` | SIFT (CPU) | 18.8 | 12.7 | 2.1 | 21667→16935 | 3774 | 7.8 | 805 | 16/63 | 1.848 | 64.9 |
+| champion + `--refine-intrinsics` | SIFT (CUDA) | 0.9 | 0.1 | 2.3 | 21667→16935 | 3774 | 9.2 | 805 | 16/63 | 1.831 | 36.1 |
+| champion + `--wide-baseline 20` | SIFT (CUDA) | 0.8 | 0.1 | 2.3 | 22643→17147 | 3707 | 13.4 | 914 | 19/63 | 1.910 | 40.2 |
+| champion, `--frame-step 5` | SIFT (CUDA) | 1.3 | 0.2 | 3.2 | 70314→60355 | 6510 | 29.7 | 1703 | 31/126 | 3.380 | 58.0 |
+
+Observations:
+
+- **Deterministic**: two identical champion runs produce byte-identical PLY.
+- **`--cuda` speeds up both stages with identical output**: extraction
+  18.8 s → 0.8 s and matching 12.7 s → 0.1 s; the reconstruction is
+  byte-identical to the CPU path.
+- **`--geo-verify` is the SIFT accuracy lever**: 9 → 16 views, RMSE 2.24 →
+  1.84 px.
+- **`--wide-baseline 20`** maximises coverage at this frame step (914 pts,
+  19/63 views).
+- **`--refine-intrinsics`** is near-neutral here (the EXIF focal is already
+  accurate: it fits `gamma≈1.00`).
+- **`--frame-step 5`** gives the densest map (1703 pts, 31/126 views) at higher
+  RMSE.
+- **ORB sensitivity**: with the default `--geo-min-inliers 15` ORB registers
+  2/63 views on this clip; `--geo-min-inliers 8` keeps enough weak pairs to
+  register 10/63. SIFT has denser per-pair inliers and is unaffected.
+
+Reproduce the champion (device SIFT, requires an NVIDIA GPU with NVRTC on the
+library path):
+
+```sh
+export LD_LIBRARY_PATH=<dir containing libnvrtc.so>
+cargo run -p sfm -- swiss_knife.mp4 out.ply \
+    --fx 895 --fy 895 --cx 640 --cy 360 --n-features 500 --frame-step 10 \
+    --detector sift --geo-verify --sprt --cuda
+```
 
 ## Output
 
