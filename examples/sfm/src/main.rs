@@ -172,14 +172,22 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // 2. Extract features per frame (parallel via rayon; sequential for CUDA).
+    // --cuda only affects SIFT; ignore it for the CPU-only ORB detector.
+    let use_cuda = args.cuda && args.detector == features::DetectorKind::Sift;
+    if args.cuda && !use_cuda {
+        eprintln!(
+            "  warning: --cuda only applies to SIFT; ignoring it for {:?}",
+            args.detector
+        );
+    }
     eprintln!("[2/6] extracting features with {:?}", args.detector);
-    if args.cuda {
+    if use_cuda {
         eprintln!("[2/6] CUDA SIFT extraction (device 0)");
     }
     let t = Instant::now();
-    let extractor = features::make_extractor(args.detector, args.n_features, args.cuda)?;
+    let extractor = features::make_extractor(args.detector, args.n_features, use_cuda)?;
     // CUDA shares one device stream, so extraction must be sequential.
-    let all_features = if args.cuda {
+    let all_features = if use_cuda {
         gray_frames
             .iter()
             .map(|frame| extractor.extract(frame))
