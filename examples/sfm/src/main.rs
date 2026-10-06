@@ -175,18 +175,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
     } else {
         video::read_frames(&args.video, args.frame_step)?
     };
+    let n_frames = gray_frames.len();
+    let (frame_w, frame_h) = rgb_frames
+        .first()
+        .map(|f| (f.width(), f.height()))
+        .unwrap_or((0, 0));
     eprintln!(
         "[1/6] decoded {} frames in {:.1}s",
-        gray_frames.len(),
+        n_frames,
         t.elapsed().as_secs_f64()
     );
-    if gray_frames.len() < 2 {
+    if n_frames < 2 {
         return Err("need at least two frames to reconstruct".into());
     }
-    if gray_frames.len() > 200 {
+    if n_frames > 200 {
         eprintln!(
-            "  warning: {} frames may make reconstruction slow; consider a larger --frame-step",
-            gray_frames.len()
+            "  warning: {n_frames} frames may make reconstruction slow; consider a larger --frame-step"
         );
     }
 
@@ -225,6 +229,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         all_features.len(),
         t.elapsed().as_secs_f64()
     );
+    // Gray frames are only needed for extraction; release them before matching.
+    drop(gray_frames);
 
     // 3. Match frames in a sliding window (parallel in async mode).
     if args.async_video {
@@ -303,10 +309,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
         t.elapsed().as_secs_f64()
     );
 
+    // Sample every raw observation's colour now, then release the RGB frames
+    // before reconstruction. Colours are later looked up by the surviving
+    // observation, so the frames need not stay resident.
+    let observation_colors = ply_writer::sample_observation_colors(&tracks, &rgb_frames);
+    drop(rgb_frames);
+
     // 5. Reconstruct the scene.
     eprintln!("[5/6] reconstructing scene");
     let t = Instant::now();
-    let n_frames = gray_frames.len();
     let progress_start = Instant::now();
     let progress: Arc<dyn Fn(usize, usize) + Send + Sync> = Arc::new(move |registered, n_cams| {
         eprintln!(
@@ -357,7 +368,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // 6. Export the point cloud to PLY (XYZ + RGB + normals).
     eprintln!("[6/6] building vertices and writing PLY");
     let t = Instant::now();
-    let vertices = ply_writer::build_vertices(&reconstruction, &tracks, &rgb_frames);
+    let vertices = ply_writer::build_vertices(&reconstruction, &observation_colors);
     ply_writer::write_ply(&args.output, &vertices)?;
     eprintln!(
         "[6/6] wrote {} vertices to {} in {:.1}s",
@@ -369,10 +380,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // 7. Optional: visualize the result (point cloud + camera poses) in rerun.
     if args.view {
         eprintln!("[7/7] opening point cloud + camera poses in rerun viewer...");
-        let (frame_w, frame_h) = rgb_frames
-            .first()
-            .map(|f| (f.width(), f.height()))
-            .unwrap_or((0, 0));
         // If intrinsics were refined, use the effective focal length so the
         // frustum FOV matches the reconstruction.
         let (view_fx, view_fy) = match reconstruction.camera_correction {
