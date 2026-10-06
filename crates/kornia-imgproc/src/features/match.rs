@@ -49,6 +49,7 @@ pub fn hamming_distance<const N: usize>(a: &[u8; N], b: &[u8; N]) -> u32 {
 /// - Caller must ensure AVX2 is available.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
+#[inline]
 unsafe fn hamming32_avx2(a: *const u8, b: *const u8) -> u32 {
     use std::arch::x86_64::*;
     // 16-byte popcount LUT broadcast to both 128-bit halves of a YMM register.
@@ -77,6 +78,71 @@ unsafe fn hamming32_avx2(a: *const u8, b: *const u8) -> u32 {
     let s = _mm_add_epi64(lo128, hi128);
     let s = _mm_add_epi64(s, _mm_unpackhi_epi64(s, s));
     _mm_cvtsi128_si32(s) as u32
+}
+
+// Dispatch at row granularity so the query and ISA constants stay in registers
+// throughout the candidate scan. The reverse pass does not need a runner-up.
+fn hamming_row<const N: usize, const SECOND: bool>(
+    query: &[u8; N],
+    candidates: &[[u8; N]],
+) -> (usize, u32, u32) {
+    #[cfg(target_arch = "x86_64")]
+    if N == 32 && crate::simd::cpu_features().has_avx2 {
+        // SAFETY: the runtime probe confirms AVX2, and N == 32 guarantees
+        // every descriptor supplies the 32 bytes loaded by the kernel.
+        return unsafe { hamming_row_avx2::<N, SECOND>(query, candidates) };
+    }
+    hamming_row_generic::<N, SECOND>(query, candidates)
+}
+
+fn hamming_row_generic<const N: usize, const SECOND: bool>(
+    query: &[u8; N],
+    candidates: &[[u8; N]],
+) -> (usize, u32, u32) {
+    let mut best_index = 0;
+    let mut best_distance = u32::MAX;
+    let mut second_distance = u32::MAX;
+    for (index, candidate) in candidates.iter().enumerate() {
+        let distance = hamming_distance(query, candidate);
+        if distance < best_distance {
+            if SECOND {
+                second_distance = best_distance;
+            }
+            best_distance = distance;
+            best_index = index;
+        } else if SECOND && distance < second_distance {
+            second_distance = distance;
+        }
+    }
+    (best_index, best_distance, second_distance)
+}
+
+/// # Safety
+/// Requires AVX2 and N == 32.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn hamming_row_avx2<const N: usize, const SECOND: bool>(
+    query: &[u8; N],
+    candidates: &[[u8; N]],
+) -> (usize, u32, u32) {
+    let mut best_index = 0;
+    let mut best_distance = u32::MAX;
+    let mut second_distance = u32::MAX;
+    for (index, candidate) in candidates.iter().enumerate() {
+        // SAFETY: the caller guarantees N == 32 and AVX2 availability;
+        // both pointers refer to complete borrowed descriptors.
+        let distance = unsafe { hamming32_avx2(query.as_ptr(), candidate.as_ptr()) };
+        if distance < best_distance {
+            if SECOND {
+                second_distance = best_distance;
+            }
+            best_distance = distance;
+            best_index = index;
+        } else if SECOND && distance < second_distance {
+            second_distance = distance;
+        }
+    }
+    (best_index, best_distance, second_distance)
 }
 
 /// Match binary descriptors using brute-force Hamming distance.
@@ -111,22 +177,7 @@ pub fn match_descriptors<const N: usize>(
     use rayon::prelude::*;
     let fwd: Vec<(usize, u32, u32)> = descriptors1
         .par_iter()
-        .map(|d1| {
-            let mut best_j = 0usize;
-            let mut best_dist = u32::MAX;
-            let mut second_dist = u32::MAX;
-            for (j, d2) in descriptors2.iter().enumerate() {
-                let dist = hamming_distance(d1, d2);
-                if dist < best_dist {
-                    second_dist = best_dist;
-                    best_dist = dist;
-                    best_j = j;
-                } else if dist < second_dist {
-                    second_dist = dist;
-                }
-            }
-            (best_j, best_dist, second_dist)
-        })
+        .map(|d1| hamming_row::<N, true>(d1, descriptors2))
         .collect();
 
     // Reverse pass (only if cross-check): for each desc2[j], find best match in desc1.
@@ -134,18 +185,7 @@ pub fn match_descriptors<const N: usize>(
     let rev_best_i = if cross_check {
         let rev: Vec<usize> = descriptors2
             .par_iter()
-            .map(|d2| {
-                let mut best_i = 0usize;
-                let mut best_dist = u32::MAX;
-                for (i, d1) in descriptors1.iter().enumerate() {
-                    let dist = hamming_distance(d1, d2);
-                    if dist < best_dist {
-                        best_dist = dist;
-                        best_i = i;
-                    }
-                }
-                best_i
-            })
+            .map(|d2| hamming_row::<N, false>(d2, descriptors1).0)
             .collect();
         Some(rev)
     } else {
@@ -504,6 +544,272 @@ pub fn match_orb_by_projection<const N: usize>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn random_binary_descs<const N: usize>(n: usize, mut seed: u64) -> Vec<[u8; N]> {
+        (0..n)
+            .map(|_| {
+                let mut descriptor = [0; N];
+                for byte in &mut descriptor {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 7;
+                    seed ^= seed << 17;
+                    *byte = seed as u8;
+                }
+                descriptor
+            })
+            .collect()
+    }
+
+    // Sort complete scalar distance rows to independently check nearest-neighbor
+    // ordering, ties and the existing forward-only ratio semantics.
+    fn reference_binary_matches<const N: usize>(
+        queries: &[[u8; N]],
+        candidates: &[[u8; N]],
+        max_distance: Option<u32>,
+        cross_check: bool,
+        max_ratio: Option<f32>,
+    ) -> Vec<(usize, usize)> {
+        let distance = |a: &[u8; N], b: &[u8; N]| -> u32 {
+            a.iter().zip(b).map(|(a, b)| (a ^ b).count_ones()).sum()
+        };
+        queries
+            .iter()
+            .enumerate()
+            .filter_map(|(i, query)| {
+                let mut row: Vec<_> = candidates
+                    .iter()
+                    .enumerate()
+                    .map(|(j, candidate)| (distance(query, candidate), j))
+                    .collect();
+                row.sort_unstable();
+                let &(best, j) = row.first()?;
+                if max_distance.is_some_and(|limit| best > limit) {
+                    return None;
+                }
+                if cross_check {
+                    let reverse = queries
+                        .iter()
+                        .enumerate()
+                        .map(|(k, query)| (distance(query, &candidates[j]), k))
+                        .min()?;
+                    if reverse.1 != i {
+                        return None;
+                    }
+                }
+                let second = row.get(1).map_or(u32::MAX, |&(dist, _)| dist);
+                if let Some(ratio) = max_ratio {
+                    let denominator = if second == 0 {
+                        f32::EPSILON
+                    } else {
+                        second as f32
+                    };
+                    if ratio < 1.0 && best as f32 / denominator >= ratio {
+                        return None;
+                    }
+                }
+                Some((i, j))
+            })
+            .collect()
+    }
+
+    fn check_binary_matches<const N: usize>() {
+        let mut queries = random_binary_descs::<N>(37, 0x1234_5678);
+        let mut candidates = random_binary_descs::<N>(43, 0x9876_5432);
+        queries[3] = queries[0];
+        candidates[1] = queries[0];
+        candidates[5] = queries[0];
+        candidates[11] = queries[7];
+        for query_count in [0, 1, 37] {
+            for candidate_count in [0, 1, 2, 43] {
+                for cross_check in [false, true] {
+                    for max_distance in [None, Some(0), Some(1), Some(128), Some(u32::MAX)] {
+                        for ratio in [
+                            None,
+                            Some(f32::NEG_INFINITY),
+                            Some(-0.5),
+                            Some(0.0),
+                            Some(0.5),
+                            Some(0.99),
+                            Some(1.0),
+                            Some(1.5),
+                            Some(f32::INFINITY),
+                            Some(f32::NAN),
+                        ] {
+                            let queries = &queries[..query_count];
+                            let candidates = &candidates[..candidate_count];
+                            assert_eq!(
+                                match_descriptors(queries, candidates, max_distance, cross_check, ratio),
+                                reference_binary_matches(queries, candidates, max_distance, cross_check, ratio),
+                                "N={N}, queries={query_count}, candidates={candidate_count}, cross_check={cross_check}, max_distance={max_distance:?}, ratio={ratio:?}",
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn binary_rows_agree_with_sorted_scalar_distances() {
+        let queries = random_binary_descs::<32>(11, 0x1122_3344);
+        let mut candidates = random_binary_descs::<32>(71, 0x5566_7788);
+        candidates[7] = queries[0];
+        candidates[9] = queries[0];
+        for query in &queries {
+            for count in [0, 1, 2, 71] {
+                let candidates = &candidates[..count];
+                let mut distances: Vec<_> = candidates
+                    .iter()
+                    .enumerate()
+                    .map(|(j, candidate)| {
+                        let distance: u32 = query
+                            .iter()
+                            .zip(candidate)
+                            .map(|(a, b)| (a ^ b).count_ones())
+                            .sum();
+                        (distance, j)
+                    })
+                    .collect();
+                distances.sort_unstable();
+                let (distance, index) = distances.first().copied().unwrap_or((u32::MAX, 0));
+                let second = distances.get(1).map_or(u32::MAX, |entry| entry.0);
+                assert_eq!(
+                    hamming_row::<32, true>(query, candidates),
+                    (index, distance, second)
+                );
+                assert_eq!(
+                    hamming_row::<32, false>(query, candidates),
+                    (index, distance, u32::MAX)
+                );
+                assert_eq!(
+                    hamming_row_generic::<32, true>(query, candidates),
+                    (index, distance, second)
+                );
+                #[cfg(target_arch = "x86_64")]
+                if crate::simd::cpu_features().has_avx2 {
+                    // SAFETY: AVX2 detected above and descriptors are 32 bytes.
+                    assert_eq!(
+                        unsafe { hamming_row_avx2::<32, true>(query, candidates) },
+                        (index, distance, second)
+                    );
+                    // SAFETY: AVX2 detected above and descriptors are 32 bytes.
+                    assert_eq!(
+                        unsafe { hamming_row_avx2::<32, false>(query, candidates) },
+                        (index, distance, u32::MAX)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn binary_matches_agree_with_scalar_reference() {
+        for threads in [1, 4] {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap()
+                .install(|| {
+                    check_binary_matches::<0>();
+                    check_binary_matches::<1>();
+                    check_binary_matches::<7>();
+                    check_binary_matches::<16>();
+                    check_binary_matches::<31>();
+                    check_binary_matches::<32>();
+                    check_binary_matches::<33>();
+                    check_binary_matches::<64>();
+                });
+        }
+    }
+
+    #[test]
+    fn binary_matches_include_maximum_distance_at_the_cap() {
+        let zero = [0; 32];
+        let ones = [u8::MAX; 32];
+        assert_eq!(hamming_distance(&zero, &ones), 256);
+        assert_eq!(hamming_row::<32, true>(&zero, &[ones, ones]), (0, 256, 256));
+        assert_eq!(
+            match_descriptors(&[zero], &[ones], Some(256), true, None),
+            vec![(0, 0)]
+        );
+        assert!(match_descriptors(&[zero], &[ones], Some(255), true, None).is_empty());
+    }
+
+    #[test]
+    fn binary_matches_accept_unaligned_borrowed_rows() {
+        let mut query_storage = [0; 34];
+        let query_offset = if (query_storage.as_ptr() as usize + 1).is_multiple_of(32) {
+            2
+        } else {
+            1
+        };
+        query_storage[query_offset..query_offset + 32]
+            .copy_from_slice(&random_binary_descs::<32>(1, 0x1234_5678)[0]);
+        let query: &[u8; 32] = query_storage[query_offset..query_offset + 32]
+            .try_into()
+            .unwrap();
+        let mut candidate_storage = vec![0; 32 * 71 + 2];
+        let candidate_offset = if (candidate_storage.as_ptr() as usize + 1).is_multiple_of(32) {
+            2
+        } else {
+            1
+        };
+        for (destination, source) in candidate_storage[candidate_offset..]
+            .chunks_exact_mut(32)
+            .zip(random_binary_descs::<32>(71, 0x8765_4321))
+        {
+            destination.copy_from_slice(&source);
+        }
+        let (candidates, _) = candidate_storage[candidate_offset..].as_chunks::<32>();
+        assert_ne!(query.as_ptr() as usize % 32, 0);
+        assert_ne!(candidates.as_ptr() as usize % 32, 0);
+        for cross_check in [false, true] {
+            for ratio in [None, Some(0.8), Some(1.0)] {
+                assert_eq!(
+                    match_descriptors(
+                        std::slice::from_ref(query),
+                        candidates,
+                        None,
+                        cross_check,
+                        ratio
+                    ),
+                    reference_binary_matches(
+                        std::slice::from_ref(query),
+                        candidates,
+                        None,
+                        cross_check,
+                        ratio
+                    ),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn binary_matches_keep_first_tie_and_forward_ratio_behavior() {
+        let zero = [0; 32];
+        let one = desc_from_bit(1);
+        let two = desc_from_bit(3);
+        assert_eq!(
+            match_descriptors(&[one, one], &[zero, zero], None, true, None),
+            vec![(0, 0)]
+        );
+        assert_eq!(
+            match_descriptors(&[zero], &[zero, zero], None, false, Some(0.5)),
+            vec![(0, 0)]
+        );
+        assert!(match_descriptors(&[one], &[zero, zero], None, false, Some(0.99)).is_empty());
+        assert_eq!(
+            match_descriptors(&[one], &[zero], Some(1), false, Some(0.5)),
+            vec![(0, 0)]
+        );
+        assert!(match_descriptors(&[one], &[zero], Some(0), false, None).is_empty());
+        // A reverse tie does not apply a second ratio test.
+        assert_eq!(
+            match_descriptors(&[zero, zero], &[one, two], None, true, Some(0.75)),
+            vec![(0, 0)]
+        );
+    }
 
     /// Generate `n` L2-normalised random 64-dim descriptors using a simple
     /// LCG so the test stays deterministic and dependency-light.
