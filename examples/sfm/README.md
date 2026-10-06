@@ -66,8 +66,13 @@ cargo run -p sfm -- sample.mp4 out.ply \
 | `--max-reprojection-error` | `0.01` | Reprojection-error threshold (normalized units). |
 | `--geo-verify` | off | Verify matches with epipolar RANSAC after matching (rejects false matches). |
 | `--geo-threshold` | `3.0` | Epipolar RANSAC inlier threshold (pixels). |
-| `--geo-min-inliers` | `8` | Min inliers for a pair's fundamental matrix to be trusted. |
+| `--geo-min-inliers` | `15` | Min inliers for a pair's fundamental matrix to be trusted. Values below 15 warn — at 8 the 8-point algorithm's minimal sample validates itself. |
 | `--cuda` | off | Use CUDA for SIFT extraction (requires an NVIDIA GPU). |
+| `--sprt` | off | Enable Wald's SPRT for PnP registration (rejects bad candidate poses early). |
+| `--sprt-epsilon` | `0.5` | SPRT expected inlier ratio (capped at 0.3 until a consensus exists). |
+| `--sprt-delta` | `0.05` | SPRT Type-I error: probability of rejecting a good pose. |
+| `--refine-intrinsics` | off | Refine focal + radial/tangential distortion against the reconstruction. |
+| `--wide-baseline` | `0` | Also match frame `i` against `i+K, i+2K, …` (`0` = off). |
 
 ### Recommended flags by capture type
 
@@ -75,6 +80,27 @@ cargo run -p sfm -- sample.mp4 out.ply \
   on `LD_LIBRARY_PATH`). NVRTC kernels are JIT-compiled on the first frame.
 - **Noisy matches / poor ORB reconstruction**: add `--geo-verify`.
 - **Long videos**: raise `--frame-step` (fewer cameras to register).
+
+## Matching model and future upgrades
+
+Every frame pair is matched with **mutual nearest neighbours (cross-check)**: a
+pair is kept only when each descriptor is the other's nearest neighbour. This is
+a hard requirement of the track builder — `kornia_calib::build_tracks` assumes
+one-to-one pair matches and discards any track that reaches one camera at two
+different pixels. A forward-only matcher can emit many-to-one matches (two
+keypoints of one camera sharing a neighbour), which silently culls whole
+multi-view tracks; the ORB path regressed to that in `98ecd0b` and was reverted
+to a cross-checked matcher here.
+
+Planned upgrades (each belongs in a core crate, not this example):
+
+| Idea | Where | Why |
+|---|---|---|
+| Orientation-histogram filtering on top of mutual NN | `kornia-imgproc` (`OrbMatchConfig`) | `98ecd0b`'s rotation-consistency check is useful but was shipped without cross-check; combine both. |
+| Per-target injective matching | `kornia-imgproc` | Weaker than mutual NN: kills the shared-neighbour fan-in while keeping strictly more matches. |
+| Cross-octave ORB keypoint de-duplication | `kornia-imgproc` (ORB extractor) | ORB emits near-duplicate keypoints 1–3 px apart across scales; removing them attacks the fan-in at its source. |
+| `build_tracks` conflict recovery (split instead of drop) | `kornia-calib` | Recover the consistent sub-track instead of discarding the whole component. |
+| Pose-guided matching | `kornia-imgproc` (`match_orb_by_projection`) | Already exists; use it once incremental poses are available. |
 
 ### Performance notes
 
