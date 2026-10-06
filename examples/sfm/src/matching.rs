@@ -49,6 +49,10 @@ pub fn min_inliers_warning(requested: usize) -> Option<String> {
 ///   Frames `i` and `j` are only matched when `0 < j - i <= window`.
 /// * `ratio` - Lowe's ratio-test threshold (e.g. `0.8`). Matches whose best
 ///   distance is not comfortably below the second-best are rejected.
+///
+/// The sequential reference the parallel matcher must agree with; only the test
+/// suite calls it (the pipeline always matches in parallel).
+#[cfg(test)]
 pub fn match_sequential_pairs(
     features: &[FrameFeatures],
     window: usize,
@@ -83,10 +87,10 @@ fn keypoint_to_uv(kp: [f32; 2]) -> Vec2F64 {
     Vec2F64::new(kp[0] as f64, kp[1] as f64)
 }
 
-/// Like [`match_sequential_pairs`], but matches the frame pairs concurrently
-/// with rayon.
+/// Match every frame `i` against frames `i+1 ..= i+window` concurrently with
+/// rayon.
 ///
-/// The set of `(i, j)` pairs is identical to the sequential version, so the
+/// The set of `(i, j)` pairs is identical to the sequential reference, so the
 /// resulting edges are the same set (in a different order). Edges are grouped
 /// per pair, so `build_tracks` still chains them identically.
 ///

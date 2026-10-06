@@ -16,7 +16,6 @@ kornia-imgproc = { workspace = true, features = ["cuda"] }
 kornia-io = { workspace = true, features = ["gstreamer"] }
 rayon = { workspace = true }
 rerun = { workspace = true }
-tokio = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
