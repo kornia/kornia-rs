@@ -147,14 +147,15 @@ fn extract_colors(
 }
 
 /// World-frame positions of the registered cameras.
+///
+/// `views` are camera→world (`T_world_cam`), so a camera's centre is simply its
+/// translation — no inversion (inverting would give the world→camera term
+/// `-Rᵀ·C`, not the centre).
 fn camera_centers(views: &[Option<Pose3d>]) -> Vec<[f64; 3]> {
     views
         .iter()
         .filter_map(|v| v.as_ref())
-        .map(|pose| {
-            let inv = pose.inverse();
-            [inv.translation.x, inv.translation.y, inv.translation.z]
-        })
+        .map(|pose| [pose.translation.x, pose.translation.y, pose.translation.z])
         .collect()
 }
 
@@ -463,5 +464,23 @@ mod tests {
         let verts = build_vertices(&recon, &tracks, &frames);
         assert_eq!(verts.len(), recon.points.len());
         assert!(verts.iter().all(|v| v.normal.iter().all(|c| c.is_finite())));
+    }
+
+    #[test]
+    fn camera_centers_are_pose_translations() {
+        use kornia_algebra::{Mat3F64, Vec3F64};
+        // Views are camera→world (`T_world_cam`), so the camera centre IS the
+        // pose translation. Inverting first (the bug) returns -Rᵀ·C.
+        let rot = Mat3F64::from_cols(
+            Vec3F64::new(0.0, 0.0, -1.0),
+            Vec3F64::new(0.0, 1.0, 0.0),
+            Vec3F64::new(1.0, 0.0, 0.0),
+        );
+        let pose = Pose3d::new(rot, Vec3F64::new(1.0, 2.0, 3.0));
+        let centers = camera_centers(&[Some(pose), None]);
+        assert_eq!(centers.len(), 1);
+        assert!((centers[0][0] - 1.0).abs() < 1e-9, "{centers:?}");
+        assert!((centers[0][1] - 2.0).abs() < 1e-9, "{centers:?}");
+        assert!((centers[0][2] - 3.0).abs() < 1e-9, "{centers:?}");
     }
 }
