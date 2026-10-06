@@ -8,7 +8,6 @@ publish = false
 argh = { workspace = true }
 cudarc = { workspace = true }
 kiddo = { workspace = true }
-kornia = { workspace = true }
 kornia-3d = { workspace = true }
 kornia-algebra = { workspace = true }
 kornia-calib = { workspace = true }
