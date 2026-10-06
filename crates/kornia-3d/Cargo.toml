@@ -50,4 +50,10 @@ tempfile = { workspace = true }
 # CUDA-resident rectification and stereo matching. Rectification uploads the remap tables once and serves device frames through
 # kornia-imgproc's residency-dispatched remap — see CudaStereoRectifier's doc for the
 # CPU<->CUDA byte-exact contract
-cuda = ["dep:cudarc", "dep:kornia-tensor", "kornia-image/cuda", "kornia-imgproc/cuda", "kornia-tensor/cuda"]
+cuda = [
+  "dep:cudarc",
+  "dep:kornia-tensor",
+  "kornia-image/cuda",
+  "kornia-imgproc/cuda",
+  "kornia-tensor/cuda",
+]
