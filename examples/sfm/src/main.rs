@@ -207,10 +207,25 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Gray frames are only needed for extraction; release them before matching.
     drop(gray_frames);
 
+    // Device SIFT matcher (only when descriptors are CUDA-resident), sized to
+    // the largest descriptor set so no pair can exceed its capacity.
+    let cuda_matcher = if use_cuda {
+        Some(features::CudaSiftMatcher::new(
+            features::max_sift_descriptors(&all_features),
+        )?)
+    } else {
+        None
+    };
+
     // 3. Match frames in a sliding window (parallel via rayon).
     eprintln!("[3/6] matching frames (window={})", args.match_window);
     let t = Instant::now();
-    let mut edges = matching::match_pairs_parallel(&all_features, args.match_window, args.ratio);
+    let mut edges = matching::match_pairs_parallel(
+        &all_features,
+        args.match_window,
+        args.ratio,
+        cuda_matcher.as_ref(),
+    );
     eprintln!(
         "[3/6] found {} matched correspondences in {:.1}s",
         edges.len(),
@@ -229,6 +244,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             args.match_window,
             args.wide_baseline,
             args.ratio,
+            cuda_matcher.as_ref(),
             &mut edges,
         );
         eprintln!(

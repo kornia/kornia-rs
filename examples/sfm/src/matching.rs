@@ -13,7 +13,7 @@ use kornia_calib::TrackEdge;
 use kornia_imgproc::features::{match_descriptors, sift_match_descriptors};
 use rayon::prelude::*;
 
-use crate::features::FrameFeatures;
+use crate::features::{CudaSiftMatcher, FrameFeatures};
 
 /// Safe floor for the epipolar-RANSAC inlier count used by
 /// [`verify_matches_geometrically`].
@@ -66,7 +66,7 @@ pub fn match_sequential_pairs(
     for i in 0..features.len() {
         let end = (i + 1 + window).min(features.len());
         for j in (i + 1)..end {
-            let matches = match_pair(&features[i], &features[j], ratio);
+            let matches = match_pair(&features[i], &features[j], ratio, None);
             for (kpt_a, kpt_b) in matches {
                 edges.push(TrackEdge {
                     cam_a: i,
@@ -99,10 +99,12 @@ fn keypoint_to_uv(kp: [f32; 2]) -> Vec2F64 {
 /// * `features` - Per-frame features, indexed by frame number.
 /// * `window` - How many following frames each frame is matched against.
 /// * `ratio` - Lowe's ratio-test threshold.
+/// * `cuda` - Device SIFT matcher for CUDA-resident descriptors, if any.
 pub fn match_pairs_parallel(
     features: &[FrameFeatures],
     window: usize,
     ratio: f32,
+    cuda: Option<&CudaSiftMatcher>,
 ) -> Vec<TrackEdge> {
     if features.len() < 2 {
         return Vec::new();
@@ -126,7 +128,7 @@ pub fn match_pairs_parallel(
             if n.is_multiple_of(100) || n == total_pairs {
                 eprintln!("  matching: {n}/{total_pairs} pairs");
             }
-            let matches = match_pair(&features[i], &features[j], ratio);
+            let matches = match_pair(&features[i], &features[j], ratio, cuda);
             let pair_edges: Vec<TrackEdge> = matches
                 .into_iter()
                 .map(|(kpt_a, kpt_b)| TrackEdge {
@@ -224,6 +226,7 @@ pub fn append_wide_baseline_edges(
     window: usize,
     stride: usize,
     ratio: f32,
+    cuda: Option<&CudaSiftMatcher>,
     edges: &mut Vec<TrackEdge>,
 ) -> usize {
     if stride == 0 || features.len() <= window + 1 {
@@ -235,7 +238,7 @@ pub fn append_wide_baseline_edges(
         let start = i + window + 1;
         let first = start + ((stride - (start - i) % stride) % stride);
         for j in (first..features.len()).step_by(stride) {
-            let matches = match_pair(&features[i], &features[j], ratio);
+            let matches = match_pair(&features[i], &features[j], ratio, cuda);
             for (kpt_a, kpt_b) in matches {
                 edges.push(TrackEdge {
                     cam_a: i,
@@ -254,16 +257,27 @@ pub fn append_wide_baseline_edges(
 
 /// Match a single frame pair; returns `(idx_in_a, idx_in_b)` pairs.
 ///
-/// Both paths use mutual nearest neighbours (cross-check). This is required:
-/// `kornia_calib::build_tracks` assumes one-to-one pair matches, and a
-/// forward-only many-to-one matcher lets two keypoints of one camera share a
-/// neighbour, which `build_tracks` then drops as an inconsistent track.
-fn match_pair(a: &FrameFeatures, b: &FrameFeatures, ratio: f32) -> Vec<(usize, usize)> {
+/// ORB uses binary Hamming matching; SIFT runs on the CUDA device when both
+/// sides are device-resident and a `cuda` matcher is supplied, else on the host.
+/// All paths use mutual nearest neighbours (cross-check), which
+/// `kornia_calib::build_tracks` requires (see the README's matching notes).
+fn match_pair(
+    a: &FrameFeatures,
+    b: &FrameFeatures,
+    ratio: f32,
+    cuda: Option<&CudaSiftMatcher>,
+) -> Vec<(usize, usize)> {
     // ORB path: binary descriptors, Hamming distance, mutual NN + Lowe's ratio.
     if let (Some(d1), Some(d2)) = (&a.descriptors_orb, &b.descriptors_orb) {
         return match_descriptors::<32>(d1, d2, None, true, Some(ratio));
     }
-    // SIFT path: L2 matching with ratio test + mutual NN.
+    // SIFT on device (avoids a host round-trip when --cuda is used).
+    if let (Some(c1), Some(c2), Some(m)) =
+        (&a.descriptors_sift_cuda, &b.descriptors_sift_cuda, cuda)
+    {
+        return m.match_pair(c1, c1.len() / 128, c2, c2.len() / 128, ratio);
+    }
+    // SIFT on host: L2 matching with ratio test + mutual NN.
     if let (Some(d1), Some(d2)) = (&a.descriptors_sift, &b.descriptors_sift) {
         return sift_match_descriptors(d1, a.n_keypoints(), d2, b.n_keypoints(), ratio, true)
             .into_iter()
@@ -293,6 +307,7 @@ mod tests {
             descriptors_orb: Some(descriptors),
             orientations_orb: Some(vec![0.0; ids.len()]),
             descriptors_sift: None,
+            descriptors_sift_cuda: None,
         }
     }
 
@@ -307,6 +322,7 @@ mod tests {
             descriptors_orb: None,
             orientations_orb: None,
             descriptors_sift: Some(descriptors),
+            descriptors_sift_cuda: None,
         }
     }
 
@@ -369,6 +385,7 @@ mod tests {
             descriptors_orb: Some(Vec::new()),
             orientations_orb: Some(Vec::new()),
             descriptors_sift: None,
+            descriptors_sift_cuda: None,
         };
         let edges = match_sequential_pairs(&[empty.clone(), empty], 1, 0.8);
         assert!(edges.is_empty());
@@ -474,7 +491,7 @@ mod tests {
         let frames: Vec<FrameFeatures> = (0..5).map(|_| f()).collect();
 
         let mut edges = Vec::new();
-        let added = append_wide_baseline_edges(&frames, 1, 2, 0.8, &mut edges);
+        let added = append_wide_baseline_edges(&frames, 1, 2, 0.8, None, &mut edges);
         assert_eq!(added, 4 * 2, "pairs (0,2),(0,4),(1,3),(2,4) x 2 matches");
         let pairs: Vec<(usize, usize)> = edges.iter().map(|e| (e.cam_a, e.cam_b)).collect();
         for (a, b) in &pairs {
@@ -491,7 +508,7 @@ mod tests {
         let frames = vec![f.clone(), f];
         let mut edges = Vec::new();
         assert_eq!(
-            append_wide_baseline_edges(&frames, 1, 0, 0.8, &mut edges),
+            append_wide_baseline_edges(&frames, 1, 0, 0.8, None, &mut edges),
             0
         );
         assert!(edges.is_empty());
