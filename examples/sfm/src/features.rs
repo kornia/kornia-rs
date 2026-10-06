@@ -10,9 +10,9 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use cudarc::driver::CudaContext;
+use cudarc::driver::{CudaContext, CudaSlice};
 use kornia_image::Image;
-use kornia_imgproc::cuda::sift::{SiftCuda, SiftCudaConfig};
+use kornia_imgproc::cuda::sift::{SiftCuda, SiftCudaConfig, SiftMatcher};
 use kornia_imgproc::features::{
     sift_detect_and_compute, FirstOctave, OrbDetector, SiftConfig, SiftWorkspace,
 };
@@ -62,8 +62,13 @@ pub struct FrameFeatures {
         reason = "reserved for the planned mutual-NN + orientation matcher"
     )]
     pub orientations_orb: Option<Vec<f32>>,
-    /// SIFT descriptors: flat buffer, `keypoints.len() * 128` floats (row-major).
+    /// SIFT descriptors on the host: flat buffer, `keypoints.len() * 128`
+    /// floats (row-major). Populated by the CPU extractor.
     pub descriptors_sift: Option<Vec<f32>>,
+    /// SIFT descriptors resident on the CUDA device (row-major). Populated by
+    /// the CUDA extractor so matching can run on device without a host
+    /// round-trip; `None` for the CPU path.
+    pub descriptors_sift_cuda: Option<CudaSlice<f32>>,
 }
 
 impl FrameFeatures {
@@ -103,6 +108,7 @@ impl FeatureExtractor for OrbExtractor {
             descriptors_orb: Some(features.descriptors),
             orientations_orb: Some(features.orientations),
             descriptors_sift: None,
+            descriptors_sift_cuda: None,
         })
     }
 }
@@ -171,6 +177,7 @@ impl FeatureExtractor for SiftExtractor {
             descriptors_orb: None,
             orientations_orb: None,
             descriptors_sift: Some(feats.descriptors),
+            descriptors_sift_cuda: None,
         })
     }
 }
@@ -237,15 +244,7 @@ impl FeatureExtractor for SiftCudaExtractor {
         let (_, _, sift) = guard.as_mut().expect("plan was just built");
         let feats = sift.detect_and_compute(&self.ctx, &stream, &dev)?;
 
-        // Download the descriptor block to host.
-        let mut descriptors = vec![0f32; feats.descriptors.len()];
-        stream
-            .memcpy_dtoh(&feats.descriptors, &mut descriptors)
-            .map_err(|e| -> Box<dyn Error> { e.to_string().into() })?;
-        stream
-            .synchronize()
-            .map_err(|e| -> Box<dyn Error> { e.to_string().into() })?;
-
+        // Keep the descriptors on device so matching runs on the GPU too.
         let keypoints: Vec<[f32; 2]> = feats
             .keypoints
             .iter()
@@ -256,9 +255,87 @@ impl FeatureExtractor for SiftCudaExtractor {
             keypoints,
             descriptors_orb: None,
             orientations_orb: None,
-            descriptors_sift: Some(descriptors),
+            descriptors_sift: None,
+            descriptors_sift_cuda: Some(feats.descriptors),
         })
     }
+}
+
+/// Device-side SIFT matcher: one reusable [`SiftMatcher`] plus the context.
+///
+/// `SiftMatcher` owns device scratch, so reuse it across frame pairs rather
+/// than allocating per pair. Matching is sequential (CUDA extraction is too), so
+/// the `Mutex` is uncontended.
+pub struct CudaSiftMatcher {
+    ctx: Arc<CudaContext>,
+    matcher: Mutex<SiftMatcher>,
+}
+
+impl CudaSiftMatcher {
+    /// Build a matcher sized for up to `cap` descriptors per side, on device 0.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no CUDA device is available or allocation fails.
+    pub fn new(cap: usize) -> Result<Self, Box<dyn Error>> {
+        let ctx = CudaContext::new(0)?;
+        let stream = ctx.default_stream();
+        let matcher = SiftMatcher::new(&stream, cap.max(1))?;
+        Ok(Self {
+            ctx,
+            matcher: Mutex::new(matcher),
+        })
+    }
+
+    /// Match two device-resident descriptor blocks, returning `(query, train)`
+    /// index pairs (mutual NN + Lowe's ratio, the same contract as the CPU
+    /// path).
+    pub fn match_pair(
+        &self,
+        d1: &CudaSlice<f32>,
+        n1: usize,
+        d2: &CudaSlice<f32>,
+        n2: usize,
+        ratio: f32,
+    ) -> Vec<(usize, usize)> {
+        let stream = self.ctx.default_stream();
+        let Ok(mut matcher) = self.matcher.lock() else {
+            return Vec::new();
+        };
+        match matcher.match_descriptors(
+            &self.ctx,
+            &stream,
+            &d1.as_view(),
+            n1,
+            &d2.as_view(),
+            n2,
+            ratio,
+            true,
+        ) {
+            Ok(pairs) => pairs
+                .into_iter()
+                .map(|[q, t]| (q as usize, t as usize))
+                .collect(),
+            Err(e) => {
+                eprintln!("  warning: CUDA SIFT match failed: {e}");
+                Vec::new()
+            }
+        }
+    }
+}
+
+/// Largest number of SIFT descriptors on any frame (for sizing a matcher).
+pub fn max_sift_descriptors(features: &[FrameFeatures]) -> usize {
+    features
+        .iter()
+        .map(|f| {
+            f.descriptors_sift_cuda
+                .as_ref()
+                .map_or(0, |d| d.len() / 128)
+                .max(f.descriptors_sift.as_ref().map_or(0, |d| d.len() / 128))
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 /// Build an extractor for the given detector kind.
