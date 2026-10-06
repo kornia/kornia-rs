@@ -74,17 +74,9 @@ struct Args {
     #[argh(option, default = "1")]
     frame_step: usize,
 
-    /// read the video asynchronously (overlaps decode with downstream work)
-    #[argh(switch)]
-    async_video: bool,
-
     /// worker threads for parallel feature extraction/matching (0 = auto)
     #[argh(option, default = "0")]
     threads: usize,
-
-    /// channel buffer size for async video reading
-    #[argh(option, default = "32")]
-    buffer_size: usize,
 
     /// open the output PLY in the rerun viewer after writing
     #[argh(switch)]
@@ -150,31 +142,16 @@ struct Args {
     wide_baseline: usize,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+fn main() -> Result<(), Box<dyn Error>> {
     let args: Args = argh::from_env();
 
     // Configure the rayon thread pool (0 = auto-detect).
     features::configure_thread_pool(args.threads)?;
 
-    // 1. Decode frames (async or sync).
-    if args.async_video {
-        eprintln!(
-            "[1/6] reading video (async, buffer={}): {}",
-            args.buffer_size,
-            args.video.display()
-        );
-    } else {
-        eprintln!("[1/6] reading video (sync): {}", args.video.display());
-    }
+    // 1. Decode frames.
+    eprintln!("[1/6] reading video: {}", args.video.display());
     let t = Instant::now();
-    let (rgb_frames, gray_frames) = if args.async_video {
-        video::read_frames_async(&args.video, args.frame_step, args.buffer_size)
-            .await
-            .map_err(|e| -> Box<dyn Error> { e })?
-    } else {
-        video::read_frames(&args.video, args.frame_step)?
-    };
+    let (rgb_frames, gray_frames) = video::read_frames(&args.video, args.frame_step)?;
     let n_frames = gray_frames.len();
     let (frame_w, frame_h) = rgb_frames
         .first()
@@ -195,14 +172,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // 2. Extract features per frame (parallel via rayon; sequential for CUDA).
-    if args.async_video {
-        eprintln!(
-            "[2/6] extracting features with {:?} (parallel)",
-            args.detector
-        );
-    } else {
-        eprintln!("[2/6] extracting features with {:?}", args.detector);
-    }
+    eprintln!("[2/6] extracting features with {:?}", args.detector);
     if args.cuda {
         eprintln!("[2/6] CUDA SIFT extraction (device 0)");
     }
@@ -214,14 +184,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .iter()
             .map(|frame| extractor.extract(frame))
             .collect::<Result<_, _>>()?
-    } else if args.async_video {
+    } else {
         features::extract_features_parallel(&gray_frames, extractor.as_ref())
             .map_err(|e| -> Box<dyn Error> { e.into() })?
-    } else {
-        gray_frames
-            .iter()
-            .map(|frame| extractor.extract(frame))
-            .collect::<Result<_, _>>()?
     };
     let total_keypoints: usize = all_features.iter().map(|f| f.n_keypoints()).sum();
     eprintln!(
@@ -232,21 +197,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Gray frames are only needed for extraction; release them before matching.
     drop(gray_frames);
 
-    // 3. Match frames in a sliding window (parallel in async mode).
-    if args.async_video {
-        eprintln!(
-            "[3/6] matching frames (window={}, parallel)",
-            args.match_window
-        );
-    } else {
-        eprintln!("[3/6] matching frames (window={})", args.match_window);
-    }
+    // 3. Match frames in a sliding window (parallel via rayon).
+    eprintln!("[3/6] matching frames (window={})", args.match_window);
     let t = Instant::now();
-    let mut edges = if args.async_video {
-        matching::match_pairs_parallel(&all_features, args.match_window, args.ratio)
-    } else {
-        matching::match_sequential_pairs(&all_features, args.match_window, args.ratio)
-    };
+    let mut edges = matching::match_pairs_parallel(&all_features, args.match_window, args.ratio);
     eprintln!(
         "[3/6] found {} matched correspondences in {:.1}s",
         edges.len(),
