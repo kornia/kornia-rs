@@ -65,6 +65,9 @@ pub enum StereoMatchError {
     /// SAD refinement is on but the pyramids are missing, mismatched, or too deep.
     #[error("pyramid: {0}")]
     Pyramid(&'static str),
+    /// A device operand was allocated on a stream other than the matcher's.
+    #[error("{0} was allocated on another stream")]
+    Stream(&'static str),
     /// An image or CUDA operation failed.
     #[error(transparent)]
     Image(#[from] kornia_image::ImageError),
@@ -155,23 +158,15 @@ impl StereoMatchConfig {
 
     fn validate(&self) -> Result<(), StereoMatchError> {
         let bad = StereoMatchError::InvalidConfig;
-        // Every comparison below also rejects NaN.
         let positive = |v: f32| v.is_finite() && v > 0.0;
         if !positive(self.bf) {
             return Err(bad("bf must be positive"));
         }
-        if self.min_disparity.is_nan()
-            || self.max_disparity.is_nan()
-            || self.min_disparity < 0.0
-            || self.max_disparity <= self.min_disparity
-        {
+        // Written as negated positive conditions so NaN fails every check.
+        if !(self.min_disparity >= 0.0 && self.max_disparity > self.min_disparity) {
             return Err(bad("need 0 <= min_disparity < max_disparity"));
         }
-        if self.row_band.is_nan()
-            || self.row_band < 0.0
-            || self.scale_factor.is_nan()
-            || self.scale_factor < 1.0
-        {
+        if !(self.row_band >= 0.0 && self.scale_factor >= 1.0) {
             return Err(bad("need row_band >= 0 and scale_factor >= 1"));
         }
         if self.n_levels == 0 || self.n_levels > MAX_LEVELS {
@@ -208,15 +203,6 @@ pub enum StereoDescriptors<'a> {
         /// Floats per descriptor.
         dim: usize,
     },
-}
-
-impl StereoDescriptors<'_> {
-    fn rows(&self) -> usize {
-        match *self {
-            Self::Binary { data, bytes } => data.len() / bytes.max(1),
-            Self::Float { data, dim } => data.len() / dim.max(1),
-        }
-    }
 }
 
 /// Keypoints of one view.
@@ -310,17 +296,15 @@ impl StereoMatcher {
         check_keypoints(left, "left")?;
         check_keypoints(right, "right")?;
         check_descriptor_pair(&left.descriptors, &right.descriptors)?;
-        let levels = self.check_pyramids(left_pyramid, right_pyramid)?;
+        let rows = self.check_pyramids(left_pyramid, right_pyramid)?;
         out.reset(left.xy.len());
-        if left.xy.is_empty() || right.xy.is_empty() || levels.rows <= 0 {
+        if left.xy.is_empty() || right.xy.is_empty() || rows <= 0 {
             return Ok(());
         }
         let cfg = &self.cfg;
-        let rows = levels.rows;
 
-        // Row buckets in ascending right index, so a scan visits candidates in the same
-        // order as the CUDA twin's predicate test over all right keypoints. Sized by the
-        // spans actually present: `rows` is unbounded when no image fixes it.
+        // Row buckets in ascending right index. Without an image `rows` is unbounded, so,
+        // like the CUDA twin, every right keypoint is scanned against its span instead.
         let spans: Vec<Option<(i32, i32)>> = (0..right.xy.len())
             .map(|ir| {
                 let o = octave_of(right.octaves, ir, cfg.n_levels)?;
@@ -331,21 +315,21 @@ impl StereoMatcher {
                 ))
             })
             .collect();
-        let n_buckets = spans
-            .iter()
-            .flatten()
-            .map(|&(_, hi)| hi + 1)
-            .max()
-            .unwrap_or(0)
-            .max(0);
-        let mut row_bucket: Vec<Vec<u32>> = vec![Vec::new(); n_buckets as usize];
-        for (ir, span) in spans.iter().enumerate() {
-            if let Some((lo, hi)) = *span {
-                for r in lo..=hi {
-                    row_bucket[r as usize].push(ir as u32);
+        let bucketed = rows != i32::MAX;
+        let row_bucket: Vec<Vec<u32>> = if bucketed {
+            // Spans are clipped to [0, rows - 1], so the table never outgrows the image.
+            let mut b = vec![Vec::new(); rows as usize];
+            for (ir, span) in spans.iter().enumerate() {
+                if let Some((lo, hi)) = *span {
+                    for r in lo..=hi {
+                        b[r as usize].push(ir as u32);
+                    }
                 }
             }
-        }
+            b
+        } else {
+            vec![(0..right.xy.len() as u32).collect()]
+        };
 
         // Left keypoints are independent until the median reject, so they match in
         // parallel; results land by index, keeping the output deterministic.
@@ -353,11 +337,16 @@ impl StereoMatcher {
             let [u_l, v_l] = left.xy[il];
             let o_l = octave_of(left.octaves, il, cfg.n_levels)?;
             let (min_u, max_u) = disparity_window(u_l, cfg.min_disparity, cfg.max_disparity)?;
-            let bucket = row_bucket.get(left_row(v_l, rows) as usize)?;
+            let row = left_row(v_l, rows);
+            let cands = row_bucket.get(if bucketed { row as usize } else { 0 })?;
             let mut best = Best::new(&left.descriptors);
-            for &ir in bucket {
+            for &ir in cands {
                 let ir = ir as usize;
-                // Bucketed rights all have a valid octave.
+                // `row` must lie in the right keypoint's span (redundant when bucketed).
+                let Some((lo, hi)) = spans[ir] else { continue };
+                if row < lo || row > hi {
+                    continue;
+                }
                 let o_r = octave_of(right.octaves, ir, cfg.n_levels).unwrap_or(0);
                 if !octave_gate(left.octaves.is_some(), o_l, o_r) {
                     continue;
@@ -422,17 +411,18 @@ impl StereoMatcher {
         Ok(())
     }
 
-    fn check_pyramids(
+    /// Validates the pyramids and returns the level-0 row count (`i32::MAX` when SAD is
+    /// off and no image is given).
+    pub(crate) fn check_pyramids(
         &self,
         left: &[Image<u8, 1>],
         right: &[Image<u8, 1>],
-    ) -> Result<Levels, StereoMatchError> {
+    ) -> Result<i32, StereoMatchError> {
         let err = StereoMatchError::Pyramid;
         if self.cfg.sad.is_none() {
             // Without SAD the images are not read; rows come from level 0 if given,
             // else are unbounded (the row clamps never bind).
-            let rows = left.first().map_or(i32::MAX, |i| i.height() as i32);
-            return Ok(Levels { rows });
+            return Ok(left.first().map_or(i32::MAX, |i| i.height() as i32));
         }
         if left.is_empty() || left.len() != right.len() {
             return Err(err("SAD needs equal-length, non-empty left/right pyramids"));
@@ -443,20 +433,11 @@ impl StereoMatcher {
         if left.iter().zip(right).any(|(l, r)| l.size() != r.size()) {
             return Err(err("left/right pyramid levels differ in size"));
         }
-        Ok(Levels {
-            rows: left[0].height() as i32,
-        })
+        Ok(left[0].height() as i32)
     }
 }
 
-struct Levels {
-    rows: i32,
-}
-
-pub(crate) fn check_keypoints(
-    k: &StereoKeypoints,
-    side: &'static str,
-) -> Result<(), StereoMatchError> {
+fn check_keypoints(k: &StereoKeypoints, side: &'static str) -> Result<(), StereoMatchError> {
     let n = k.xy.len();
     if let Some(o) = k.octaves {
         if o.len() != n {
@@ -468,16 +449,19 @@ pub(crate) fn check_keypoints(
             });
         }
     }
-    let (width, len) = match k.descriptors {
-        StereoDescriptors::Binary { data, bytes } => (bytes, data.len()),
-        StereoDescriptors::Float { data, dim } => (dim, data.len()),
+    let (what, width, len) = match k.descriptors {
+        StereoDescriptors::Binary { data, bytes } => ("descriptor bytes", bytes, data.len()),
+        StereoDescriptors::Float { data, dim } => ("descriptor floats", dim, data.len()),
     };
-    if width == 0 || len != n * width {
+    if width == 0 {
+        return Err(StereoMatchError::Descriptors("zero-width descriptors"));
+    }
+    if len != n * width {
         return Err(StereoMatchError::Length {
             side,
-            what: "descriptors",
-            got: k.descriptors.rows(),
-            expected: n,
+            what,
+            got: len,
+            expected: n * width,
         });
     }
     Ok(())
@@ -509,36 +493,36 @@ pub(crate) fn check_descriptor_pair(
 // ── Scalar helpers, each mirrored by a CUDA function of the same name ────────────────
 
 /// Octave of keypoint `i`, or `None` if it indexes past the configured levels.
-pub(crate) fn octave_of(octaves: Option<&[u8]>, i: usize, n_levels: usize) -> Option<usize> {
+fn octave_of(octaves: Option<&[u8]>, i: usize, n_levels: usize) -> Option<usize> {
     let o = octaves.map_or(0, |o| o[i] as usize);
     (o < n_levels).then_some(o)
 }
 
 /// Inclusive row span `[floor(y - r), ceil(y + r)]` clipped to the image.
-pub(crate) fn row_span(y: f32, r: f32, rows: i32) -> (i32, i32) {
+fn row_span(y: f32, r: f32, rows: i32) -> (i32, i32) {
     let lo = ((y - r).floor() as i32).max(0);
     let hi = ((y + r).ceil() as i32).min(rows - 1);
     (lo, hi)
 }
 
 /// The row a left keypoint searches.
-pub(crate) fn left_row(v: f32, rows: i32) -> i32 {
+fn left_row(v: f32, rows: i32) -> i32 {
     (v as i32).clamp(0, rows - 1)
 }
 
 /// Accepted right `u` range for a left keypoint, or `None` if it is empty of valid `u`.
-pub(crate) fn disparity_window(u_l: f32, min_d: f32, max_d: f32) -> Option<(f32, f32)> {
+fn disparity_window(u_l: f32, min_d: f32, max_d: f32) -> Option<(f32, f32)> {
     let min_u = u_l - max_d;
     let max_u = u_l - min_d;
     (max_u >= 0.0).then_some((min_u, max_u))
 }
 
 /// ORB-SLAM3's ±1 octave gate; always open for single-scale keypoints.
-pub(crate) fn octave_gate(has_octaves: bool, o_l: usize, o_r: usize) -> bool {
+fn octave_gate(has_octaves: bool, o_l: usize, o_r: usize) -> bool {
     !has_octaves || o_l.abs_diff(o_r) <= 1
 }
 
-pub(crate) fn hamming(a: &[u8], b: &[u8]) -> u32 {
+fn hamming(a: &[u8], b: &[u8]) -> u32 {
     a.iter().zip(b).map(|(x, y)| (x ^ y).count_ones()).sum()
 }
 
@@ -546,7 +530,7 @@ pub(crate) fn hamming(a: &[u8], b: &[u8]) -> u32 {
 /// takes `l, l + 32, …`), then the pairwise tree a `shfl_down` reduction performs. Fixing
 /// the order is what makes the GPU result bit-identical; it is also more accurate than
 /// one long running sum.
-pub(crate) fn dot(a: &[f32], b: &[f32]) -> f32 {
+fn dot(a: &[f32], b: &[f32]) -> f32 {
     let mut p = [0.0f32; 32];
     for (l, pl) in p.iter_mut().enumerate() {
         let mut k = l;
@@ -683,7 +667,7 @@ fn refine_sad(
 }
 
 /// Both patches and the whole right search window lie inside the image.
-pub(crate) fn sad_fits(su_l: i32, sv: i32, su_r0: i32, w: i32, l: i32, iw: i32, ih: i32) -> bool {
+fn sad_fits(su_l: i32, sv: i32, su_r0: i32, w: i32, l: i32, iw: i32, ih: i32) -> bool {
     su_l - w >= 0
         && su_l + w < iw
         && sv - w >= 0
@@ -694,7 +678,7 @@ pub(crate) fn sad_fits(su_l: i32, sv: i32, su_r0: i32, w: i32, l: i32, iw: i32, 
 
 /// Sub-pixel offset of the optimum from three SADs centred on the integer minimum,
 /// in `[-1, 1]`, or `None` if the fit is degenerate.
-pub(crate) fn sub_pixel_offset(fit: SubPixelFit, s1: i32, s2: i32, s3: i32) -> Option<f32> {
+fn sub_pixel_offset(fit: SubPixelFit, s1: i32, s2: i32, s3: i32) -> Option<f32> {
     let (d1, d2, d3) = (s1 as f32, s2 as f32, s3 as f32);
     let denom = match fit {
         SubPixelFit::Parabola => 2.0 * (d1 + d3 - 2.0 * d2),
@@ -707,12 +691,12 @@ pub(crate) fn sub_pixel_offset(fit: SubPixelFit, s1: i32, s2: i32, s3: i32) -> O
     (-1.0..=1.0).contains(&delta).then_some(delta)
 }
 
-pub(crate) fn sub_pixel_u(scale: f32, su_r0: i32, inc: i32, delta: f32) -> f32 {
+fn sub_pixel_u(scale: f32, su_r0: i32, inc: i32, delta: f32) -> f32 {
     scale * (su_r0 as f32 + inc as f32 + delta)
 }
 
 /// Disparity gate and depth; ORB-SLAM3 nudges a non-positive disparity to 0.01.
-pub(crate) fn finish(u_l: f32, u_r: f32, cfg: &StereoMatchConfig) -> Option<(f32, f32)> {
+fn finish(u_l: f32, u_r: f32, cfg: &StereoMatchConfig) -> Option<(f32, f32)> {
     let mut u_r = u_r;
     let mut disparity = u_l - u_r;
     if !(disparity >= cfg.min_disparity && disparity < cfg.max_disparity) {
@@ -725,7 +709,7 @@ pub(crate) fn finish(u_l: f32, u_r: f32, cfg: &StereoMatchConfig) -> Option<(f32
     Some((u_r, cfg.bf / disparity))
 }
 
-pub(crate) fn median_threshold(factor: f32, median: i32) -> f32 {
+fn median_threshold(factor: f32, median: i32) -> f32 {
     factor * median as f32
 }
 
@@ -987,6 +971,28 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// Without an image the rows are unbounded: a keypoint at y = inf must neither size
+    /// a row table nor stop the normal pair from matching.
+    #[test]
+    fn stray_keypoint_at_infinite_y_is_harmless() -> Result<(), StereoMatchError> {
+        let lxy = [[100.0f32, f32::INFINITY], [100.0, 50.0]];
+        let rxy = [[95.0f32, f32::INFINITY], [95.0, 50.0]];
+        let b = [0u8; 64];
+        let mut c = cfg();
+        c.sad = None;
+        let m = StereoMatcher::new(c)?;
+        let mut out = StereoMatches::default();
+        m.match_into(
+            &[],
+            &[],
+            &kps(&lxy, &b, &[], true),
+            &kps(&rxy, &b, &[], true),
+            &mut out,
+        )?;
+        assert_eq!(out.right_idx, vec![-1, 1]);
+        Ok(())
+    }
+
     #[test]
     fn octave_gate_and_row_band_scale_with_octave() -> Result<(), StereoMatchError> {
         let lxy = [[100.0f32, 50.0]];
@@ -1000,22 +1006,10 @@ pub(crate) mod tests {
         let m = StereoMatcher::new(c)?;
         let run = |ol: u8, or: u8| -> Result<i32, StereoMatchError> {
             let (lo, ro) = ([ol], [or]);
-            let l = StereoKeypoints {
-                xy: &lxy,
-                octaves: Some(&lo),
-                descriptors: StereoDescriptors::Binary {
-                    data: &b,
-                    bytes: 32,
-                },
-            };
-            let r = StereoKeypoints {
-                xy: &rxy,
-                octaves: Some(&ro),
-                descriptors: StereoDescriptors::Binary {
-                    data: &b,
-                    bytes: 32,
-                },
-            };
+            let mut l = kps(&lxy, &b, &[], true);
+            let mut r = kps(&rxy, &b, &[], true);
+            l.octaves = Some(&lo);
+            r.octaves = Some(&ro);
             let mut out = StereoMatches::default();
             m.match_into(&[], &[], &l, &r, &mut out)?;
             Ok(out.right_idx[0])
@@ -1055,6 +1049,18 @@ pub(crate) mod tests {
         assert!(matches!(
             m.match_into(&[], &[], &short, &l, &mut out),
             Err(StereoMatchError::Length { .. })
+        ));
+        let zero = StereoKeypoints {
+            xy: &xy,
+            octaves: None,
+            descriptors: StereoDescriptors::Binary {
+                data: &[],
+                bytes: 0,
+            },
+        };
+        assert!(matches!(
+            m.match_into(&[], &[], &zero, &zero, &mut out),
+            Err(StereoMatchError::Descriptors(_))
         ));
         assert!(matches!(
             m.match_into(&[], &[], &l, &l, &mut out),

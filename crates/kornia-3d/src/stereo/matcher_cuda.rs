@@ -81,7 +81,8 @@ pub struct CudaStereoKeypoints<'a> {
     pub count: KeypointCount<'a>,
 }
 
-/// Device-resident [`StereoMatches`], caller-owned and reusable across frames.
+/// Device-resident [`StereoMatches`], caller-owned and reusable across frames. Every
+/// slot up to capacity is rewritten per call: slots past the left count hold `-1`.
 pub struct CudaStereoMatches {
     /// Matched right `u`, `-1` if none.
     pub u_right: CudaSlice<f32>,
@@ -104,15 +105,16 @@ impl CudaStereoMatches {
     /// Copies the first `n` results to the host. Synchronizes the stream.
     ///
     /// # Errors
-    /// [`ImageError::Cuda`] on a copy failure.
+    /// [`StereoMatchError::Image`]`(`[`ImageError::Cuda`]`)` on a copy failure.
     pub fn to_host(&self, n: usize) -> Result<StereoMatches, StereoMatchError> {
         let n = n.min(self.capacity);
-        let cuda = |e: cudarc::driver::DriverError| ImageError::Cuda(e.to_string());
         let s = &self.stream;
         Ok(StereoMatches {
-            u_right: s.clone_dtoh(&self.u_right.slice(0..n)).map_err(cuda)?,
-            depth: s.clone_dtoh(&self.depth.slice(0..n)).map_err(cuda)?,
-            right_idx: s.clone_dtoh(&self.right_idx.slice(0..n)).map_err(cuda)?,
+            u_right: s.clone_dtoh(&self.u_right.slice(0..n)).map_err(cuda_err)?,
+            depth: s.clone_dtoh(&self.depth.slice(0..n)).map_err(cuda_err)?,
+            right_idx: s
+                .clone_dtoh(&self.right_idx.slice(0..n))
+                .map_err(cuda_err)?,
         })
     }
 }
@@ -141,12 +143,10 @@ struct Params {
     max_d: f32,
     bf: f32,
     min_sim: f32,
-    median_factor: f32,
     max_hamming: u32,
     n_levels: i32,
     rows: i32,
     has_l_oct: i32,
-    has_r_oct: i32,
     sad_on: i32,
     sad_w: i32,
     sad_l: i32,
@@ -171,9 +171,9 @@ struct Pyramid {
 struct Params {
     float scale[MAX_LEVELS];
     float inv_scale[MAX_LEVELS];
-    float row_band, min_d, max_d, bf, min_sim, median_factor;
+    float row_band, min_d, max_d, bf, min_sim;
     unsigned int max_hamming;
-    int n_levels, rows, has_l_oct, has_r_oct, sad_on, sad_w, sad_l, desc_width, median_on,
+    int n_levels, rows, has_l_oct, sad_on, sad_w, sad_l, desc_width, median_on,
         fit_parabola, bucketed, hist_bins, hist_shift;
 };
 
@@ -241,8 +241,7 @@ __device__ __forceinline__ unsigned int lane_dist_bin(const unsigned char* a, co
     return d;
 }
 
-/* Warp-cooperative dot; every lane returns the same value. matcher.rs::dot — lane l sums dims l, l+32, ... in order, then the shfl_down
-   tree (16, 8, 4, 2, 1) that dot() mirrors; fmad=false keeps each product rounded. */
+/* Warp-cooperative dot in matcher.rs::dot's order (fmad=false); every lane returns it. */
 __device__ __forceinline__ float warp_dist_flt(const float* a, const float* b, int dim, int lane) {
     float s = 0.0f;
     for (int k = lane; k < dim; k += 32) s = s + a[k] * b[k];
@@ -250,17 +249,17 @@ __device__ __forceinline__ float warp_dist_flt(const float* a, const float* b, i
     return __shfl_sync(0xffffffffu, s, 0);
 }
 
-/* Is (cand, cj) better than (cur, j)? Lower Hamming / higher similarity; ties to the
-   lowest index; j < 0 is "none". */
+/* Is (cand, cj) better than (cur, j)? Lower Hamming, ties to the lowest index;
+   j < 0 is "none". */
 __device__ __forceinline__ bool better_bin(unsigned int cand, int cj, unsigned int cur, int j) {
     if (cj < 0) return false;
     if (j < 0) return true;
     return cand < cur || (cand == cur && cj < j);
 }
+/* Mirrors Best::offer: `s > sim` from sim = -inf, ties to the lowest index; NaN / -inf
+   never win. */
 __device__ __forceinline__ bool better_flt(float cand, int cj, float cur, int j) {
-    if (cj < 0) return false;
-    if (j < 0) return true;
-    return cand > cur || (cand == cur && cj < j);
+    return cj >= 0 && (cand > cur || (cand == cur && j >= 0 && cj < j));
 }
 
 template <bool BIN>
@@ -278,10 +277,11 @@ __device__ void stereo_match(
     const unsigned FULL = 0xffffffffu;
     int lane = threadIdx.x & 31;
     int il = blockIdx.x * (blockDim.x >> 5) + (threadIdx.x >> 5);
-    int nl = count_of(lcount, lcap);
-    if (il >= nl) return;                       /* warp-uniform */
-    int nr = count_of(rcount, rcap);
+    if (il >= lcap) return;                     /* warp-uniform; the grid rounds lcap up */
+    /* Sentinels up to capacity, so slots past a device count never keep an old match. */
     if (lane == 0) { u_right[il] = -1.0f; depth[il] = -1.0f; ridx[il] = -1; sad_out[il] = -1; }
+    if (il >= count_of(lcount, lcap) || p.rows <= 0) return;   /* matcher.rs: rows <= 0 */
+    int nr = count_of(rcount, rcap);
 
     float u_l = lxy[2 * il], v_l = lxy[2 * il + 1];
     int o_l = loct ? (int)loct[il] : 0;
@@ -653,8 +653,10 @@ impl CudaStereoMatcher {
     ///
     /// # Errors
     /// [`StereoMatchError`] on inconsistent inputs (checked before any launch),
-    /// [`ImageError::HostResident`] / [`ImageError::DeviceMismatch`] for a pyramid level
-    /// on the wrong residency or device, [`ImageError::Cuda`] on launch failure.
+    /// [`ImageError::HostResident`] for a host pyramid level,
+    /// [`ImageError::DeviceMismatch`] for a pyramid level, keypoint buffer or output on
+    /// another device, [`StereoMatchError::Stream`] for an output allocated on another
+    /// stream, [`ImageError::Cuda`] on launch failure.
     pub fn match_device(
         &mut self,
         left_pyramid: &[Image<u8, 1>],
@@ -663,8 +665,9 @@ impl CudaStereoMatcher {
         right: &CudaStereoKeypoints,
         out: &mut CudaStereoMatches,
     ) -> Result<(), StereoMatchError> {
-        check_device_keypoints(left, "left")?;
-        check_device_keypoints(right, "right")?;
+        let ordinal = self.stream.context().ordinal();
+        check_device_keypoints(left, "left", ordinal)?;
+        check_device_keypoints(right, "right", ordinal)?;
         super::matcher::check_descriptor_pair(
             &host_view(&left.descriptors),
             &host_view(&right.descriptors),
@@ -678,34 +681,21 @@ impl CudaStereoMatcher {
                 expected: lcap,
             });
         }
+        if out.u_right.ordinal() != ordinal {
+            return Err(ImageError::DeviceMismatch.into());
+        }
         if !Arc::ptr_eq(&out.stream, &self.stream) {
-            return Err(StereoMatchError::InvalidConfig(
-                "match output was allocated on another stream",
-            ));
+            return Err(StereoMatchError::Stream("match output"));
         }
         let cfg = &self.host.cfg;
         let st = self.stream.clone();
 
         // Pyramid: same validation as the CPU path, plus residency.
+        let rows = self.host.check_pyramids(left_pyramid, right_pyramid)?;
         let mut pyr = Pyramid::default();
         let mut guards = Vec::new();
-        let rows = if cfg.sad.is_some() {
-            if left_pyramid.is_empty() || left_pyramid.len() != right_pyramid.len() {
-                return Err(StereoMatchError::Pyramid(
-                    "SAD needs equal-length, non-empty left/right pyramids",
-                ));
-            }
-            if left_pyramid.len() > MAX_LEVELS || left_pyramid.len() < cfg.n_levels {
-                return Err(StereoMatchError::Pyramid(
-                    "pyramid depth must be n_levels..=MAX_LEVELS",
-                ));
-            }
+        if cfg.sad.is_some() {
             for (o, (l, r)) in left_pyramid.iter().zip(right_pyramid).enumerate() {
-                if l.size() != r.size() {
-                    return Err(StereoMatchError::Pyramid(
-                        "left/right pyramid levels differ in size",
-                    ));
-                }
                 let (lp, lg) = device_ptr(&st, l)?;
                 let (rp, rg) = device_ptr(&st, r)?;
                 guards.push(lg);
@@ -715,10 +705,7 @@ impl CudaStereoMatcher {
                 pyr.width[o] = l.width() as i32;
                 pyr.height[o] = l.height() as i32;
             }
-            left_pyramid[0].height() as i32
-        } else {
-            left_pyramid.first().map_or(i32::MAX, |i| i.height() as i32)
-        };
+        }
 
         let (median_on, median_factor) = match cfg.sad.and_then(|s| s.median_factor) {
             Some(f) => (1, f),
@@ -736,12 +723,10 @@ impl CudaStereoMatcher {
             max_d: cfg.max_disparity,
             bf: cfg.bf,
             min_sim: cfg.min_similarity,
-            median_factor,
             max_hamming: cfg.max_hamming,
             n_levels: cfg.n_levels as i32,
             rows,
             has_l_oct: left.octaves.is_some() as i32,
-            has_r_oct: right.octaves.is_some() as i32,
             sad_on: cfg.sad.is_some() as i32,
             sad_w: cfg.sad.map_or(0, |s| s.half_window as i32),
             sad_l: cfg.sad.map_or(0, |s| s.search_range as i32),
@@ -759,83 +744,72 @@ impl CudaStereoMatcher {
             return Ok(());
         }
         let rcap = right.count.capacity();
-        // A span covers at most ceil(y+r) - floor(y-r) + 1 <= 2r + 3 rows.
-        let r_max = cfg.row_band * self.host.scale[cfg.n_levels - 1];
-        let entries = rcap * ((2.0 * r_max).floor() as usize + 3);
-        if params.bucketed == 1 {
+        let (lcap_i, rcap_i) = (lcap as i32, rcap as i32);
+        let null = 0u64;
+        let (row_count, row_start) = if params.bucketed == 1 {
             let rows_u = rows as usize;
+            // A span covers at most min(2r + 3, rows) rows; r may be inf.
+            let r_max = cfg.row_band * self.host.scale[cfg.n_levels - 1];
+            let span = ((2.0 * r_max).floor() as usize)
+                .saturating_add(3)
+                .min(rows_u);
+            let entries = rcap.saturating_mul(span).max(1);
             if self.rows_buf.len() < 3 * rows_u {
                 self.rows_buf = st.alloc_zeros(3 * rows_u).map_err(cuda_err)?;
             }
-            if self.bucket.len() < entries.max(1) {
-                self.bucket = st.alloc_zeros(entries.max(1)).map_err(cuda_err)?;
+            if self.bucket.len() < entries {
+                self.bucket = st.alloc_zeros(entries).map_err(cuda_err)?;
             }
             st.memset_zeros(&mut self.rows_buf.slice_mut(0..rows_u))
                 .map_err(cuda_err)?;
-        }
+            let row_count = self.rows_buf.slice(0..rows_u);
+            let row_start = self.rows_buf.slice(rows_u..2 * rows_u);
+            let cursor = self.rows_buf.slice(2 * rows_u..3 * rows_u);
+            if rcap > 0 {
+                push_bucket_args(self.k_bcount.launch_builder(&st), &params, right, &null)
+                    .arg(&rcap_i)
+                    .arg(&row_count)
+                    .launch_1d(rcap as u32)
+                    .map_err(cuda_err)?;
+                self.k_bscan
+                    .launch_builder(&st)
+                    .arg(&row_count)
+                    .arg(&rows)
+                    .arg(&row_start)
+                    .arg(&cursor)
+                    .launch_cfg(LaunchConfig {
+                        grid_dim: (1, 1, 1),
+                        block_dim: (1024, 1, 1),
+                        shared_mem_bytes: 0,
+                    })
+                    .map_err(cuda_err)?;
+                push_bucket_args(self.k_bfill.launch_builder(&st), &params, right, &null)
+                    .arg(&rcap_i)
+                    .arg(&cursor)
+                    .arg(&self.bucket)
+                    .launch_1d(rcap as u32)
+                    .map_err(cuda_err)?;
+            }
+            (row_count, row_start)
+        } else {
+            // Unused when not bucketed; any valid pointer will do.
+            (self.rows_buf.slice(0..1), self.rows_buf.slice(0..1))
+        };
         st.memset_zeros(&mut self.scratch).map_err(cuda_err)?;
-        let null = 0u64;
-        let (lcap_i, rcap_i) = (lcap as i32, right.count.capacity() as i32);
         let kernel = if binary { &self.k_bin } else { &self.k_flt };
-        let bins = self.bins;
-        let h = bins + coarse_bins(bins);
+        let h = self.bins + coarse_bins(self.bins);
         let hist = self.scratch.slice(0..h);
         let n_acc = self.scratch.slice(h..h + 1);
         let median = self.scratch.slice(h + 1..h + 2);
 
-        let rows_u = rows.max(0) as usize;
-        let (row_count, row_start, cursor) = if params.bucketed == 1 {
-            (
-                self.rows_buf.slice(0..rows_u),
-                self.rows_buf.slice(rows_u..2 * rows_u),
-                self.rows_buf.slice(2 * rows_u..3 * rows_u),
-            )
-        } else {
-            // Unused when not bucketed; any valid pointer will do.
-            (
-                self.rows_buf.slice(0..1),
-                self.rows_buf.slice(0..1),
-                self.rows_buf.slice(0..1),
-            )
-        };
-        if params.bucketed == 1 && rcap > 0 {
-            let per = |n: usize| LaunchConfig {
-                grid_dim: ((n as u32).div_ceil(256), 1, 1),
-                block_dim: (256, 1, 1),
-                shared_mem_bytes: 0,
-            };
-            push_bucket_args(self.k_bcount.launch_builder(&st), &params, right, &null)
-                .arg(&rcap_i)
-                .arg(&row_count)
-                .launch_cfg(per(rcap))
-                .map_err(cuda_err)?;
-            self.k_bscan
-                .launch_builder(&st)
-                .arg(&row_count)
-                .arg(&rows)
-                .arg(&row_start)
-                .arg(&cursor)
-                .launch_cfg(LaunchConfig {
-                    grid_dim: (1, 1, 1),
-                    block_dim: (1024, 1, 1),
-                    shared_mem_bytes: 0,
-                })
-                .map_err(cuda_err)?;
-            push_bucket_args(self.k_bfill.launch_builder(&st), &params, right, &null)
-                .arg(&rcap_i)
-                .arg(&cursor)
-                .arg(&self.bucket)
-                .launch_cfg(per(rcap))
-                .map_err(cuda_err)?;
-        }
-
         let mut b = kernel.launch_builder(&st).arg(&pyr).arg(&params);
         b = push_side(b, left, &null).arg(&lcap_i);
         b = push_side(b, right, &null).arg(&rcap_i);
-        b.arg(&out.u_right)
-            .arg(&out.depth)
-            .arg(&out.right_idx)
-            .arg(&out.sad)
+        // Outputs pass as &mut so cudarc records their write event for other streams.
+        b.arg(&mut out.u_right)
+            .arg(&mut out.depth)
+            .arg(&mut out.right_idx)
+            .arg(&mut out.sad)
             .arg(&hist)
             .arg(&n_acc)
             .arg(&row_count)
@@ -849,13 +823,11 @@ impl CudaStereoMatcher {
             .map_err(cuda_err)?;
 
         if median_on == 1 {
-            let bins_i = bins as i32;
-            let shift_i = coarse_shift(bins) as i32;
             self.k_median
                 .launch_builder(&st)
                 .arg(&hist)
-                .arg(&bins_i)
-                .arg(&shift_i)
+                .arg(&params.hist_bins)
+                .arg(&params.hist_shift)
                 .arg(&n_acc)
                 .arg(&median)
                 .launch_cfg(LaunchConfig {
@@ -864,23 +836,15 @@ impl CudaStereoMatcher {
                     shared_mem_bytes: 0,
                 })
                 .map_err(cuda_err)?;
-            let rb = self.k_reject.launch_builder(&st);
-            let rb = match left.count {
-                KeypointCount::Device { count, .. } => rb.arg(count),
-                KeypointCount::Host(_) => rb.arg(&null),
-            };
-            rb.arg(&lcap_i)
+            push_count(self.k_reject.launch_builder(&st), left.count, &null)
+                .arg(&lcap_i)
                 .arg(&median_factor)
                 .arg(&median)
-                .arg(&out.sad)
-                .arg(&out.u_right)
-                .arg(&out.depth)
-                .arg(&out.right_idx)
-                .launch_cfg(LaunchConfig {
-                    grid_dim: ((lcap as u32).div_ceil(256), 1, 1),
-                    block_dim: (256, 1, 1),
-                    shared_mem_bytes: 0,
-                })
+                .arg(&mut out.sad)
+                .arg(&mut out.u_right)
+                .arg(&mut out.depth)
+                .arg(&mut out.right_idx)
+                .launch_1d(lcap as u32)
                 .map_err(cuda_err)?;
         }
         drop(guards);
@@ -911,15 +875,8 @@ fn push_bucket_args<'a>(
     k: &'a CudaStereoKeypoints<'a>,
     null: &'a u64,
 ) -> kornia_tensor::CudaLaunchBuilder<'a> {
-    let b = b.arg(params).arg(k.xy);
-    let b = match k.octaves {
-        Some(o) => b.arg(o),
-        None => b.arg(null),
-    };
-    match k.count {
-        KeypointCount::Device { count, .. } => b.arg(count),
-        KeypointCount::Host(_) => b.arg(null),
-    }
+    let b = push_octaves(b.arg(params).arg(k.xy), k.octaves, null);
+    push_count(b, k.count, null)
 }
 
 fn push_side<'a>(
@@ -927,18 +884,35 @@ fn push_side<'a>(
     k: &'a CudaStereoKeypoints<'a>,
     null: &'a u64,
 ) -> kornia_tensor::CudaLaunchBuilder<'a> {
-    let b = b.arg(k.xy);
-    let b = match k.octaves {
-        Some(o) => b.arg(o),
-        None => b.arg(null),
-    };
+    let b = push_octaves(b.arg(k.xy), k.octaves, null);
     let b = match k.descriptors {
         CudaStereoDescriptors::Binary { data, .. } => b.arg(data),
         CudaStereoDescriptors::Float { data, .. } => b.arg(data),
     };
-    match k.count {
+    push_count(b, k.count, null)
+}
+
+/// Pushes the device count, or a null pointer when the count is host-known.
+fn push_count<'a>(
+    b: kornia_tensor::CudaLaunchBuilder<'a>,
+    c: KeypointCount<'a>,
+    null: &'a u64,
+) -> kornia_tensor::CudaLaunchBuilder<'a> {
+    match c {
         KeypointCount::Device { count, .. } => b.arg(count),
         KeypointCount::Host(_) => b.arg(null),
+    }
+}
+
+/// Pushes the octave buffer, or a null pointer for all-octave-0.
+fn push_octaves<'a>(
+    b: kornia_tensor::CudaLaunchBuilder<'a>,
+    o: Option<&'a CudaSlice<u8>>,
+    null: &'a u64,
+) -> kornia_tensor::CudaLaunchBuilder<'a> {
+    match o {
+        Some(o) => b.arg(o),
+        None => b.arg(null),
     }
 }
 
@@ -957,7 +931,26 @@ fn host_view(d: &CudaStereoDescriptors) -> StereoDescriptors<'static> {
 fn check_device_keypoints(
     k: &CudaStereoKeypoints,
     side: &'static str,
+    ordinal: usize,
 ) -> Result<(), StereoMatchError> {
+    let on = |o: usize| {
+        if o != ordinal {
+            Err(StereoMatchError::from(ImageError::DeviceMismatch))
+        } else {
+            Ok(())
+        }
+    };
+    on(k.xy.ordinal())?;
+    if let Some(o) = k.octaves {
+        on(o.ordinal())?;
+    }
+    match k.descriptors {
+        CudaStereoDescriptors::Binary { data, .. } => on(data.ordinal())?,
+        CudaStereoDescriptors::Float { data, .. } => on(data.ordinal())?,
+    }
+    if let KeypointCount::Device { count, .. } = k.count {
+        on(count.ordinal())?;
+    }
     let cap = k.count.capacity();
     let len = |what: &'static str, got: usize, need: usize| {
         if got < need {
@@ -1015,27 +1008,31 @@ mod tests {
 
     impl UploadedKeypoints {
         fn new(stream: &Arc<CudaStream>, k: &StereoKeypoints) -> Result<Self, StereoMatchError> {
+            // cudarc rejects zero-length allocations.
+            fn pad<T: Default + Clone>(v: &[T]) -> Vec<T> {
+                if v.is_empty() {
+                    vec![T::default()]
+                } else {
+                    v.to_vec()
+                }
+            }
             let flat: Vec<f32> = k.xy.iter().flatten().copied().collect();
             let n = k.xy.len();
-            let pad = |v: Vec<f32>| if v.is_empty() { vec![0.0] } else { v };
-            let xy = stream.clone_htod(&pad(flat)).map_err(cuda_err)?;
+            let xy = stream.clone_htod(&pad(&flat)).map_err(cuda_err)?;
             let octaves = k
                 .octaves
                 .map(|o| stream.clone_htod(o))
                 .transpose()
                 .map_err(cuda_err)?;
             let (bin, flt, width) = match k.descriptors {
-                StereoDescriptors::Binary { data, bytes } => {
-                    let d = if data.is_empty() {
-                        vec![0u8]
-                    } else {
-                        data.to_vec()
-                    };
-                    (Some(stream.clone_htod(&d).map_err(cuda_err)?), None, bytes)
-                }
+                StereoDescriptors::Binary { data, bytes } => (
+                    Some(stream.clone_htod(&pad(data)).map_err(cuda_err)?),
+                    None,
+                    bytes,
+                ),
                 StereoDescriptors::Float { data, dim } => (
                     None,
-                    Some(stream.clone_htod(&pad(data.to_vec())).map_err(cuda_err)?),
+                    Some(stream.clone_htod(&pad(data)).map_err(cuda_err)?),
                     dim,
                 ),
             };
@@ -1069,6 +1066,78 @@ mod tests {
         }
     }
 
+    /// Padded rows appended past a device count.
+    const PAD: usize = 8;
+
+    /// Host keypoints owning their arrays, for padding.
+    struct OwnedKeypoints {
+        xy: Vec<[f32; 2]>,
+        octaves: Option<Vec<u8>>,
+        bin: Vec<u8>,
+        flt: Vec<f32>,
+        binary: bool,
+        width: usize,
+    }
+
+    impl OwnedKeypoints {
+        /// `base` followed by up to [`PAD`] copies of `src`'s first keypoints (descriptors
+        /// and octaves too), shifted left by `shift` px.
+        fn padded(base: &StereoKeypoints, src: &StereoKeypoints, shift: f32) -> Self {
+            let k = PAD.min(src.xy.len());
+            let mut xy = base.xy.to_vec();
+            xy.extend(src.xy[..k].iter().map(|&[x, y]| [x - shift, y]));
+            let octaves = base.octaves.map(|o| {
+                let mut o = o.to_vec();
+                o.extend((0..k).map(|i| src.octaves.map_or(0, |s| s[i])));
+                o
+            });
+            let (mut bin, mut flt) = (Vec::new(), Vec::new());
+            let (binary, width) = match (base.descriptors, src.descriptors) {
+                (
+                    StereoDescriptors::Binary { data, bytes },
+                    StereoDescriptors::Binary { data: s, .. },
+                ) => {
+                    bin = [data, &s[..k * bytes]].concat();
+                    (true, bytes)
+                }
+                (
+                    StereoDescriptors::Float { data, dim },
+                    StereoDescriptors::Float { data: s, .. },
+                ) => {
+                    flt = [data, &s[..k * dim]].concat();
+                    (false, dim)
+                }
+                _ => unreachable!("same descriptor kind"),
+            };
+            Self {
+                xy,
+                octaves,
+                bin,
+                flt,
+                binary,
+                width,
+            }
+        }
+
+        fn view(&self) -> StereoKeypoints<'_> {
+            StereoKeypoints {
+                xy: &self.xy,
+                octaves: self.octaves.as_deref(),
+                descriptors: if self.binary {
+                    StereoDescriptors::Binary {
+                        data: &self.bin,
+                        bytes: self.width,
+                    }
+                } else {
+                    StereoDescriptors::Float {
+                        data: &self.flt,
+                        dim: self.width,
+                    }
+                },
+            }
+        }
+    }
+
     fn run_both(
         cfg: StereoMatchConfig,
         lpyr: &[Image<u8, 1>],
@@ -1092,23 +1161,51 @@ mod tests {
             .iter()
             .map(|i| i.to_cuda(&stream))
             .collect::<Result<_, _>>()?;
-        let (ul, ur) = (
-            UploadedKeypoints::new(&stream, l)?,
-            UploadedKeypoints::new(&stream, r)?,
-        );
-        let count = stream.clone_htod(&[l.xy.len() as i32])?;
-        let mut lv = ul.view();
-        if device_count {
-            // Capacity above the count: the kernel must stop at the device value.
-            lv.count = KeypointCount::Device {
-                count: &count,
-                capacity: l.xy.len(),
-            };
+        let (nl, nr) = (l.xy.len(), r.xy.len());
+        if !device_count {
+            let (ul, ur) = (
+                UploadedKeypoints::new(&stream, l)?,
+                UploadedKeypoints::new(&stream, r)?,
+            );
+            let mut out = dm.alloc_matches(nl)?;
+            dm.match_device(&dl, &dr, &ul.view(), &ur.view(), &mut out)?;
+            return Ok((cpu, out.to_host(nl)?));
         }
-        let mut out = dm.alloc_matches(l.xy.len())?;
-        dm.match_device(&dl, &dr, &lv, &ur.view(), &mut out)?;
-        let gpu = out.to_host(l.xy.len())?;
-        Ok((cpu, gpu))
+        // Device counts below capacity on both sides; padded rows are matchable (left
+        // copies, and right copies of the left at Hamming 0), so any read past the count
+        // breaks parity.
+        let pl = OwnedKeypoints::padded(l, l, 0.0);
+        let pr = OwnedKeypoints::padded(r, l, 1.0);
+        let (ul, ur) = (
+            UploadedKeypoints::new(&stream, &pl.view())?,
+            UploadedKeypoints::new(&stream, &pr.view())?,
+        );
+        let lc = stream.clone_htod(&[nl as i32])?;
+        let rc = stream.clone_htod(&[nr as i32])?;
+        let (mut lv, mut rv) = (ul.view(), ur.view());
+        lv.count = KeypointCount::Device {
+            count: &lc,
+            capacity: pl.xy.len(),
+        };
+        rv.count = KeypointCount::Device {
+            count: &rc,
+            capacity: pr.xy.len(),
+        };
+        let mut out = dm.alloc_matches(pl.xy.len())?;
+        // Twice on the same output: the tail must be reset, not left as is.
+        for _ in 0..2 {
+            dm.match_device(&dl, &dr, &lv, &rv, &mut out)?;
+        }
+        let all = out.to_host(pl.xy.len())?;
+        assert!(
+            all.right_idx[nl..].iter().all(|&i| i == -1),
+            "tail not reset"
+        );
+        assert!(
+            all.u_right[nl..].iter().all(|&u| u == -1.0),
+            "tail not reset"
+        );
+        Ok((cpu, out.to_host(nl)?))
     }
 
     fn bits(m: &StereoMatches) -> (Vec<u32>, Vec<u32>, Vec<i32>) {
@@ -1227,6 +1324,133 @@ mod tests {
             assert!(cpu.num_matched() > s.lxy.len() / 3, "test scene must match");
             assert_eq!(bits(&cpu), bits(&gpu), "binary={binary}");
         }
+        Ok(())
+    }
+
+    /// Ties resolve to the lowest right index on both backends, even though a GPU row
+    /// bucket is filled in atomic (arbitrary) order.
+    #[test]
+    fn cuda_ties_go_to_the_lowest_right_index() -> Result<(), Box<dyn std::error::Error>> {
+        let (li, ri) = pair(4.0);
+        let lxy = [[200.0f32, 120.0]];
+        // 0: a worse decoy; 1..=40: identical to the left descriptor, same row, in range.
+        let n = 41;
+        let rxy: Vec<[f32; 2]> = (0..n).map(|k| [196.0 - k as f32, 120.0]).collect();
+        let lbin = [0u8; 32];
+        let mut rbin = vec![0u8; 32 * n];
+        rbin[..32].fill(1);
+        let lf = [0.125f32; 64];
+        let mut rf = vec![0.125f32; 64 * n];
+        rf[..64].fill(0.0);
+        let sad_nomedian = SadRefine {
+            median_factor: None,
+            ..SadRefine::default()
+        };
+        for binary in [true, false] {
+            for sad in [None, Some(sad_nomedian)] {
+                // SAD off also runs image-less (unbucketed brute force).
+                for images in if sad.is_none() { vec![0, 1] } else { vec![1] } {
+                    let mut c = StereoMatchConfig::new(300.0, 0.1);
+                    c.sad = sad;
+                    c.min_similarity = 0.5;
+                    let (l, r) = (kps(&lxy, &lbin, &lf, binary), kps(&rxy, &rbin, &rf, binary));
+                    let (lp, rp) = (vec![li.clone(); images], vec![ri.clone(); images]);
+                    let (cpu, gpu) = run_both(c, &lp, &rp, &l, &r, false)?;
+                    let tag = format!("binary={binary} sad={} images={images}", sad.is_some());
+                    assert_eq!(cpu.right_idx, vec![1], "cpu {tag}");
+                    assert_eq!(bits(&cpu), bits(&gpu), "{tag}");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// A NaN similarity never wins (CPU `s > sim` from -inf), even when it is the first
+    /// candidate the GPU visits.
+    #[test]
+    fn cuda_nan_descriptor_never_wins() -> Result<(), Box<dyn std::error::Error>> {
+        let (li, _) = pair(5.0);
+        let lxy = [[200.0f32, 120.0]];
+        let rxy = [[190.0f32, 120.0], [195.0, 120.0]];
+        let lf = [0.125f32; 64];
+        let mut rf = vec![0.125f32; 128];
+        rf[0] = f32::NAN;
+        let mut c = StereoMatchConfig::new(300.0, 0.1);
+        c.sad = None;
+        c.min_similarity = 0.5;
+        for images in [0, 1] {
+            for _ in 0..3 {
+                let (l, r) = (kps(&lxy, &[], &lf, false), kps(&rxy, &[], &rf, false));
+                let lp = vec![li.clone(); images];
+                let (cpu, gpu) = run_both(c.clone(), &lp, &lp, &l, &r, false)?;
+                assert_eq!(cpu.right_idx, vec![1], "images={images}");
+                assert_eq!(bits(&cpu), bits(&gpu), "images={images}");
+            }
+        }
+        Ok(())
+    }
+
+    /// An infinite row band must size the bucket buffer by the image, not overflow.
+    #[test]
+    fn cuda_infinite_row_band_matches_cpu() -> Result<(), Box<dyn std::error::Error>> {
+        let (li, ri) = pair(7.3);
+        let s = scene(7.3, 13);
+        let mut c = StereoMatchConfig::new(300.0, 0.1);
+        c.sad = None;
+        c.row_band = f32::INFINITY;
+        for binary in [true, false] {
+            let (l, r) = (
+                kps(&s.lxy, &s.lbin, &s.lf, binary),
+                kps(&s.rxy, &s.rbin, &s.rf, binary),
+            );
+            let (cpu, gpu) = run_both(
+                c.clone(),
+                std::slice::from_ref(&li),
+                std::slice::from_ref(&ri),
+                &l,
+                &r,
+                false,
+            )?;
+            assert!(cpu.num_matched() > 0, "binary={binary}");
+            assert_eq!(bits(&cpu), bits(&gpu), "binary={binary}");
+        }
+        Ok(())
+    }
+
+    /// A zero-height level 0 leaves everything unmatched on both backends (SAD off, so
+    /// the host image only bounds the rows).
+    #[test]
+    fn cuda_zero_height_image_matches_nothing() -> Result<(), Box<dyn std::error::Error>> {
+        use kornia_image::ImageSize;
+        let s = scene(7.0, 4);
+        let empty = Image::<u8, 1>::new(
+            ImageSize {
+                width: 0,
+                height: 0,
+            },
+            vec![],
+        )?;
+        let mut c = StereoMatchConfig::new(300.0, 0.1);
+        c.sad = None;
+        let m = StereoMatcher::new(c)?;
+        let (l, r) = (
+            kps(&s.lxy, &s.lbin, &s.lf, true),
+            kps(&s.rxy, &s.rbin, &s.rf, true),
+        );
+        let lp = [empty];
+        let mut cpu = StereoMatches::default();
+        m.match_into(&lp, &lp, &l, &r, &mut cpu)?;
+        let stream = CudaContext::new(0)?.new_stream()?;
+        let mut dm = m.to_cuda(&stream)?;
+        let (ul, ur) = (
+            UploadedKeypoints::new(&stream, &l)?,
+            UploadedKeypoints::new(&stream, &r)?,
+        );
+        let mut out = dm.alloc_matches(s.lxy.len())?;
+        dm.match_device(&lp, &lp, &ul.view(), &ur.view(), &mut out)?;
+        let gpu = out.to_host(s.lxy.len())?;
+        assert_eq!(cpu.num_matched(), 0);
+        assert_eq!(bits(&cpu), bits(&gpu));
         Ok(())
     }
 
