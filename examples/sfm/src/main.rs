@@ -346,6 +346,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         reconstruction.reproj_rmse_px,
         t.elapsed().as_secs_f64(),
     );
+    if let Some((gamma, k1, k2, p1, p2)) = reconstruction.camera_correction {
+        eprintln!(
+            "[5/6] refined intrinsics: gamma {gamma:.4} (fx ~ {:.1} px), k1 {k1:.4}, k2 {k2:.4}, \
+             p1 {p1:.4}, p2 {p2:.4}",
+            args.fx / gamma
+        );
+    }
 
     // 6. Export the point cloud to PLY (XYZ + RGB + normals).
     eprintln!("[6/6] building vertices and writing PLY");
@@ -361,16 +368,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // 7. Optional: visualize the result (point cloud + camera poses) in rerun.
     if args.view {
-        eprintln!("[7/7] opening PLY + camera poses in rerun viewer...");
+        eprintln!("[7/7] opening point cloud + camera poses in rerun viewer...");
         let (frame_w, frame_h) = rgb_frames
             .first()
             .map(|f| (f.width(), f.height()))
             .unwrap_or((0, 0));
+        // If intrinsics were refined, use the effective focal length so the
+        // frustum FOV matches the reconstruction.
+        let (view_fx, view_fy) = match reconstruction.camera_correction {
+            Some((gamma, ..)) if gamma > 0.0 => (args.fx / gamma, args.fy / gamma),
+            _ => (args.fx, args.fy),
+        };
         ply_viewer::view_world(
-            &args.output,
+            &vertices,
             &reconstruction.views,
-            args.fx,
-            args.fy,
+            view_fx,
+            view_fy,
             args.cx,
             args.cy,
             frame_w,

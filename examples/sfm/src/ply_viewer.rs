@@ -1,24 +1,28 @@
-//! Visualize a PLY point cloud and the camera poses in the rerun GUI.
+//! Visualize a point cloud and the camera poses in the rerun GUI.
 //!
-//! Reads the file with `kornia::k3d::io::ply::read_ply_binary` (the same
-//! reader the `ply_rerun` example uses), logs positions + colors, and draws
-//! each registered camera as a pinhole frustum (pattern from
-//! `examples/colmap_rerun`).
+//! Logs the in-memory vertices (positions + colours) and draws each registered
+//! camera as a pinhole frustum (pattern from `examples/apriltag_board_multicam`).
 
 use std::error::Error;
-use std::path::Path;
 
 use kornia_3d::pose::Pose3d;
 use kornia_algebra::QuatF64;
 
-/// Convert a camera pose (`T_world_cam` = world→cam, as returned by
-/// `kornia_calib::reconstruct`) into `(translation, quaternion_wxyz)` for
-/// rerun's `Transform3D::from_translation_rotation`.
+use crate::ply_writer::Vertex;
+
+/// rerun transform relation used to place a camera in the world.
 ///
-/// rerun's `ChildFromParent` relation interprets the logged transform as the
-/// parent→child (world→cam) transform, which is exactly `T_world_cam` — the
-/// same convention `examples/colmap_rerun` uses (colmap logs qvec/tvec with
-/// `ChildFromParent`).
+/// `ParentFromChild` means the logged transform maps the child frame into the
+/// parent frame — camera→world (`T_world_cam`), which is what
+/// `kornia_calib::reconstruct` returns. The same convention
+/// `examples/apriltag_board_multicam` uses.
+const CAMERA_TRANSFORM_RELATION: rerun::TransformRelation =
+    rerun::TransformRelation::ParentFromChild;
+
+/// Convert a camera pose (`T_world_cam` = camera→world, as returned by
+/// `kornia_calib::reconstruct`) into `(translation, quaternion_wxyz)` for
+/// rerun's `Transform3D::from_translation_rotation`. The translation is the
+/// camera centre, passed through verbatim (the pose is already C2W).
 fn pose_to_rerun(pose: &Pose3d) -> ([f32; 3], [f32; 4]) {
     let t = [
         pose.translation.x as f32,
@@ -33,24 +37,24 @@ fn pose_to_rerun(pose: &Pose3d) -> ([f32; 3], [f32; 4]) {
     )
 }
 
-/// Open `path` in the rerun viewer and block until the viewer is closed.
+/// Log colored vertices to the rerun viewer and draw each registered camera.
 ///
-/// Logs the point cloud and each registered camera pose as a pinhole frustum.
-/// Requires the rerun viewer (`pip install rerun-sdk` or from rerun.io).
+/// Requires the rerun viewer (`pip install rerun-sdk` or from rerun.io). The
+/// viewer is spawned detached; this returns immediately after logging.
 ///
 /// # Arguments
 ///
-/// * `path` - Path to a binary PLY file (XYZRgbNormals layout).
+/// * `vertices` - Point-cloud vertices (positions, colours, normals).
 /// * `views` - Per-frame poses from the reconstruction (`None` = unregistered).
 /// * `fx` / `fy` / `cx` / `cy` - Camera intrinsics (pixels).
 /// * `width` / `height` - Frame size in pixels (for the pinhole frustum).
 ///
 /// # Errors
 ///
-/// Returns an error if the PLY cannot be read or rerun cannot spawn a viewer.
-#[allow(clippy::too_many_arguments)] // view_world signature mirrors the reconstruction's inputs
+/// Returns an error if rerun cannot spawn a viewer.
+#[allow(clippy::too_many_arguments)] // mirrors the reconstruction's inputs
 pub fn view_world(
-    path: &Path,
+    vertices: &[Vertex],
     views: &[Option<Pose3d>],
     fx: f64,
     fy: f64,
@@ -59,13 +63,7 @@ pub fn view_world(
     width: usize,
     height: usize,
 ) -> Result<(), Box<dyn Error>> {
-    let pointcloud =
-        kornia::k3d::io::ply::read_ply_binary(path, kornia::k3d::io::ply::PlyType::XYZRgbNormals)?;
-    eprintln!(
-        "[view] read {} points from {}",
-        pointcloud.len(),
-        path.display()
-    );
+    eprintln!("[view] {} points", vertices.len());
 
     // Up-to-scale maps can be tiny: the orbit radius may be ~0.2 units while
     // the pinhole frustums are ~1 unit long, which makes every camera cluster
@@ -75,13 +73,15 @@ pub fn view_world(
     let radii: Vec<f64> = views
         .iter()
         .filter_map(|v| v.as_ref())
-        .map(|p| p.inverse().translation.length())
+        .map(|p| p.translation.length())
         .collect();
     let max_radius = radii.iter().cloned().fold(0.0, f64::max);
-    let max_extent = pointcloud
-        .points()
+    let max_extent = vertices
         .iter()
-        .map(|p| (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt())
+        .map(|v| {
+            let p = v.position;
+            (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt()
+        })
         .fold(0.0, f64::max);
     let scale = if max_radius > 1e-9 {
         TARGET_ORBIT_RADIUS / max_radius
@@ -94,10 +94,10 @@ pub fn view_world(
     let rec = rerun::RecordingStreamBuilder::new("SfM Point Cloud Viewer").spawn()?;
     rec.log("/", &rerun::ViewCoordinates::RIGHT_HAND_Y_DOWN())?;
 
-    let points: Vec<rerun::Position3D> = pointcloud
-        .points()
+    let points: Vec<rerun::Position3D> = vertices
         .iter()
-        .map(|p| {
+        .map(|v| {
+            let p = v.position;
             rerun::Position3D::new(
                 (p[0] * scale) as f32,
                 (p[1] * scale) as f32,
@@ -106,15 +106,10 @@ pub fn view_world(
         })
         .collect();
 
-    let colors: Vec<rerun::Color> = pointcloud
-        .colors()
-        .map(|colors| {
-            colors
-                .iter()
-                .map(|c| rerun::Color::from_rgb(c[0], c[1], c[2]))
-                .collect()
-        })
-        .unwrap_or_default();
+    let colors: Vec<rerun::Color> = vertices
+        .iter()
+        .map(|v| rerun::Color::from_rgb(v.color[0], v.color[1], v.color[2]))
+        .collect();
 
     rec.log(
         "world/points",
@@ -138,7 +133,7 @@ pub fn view_world(
                 t,
                 rerun::Quaternion::from_wxyz([q[0], q[1], q[2], q[3]]),
             )
-            .with_relation(rerun::TransformRelation::ChildFromParent),
+            .with_relation(CAMERA_TRANSFORM_RELATION),
         )?;
         rec.log(format!("world/camera_{i}"), &rerun::ViewCoordinates::RDF())?;
         rec.log(
@@ -161,15 +156,14 @@ pub fn view_world(
         );
     }
     eprintln!(
-        "[view] logged {} cameras and {} points. Close the viewer to exit.",
+        "[view] logged {} cameras and {} points.",
         n_cameras,
-        pointcloud.len()
+        vertices.len()
     );
 
-    // Keep the process alive so the viewer stays connected.
-    loop {
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
+    // The viewer is spawned detached; returning drops the `RecordingStream`,
+    // which flushes and disconnects. No need to keep the process alive.
+    Ok(())
 }
 
 #[cfg(test)]
@@ -187,10 +181,10 @@ mod tests {
     }
 
     #[test]
-    fn pose_to_rerun_uses_world_to_cam_convention() {
-        // T_world_cam (world→cam) with a 90° yaw and translation (-5,0,0).
-        // rerun's ChildFromParent expects exactly this W2C transform, so the
-        // logged values must be pose.translation / pose.rotation verbatim.
+    fn pose_to_rerun_passes_camera_to_world_through() {
+        // C2W pose with a 90° yaw and translation (-5,0,0) (the camera centre).
+        // ParentFromChild expects camera→world, so translation/rotation pass
+        // through verbatim.
         let rot = Mat3F64::from_cols(
             Vec3F64::new(0.0, 0.0, -1.0),
             Vec3F64::new(0.0, 1.0, 0.0),
@@ -198,11 +192,20 @@ mod tests {
         );
         let pose = Pose3d::new(rot, Vec3F64::new(-5.0, 0.0, 0.0));
         let (t, q) = pose_to_rerun(&pose);
-        // Translation passed through verbatim (not inverted).
         assert!((t[0] + 5.0).abs() < 1e-4, "t0={}", t[0]);
         assert!(t[1].abs() < 1e-4 && t[2].abs() < 1e-4, "t={t:?}");
-        // Rotation is a quarter turn: quaternion must be unit length.
         let norm = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
         assert!((norm - 1.0).abs() < 1e-4, "unit quaternion, got {norm}");
+    }
+
+    #[test]
+    fn camera_transform_relation_is_camera_to_world() {
+        assert!(
+            matches!(
+                CAMERA_TRANSFORM_RELATION,
+                rerun::TransformRelation::ParentFromChild
+            ),
+            "C2W poses must be logged with ParentFromChild, not ChildFromParent"
+        );
     }
 }
