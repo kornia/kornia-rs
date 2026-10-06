@@ -27,6 +27,8 @@
 //! - The right search window is bounds-checked on BOTH sides. ORB-SLAM3 checks
 //!   `uR0 + L - w >= 0`, which leaves `uR0 - L - w` unchecked; detectors with a wide
 //!   border margin (ORB) hide this, detectors that fire at the border (XFeat) do not.
+//! - A zero-SAD match survives the median reject (ORB-SLAM3 drops all when the median
+//!   is 0).
 //! - Ties go to the lowest right index, a rule the CUDA twin reproduces exactly.
 //!
 //! Every per-keypoint decision lives in a small scalar helper below whose CUDA mirror in
@@ -141,6 +143,15 @@ impl StereoMatchConfig {
     /// ORB-SLAM3's defaults for a rig with focal length `fx` (pixels) and metric
     /// `baseline`, single-scale. Set [`scale_factor`](Self::scale_factor) and
     /// [`n_levels`](Self::n_levels) for pyramid features.
+    ///
+    /// # Arguments
+    ///
+    /// * `fx` - Focal length of the rectified camera, in pixels.
+    /// * `baseline` - Metric distance between the two cameras.
+    ///
+    /// # Returns
+    ///
+    /// The config; it is validated by [`StereoMatcher::new`].
     pub fn new(fx: f32, baseline: f32) -> Self {
         let bf = fx * baseline;
         Self {
@@ -173,7 +184,8 @@ impl StereoMatchConfig {
             return Err(bad("n_levels must be in 1..=MAX_LEVELS"));
         }
         if let Some(s) = self.sad {
-            if s.search_range == 0 || s.half_window + s.search_range > MAX_SAD_RADIUS {
+            let window = s.half_window.checked_add(s.search_range);
+            if s.search_range == 0 || window.is_none_or(|w| w > MAX_SAD_RADIUS) {
                 return Err(bad(
                     "SAD needs search_range >= 1 and half_window + search_range <= 15",
                 ));
@@ -229,6 +241,10 @@ pub struct StereoMatches {
 
 impl StereoMatches {
     /// Number of left keypoints with a match.
+    ///
+    /// # Returns
+    ///
+    /// The count of entries whose `right_idx` is not `-1`.
     pub fn num_matched(&self) -> usize {
         self.right_idx.iter().filter(|&&i| i >= 0).count()
     }
@@ -255,8 +271,17 @@ pub struct StereoMatcher {
 impl StereoMatcher {
     /// Validates `cfg` and precomputes the octave scale tables.
     ///
+    /// # Arguments
+    ///
+    /// * `cfg` - Matching configuration, e.g. from [`StereoMatchConfig::new`].
+    ///
+    /// # Returns
+    ///
+    /// A matcher ready for [`match_into`](Self::match_into).
+    ///
     /// # Errors
-    /// [`StereoMatchError::InvalidConfig`] on an unusable configuration.
+    ///
+    /// Returns [`StereoMatchError::InvalidConfig`] on an unusable configuration.
     pub fn new(cfg: StereoMatchConfig) -> Result<Self, StereoMatchError> {
         cfg.validate()?;
         let mut scale = [1.0f32; MAX_LEVELS];
@@ -273,18 +298,62 @@ impl StereoMatcher {
     }
 
     /// The configuration in use.
+    ///
+    /// # Returns
+    ///
+    /// The validated config this matcher was built from.
     pub fn config(&self) -> &StereoMatchConfig {
         &self.cfg
     }
 
-    /// Matches `left` against `right` into `out` (resized to `left.xy.len()`).
+    /// Matches `left` against `right` into `out`.
     ///
-    /// `left_pyramid` / `right_pyramid` hold the rectified images, one per octave
-    /// (index = octave); only needed when SAD refinement is on, and then must cover
-    /// every octave the keypoints use.
+    /// # Arguments
+    ///
+    /// * `left_pyramid` / `right_pyramid` - Rectified images, one per octave (index =
+    ///   octave). Needed only with SAD refinement, and must then cover every octave
+    ///   the keypoints use; may be empty otherwise.
+    /// * `left` / `right` - Keypoints and descriptors of each view (same descriptor
+    ///   kind and width on both sides).
+    /// * `out` - Reused output, resized to `left.xy.len()`.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())`; `out` holds `u_right`, `depth` and `right_idx` per left keypoint, `-1`
+    /// where unmatched.
     ///
     /// # Errors
-    /// [`StereoMatchError`] on inconsistent inputs; matching itself never fails.
+    ///
+    /// Returns [`StereoMatchError::Length`] or [`StereoMatchError::Descriptors`] on
+    /// inconsistent keypoint arrays, and [`StereoMatchError::Pyramid`] when SAD is on
+    /// and the pyramids are missing or mismatched. Matching itself never fails.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use kornia_3d::stereo::{
+    ///     StereoDescriptors, StereoKeypoints, StereoMatchConfig, StereoMatcher, StereoMatches,
+    /// };
+    ///
+    /// let mut cfg = StereoMatchConfig::new(435.0, 0.11);
+    /// cfg.sad = None; // descriptor match only, no images needed
+    /// let matcher = StereoMatcher::new(cfg)?;
+    ///
+    /// let (lxy, rxy) = ([[120.0f32, 40.0]], [[100.0f32, 40.0]]);
+    /// let desc = [0u8; 32];
+    /// let left = StereoKeypoints {
+    ///     xy: &lxy,
+    ///     octaves: None,
+    ///     descriptors: StereoDescriptors::Binary { data: &desc, bytes: 32 },
+    /// };
+    /// let right = StereoKeypoints { xy: &rxy, ..left };
+    ///
+    /// let mut out = StereoMatches::default();
+    /// matcher.match_into(&[], &[], &left, &right, &mut out)?;
+    /// assert_eq!(out.right_idx, vec![0]);
+    /// assert!((out.depth[0] - 435.0 * 0.11 / 20.0).abs() < 1e-4); // bf / disparity
+    /// # Ok::<(), kornia_3d::stereo::StereoMatchError>(())
+    /// ```
     pub fn match_into(
         &self,
         left_pyramid: &[Image<u8, 1>],
@@ -333,6 +402,7 @@ impl StereoMatcher {
 
         // Left keypoints are independent until the median reject, so they match in
         // parallel; results land by index, keeping the output deterministic.
+        let has_octaves = left.octaves.is_some() || right.octaves.is_some();
         let match_one = |il: usize| -> Option<(f32, f32, usize, i32)> {
             let [u_l, v_l] = left.xy[il];
             let o_l = octave_of(left.octaves, il, cfg.n_levels)?;
@@ -348,7 +418,7 @@ impl StereoMatcher {
                     continue;
                 }
                 let o_r = octave_of(right.octaves, ir, cfg.n_levels).unwrap_or(0);
-                if !octave_gate(left.octaves.is_some(), o_l, o_r) {
+                if !octave_gate(has_octaves, o_l, o_r) {
                     continue;
                 }
                 let u_r = right.xy[ir][0];
@@ -400,7 +470,7 @@ impl StereoMatcher {
                 let (_, median, _) = sads.select_nth_unstable(k);
                 let th = median_threshold(factor, *median);
                 for &(sad, il) in &accepted {
-                    if sad as f32 >= th {
+                    if median_rejects(sad, th) {
                         out.u_right[il] = -1.0;
                         out.depth[il] = -1.0;
                         out.right_idx[il] = -1;
@@ -517,7 +587,8 @@ fn disparity_window(u_l: f32, min_d: f32, max_d: f32) -> Option<(f32, f32)> {
     (max_u >= 0.0).then_some((min_u, max_u))
 }
 
-/// ORB-SLAM3's ±1 octave gate; always open for single-scale keypoints.
+/// ORB-SLAM3's ±1 octave gate; open only when neither side carries octaves (a side
+/// without them is octave 0).
 fn octave_gate(has_octaves: bool, o_l: usize, o_r: usize) -> bool {
     !has_octaves || o_l.abs_diff(o_r) <= 1
 }
@@ -707,6 +778,12 @@ fn finish(u_l: f32, u_r: f32, cfg: &StereoMatchConfig) -> Option<(f32, f32)> {
         u_r = u_l - 0.01;
     }
     Some((u_r, cfg.bf / disparity))
+}
+
+/// ORB-SLAM3 drops `sad >= th`; a zero SAD is kept, else a median of 0 (byte-identical
+/// patches) would make `th = 0` and reject every match.
+fn median_rejects(sad: i32, th: f32) -> bool {
+    sad > 0 && sad as f32 >= th
 }
 
 fn median_threshold(factor: f32, median: i32) -> f32 {
@@ -904,6 +981,28 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// Integer disparity on identical texture: every true match has SAD 0, so the median
+    /// is 0. The reject must keep them (a 0 threshold would drop everything).
+    #[test]
+    fn zero_median_keeps_perfect_matches() -> Result<(), StereoMatchError> {
+        let (li, ri) = pair(6.0);
+        let s = scene(6.0, 9);
+        let m = StereoMatcher::new(cfg())?;
+        let mut out = StereoMatches::default();
+        let (l, r) = (
+            kps(&s.lxy, &s.lbin, &s.lf, true),
+            kps(&s.rxy, &s.rbin, &s.rf, true),
+        );
+        m.match_into(&[li], &[ri], &l, &r, &mut out)?;
+        assert!(
+            out.num_matched() * 10 >= s.lxy.len() * 7,
+            "{} of {}",
+            out.num_matched(),
+            s.lxy.len()
+        );
+        Ok(())
+    }
+
     #[test]
     fn coarse_only_reports_the_matched_keypoint_u() -> Result<(), StereoMatchError> {
         let s = scene(7.0, 3);
@@ -1022,6 +1121,20 @@ pub(crate) mod tests {
         assert_eq!(run(1, 1)?, 0, "band 4 at octave 1 covers it");
         assert_eq!(run(0, 2)?, -1, "octaves 2 apart are gated");
         assert_eq!(run(0, 3)?, -1, "octave past n_levels never matches");
+        // Octaves on the right only: the left side counts as octave 0, still gated.
+        let ro = [2u8];
+        let l = kps(&lxy, &b, &[], true);
+        let r = StereoKeypoints {
+            octaves: Some(&ro),
+            ..kps(&rxy, &b, &[], true)
+        };
+        let mut out = StereoMatches::default();
+        m.match_into(&[], &[], &l, &r, &mut out)?;
+        assert_eq!(
+            out.right_idx,
+            vec![-1],
+            "left without octaves vs right octave 2"
+        );
         Ok(())
     }
 

@@ -23,6 +23,9 @@ twin behind the `cuda` feature.
   0.065 to 0.042 px against ORB-SLAM3's parabola on a synthetic pair; `Parabola` is kept for parity.
 - The right search window is bounds-checked on both sides (ORB-SLAM3 checks one, which a detector
   firing near the image border turns into an out-of-bounds read).
+- The median reject keeps zero-SAD matches; ORB-SLAM3's `sad >= 2.1 * median` drops every match
+  when the median is 0 (byte-identical patches). The octave gate applies whenever either side
+  carries octaves.
 - `StereoMatcher::to_cuda` → `CudaStereoMatcher::match_device`: device keypoints in, device
   matches out, no host sync; the keypoint count may live on the device. Output is bit-identical to
   the CPU path (tested), including the median reject.

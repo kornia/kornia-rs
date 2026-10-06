@@ -98,14 +98,27 @@ pub struct CudaStereoMatches {
 
 impl CudaStereoMatches {
     /// Left-keypoint capacity.
+    ///
+    /// # Returns
+    ///
+    /// The number of left keypoints this buffer holds results for.
     pub fn capacity(&self) -> usize {
         self.capacity
     }
 
     /// Copies the first `n` results to the host. Synchronizes the stream.
     ///
+    /// # Arguments
+    ///
+    /// * `n` - Results to copy, clamped to [`capacity`](Self::capacity).
+    ///
+    /// # Returns
+    ///
+    /// The host [`StereoMatches`] for left keypoints `0..n`.
+    ///
     /// # Errors
-    /// [`StereoMatchError::Image`]`(`[`ImageError::Cuda`]`)` on a copy failure.
+    ///
+    /// Returns [`StereoMatchError::Image`]`(`[`ImageError::Cuda`]`)` on a copy failure.
     pub fn to_host(&self, n: usize) -> Result<StereoMatches, StereoMatchError> {
         let n = n.min(self.capacity);
         let s = &self.stream;
@@ -146,7 +159,7 @@ struct Params {
     max_hamming: u32,
     n_levels: i32,
     rows: i32,
-    has_l_oct: i32,
+    gate_oct: i32,
     sad_on: i32,
     sad_w: i32,
     sad_l: i32,
@@ -173,7 +186,7 @@ struct Params {
     float inv_scale[MAX_LEVELS];
     float row_band, min_d, max_d, bf, min_sim;
     unsigned int max_hamming;
-    int n_levels, rows, has_l_oct, sad_on, sad_w, sad_l, desc_width, median_on,
+    int n_levels, rows, gate_oct, sad_on, sad_w, sad_l, desc_width, median_on,
         fit_parabola, bucketed, hist_bins, hist_shift;
 };
 
@@ -314,7 +327,7 @@ __device__ void stereo_match(
                 row_span(rxy[2 * j + 1], p.row_band * p.scale[o_r], p.rows, &lo, &hi);
                 float u_r = rxy[2 * j];
                 ok = row >= lo && row <= hi
-                    && !(p.has_l_oct && abs(o_l - o_r) > 1)          /* octave_gate */
+                    && !(p.gate_oct && abs(o_l - o_r) > 1)          /* octave_gate */
                     && (u_r >= min_u && u_r <= max_u);
             }
         }
@@ -527,7 +540,7 @@ extern "C" __global__ void stereo_reject(const int* __restrict__ lcount, int lca
     int m = *median;
     if (m < 0 || ridx[il] < 0) return;
     float th = factor * (float)m;
-    if ((float)sad_out[il] >= th) { u_right[il] = -1.0f; depth[il] = -1.0f; ridx[il] = -1; }
+    if (sad_out[il] > 0 && (float)sad_out[il] >= th) {   /* matcher.rs: median_rejects */ u_right[il] = -1.0f; depth[il] = -1.0f; ridx[il] = -1; }
 }
 "#;
 
@@ -578,8 +591,57 @@ impl StereoMatcher {
     /// matcher for device-resident inputs. Synchronizes once, so nvrtc failures surface
     /// here — where a caller's CPU fallback can catch them — not on the first frame.
     ///
+    /// # Arguments
+    ///
+    /// * `stream` - Stream all matching work is enqueued on.
+    ///
+    /// # Returns
+    ///
+    /// A [`CudaStereoMatcher`] with this matcher's config.
+    ///
     /// # Errors
-    /// [`StereoMatchError::Image`]`(`[`ImageError::Cuda`]`)` on compile/alloc failure.
+    ///
+    /// Returns [`StereoMatchError::Image`]`(`[`ImageError::Cuda`]`)` on compile or
+    /// allocation failure.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use cudarc::driver::CudaContext;
+    /// use kornia_3d::stereo::{
+    ///     CudaStereoDescriptors, CudaStereoKeypoints, KeypointCount, StereoMatchConfig,
+    ///     StereoMatcher,
+    /// };
+    /// use kornia_image::{Image, ImageSize};
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let ctx = CudaContext::new(0)?;
+    /// let stream = ctx.default_stream();
+    /// let mut gpu = StereoMatcher::new(StereoMatchConfig::new(435.0, 0.11))?.to_cuda(&stream)?;
+    ///
+    /// // A detector's device outputs: interleaved xy, 64-D f32 descriptors, and its
+    /// // atomic keypoint counter (read on the device, so no host sync in between).
+    /// let cap = 1024;
+    /// let xy = stream.alloc_zeros::<f32>(2 * cap)?;
+    /// let desc = stream.alloc_zeros::<f32>(64 * cap)?;
+    /// let count = stream.alloc_zeros::<i32>(1)?;
+    /// let kp = CudaStereoKeypoints {
+    ///     xy: &xy,
+    ///     octaves: None,
+    ///     descriptors: CudaStereoDescriptors::Float { data: &desc, dim: 64 },
+    ///     count: KeypointCount::Device { count: &count, capacity: cap },
+    /// };
+    ///
+    /// let size = ImageSize { width: 752, height: 480 };
+    /// let left = Image::<u8, 1>::zeros_cuda(size, &stream)?;
+    /// let right = Image::<u8, 1>::zeros_cuda(size, &stream)?;
+    /// let mut out = gpu.alloc_matches(cap)?;
+    /// gpu.match_device(&[left], &[right], &kp, &kp, &mut out)?;
+    /// let host = out.to_host(cap)?; // synchronizes
+    /// # let _ = host;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn to_cuda(&self, stream: &Arc<CudaStream>) -> Result<CudaStereoMatcher, StereoMatchError> {
         let names = [
             "stereo_match_bin",
@@ -626,14 +688,27 @@ impl StereoMatcher {
 
 impl CudaStereoMatcher {
     /// The CPU matcher this was built from (same config).
+    ///
+    /// # Returns
+    ///
+    /// The host [`StereoMatcher`], e.g. for a CPU fallback.
     pub fn host(&self) -> &StereoMatcher {
         &self.host
     }
 
     /// Allocates a result buffer for up to `capacity` left keypoints.
     ///
+    /// # Arguments
+    ///
+    /// * `capacity` - Maximum left keypoints per call.
+    ///
+    /// # Returns
+    ///
+    /// A [`CudaStereoMatches`] on this matcher's stream, reusable across frames.
+    ///
     /// # Errors
-    /// [`ImageError::Cuda`] on allocation failure.
+    ///
+    /// Returns [`StereoMatchError::Image`]`(`[`ImageError::Cuda`]`)` on allocation failure.
     pub fn alloc_matches(&self, capacity: usize) -> Result<CudaStereoMatches, StereoMatchError> {
         let s = &self.stream;
         let n = capacity.max(1);
@@ -648,8 +723,20 @@ impl CudaStereoMatcher {
     }
 
     /// Device twin of [`StereoMatcher::match_into`]. Enqueued on this matcher's stream
-    /// with no host sync; inputs must be ready in that stream's order. Pyramids are
-    /// device-resident images, needed only with SAD refinement.
+    /// with no host sync; inputs must be ready in that stream's order. See
+    /// [`StereoMatcher::to_cuda`] for an example.
+    ///
+    /// # Arguments
+    ///
+    /// * `left_pyramid` / `right_pyramid` - Device-resident rectified images, one per
+    ///   octave; needed only with SAD refinement.
+    /// * `left` / `right` - Device keypoints, descriptors and counts.
+    /// * `out` - Result buffer from [`alloc_matches`](Self::alloc_matches), with at
+    ///   least the left capacity.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` once the work is enqueued; read `out` after syncing the stream.
     ///
     /// # Errors
     /// [`StereoMatchError`] on inconsistent inputs (checked before any launch),
@@ -726,7 +813,7 @@ impl CudaStereoMatcher {
             max_hamming: cfg.max_hamming,
             n_levels: cfg.n_levels as i32,
             rows,
-            has_l_oct: left.octaves.is_some() as i32,
+            gate_oct: (left.octaves.is_some() || right.octaves.is_some()) as i32,
             sad_on: cfg.sad.is_some() as i32,
             sad_w: cfg.sad.map_or(0, |s| s.half_window as i32),
             sad_l: cfg.sad.map_or(0, |s| s.search_range as i32),
@@ -1451,6 +1538,43 @@ mod tests {
         let gpu = out.to_host(s.lxy.len())?;
         assert_eq!(cpu.num_matched(), 0);
         assert_eq!(bits(&cpu), bits(&gpu));
+        Ok(())
+    }
+
+    /// Median 0 (byte-identical patches) and right-only octaves, CPU == GPU.
+    #[test]
+    fn cuda_matches_cpu_zero_median_and_right_only_octaves(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (li, ri) = pair(6.0);
+        let s = scene(6.0, 9);
+        let octs_r: Vec<u8> = (0..s.rxy.len()).map(|j| (j % 3) as u8).collect();
+        let mut c = StereoMatchConfig::new(300.0, 0.1);
+        c.scale_factor = 2.0;
+        c.n_levels = 3;
+        let half = |i: &Image<u8, 1>, k: usize| -> Result<Image<u8, 1>, ImageError> {
+            let (w, h) = (i.width() >> k, i.height() >> k);
+            let src = i.as_slice();
+            let v = (0..w * h)
+                .map(|p| src[((p / w) << k) * i.width() + ((p % w) << k)])
+                .collect();
+            Image::new(
+                kornia_image::ImageSize {
+                    width: w,
+                    height: h,
+                },
+                v,
+            )
+        };
+        let lp = [li.clone(), half(&li, 1)?, half(&li, 2)?];
+        let rp = [ri.clone(), half(&ri, 1)?, half(&ri, 2)?];
+        for binary in [true, false] {
+            let l = kps(&s.lxy, &s.lbin, &s.lf, binary);
+            let mut r = kps(&s.rxy, &s.rbin, &s.rf, binary);
+            r.octaves = Some(&octs_r);
+            let (cpu, gpu) = run_both(c.clone(), &lp, &rp, &l, &r, false)?;
+            assert!(cpu.num_matched() > s.lxy.len() / 4, "scene must match");
+            assert_eq!(bits(&cpu), bits(&gpu), "binary={binary}");
+        }
         Ok(())
     }
 
