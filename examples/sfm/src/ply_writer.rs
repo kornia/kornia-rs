@@ -5,9 +5,10 @@
 //! followed by little-endian binary data of 27 bytes per vertex
 //! (`x, y, z` as `f32`, `red, green, blue` as `u8`, `nx, ny, nz` as `f32`).
 //!
-//! Colors are sampled from the source RGB frames at each reconstructed point's
-//! first track observation. Normals are estimated from the k nearest neighbours
-//! via PCA and oriented toward the cameras.
+//! Colours are sampled (before reconstruction) from each track's raw
+//! observations; each point then takes the colour of whichever observation
+//! survived into the solve. Normals are estimated from the k nearest neighbours
+//! via PCA and oriented toward the point's own observing cameras.
 
 use std::error::Error;
 use std::fs::File;
@@ -39,31 +40,66 @@ pub struct Vertex {
 /// # Arguments
 ///
 /// * `reconstruction` - Output of `kornia_calib::reconstruct`.
-/// * `tracks` - The feature tracks the reconstruction was built from (used to
-///   look up each point's source pixels for colour sampling).
-/// * `rgb_frames` - The original RGB video frames, indexed by camera/frame.
+/// * `observation_colors` - Per-track raw-observation colours, from
+///   [`sample_observation_colors`]. Sampled before reconstruction so the source
+///   frames can be dropped; each point then picks the colour of a *surviving*
+///   observation (not necessarily the first raw one).
 pub fn build_vertices(
     reconstruction: &Reconstruction,
-    tracks: &[FeatureTrack],
-    rgb_frames: &[Image<u8, 3>],
+    observation_colors: &[Vec<(usize, [u8; 3])>],
 ) -> Vec<Vertex> {
     let points: Vec<[f64; 3]> = reconstruction
         .points
         .iter()
         .map(|p| [p.position.x, p.position.y, p.position.z])
         .collect();
-    let colors = extract_colors(reconstruction, tracks, rgb_frames);
-    let cameras = camera_centers(&reconstruction.views);
-    let normals = estimate_normals(&points, &cameras);
+    let axes = pca_normals_axis(&points);
 
-    points
-        .into_iter()
-        .zip(colors)
-        .zip(normals)
-        .map(|((position, color), normal)| Vertex {
-            position,
-            color,
-            normal,
+    // Group surviving observations by the point they belong to.
+    let mut obs_by_point: Vec<Vec<usize>> = vec![Vec::new(); reconstruction.points.len()];
+    for (oi, obs) in reconstruction.observations.iter().enumerate() {
+        if let Some(list) = obs_by_point.get_mut(obs.point) {
+            list.push(oi);
+        }
+    }
+
+    reconstruction
+        .points
+        .iter()
+        .enumerate()
+        .map(|(pi, pt)| {
+            let p = points[pi];
+            let axis = axes[pi];
+            let track_id = pt.track_id;
+
+            // Observers that actually saw this point (surviving observations).
+            let mut observers: Vec<([f64; 3], Option<[u8; 3]>)> = obs_by_point[pi]
+                .iter()
+                .filter_map(|&oi| {
+                    let view = reconstruction.observations[oi].view;
+                    let center = view_centre(&reconstruction.views, view)?;
+                    Some((center, colour_for_view(observation_colors, track_id, view)))
+                })
+                .collect();
+            // Fallback: the track's raw observations (a filtered point may have
+            // no surviving observation).
+            if observers.is_empty() {
+                if let Some(raw) = observation_colors.get(track_id) {
+                    observers = raw
+                        .iter()
+                        .filter_map(|&(view, color)| {
+                            view_centre(&reconstruction.views, view).map(|c| (c, Some(color)))
+                        })
+                        .collect();
+                }
+            }
+
+            let (normal, color) = orient_normal_and_pick_color(p, axis, &observers);
+            Vertex {
+                position: p,
+                color,
+                normal,
+            }
         })
         .collect()
 }
@@ -124,65 +160,100 @@ fn sample_color(rgb_frames: &[Image<u8, 3>], cam_idx: usize, pixel: Vec2F64) -> 
     [s[0], s[1], s[2]]
 }
 
-/// Extract one RGB colour per reconstructed point, sampled from the first
-/// camera observation of each point's track.
-fn extract_colors(
-    reconstruction: &Reconstruction,
+/// Sample every raw observation's colour from the source RGB frames, indexed by
+/// track. Computed before reconstruction so the RGB frames can be dropped; a
+/// point then looks up the colour for whichever of its observations survived.
+pub fn sample_observation_colors(
     tracks: &[FeatureTrack],
     rgb_frames: &[Image<u8, 3>],
-) -> Vec<[u8; 3]> {
-    reconstruction
-        .points
+) -> Vec<Vec<(usize, [u8; 3])>> {
+    tracks
         .iter()
-        .map(|pt| {
-            let Some(track) = tracks.get(pt.track_id) else {
-                return [0; 3];
-            };
-            let Some(&(cam_idx, pixel)) = track.obs.first() else {
-                return [0; 3];
-            };
-            sample_color(rgb_frames, cam_idx, pixel)
+        .map(|track| {
+            track
+                .obs
+                .iter()
+                .map(|&(cam_idx, pixel)| (cam_idx, sample_color(rgb_frames, cam_idx, pixel)))
+                .collect()
         })
         .collect()
 }
 
-/// World-frame positions of the registered cameras.
+/// World-frame centre of `view`, or `None` if it is unregistered.
 ///
 /// `views` are camera→world (`T_world_cam`), so a camera's centre is simply its
 /// translation — no inversion (inverting would give the world→camera term
 /// `-Rᵀ·C`, not the centre).
-fn camera_centers(views: &[Option<Pose3d>]) -> Vec<[f64; 3]> {
-    views
-        .iter()
-        .filter_map(|v| v.as_ref())
-        .map(|pose| [pose.translation.x, pose.translation.y, pose.translation.z])
-        .collect()
+fn view_centre(views: &[Option<Pose3d>], view: usize) -> Option<[f64; 3]> {
+    let pose = views.get(view)?.as_ref()?;
+    Some([pose.translation.x, pose.translation.y, pose.translation.z])
 }
 
-/// Estimate surface normals from the k nearest neighbours via PCA, oriented
-/// toward the average camera position.
-fn estimate_normals(points: &[[f64; 3]], cameras: &[[f64; 3]]) -> Vec<[f64; 3]> {
+/// Colour recorded for `track_id` at `view`, if that observation exists.
+fn colour_for_view(
+    observation_colors: &[Vec<(usize, [u8; 3])>],
+    track_id: usize,
+    view: usize,
+) -> Option<[u8; 3]> {
+    observation_colors
+        .get(track_id)?
+        .iter()
+        .find(|(v, _)| *v == view)
+        .map(|(_, c)| *c)
+}
+
+/// Orient a PCA normal axis toward the observer that sees the point most
+/// head-on, and return that observer's colour.
+///
+/// `axis` is a unit normal with an arbitrary sign. Observers are
+/// `(camera_centre, colour)`. Choosing the observer whose viewing direction is
+/// most aligned with the axis (`max |dot|`) rejects grazing views, and using a
+/// point's own observers (not a global mean) keeps surround captures correct.
+fn orient_normal_and_pick_color(
+    p: [f64; 3],
+    axis: [f64; 3],
+    observers: &[([f64; 3], Option<[u8; 3]>)],
+) -> ([f64; 3], [u8; 3]) {
+    let first_color = observers.iter().find_map(|(_, c)| *c).unwrap_or([0, 0, 0]);
+    if observers.is_empty() {
+        return (axis, first_color);
+    }
+    let mut best_idx = 0usize;
+    let mut best_score = f64::NEG_INFINITY;
+    let mut best_dir = [0.0, 0.0, 1.0];
+    for (i, (c, _)) in observers.iter().enumerate() {
+        let dir = normalize([c[0] - p[0], c[1] - p[1], c[2] - p[2]]);
+        let score = dot(axis, dir).abs();
+        if score > best_score {
+            best_score = score;
+            best_idx = i;
+            best_dir = dir;
+        }
+    }
+    let normal = if dot(axis, best_dir) < 0.0 {
+        [-axis[0], -axis[1], -axis[2]]
+    } else {
+        axis
+    };
+    let color = observers[best_idx].1.unwrap_or(first_color);
+    (normal, color)
+}
+
+/// Smallest-eigenvector (PCA) normal axis for every point; the sign is
+/// arbitrary and is fixed later by [`orient_normal_and_pick_color`].
+fn pca_normals_axis(points: &[[f64; 3]]) -> Vec<[f64; 3]> {
     if points.is_empty() {
         return Vec::new();
     }
     let kdtree: ImmutableKdTree<f64, u32, 3, 32> = ImmutableKdTree::new_from_slice(points);
     let k = NonZeroUsize::new(NORMAL_K.min(points.len()).max(2)).unwrap();
 
-    let cam_mean = mean(cameras);
     points
         .iter()
         .map(|p| {
             let nn = kdtree.nearest_n::<kiddo::SquaredEuclidean>(p, k);
             let neighbours: Vec<[f64; 3]> = nn.iter().map(|nb| points[nb.item as usize]).collect();
-            let mut normal = pca_normal(&neighbours);
-            if !cameras.is_empty() {
-                // Flip so the normal points toward the cameras.
-                let to_cam = [cam_mean[0] - p[0], cam_mean[1] - p[1], cam_mean[2] - p[2]];
-                if dot(normal, to_cam) < 0.0 {
-                    normal = [-normal[0], -normal[1], -normal[2]];
-                }
-            }
-            normal
+            pca_normal(&neighbours)
         })
         .collect()
 }
@@ -351,19 +422,18 @@ mod tests {
     }
 
     #[test]
-    fn estimate_normals_on_plane_point_up() {
+    fn pca_normals_axis_on_plane() {
         let mut points = Vec::new();
         for x in [-1.0, -0.5, 0.0, 0.5, 1.0] {
             for y in [-1.0, -0.5, 0.0, 0.5, 1.0] {
                 points.push([x, y, 0.0]);
             }
         }
-        let cameras = [[0.0, 0.0, 5.0]];
-        let normals = estimate_normals(&points, &cameras);
-
+        let normals = pca_normals_axis(&points);
         assert_eq!(normals.len(), points.len());
         for n in &normals {
-            assert!(n[2] > 0.99, "plane normal should point up, got {n:?}");
+            // Axis is ±z (sign is fixed later by the orientation step).
+            assert!(n[2].abs() > 0.99, "plane axis should be ±z, got {n:?}");
             let len = dot(*n, *n).sqrt();
             assert!((len - 1.0).abs() < 1e-6, "normal should be unit length");
         }
@@ -461,26 +531,90 @@ mod tests {
             );
         }
 
-        let verts = build_vertices(&recon, &tracks, &frames);
+        let observation_colors = sample_observation_colors(&tracks, &frames);
+        let verts = build_vertices(&recon, &observation_colors);
         assert_eq!(verts.len(), recon.points.len());
         assert!(verts.iter().all(|v| v.normal.iter().all(|c| c.is_finite())));
     }
 
     #[test]
-    fn camera_centers_are_pose_translations() {
+    fn view_centre_is_pose_translation() {
         use kornia_algebra::{Mat3F64, Vec3F64};
-        // Views are camera→world (`T_world_cam`), so the camera centre IS the
-        // pose translation. Inverting first (the bug) returns -Rᵀ·C.
+        // Views are camera→world (`T_world_cam`), so the centre IS the
+        // translation; inverting first (the old bug) returns -Rᵀ·C.
         let rot = Mat3F64::from_cols(
             Vec3F64::new(0.0, 0.0, -1.0),
             Vec3F64::new(0.0, 1.0, 0.0),
             Vec3F64::new(1.0, 0.0, 0.0),
         );
         let pose = Pose3d::new(rot, Vec3F64::new(1.0, 2.0, 3.0));
-        let centers = camera_centers(&[Some(pose), None]);
-        assert_eq!(centers.len(), 1);
-        assert!((centers[0][0] - 1.0).abs() < 1e-9, "{centers:?}");
-        assert!((centers[0][1] - 2.0).abs() < 1e-9, "{centers:?}");
-        assert!((centers[0][2] - 3.0).abs() < 1e-9, "{centers:?}");
+        let views = [Some(pose), None];
+        assert_eq!(view_centre(&views, 0), Some([1.0, 2.0, 3.0]));
+        assert_eq!(
+            view_centre(&views, 1),
+            None,
+            "unregistered view has no centre"
+        );
+        assert_eq!(
+            view_centre(&views, 9),
+            None,
+            "out-of-range view has no centre"
+        );
+    }
+
+    #[test]
+    fn orient_normal_picks_head_on_observer_and_color() {
+        let p = [0.0, 0.0, 0.0];
+        let axis = [0.0, 0.0, 1.0];
+        // A grazing observer to the side, a head-on observer on +z. The
+        // head-on one must win even though it is second in the list, and its
+        // colour is the one returned.
+        let grazing = ([1.0, 0.0, 0.1], Some([9, 9, 9]));
+        let head_on = ([0.0, 0.0, 5.0], Some([1, 2, 3]));
+        let (normal, color) = orient_normal_and_pick_color(p, axis, &[grazing, head_on]);
+        assert!(
+            normal[2] > 0.99,
+            "normal should point at the head-on camera"
+        );
+        assert_eq!(color, [1, 2, 3]);
+
+        // An observer on −z flips the axis.
+        let (flipped, _) = orient_normal_and_pick_color(p, axis, &[([0.0, 0.0, -5.0], None)]);
+        assert!(flipped[2] < -0.99, "normal must flip toward a −z observer");
+
+        // No observers: axis unchanged, colour defaults to black.
+        let (unchanged, color) = orient_normal_and_pick_color(p, axis, &[]);
+        assert_eq!(unchanged, axis);
+        assert_eq!(color, [0, 0, 0]);
+    }
+
+    #[test]
+    fn sample_observation_colors_reads_each_observation() {
+        // Two frames of distinct colours; a track observed in both must carry a
+        // colour per view (not just the first).
+        let mut f0 = Image::<u8, 3>::from_size_val(
+            ImageSize {
+                width: 1,
+                height: 1,
+            },
+            0,
+        )
+        .unwrap();
+        f0.as_slice_mut().copy_from_slice(&[10, 20, 30]);
+        let mut f1 = Image::<u8, 3>::from_size_val(
+            ImageSize {
+                width: 1,
+                height: 1,
+            },
+            0,
+        )
+        .unwrap();
+        f1.as_slice_mut().copy_from_slice(&[40, 50, 60]);
+        let tracks = vec![FeatureTrack {
+            obs: vec![(0, Vec2F64::new(0.0, 0.0)), (1, Vec2F64::new(0.0, 0.0))],
+        }];
+        let colors = sample_observation_colors(&tracks, &[f0, f1]);
+        assert_eq!(colors.len(), 1);
+        assert_eq!(colors[0], vec![(0, [10, 20, 30]), (1, [40, 50, 60])]);
     }
 }
