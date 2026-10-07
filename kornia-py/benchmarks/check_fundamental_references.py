@@ -160,6 +160,7 @@ def main():
     args.json.parent.mkdir(parents=True, exist_ok=True)
     with args.json.open("w") as f:
         json.dump(result, f, indent=2)
+        f.write("\n")
     print(json.dumps(result, indent=2))
     for name in ("random_1000", "real_1000", "singular_endpoint"):
         summary = result[name]["summary"]
