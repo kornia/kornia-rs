@@ -1,0 +1,202 @@
+{
+  "metadata": {
+    "input_sha256": "10d856775c97a65773889367dcb7378eb8a40a648e0f7cf10cdf060acecaa503",
+    "data_sha256": {
+      "matches.h5": "84eb5bf764ffaf2713e99416143605d8534593be2c899707036540d74ecedf26",
+      "match_conf.h5": "15c00f0465401372b1d62b972b3254794a847dabee0a02ca38ae9343acc7c45e",
+      "K1_K2.h5": "1f2e437035288765b421bb41c1adbab022e04b1685a0505db7e1b3f7bc86605b",
+      "R.h5": "6ce2b788a762967dbbef0df79193b89d74e76544b62a5912e7db20ec313b7982",
+      "T.h5": "5bc127f3bba70cc62709f20eddacb8ac8b574df0cb02bec62b0b6f638556c37b"
+    },
+    "confidence": 0.999999,
+    "threshold_px": 0.5,
+    "seeds": [
+      0,
+      1,
+      2
+    ],
+    "rounds": 5,
+    "platform": "macOS-26.5.1-arm64-arm-64bit",
+    "measurement": "same-process alternating calls; mean per-case median; includes Python FFI",
+    "binary_sha256": [
+      "228f35bb0da817b902c10b32c6132a6c29da76bc3535faf5bbf17160960cd860",
+      "9440e34c52cf0028ff01efa63334d8c3c16b536513e6cf74328feafe0c102756"
+    ],
+    "base_commit": "7e77446560d9b58c416e653b58f93a01afda64a6",
+    "compiler": "rustc 1.93.0; Apple M1; repository ThinLTO release profile",
+    "source_sha256": {
+      "crates/kornia-3d/src/pose/twoview/local_optimization.rs": "d41f5aa80d75d54aa89b09fb13981385a73b6b1fca8832f0f2d2bc17cffe3f20",
+      "crates/kornia-3d/src/pose/twoview/mod.rs": "1580646379b39a2730f892f11aa286f272a9b822bdf78b284286d220225f3a85",
+      "crates/kornia-3d/src/pose/twoview/robust.rs": "0b61249a7ac0b396fa904718c4352414b4838f262bca13d591cfba1e414e6785",
+      "crates/kornia-3d/src/pose/twoview/scoring.rs": "7bc762fda890d3408ea191779a17ffe659887ceb3247d5e090409fc0cb36f990",
+      "crates/kornia-3d/src/pose/twoview/tests.rs": "6528e0e81f1ddcc8089df3a5d60960464b932424b6335fc236c29100bf615e73",
+      "crates/kornia-3d/src/ransac/estimators/fundamental/kernels.rs": "bdc327581d7e4a3a81727df25e8c1b8f3cab65c7ef0ab7e979ee2234d898318d",
+      "crates/kornia-3d/src/ransac/estimators/fundamental/mod.rs": "5e2e38a44cd784da5fc40fbc9850fad17a6ad3647c0b0e5940cc2df6f61c30da",
+      "crates/kornia-3d/src/ransac/estimators/fundamental/tests.rs": "6abe9f618ff03f736e5dd503aa3b0b48dea0215b34fe30c742353bb6974f516b",
+      "crates/kornia-3d/src/ransac/driver.rs": "6b2a95a055ab77bbc6635e5f4371c26db99fdfff8f7616aba6ff720d0b872ace"
+    }
+  },
+  "summary": [
+    {
+      "engine": "generic",
+      "solver": "7point",
+      "budget": 64,
+      "before_ms": 0.09998856862745098,
+      "after_ms": 0.09992490196078431,
+      "speedup": 1.0006371451501814
+    },
+    {
+      "engine": "generic",
+      "solver": "7point",
+      "budget": 256,
+      "before_ms": 0.3562010882352941,
+      "after_ms": 0.35568098039215684,
+      "speedup": 1.0014622874761643
+    },
+    {
+      "engine": "generic",
+      "solver": "7point",
+      "budget": 1000,
+      "before_ms": 1.093850931372549,
+      "after_ms": 1.0941013725490196,
+      "speedup": 0.9997710987457341
+    },
+    {
+      "engine": "generic",
+      "solver": "7point",
+      "budget": 4096,
+      "before_ms": 2.597203411764706,
+      "after_ms": 2.597521656862745,
+      "speedup": 0.999877481253256
+    },
+    {
+      "engine": "generic",
+      "solver": "7point",
+      "budget": 16384,
+      "before_ms": 6.559146205882353,
+      "after_ms": 6.560565323529412,
+      "speedup": 0.9997836897314368
+    },
+    {
+      "engine": "generic",
+      "solver": "8point",
+      "budget": 64,
+      "before_ms": 0.11821688235294117,
+      "after_ms": 0.1184505294117647,
+      "speedup": 0.9980274713841817
+    },
+    {
+      "engine": "generic",
+      "solver": "8point",
+      "budget": 256,
+      "before_ms": 0.4463345294117647,
+      "after_ms": 0.44723854901960786,
+      "speedup": 0.997978663489932
+    },
+    {
+      "engine": "generic",
+      "solver": "8point",
+      "budget": 1000,
+      "before_ms": 1.5493676470588236,
+      "after_ms": 1.5501629901960785,
+      "speedup": 0.999486929347246
+    },
+    {
+      "engine": "generic",
+      "solver": "8point",
+      "budget": 4096,
+      "before_ms": 4.484553039215686,
+      "after_ms": 4.490641323529411,
+      "speedup": 0.9986442283239534
+    },
+    {
+      "engine": "generic",
+      "solver": "8point",
+      "budget": 16384,
+      "before_ms": 10.436082568627452,
+      "after_ms": 10.445122921568627,
+      "speedup": 0.9991344905168605
+    },
+    {
+      "engine": "k3d",
+      "solver": "7point",
+      "budget": 64,
+      "before_ms": 0.10352654901960784,
+      "after_ms": 0.10400935294117647,
+      "speedup": 0.9953580720587534
+    },
+    {
+      "engine": "k3d",
+      "solver": "7point",
+      "budget": 256,
+      "before_ms": 0.3744779117647059,
+      "after_ms": 0.3751495098039216,
+      "speedup": 0.9982097856410189
+    },
+    {
+      "engine": "k3d",
+      "solver": "7point",
+      "budget": 1000,
+      "before_ms": 1.1507328725490196,
+      "after_ms": 1.1514836470588234,
+      "speedup": 0.999347993771582
+    },
+    {
+      "engine": "k3d",
+      "solver": "7point",
+      "budget": 4096,
+      "before_ms": 2.7279240588235294,
+      "after_ms": 2.7296875588235294,
+      "speedup": 0.9993539553659541
+    },
+    {
+      "engine": "k3d",
+      "solver": "7point",
+      "budget": 16384,
+      "before_ms": 6.894797843137255,
+      "after_ms": 6.892716098039216,
+      "speedup": 1.0003020210129692
+    },
+    {
+      "engine": "k3d",
+      "solver": "8point",
+      "budget": 64,
+      "before_ms": 0.13426023529411765,
+      "after_ms": 0.12965116666666668,
+      "speedup": 1.0355497659292252
+    },
+    {
+      "engine": "k3d",
+      "solver": "8point",
+      "budget": 256,
+      "before_ms": 0.5875788725490196,
+      "after_ms": 0.5846846960784313,
+      "speedup": 1.0049499781506168
+    },
+    {
+      "engine": "k3d",
+      "solver": "8point",
+      "budget": 1000,
+      "before_ms": 2.021951,
+      "after_ms": 2.014855794117647,
+      "speedup": 1.0035214460027697
+    },
+    {
+      "engine": "k3d",
+      "solver": "8point",
+      "budget": 4096,
+      "before_ms": 5.321130264705882,
+      "after_ms": 5.3439064705882355,
+      "speedup": 0.9957379108321396
+    },
+    {
+      "engine": "k3d",
+      "solver": "8point",
+      "budget": 16384,
+      "before_ms": 11.240578794117647,
+      "after_ms": 11.229068637254901,
+      "speedup": 1.0010250321940823
+    }
+  ],
+  "changes": []
+}
