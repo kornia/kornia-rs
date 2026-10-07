@@ -80,6 +80,7 @@ fn scene(n: usize) -> Scene {
     s
 }
 
+/// Borrows single-scale keypoints with either 32-byte binary or 64-float descriptors.
 fn keypoints<'a>(
     xy: &'a [[f32; 2]],
     bin: &'a [u8],
@@ -100,6 +101,7 @@ fn keypoints<'a>(
     }
 }
 
+/// Benchmarks both descriptor kinds at 1000 and 2048 keypoints on CPU and, if enabled, CUDA.
 fn bench_stereo_match(c: &mut Criterion) {
     let mut group = c.benchmark_group("StereoMatch");
     let m = StereoMatcher::new(StereoMatchConfig::new(435.0, 0.11)).unwrap();
@@ -132,6 +134,29 @@ mod cuda {
     use cudarc::driver::CudaContext;
     use kornia_3d::stereo::{CudaStereoDescriptors, CudaStereoKeypoints, KeypointCount};
 
+    /// Benchmarks device-resident stereo matching, synchronizing after each iteration.
+    /// Uploads and output allocation occur outside the timed loop.
+    ///
+    /// # Arguments
+    ///
+    /// * `group` - Criterion group receiving the CUDA benchmark.
+    /// * `m` - CPU matcher whose configuration is copied to the CUDA backend.
+    /// * `s` - Synthetic stereo images, keypoints, and descriptors to upload.
+    /// * `binary` - Selects binary descriptors when true, float descriptors otherwise.
+    /// * `kind` - Descriptor label used in the benchmark identifier.
+    /// * `n` - Keypoint count used in the benchmark identifier and input.
+    ///
+    /// # Returns
+    ///
+    /// Registers and runs the benchmark without returning a value.
+    ///
+    /// # Errors
+    ///
+    /// Errors are not returned; setup and matching failures panic.
+    ///
+    /// # Panics
+    ///
+    /// Panics if CUDA initialization, uploads, allocation, matching, or synchronization fails.
     pub fn bench(
         group: &mut BenchmarkGroup<'_, WallTime>,
         m: &StereoMatcher,

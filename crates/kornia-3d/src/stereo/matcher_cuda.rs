@@ -41,6 +41,7 @@ pub enum KeypointCount<'a> {
 }
 
 impl KeypointCount<'_> {
+    /// Returns the host-known count or device-count upper bound without synchronizing.
     fn capacity(&self) -> usize {
         match *self {
             Self::Host(n) => n,
@@ -578,10 +579,12 @@ fn coarse_shift(bins: usize) -> u32 {
     shift
 }
 
+/// Returns the coarse histogram bucket count, including a partially filled final bucket.
 fn coarse_bins(bins: usize) -> usize {
     bins.div_ceil(1 << coarse_shift(bins))
 }
 
+/// Wraps a CUDA failure as a stereo image error, preserving its diagnostic text.
 fn cuda_err(e: impl std::fmt::Display) -> StereoMatchError {
     StereoMatchError::Image(ImageError::Cuda(e.to_string()))
 }
@@ -966,6 +969,8 @@ fn push_bucket_args<'a>(
     push_count(b, k.count, null)
 }
 
+/// Appends one view's coordinates, octaves, descriptors, and count in kernel ABI order.
+/// Uses `null` for absent octaves and for a count already known on the host.
 fn push_side<'a>(
     b: kornia_tensor::CudaLaunchBuilder<'a>,
     k: &'a CudaStereoKeypoints<'a>,

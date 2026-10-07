@@ -103,6 +103,7 @@ pub struct SadRefine {
 }
 
 impl Default for SadRefine {
+    /// Uses an 11×11 patch, a ±5-pixel search, equiangular fitting, and median rejection.
     fn default() -> Self {
         Self {
             half_window: 5,
@@ -167,6 +168,8 @@ impl StereoMatchConfig {
         }
     }
 
+    /// Checks geometry, pyramid limits, and SAD settings for both matching backends.
+    /// Returns `InvalidConfig` when a configuration constraint is violated.
     fn validate(&self) -> Result<(), StereoMatchError> {
         let bad = StereoMatchError::InvalidConfig;
         let positive = |v: f32| v.is_finite() && v > 0.0;
@@ -249,6 +252,7 @@ impl StereoMatches {
         self.right_idx.iter().filter(|&&i| i >= 0).count()
     }
 
+    /// Resizes all result arrays to `n` left keypoints and fills them with `-1` sentinels.
     fn reset(&mut self, n: usize) {
         for v in [&mut self.u_right, &mut self.depth] {
             v.clear();
@@ -507,6 +511,7 @@ impl StereoMatcher {
     }
 }
 
+/// Checks descriptor width and per-keypoint array lengths, labelling errors with `side`.
 fn check_keypoints(k: &StereoKeypoints, side: &'static str) -> Result<(), StereoMatchError> {
     let n = k.xy.len();
     if let Some(o) = k.octaves {
@@ -537,6 +542,20 @@ fn check_keypoints(k: &StereoKeypoints, side: &'static str) -> Result<(), Stereo
     Ok(())
 }
 
+/// Checks that both views use the same descriptor kind and row width.
+///
+/// # Arguments
+///
+/// * `l` - Left-view descriptors.
+/// * `r` - Right-view descriptors.
+///
+/// # Returns
+///
+/// `Ok(())` when descriptor kinds and widths agree.
+///
+/// # Errors
+///
+/// Returns [`StereoMatchError::Descriptors`] if kinds or widths differ.
 pub(crate) fn check_descriptor_pair(
     l: &StereoDescriptors,
     r: &StereoDescriptors,
@@ -593,6 +612,7 @@ fn octave_gate(has_octaves: bool, o_l: usize, o_r: usize) -> bool {
     !has_octaves || o_l.abs_diff(o_r) <= 1
 }
 
+/// Counts differing bits in paired bytes of two descriptors of equal, validated width.
 fn hamming(a: &[u8], b: &[u8]) -> u32 {
     a.iter().zip(b).map(|(x, y)| (x ^ y).count_ones()).sum()
 }
@@ -626,6 +646,7 @@ enum Best {
 }
 
 impl Best {
+    /// Starts an empty best-match accumulator for the descriptor kind in `d`.
     fn new(d: &StereoDescriptors) -> Self {
         match d {
             StereoDescriptors::Binary { .. } => Best::Binary {
@@ -639,6 +660,8 @@ impl Best {
         }
     }
 
+    /// Scores right keypoint `ir` against left keypoint `il`, keeping strict improvements.
+    /// Descriptor kinds and widths must agree; ascending right indices resolve ties.
     fn offer(&mut self, l: &StereoDescriptors, il: usize, r: &StereoDescriptors, ir: usize) {
         match (self, l, r) {
             (
@@ -670,6 +693,7 @@ impl Best {
         }
     }
 
+    /// Returns the best right index only if its score passes the configured strict threshold.
     fn accept(&self, cfg: &StereoMatchConfig) -> Option<usize> {
         match *self {
             Best::Binary { dist, ir } => ir.filter(|_| dist < cfg.max_hamming),
@@ -764,6 +788,7 @@ fn sub_pixel_offset(fit: SubPixelFit, s1: i32, s2: i32, s3: i32) -> Option<f32> 
     (-1.0..=1.0).contains(&delta).then_some(delta)
 }
 
+/// Converts the coarse right coordinate plus integer and sub-pixel offsets to level-0 pixels.
 fn sub_pixel_u(scale: f32, su_r0: i32, inc: i32, delta: f32) -> f32 {
     scale * (su_r0 as f32 + inc as f32 + delta)
 }
@@ -788,6 +813,7 @@ fn median_rejects(sad: i32, th: f32) -> bool {
     sad > 0 && sad as f32 >= th
 }
 
+/// Scales the median centred SAD to obtain the outlier-rejection threshold.
 fn median_threshold(factor: f32, median: i32) -> f32 {
     factor * median as f32
 }
