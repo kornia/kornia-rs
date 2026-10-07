@@ -739,6 +739,8 @@ fn refine_sad(
 
 /// Both patches and the whole right search window lie inside the image.
 fn sad_fits(su_l: i32, sv: i32, su_r0: i32, w: i32, l: i32, iw: i32, ih: i32) -> bool {
+    let (su_l, sv, su_r0) = (su_l as i64, sv as i64, su_r0 as i64);
+    let (w, l, iw, ih) = (w as i64, l as i64, iw as i64, ih as i64);
     su_l - w >= 0
         && su_l + w < iw
         && sv - w >= 0
@@ -1020,6 +1022,40 @@ pub(crate) mod tests {
             assert_eq!(out.u_right[il], s.rxy[s.partner[il]][0]);
         }
         Ok(())
+    }
+
+    #[test]
+    fn sad_fits_preserves_inclusive_lower_and_exclusive_upper_bounds() {
+        assert!(sad_fits(5, 5, 10, 5, 5, 21, 11));
+        assert!(sad_fits(15, 5, 10, 5, 5, 21, 11));
+        for (su_l, sv, su_r0) in [
+            (4, 5, 10),
+            (16, 5, 10),
+            (5, 4, 10),
+            (5, 6, 10),
+            (5, 5, 9),
+            (5, 5, 11),
+        ] {
+            assert!(!sad_fits(su_l, sv, su_r0, 5, 5, 21, 11));
+        }
+    }
+
+    #[test]
+    fn sad_fits_rejects_extreme_coordinates_without_overflow() {
+        for coordinate in [i32::MIN, i32::MAX, i32::MAX - 5] {
+            assert!(!sad_fits(coordinate, 10, 10, 5, 5, 100, 100));
+            assert!(!sad_fits(10, coordinate, 10, 5, 5, 100, 100));
+            assert!(!sad_fits(10, 10, coordinate, 5, 5, 100, 100));
+        }
+        assert!(sad_fits(
+            i32::MAX - 6,
+            i32::MAX - 6,
+            i32::MAX - 11,
+            5,
+            5,
+            i32::MAX,
+            i32::MAX,
+        ));
     }
 
     /// A match whose search window would cross the image border is skipped, not read

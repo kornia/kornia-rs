@@ -208,7 +208,7 @@ __device__ __forceinline__ int left_row(float v, int rows) {
     return min(max((int)v, 0), rows - 1);
 }
 /* sad_fits */
-__device__ __forceinline__ bool sad_fits(int su_l, int sv, int su_r0, int w, int l, int iw, int ih) {
+__device__ __forceinline__ bool sad_fits(long long su_l, long long sv, long long su_r0, long long w, long long l, long long iw, long long ih) {
     return su_l - w >= 0 && su_l + w < iw && sv - w >= 0 && sv + w < ih
         && su_r0 - l - w >= 0 && su_r0 + l + w < iw;
 }
