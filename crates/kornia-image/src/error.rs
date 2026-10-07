@@ -25,6 +25,10 @@ pub enum ImageError {
     #[error("Data length ({0}) does not match the image size ({1})")]
     InvalidChannelShape(usize, usize),
 
+    /// Error when the image has zero width or zero height.
+    #[error("Image is empty: width {0}, height {1}")]
+    EmptyImage(usize, usize),
+
     /// Error when the cast operation fails.
     #[error("Failed to cast image data")]
     CastError,

@@ -57,10 +57,27 @@ impl DistanceTransformExecutor {
     }
 
     /// Computes the Euclidean Distance Transform of a binary image.
+    ///
+    /// # Arguments
+    ///
+    /// * `image` - Input image. Pixels with a value greater than zero are foreground.
+    ///
+    /// # Returns
+    ///
+    /// An image of the same size holding the distance from each pixel to the
+    /// nearest foreground pixel.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ImageError::EmptyImage`] if `image` has zero width or zero height.
     pub fn execute(&mut self, image: &Image<f32, 1>) -> Result<Image<f32, 1>, ImageError> {
         let width = image.width();
         let height = image.height();
         let num_pixels = width * height;
+
+        if width == 0 || height == 0 {
+            return Err(ImageError::EmptyImage(width, height));
+        }
 
         // Resize internal workspace if the image dimensions have changed.
         if self.grid.len() != num_pixels {
@@ -212,6 +229,21 @@ mod tests {
         assert_eq!(output.size().width, 3);
         assert_eq!(output.size().height, 4);
         assert_eq!(output.as_slice()[2], 0.0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn distance_transform_empty_image() -> Result<(), ImageError> {
+        let mut executor = DistanceTransformExecutor::new();
+
+        for (width, height) in [(0, 5), (5, 0), (0, 0)] {
+            let image = Image::<f32, 1>::new(ImageSize { width, height }, vec![])?;
+            let result = executor.execute(&image);
+            assert!(
+                matches!(result, Err(ImageError::EmptyImage(w, h)) if w == width && h == height)
+            );
+        }
 
         Ok(())
     }

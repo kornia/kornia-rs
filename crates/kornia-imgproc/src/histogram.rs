@@ -18,6 +18,7 @@ use rayon::prelude::*;
 /// # Errors
 ///
 /// Returns an error if the number of bins is invalid.
+/// Returns [`ImageError::EmptyImage`] if `src` has zero width or zero height.
 ///
 /// # Example
 ///
@@ -49,6 +50,10 @@ pub fn compute_histogram(
 
     if hist.len() != num_bins {
         return Err(ImageError::InvalidHistogramBins(num_bins));
+    }
+
+    if src.width() == 0 || src.height() == 0 {
+        return Err(ImageError::EmptyImage(src.width(), src.height()));
     }
 
     // we assume 8-bit images for now and range [0, 255]
@@ -115,6 +120,22 @@ mod tests {
 
         super::compute_histogram(&image, &mut histogram, 3)?;
         assert_eq!(histogram, vec![3, 3, 3]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_compute_histogram_empty_image() -> Result<(), ImageError> {
+        for (width, height) in [(0, 5), (5, 0), (0, 0)] {
+            let image = Image::<u8, 1>::new(ImageSize { width, height }, vec![])?;
+            let mut histogram = vec![0; 4];
+
+            let result = super::compute_histogram(&image, &mut histogram, 4);
+            assert!(
+                matches!(result, Err(ImageError::EmptyImage(w, h)) if w == width && h == height)
+            );
+            assert_eq!(histogram, vec![0; 4]);
+        }
 
         Ok(())
     }
