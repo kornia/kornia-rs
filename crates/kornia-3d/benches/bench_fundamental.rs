@@ -1,7 +1,10 @@
 //! Focused seven-point versus eight-point solver and RANSAC benchmarks.
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use kornia_3d::{
-    pose::{fundamental_7point, fundamental_8point},
+    pose::{
+        fundamental_7point, fundamental_8point, ransac_fundamental, ransac_fundamental_8point,
+        RansacParams,
+    },
     ransac::{
         estimators::{Fundamental8PointEstimator, FundamentalEstimator},
         run, Estimator, Match2d2d, RansacConfig, ThresholdConsensus, UniformSampler,
@@ -139,6 +142,39 @@ fn bench_fundamental(c: &mut Criterion) {
                 });
             },
         );
+    }
+    group.finish();
+
+    // Public two-view path has independent scoring and count/score tie-breaking.
+    let mut group = c.benchmark_group("fundamental_twoview_fixed_budget");
+    for ratio in [0.2, 0.5, 0.8] {
+        let (a, b, _) = scene(500, ratio);
+        let params = RansacParams {
+            max_iterations: 1000,
+            threshold: 1.0,
+            confidence: Some(0.999_999),
+            ..Default::default()
+        };
+        group.bench_function(BenchmarkId::new("7point", ratio), |bench| {
+            bench.iter(|| {
+                std::hint::black_box(
+                    ransac_fundamental(std::hint::black_box(&a), std::hint::black_box(&b), &params)
+                        .unwrap(),
+                )
+            });
+        });
+        group.bench_function(BenchmarkId::new("8point", ratio), |bench| {
+            bench.iter(|| {
+                std::hint::black_box(
+                    ransac_fundamental_8point(
+                        std::hint::black_box(&a),
+                        std::hint::black_box(&b),
+                        &params,
+                    )
+                    .unwrap(),
+                )
+            });
+        });
     }
     group.finish();
 

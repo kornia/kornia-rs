@@ -71,30 +71,21 @@ impl Estimator for FundamentalEstimator {
         if n != samples.len() {
             return None;
         }
-        if inliers_out.len() != n {
-            inliers_out.resize(n, false);
-        }
 
-        let mut count = 0usize;
-        let mut start = 0usize;
-        while start < n {
-            let end = (start + THRESHOLD_SCORE_CHUNK).min(n);
-            // Retain the existing SIMD residual dispatcher. Thresholding the
-            // fresh chunk immediately avoids materializing/scanning a full
-            // residual vector for roots that cannot beat the incumbent.
-            self.residual_batch(model, &samples[start..end], &mut residuals[start..end]);
-            for (mask, &residual) in inliers_out[start..end]
-                .iter_mut()
-                .zip(&residuals[start..end])
-            {
-                let is_inlier = residual < threshold;
-                *mask = is_inlier;
-                count += is_inlier as usize;
-            }
-            start = end;
-            if count + n - start <= best_inlier_count {
-                return Some(ThresholdInlierResult::Pruned);
-            }
+        // Pack once per candidate rather than once per scoring chunk.
+        let f = pack_f(model);
+        // The selected backend keeps its vector constants live across the
+        // fixed-size chunks and performs the same safe pruning check.
+        let Some(count) =
+            sampson_residual_batch_threshold(f, samples, residuals, threshold, best_inlier_count)
+        else {
+            return Some(ThresholdInlierResult::Pruned);
+        };
+
+        // Only a candidate that can become the winner needs its full mask.
+        inliers_out.resize(n, false);
+        for (mask, &residual) in inliers_out.iter_mut().zip(residuals.iter()) {
+            *mask = residual < threshold;
         }
         Some(ThresholdInlierResult::Complete(count))
     }
@@ -166,33 +157,84 @@ impl Estimator for Fundamental8PointEstimator {
         // The SIMD kernels below write `out` through raw pointers for every sample;
         // only the first `min(out.len(), samples.len())` entries are computed.
         let (samples, out) = clamp_pair(samples, out);
-        let f = pack_f(model);
+        sampson_residual_batch(pack_f(model), samples, out);
+    }
+}
 
-        #[cfg(target_arch = "aarch64")]
-        // SAFETY: NEON is architectural on aarch64-unknown-linux-gnu.
-        // `out.len() == samples.len()` holds after the clamp above; the kernel never reads/writes
-        // past `samples.len()` (returns `idx`, scalar tail handles the rest).
+/// Evaluate a batch with the existing residual dispatcher.
+#[inline]
+fn sampson_residual_batch(f: FPacked, samples: &[Match2d2d], out: &mut [f64]) {
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: NEON is architectural on aarch64-unknown-linux-gnu.
+    // `out.len() == samples.len()` holds after the clamp above; the kernel never reads/writes
+    // past `samples.len()` (returns `idx`, scalar tail handles the rest).
+    unsafe {
+        let _ = sampson_residual_batch_neon::<false, false>(f, samples, out, 0.0, 0);
+        return;
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    if kornia_imgproc::simd::cpu_features().has_avx2 && kornia_imgproc::simd::cpu_features().has_fma
+    {
+        // SAFETY: `has_avx2` runtime check; `target_feature(enable=...)`
+        // enables AVX2+FMA inside the kernel. Same length invariants.
         unsafe {
-            let idx = sampson_residual_batch_neon(f, samples, out);
-            sampson_residual_batch_scalar_tail(f, samples, out, idx);
-            return;
+            let _ = sampson_residual_batch_avx2::<false, false>(f, samples, out, 0.0, 0);
         }
+        return;
+    }
 
-        #[cfg(target_arch = "x86_64")]
-        if kornia_imgproc::simd::cpu_features().has_avx2
-            && kornia_imgproc::simd::cpu_features().has_fma
-        {
-            // SAFETY: `has_avx2` runtime check; `target_feature(enable=...)`
-            // enables AVX2+FMA inside the kernel. Same length invariants.
-            unsafe {
-                let idx = sampson_residual_batch_avx2(f, samples, out);
-                sampson_residual_batch_scalar_tail(f, samples, out, idx);
-            }
-            return;
+    #[allow(unreachable_code)]
+    sampson_residual_batch_scalar(f, samples, out);
+}
+
+/// Compute residuals and count strict inliers in one pass.
+#[inline]
+fn sampson_residual_batch_threshold(
+    f: FPacked,
+    samples: &[Match2d2d],
+    out: &mut [f64],
+    threshold: f64,
+    best_inlier_count: usize,
+) -> Option<usize> {
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: NEON is architectural on aarch64. The kernel only processes
+    // complete lanes within the equally-sized slices.
+    unsafe {
+        return sampson_residual_batch_neon::<true, true>(
+            f,
+            samples,
+            out,
+            threshold,
+            best_inlier_count,
+        );
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    if kornia_imgproc::simd::cpu_features().has_avx2 && kornia_imgproc::simd::cpu_features().has_fma
+    {
+        // SAFETY: runtime feature checks match the kernel target features;
+        // the kernel only processes complete lanes within the slices.
+        unsafe {
+            return sampson_residual_batch_avx2::<true, true>(
+                f,
+                samples,
+                out,
+                threshold,
+                best_inlier_count,
+            );
         }
+    }
 
-        #[allow(unreachable_code)]
-        sampson_residual_batch_scalar(f, samples, out);
+    #[allow(unreachable_code)]
+    {
+        sampson_residual_batch_scalar_threshold_bounded(
+            f,
+            samples,
+            out,
+            threshold,
+            best_inlier_count,
+        )
     }
 }
 
@@ -204,9 +246,9 @@ impl Estimator for Fundamental8PointEstimator {
 //   - `_neon`    — aarch64 SIMD; baseline feature, no runtime probe.
 //   - `_avx2`    — x86_64 SIMD; gated by `simd::cpu_features().has_avx2`.
 //
-// Each SIMD kernel returns the index up to which it processed. The
-// dispatcher then calls `_scalar_tail` to finish off the remainder
-// (1 element on NEON's 2-wide path, up to 3 on AVX2's 4-wide path).
+// Each SIMD kernel completes scalar tails internally and returns the inlier
+// count, or `None` when bounded scoring proves the remaining samples cannot
+// exceed the incumbent.
 // ---------------------------------------------------------------------------
 
 /// 9 entries of an F-matrix in row-major order — the natural shape for
@@ -274,6 +316,31 @@ fn sampson_residual_batch_scalar_tail(
     sampson_residual_batch_scalar(f, &samples[start..], &mut out[start..]);
 }
 
+/// Scalar bounded threshold fallback with the same pruning boundaries as SIMD.
+fn sampson_residual_batch_scalar_threshold_bounded(
+    f: FPacked,
+    samples: &[Match2d2d],
+    out: &mut [f64],
+    threshold: f64,
+    best_inlier_count: usize,
+) -> Option<usize> {
+    let mut count = 0usize;
+    let mut start = 0usize;
+    while start < samples.len() {
+        let end = (start + THRESHOLD_SCORE_CHUNK).min(samples.len());
+        sampson_residual_batch_scalar(f, &samples[start..end], &mut out[start..end]);
+        count += out[start..end]
+            .iter()
+            .filter(|&&residual| residual < threshold)
+            .count();
+        if count + samples.len() - end <= best_inlier_count {
+            return None;
+        }
+        start = end;
+    }
+    Some(count)
+}
+
 /// 2-lane f64 NEON kernel.
 ///
 /// `Match2d2d` is `#[repr(C)]` `{x1: Vec2F64, x2: Vec2F64}` → 4 contiguous
@@ -285,10 +352,18 @@ fn sampson_residual_batch_scalar_tail(
 /// - aarch64 architectural (no runtime probe needed); `target_feature` is
 ///   set to unlock the intrinsics.
 /// - `out.len() >= samples.len()`; never reads/writes past either slice.
+///   `threshold_inliers` deliberately permits oversized reusable scratch and
+///   only accesses the prefix matching `samples.len()`.
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 #[inline]
-unsafe fn sampson_residual_batch_neon(f: FPacked, samples: &[Match2d2d], out: &mut [f64]) -> usize {
+unsafe fn sampson_residual_batch_neon<const COUNT: bool, const BOUNDED: bool>(
+    f: FPacked,
+    samples: &[Match2d2d],
+    out: &mut [f64],
+    threshold: f64,
+    best_inlier_count: usize,
+) -> Option<usize> {
     unsafe {
         use std::arch::aarch64::*;
         let (f00, f01, f02, f10, f11, f12, f20, f21, f22) = f;
@@ -303,39 +378,68 @@ unsafe fn sampson_residual_batch_neon(f: FPacked, samples: &[Match2d2d], out: &m
         let f22v = vdupq_n_f64(f22);
         let eps = vdupq_n_f64(1e-12);
         let one = vdupq_n_f64(1.0);
+        let threshold_v = vdupq_n_f64(threshold);
 
         let n = samples.len();
-        let mut idx = 0usize;
-        while idx + 2 <= n {
-            let base = samples.as_ptr().add(idx) as *const f64;
-            let lanes = vld4q_f64(base);
-            let x1 = lanes.0;
-            let y1 = lanes.1;
-            let x2 = lanes.2;
-            let y2 = lanes.3;
+        let mut start = 0usize;
+        let mut count = 0usize;
+        while start < n {
+            let end = if BOUNDED {
+                (start + THRESHOLD_SCORE_CHUNK).min(n)
+            } else {
+                n
+            };
+            let mut idx = start;
+            while idx + 2 <= end {
+                let base = samples.as_ptr().add(idx) as *const f64;
+                let lanes = vld4q_f64(base);
+                let x1 = lanes.0;
+                let y1 = lanes.1;
+                let x2 = lanes.2;
+                let y2 = lanes.3;
 
-            let fx1x = vfmaq_f64(vfmaq_f64(f02v, x1, f00v), y1, f01v);
-            let fx1y = vfmaq_f64(vfmaq_f64(f12v, x1, f10v), y1, f11v);
-            let fx1z = vfmaq_f64(vfmaq_f64(f22v, x1, f20v), y1, f21v);
-            let ftx2x = vfmaq_f64(vfmaq_f64(f20v, x2, f00v), y2, f10v);
-            let ftx2y = vfmaq_f64(vfmaq_f64(f21v, x2, f01v), y2, f11v);
+                let fx1x = vfmaq_f64(vfmaq_f64(f02v, x1, f00v), y1, f01v);
+                let fx1y = vfmaq_f64(vfmaq_f64(f12v, x1, f10v), y1, f11v);
+                let fx1z = vfmaq_f64(vfmaq_f64(f22v, x1, f20v), y1, f21v);
+                let ftx2x = vfmaq_f64(vfmaq_f64(f20v, x2, f00v), y2, f10v);
+                let ftx2y = vfmaq_f64(vfmaq_f64(f21v, x2, f01v), y2, f11v);
 
-            let err = vfmaq_f64(vfmaq_f64(fx1z, x2, fx1x), y2, fx1y);
-            let denom = vfmaq_f64(
-                vfmaq_f64(vfmaq_f64(vmulq_f64(fx1x, fx1x), fx1y, fx1y), ftx2x, ftx2x),
-                ftx2y,
-                ftx2y,
-            );
-            let err_sq = vmulq_f64(err, err);
-            let denom_ok = vcgtq_f64(denom, eps);
-            let safe_denom = vbslq_f64(denom_ok, denom, one);
-            let div_val = vdivq_f64(err_sq, safe_denom);
-            let dd = vbslq_f64(denom_ok, div_val, err_sq);
+                let err = vfmaq_f64(vfmaq_f64(fx1z, x2, fx1x), y2, fx1y);
+                let denom = vfmaq_f64(
+                    vfmaq_f64(vfmaq_f64(vmulq_f64(fx1x, fx1x), fx1y, fx1y), ftx2x, ftx2x),
+                    ftx2y,
+                    ftx2y,
+                );
+                let err_sq = vmulq_f64(err, err);
+                let denom_ok = vcgtq_f64(denom, eps);
+                let safe_denom = vbslq_f64(denom_ok, denom, one);
+                let div_val = vdivq_f64(err_sq, safe_denom);
+                let dd = vbslq_f64(denom_ok, div_val, err_sq);
 
-            vst1q_f64(out.as_mut_ptr().add(idx), dd);
-            idx += 2;
+                vst1q_f64(out.as_mut_ptr().add(idx), dd);
+                if COUNT {
+                    let mask = vcltq_f64(dd, threshold_v);
+                    let mut lanes = [0u64; 2];
+                    vst1q_u64(lanes.as_mut_ptr(), mask);
+                    count += (lanes[0] != 0) as usize + (lanes[1] != 0) as usize;
+                }
+                idx += 2;
+            }
+            if idx < end {
+                sampson_residual_batch_scalar_tail(f, &samples[..end], &mut out[..end], idx);
+                if COUNT {
+                    count += out[idx..end]
+                        .iter()
+                        .filter(|&&residual| residual < threshold)
+                        .count();
+                }
+            }
+            if BOUNDED && count + n - end <= best_inlier_count {
+                return None;
+            }
+            start = end;
         }
-        idx
+        Some(count)
     }
 }
 
@@ -356,11 +460,19 @@ unsafe fn sampson_residual_batch_neon(f: FPacked, samples: &[Match2d2d], out: &m
 ///
 /// # Safety
 /// - Caller has runtime-checked `cpu_features().has_avx2`.
-/// - `out.len() >= samples.len()`.
+/// - `out.len() >= samples.len()`; `threshold_inliers` deliberately permits
+///   oversized reusable scratch and this kernel accesses only the matching
+///   sample prefix.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
 #[inline]
-unsafe fn sampson_residual_batch_avx2(f: FPacked, samples: &[Match2d2d], out: &mut [f64]) -> usize {
+unsafe fn sampson_residual_batch_avx2<const COUNT: bool, const BOUNDED: bool>(
+    f: FPacked,
+    samples: &[Match2d2d],
+    out: &mut [f64],
+    threshold: f64,
+    best_inlier_count: usize,
+) -> Option<usize> {
     use std::arch::x86_64::*;
     let (f00, f01, f02, f10, f11, f12, f20, f21, f22) = f;
     let f00v = _mm256_set1_pd(f00);
@@ -374,55 +486,82 @@ unsafe fn sampson_residual_batch_avx2(f: FPacked, samples: &[Match2d2d], out: &m
     let f22v = _mm256_set1_pd(f22);
     let eps = _mm256_set1_pd(1e-12);
     let one = _mm256_set1_pd(1.0);
+    let threshold_v = _mm256_set1_pd(threshold);
 
     let n = samples.len();
-    let mut idx = 0usize;
-    while idx + 4 <= n {
-        let base = samples.as_ptr().add(idx) as *const f64;
-        // Each Match2d2d is 32 B = exactly one __m256d. Load 4 of them.
-        let a = _mm256_loadu_pd(base);
-        let b = _mm256_loadu_pd(base.add(4));
-        let c = _mm256_loadu_pd(base.add(8));
-        let d = _mm256_loadu_pd(base.add(12));
-        // 4×4 transpose: per-128b-lane unpack, then cross-lane permute.
-        let t0 = _mm256_unpacklo_pd(a, b);
-        let t1 = _mm256_unpackhi_pd(a, b);
-        let t2 = _mm256_unpacklo_pd(c, d);
-        let t3 = _mm256_unpackhi_pd(c, d);
-        let x1 = _mm256_permute2f128_pd::<0x20>(t0, t2);
-        let y1 = _mm256_permute2f128_pd::<0x20>(t1, t3);
-        let x2 = _mm256_permute2f128_pd::<0x31>(t0, t2);
-        let y2 = _mm256_permute2f128_pd::<0x31>(t1, t3);
+    let mut start = 0usize;
+    let mut count = 0usize;
+    while start < n {
+        let end = if BOUNDED {
+            (start + THRESHOLD_SCORE_CHUNK).min(n)
+        } else {
+            n
+        };
+        let mut idx = start;
+        while idx + 4 <= end {
+            let base = samples.as_ptr().add(idx) as *const f64;
+            // Each Match2d2d is 32 B = exactly one __m256d. Load 4 of them.
+            let a = _mm256_loadu_pd(base);
+            let b = _mm256_loadu_pd(base.add(4));
+            let c = _mm256_loadu_pd(base.add(8));
+            let d = _mm256_loadu_pd(base.add(12));
+            // 4×4 transpose: per-128b-lane unpack, then cross-lane permute.
+            let t0 = _mm256_unpacklo_pd(a, b);
+            let t1 = _mm256_unpackhi_pd(a, b);
+            let t2 = _mm256_unpacklo_pd(c, d);
+            let t3 = _mm256_unpackhi_pd(c, d);
+            let x1 = _mm256_permute2f128_pd::<0x20>(t0, t2);
+            let y1 = _mm256_permute2f128_pd::<0x20>(t1, t3);
+            let x2 = _mm256_permute2f128_pd::<0x31>(t0, t2);
+            let y2 = _mm256_permute2f128_pd::<0x31>(t1, t3);
 
-        let fx1x = _mm256_fmadd_pd(x1, f00v, _mm256_fmadd_pd(y1, f01v, f02v));
-        let fx1y = _mm256_fmadd_pd(x1, f10v, _mm256_fmadd_pd(y1, f11v, f12v));
-        let fx1z = _mm256_fmadd_pd(x1, f20v, _mm256_fmadd_pd(y1, f21v, f22v));
-        let ftx2x = _mm256_fmadd_pd(x2, f00v, _mm256_fmadd_pd(y2, f10v, f20v));
-        let ftx2y = _mm256_fmadd_pd(x2, f01v, _mm256_fmadd_pd(y2, f11v, f21v));
+            let fx1x = _mm256_fmadd_pd(x1, f00v, _mm256_fmadd_pd(y1, f01v, f02v));
+            let fx1y = _mm256_fmadd_pd(x1, f10v, _mm256_fmadd_pd(y1, f11v, f12v));
+            let fx1z = _mm256_fmadd_pd(x1, f20v, _mm256_fmadd_pd(y1, f21v, f22v));
+            let ftx2x = _mm256_fmadd_pd(x2, f00v, _mm256_fmadd_pd(y2, f10v, f20v));
+            let ftx2y = _mm256_fmadd_pd(x2, f01v, _mm256_fmadd_pd(y2, f11v, f21v));
 
-        let err = _mm256_fmadd_pd(fx1x, x2, _mm256_fmadd_pd(fx1y, y2, fx1z));
-        let denom = _mm256_fmadd_pd(
-            ftx2y,
-            ftx2y,
-            _mm256_fmadd_pd(
-                ftx2x,
-                ftx2x,
-                _mm256_fmadd_pd(fx1y, fx1y, _mm256_mul_pd(fx1x, fx1x)),
-            ),
-        );
-        let err_sq = _mm256_mul_pd(err, err);
-        // Mask: denom > 1e-12. `_mm256_blendv_pd` selects per-lane on the
-        // *sign bit* of the mask — `_CMP_GT_OQ` produces all-ones on true,
-        // all-zeros on false.
-        let denom_ok = _mm256_cmp_pd::<_CMP_GT_OQ>(denom, eps);
-        let safe_denom = _mm256_blendv_pd(one, denom, denom_ok);
-        let div_val = _mm256_div_pd(err_sq, safe_denom);
-        let dd = _mm256_blendv_pd(err_sq, div_val, denom_ok);
+            let err = _mm256_fmadd_pd(fx1x, x2, _mm256_fmadd_pd(fx1y, y2, fx1z));
+            let denom = _mm256_fmadd_pd(
+                ftx2y,
+                ftx2y,
+                _mm256_fmadd_pd(
+                    ftx2x,
+                    ftx2x,
+                    _mm256_fmadd_pd(fx1y, fx1y, _mm256_mul_pd(fx1x, fx1x)),
+                ),
+            );
+            let err_sq = _mm256_mul_pd(err, err);
+            // Mask: denom > 1e-12. `_mm256_blendv_pd` selects per-lane on the
+            // *sign bit* of the mask — `_CMP_GT_OQ` produces all-ones on true,
+            // all-zeros on false.
+            let denom_ok = _mm256_cmp_pd::<_CMP_GT_OQ>(denom, eps);
+            let safe_denom = _mm256_blendv_pd(one, denom, denom_ok);
+            let div_val = _mm256_div_pd(err_sq, safe_denom);
+            let dd = _mm256_blendv_pd(err_sq, div_val, denom_ok);
 
-        _mm256_storeu_pd(out.as_mut_ptr().add(idx), dd);
-        idx += 4;
+            _mm256_storeu_pd(out.as_mut_ptr().add(idx), dd);
+            if COUNT {
+                let mask = _mm256_cmp_pd::<_CMP_LT_OQ>(dd, threshold_v);
+                count += _mm256_movemask_pd(mask).count_ones() as usize;
+            }
+            idx += 4;
+        }
+        if idx < end {
+            sampson_residual_batch_scalar_tail(f, &samples[..end], &mut out[..end], idx);
+            if COUNT {
+                count += out[idx..end]
+                    .iter()
+                    .filter(|&&residual| residual < threshold)
+                    .count();
+            }
+        }
+        if BOUNDED && count + n - end <= best_inlier_count {
+            return None;
+        }
+        start = end;
     }
-    idx
+    Some(count)
 }
 
 #[cfg(test)]
@@ -507,6 +646,7 @@ mod tests {
             Vec3F64::ZERO,
             Vec3F64::ZERO,
         );
+        mask.fill(true);
         let result = est.threshold_inliers(
             &nan_model,
             &samples,
@@ -516,7 +656,130 @@ mod tests {
             &mut mask,
         );
         assert_eq!(result, Some(ThresholdInlierResult::Pruned));
-        assert!(mask.iter().take(128).all(|&is_inlier| !is_inlier));
+        assert!(mask.iter().all(|&is_inlier| is_inlier));
+    }
+
+    /// The fused counter must agree exactly with the residual dispatcher over
+    /// SIMD boundaries, tails, and strict threshold edge cases.
+    #[test]
+    fn fused_threshold_scoring_matches_batch_masks_and_counts() {
+        let pair = synthetic_pair();
+        let est = FundamentalEstimator;
+        let mut models = Vec::new();
+        est.fit(&pair.matches, &mut models);
+        let f = models[0];
+
+        for &n in &[1usize, 2, 3, 4, 5, 127, 128, 129] {
+            let samples: Vec<_> = pair.matches.iter().copied().cycle().take(n).collect();
+            let mut expected_residuals = vec![0.0; n];
+            est.residual_batch(&f, &samples, &mut expected_residuals);
+            let max_residual = expected_residuals
+                .iter()
+                .copied()
+                .fold(f64::NEG_INFINITY, f64::max);
+
+            for threshold in [max_residual, f64::INFINITY] {
+                let expected_mask: Vec<_> = expected_residuals
+                    .iter()
+                    .map(|&residual| residual < threshold)
+                    .collect();
+                let expected_count = expected_mask.iter().filter(|&&inlier| inlier).count();
+
+                let mut residuals = vec![f64::NAN; n];
+                let mut mask = vec![false; n];
+                let expected_result = if expected_count == 0 {
+                    ThresholdInlierResult::Pruned
+                } else {
+                    ThresholdInlierResult::Complete(expected_count)
+                };
+                assert_eq!(
+                    est.threshold_inliers(&f, &samples, threshold, 0, &mut residuals, &mut mask),
+                    Some(expected_result),
+                    "threshold={threshold:?}, n={n}"
+                );
+                if expected_count > 0 {
+                    assert_eq!(residuals, expected_residuals, "residuals at n={n}");
+                    assert_eq!(mask, expected_mask, "mask at n={n}");
+                }
+            }
+
+            let mut residuals = vec![f64::NAN; n];
+            let mut mask = vec![true; n];
+            assert_eq!(
+                est.threshold_inliers(&f, &samples, f64::NAN, 0, &mut residuals, &mut mask),
+                Some(ThresholdInlierResult::Pruned),
+                "NaN threshold must reject every lane at n={n}"
+            );
+        }
+    }
+
+    /// The AVX2 entry point is checked directly so a scalar dispatcher fallback
+    /// cannot hide an error in the fused counter.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn avx2_fused_threshold_kernel_matches_dispatcher() {
+        if !kornia_imgproc::simd::cpu_features().has_avx2
+            || !kornia_imgproc::simd::cpu_features().has_fma
+        {
+            return;
+        }
+
+        let pair = synthetic_pair();
+        let est = FundamentalEstimator;
+        let mut models = Vec::new();
+        est.fit(&pair.matches, &mut models);
+        let f = models[0];
+        let samples: Vec<_> = pair.matches.iter().copied().cycle().take(129).collect();
+        let mut expected = vec![0.0; samples.len()];
+        est.residual_batch(&f, &samples, &mut expected);
+        let threshold = expected.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let expected_count = expected
+            .iter()
+            .filter(|&&residual| residual < threshold)
+            .count();
+
+        let packed = pack_f(&f);
+        let mut actual = vec![f64::NAN; samples.len()];
+        // SAFETY: the runtime probe above verifies AVX2 and FMA before calling
+        // the target-feature kernel; `actual` has one entry per sample.
+        let count = unsafe {
+            sampson_residual_batch_avx2::<true, false>(packed, &samples, &mut actual, threshold, 0)
+        }
+        .unwrap();
+
+        assert_eq!(actual, expected);
+        assert_eq!(count, expected_count);
+    }
+
+    /// The NEON entry point is checked directly for the same reason as AVX2.
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn neon_fused_threshold_kernel_matches_dispatcher() {
+        let pair = synthetic_pair();
+        let est = FundamentalEstimator;
+        let mut models = Vec::new();
+        est.fit(&pair.matches, &mut models);
+        let f = models[0];
+        let samples: Vec<_> = pair.matches.iter().copied().cycle().take(129).collect();
+        let mut expected = vec![0.0; samples.len()];
+        est.residual_batch(&f, &samples, &mut expected);
+        let threshold = expected.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let expected_count = expected
+            .iter()
+            .filter(|&&residual| residual < threshold)
+            .count();
+
+        let packed = pack_f(&f);
+        let mut actual = vec![f64::NAN; samples.len()];
+        // SAFETY: NEON is architectural on aarch64; `actual` has one entry
+        // per sample and therefore satisfies the kernel's slice invariant.
+        let count = unsafe {
+            sampson_residual_batch_neon::<true, false>(packed, &samples, &mut actual, threshold, 0)
+        }
+        .unwrap();
+
+        assert_eq!(actual, expected);
+        assert_eq!(count, expected_count);
     }
 
     /// Below-minimal input must yield zero candidate models without panicking.

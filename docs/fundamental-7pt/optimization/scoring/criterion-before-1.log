@@ -1,0 +1,145 @@
+Gnuplot not found, using plotters backend
+Benchmarking fundamental_minimal/7point
+Benchmarking fundamental_minimal/7point: Warming up for 500.00 ms
+Benchmarking fundamental_minimal/7point: Collecting 20 samples in estimated 1.0001 s (2.1M iterations)
+Benchmarking fundamental_minimal/7point: Analyzing
+fundamental_minimal/7point
+                        time:   [485.17 ns 486.01 ns 487.17 ns]
+                        change: [−5.2813% −3.7918% −2.4415%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+Benchmarking fundamental_minimal/8point
+Benchmarking fundamental_minimal/8point: Warming up for 500.00 ms
+Benchmarking fundamental_minimal/8point: Collecting 20 samples in estimated 1.0001 s (1.0M iterations)
+Benchmarking fundamental_minimal/8point: Analyzing
+fundamental_minimal/8point
+                        time:   [975.40 ns 976.94 ns 978.78 ns]
+                        change: [−0.5805% −0.4072% −0.2416%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+
+Benchmarking fundamental_ransac_fixed_budget/7point/0.2
+Benchmarking fundamental_ransac_fixed_budget/7point/0.2: Warming up for 500.00 ms
+Benchmarking fundamental_ransac_fixed_budget/7point/0.2: Collecting 20 samples in estimated 1.4510 s (630 iterations)
+Benchmarking fundamental_ransac_fixed_budget/7point/0.2: Analyzing
+fundamental_ransac_fixed_budget/7point/0.2
+                        time:   [2.3199 ms 2.3229 ms 2.3254 ms]
+                        change: [+1.8479% +2.2198% +2.5007%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) low severe
+Benchmarking fundamental_ransac_fixed_budget/8point/0.2
+Benchmarking fundamental_ransac_fixed_budget/8point/0.2: Warming up for 500.00 ms
+Benchmarking fundamental_ransac_fixed_budget/8point/0.2: Collecting 20 samples in estimated 1.2456 s (630 iterations)
+Benchmarking fundamental_ransac_fixed_budget/8point/0.2: Analyzing
+fundamental_ransac_fixed_budget/8point/0.2
+                        time:   [1.9774 ms 1.9824 ms 1.9866 ms]
+                        change: [−0.5566% −0.2420% +0.0973%] (p = 0.16 > 0.05)
+                        No change in performance detected.
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high severe
+Benchmarking fundamental_ransac_fixed_budget/7point/0.5
+Benchmarking fundamental_ransac_fixed_budget/7point/0.5: Warming up for 500.00 ms
+Benchmarking fundamental_ransac_fixed_budget/7point/0.5: Collecting 20 samples in estimated 1.0491 s (630 iterations)
+Benchmarking fundamental_ransac_fixed_budget/7point/0.5: Analyzing
+fundamental_ransac_fixed_budget/7point/0.5
+                        time:   [1.6762 ms 1.6777 ms 1.6796 ms]
+                        change: [+2.3063% +2.5212% +2.7076%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 2 outliers among 20 measurements (10.00%)
+  1 (5.00%) low severe
+  1 (5.00%) high severe
+Benchmarking fundamental_ransac_fixed_budget/8point/0.5
+Benchmarking fundamental_ransac_fixed_budget/8point/0.5: Warming up for 500.00 ms
+Benchmarking fundamental_ransac_fixed_budget/8point/0.5: Collecting 20 samples in estimated 1.2634 s (630 iterations)
+Benchmarking fundamental_ransac_fixed_budget/8point/0.5: Analyzing
+fundamental_ransac_fixed_budget/8point/0.5
+                        time:   [2.0036 ms 2.0075 ms 2.0106 ms]
+                        change: [−0.5861% −0.2405% +0.1397%] (p = 0.21 > 0.05)
+                        No change in performance detected.
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+Benchmarking fundamental_ransac_fixed_budget/7point/0.8
+Benchmarking fundamental_ransac_fixed_budget/7point/0.8: Warming up for 500.00 ms
+Benchmarking fundamental_ransac_fixed_budget/7point/0.8: Collecting 20 samples in estimated 1.0133 s (11k iterations)
+Benchmarking fundamental_ransac_fixed_budget/7point/0.8: Analyzing
+fundamental_ransac_fixed_budget/7point/0.8
+                        time:   [92.137 µs 92.269 µs 92.394 µs]
+                        change: [+2.1394% +2.4482% +2.7215%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 2 outliers among 20 measurements (10.00%)
+  1 (5.00%) low severe
+  1 (5.00%) high mild
+Benchmarking fundamental_ransac_fixed_budget/8point/0.8
+Benchmarking fundamental_ransac_fixed_budget/8point/0.8: Warming up for 500.00 ms
+Benchmarking fundamental_ransac_fixed_budget/8point/0.8: Collecting 20 samples in estimated 1.0275 s (6090 iterations)
+Benchmarking fundamental_ransac_fixed_budget/8point/0.8: Analyzing
+fundamental_ransac_fixed_budget/8point/0.8
+                        time:   [169.10 µs 169.44 µs 169.77 µs]
+                        change: [−1.0357% −0.4677% +0.0537%] (p = 0.10 > 0.05)
+                        No change in performance detected.
+Found 3 outliers among 20 measurements (15.00%)
+  1 (5.00%) low mild
+  1 (5.00%) high mild
+  1 (5.00%) high severe
+
+Benchmarking fundamental_twoview_fixed_budget/7point/0.2
+Benchmarking fundamental_twoview_fixed_budget/7point/0.2: Warming up for 500.00 ms
+Benchmarking fundamental_twoview_fixed_budget/7point/0.2: Collecting 20 samples in estimated 1.2021 s (420 iterations)
+Benchmarking fundamental_twoview_fixed_budget/7point/0.2: Analyzing
+fundamental_twoview_fixed_budget/7point/0.2
+                        time:   [2.8551 ms 2.8577 ms 2.8607 ms]
+                        change: [+9.0861% +9.2826% +9.4606%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Benchmarking fundamental_twoview_fixed_budget/8point/0.2
+Benchmarking fundamental_twoview_fixed_budget/8point/0.2: Warming up for 500.00 ms
+Benchmarking fundamental_twoview_fixed_budget/8point/0.2: Collecting 20 samples in estimated 1.1504 s (630 iterations)
+Benchmarking fundamental_twoview_fixed_budget/8point/0.2: Analyzing
+fundamental_twoview_fixed_budget/8point/0.2
+                        time:   [1.8277 ms 1.8298 ms 1.8320 ms]
+                        change: [−0.6412% −0.4057% −0.1941%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+Found 2 outliers among 20 measurements (10.00%)
+  1 (5.00%) low mild
+  1 (5.00%) high severe
+Benchmarking fundamental_twoview_fixed_budget/7point/0.5
+Benchmarking fundamental_twoview_fixed_budget/7point/0.5: Warming up for 500.00 ms
+Benchmarking fundamental_twoview_fixed_budget/7point/0.5: Collecting 20 samples in estimated 1.2950 s (630 iterations)
+Benchmarking fundamental_twoview_fixed_budget/7point/0.5: Analyzing
+fundamental_twoview_fixed_budget/7point/0.5
+                        time:   [2.0490 ms 2.0568 ms 2.0694 ms]
+                        change: [+14.347% +14.701% +15.129%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high severe
+Benchmarking fundamental_twoview_fixed_budget/8point/0.5
+Benchmarking fundamental_twoview_fixed_budget/8point/0.5: Warming up for 500.00 ms
+Benchmarking fundamental_twoview_fixed_budget/8point/0.5: Collecting 20 samples in estimated 1.1983 s (630 iterations)
+Benchmarking fundamental_twoview_fixed_budget/8point/0.5: Analyzing
+fundamental_twoview_fixed_budget/8point/0.5
+                        time:   [1.9062 ms 1.9089 ms 1.9121 ms]
+                        change: [−0.4003% −0.1072% +0.1703%] (p = 0.49 > 0.05)
+                        No change in performance detected.
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+Benchmarking fundamental_twoview_fixed_budget/7point/0.8
+Benchmarking fundamental_twoview_fixed_budget/7point/0.8: Warming up for 500.00 ms
+Benchmarking fundamental_twoview_fixed_budget/7point/0.8: Collecting 20 samples in estimated 1.0074 s (12k iterations)
+Benchmarking fundamental_twoview_fixed_budget/7point/0.8: Analyzing
+fundamental_twoview_fixed_budget/7point/0.8
+                        time:   [82.202 µs 82.440 µs 82.784 µs]
+                        change: [−1.9811% −1.7960% −1.5826%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high severe
+Benchmarking fundamental_twoview_fixed_budget/8point/0.8
+Benchmarking fundamental_twoview_fixed_budget/8point/0.8: Warming up for 500.00 ms
+Benchmarking fundamental_twoview_fixed_budget/8point/0.8: Collecting 20 samples in estimated 1.0239 s (6720 iterations)
+Benchmarking fundamental_twoview_fixed_budget/8point/0.8: Analyzing
+fundamental_twoview_fixed_budget/8point/0.8
+                        time:   [151.91 µs 152.08 µs 152.32 µs]
+                        change: [+1.9484% +2.1260% +2.2965%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 4 outliers among 20 measurements (20.00%)
+  1 (5.00%) low mild
+  3 (15.00%) high mild

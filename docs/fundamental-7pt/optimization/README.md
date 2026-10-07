@@ -1,5 +1,9 @@
 # Seven-point solver optimization and reference checks
 
+The latest [scoring optimization](scoring/README.md) improves the dedicated F7
+public path by 1.45–1.75× on the recorded real pairs, with exact output checks
+across 2,040 cases. The measurements below describe the earlier optimization.
+
 **The historical Pareto curve below is superseded by the
 [corrected confidence-0.999999 evaluation](../accuracy-audit/README.md).**
 That audit fixes shared nonminimal fitting and the without-replacement
