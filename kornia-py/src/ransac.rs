@@ -15,7 +15,9 @@
 //! lifetimes leak across the FFI boundary.
 
 use kornia_3d::ransac::{
-    estimators::{EssentialEstimator, FundamentalEstimator, HomographyEstimator},
+    estimators::{
+        EssentialEstimator, Fundamental8PointEstimator, FundamentalEstimator, HomographyEstimator,
+    },
     run, Match2d2d, RansacConfig, ThresholdConsensus, UniformSampler,
 };
 use kornia_algebra::Vec2F64;
@@ -75,27 +77,66 @@ fn mat3_to_row_major_vec(m: &kornia_algebra::Mat3F64) -> Vec<f64> {
     ]
 }
 
-/// `cv2.findFundamentalMat` analog. Returns a `RansacTwoViewResult`.
+/// Estimate a fundamental matrix with seven-point RANSAC and Sampson scoring.
+///
+/// # Arguments
+///
+/// * `matches` - `(N, 4)` float64 pixel correspondences.
+/// * `threshold` - Squared-pixel Sampson cutoff.
+/// * `max_iters` - Maximum number of minimal samples drawn.
+/// * `confidence` - Target probability of drawing an all-inlier sample.
+/// * `seed` - Optional deterministic RNG seed (defaults to zero).
+/// * `solver` - `"7point"` (default) or `"8point"` for the original solver.
+///
+/// # Returns
+///
+/// A `RansacTwoViewResult` with the best matrix and its inlier mask.
+///
+/// # Errors
+///
+/// Returns `ValueError` for invalid input arrays or an unknown solver.
+/// Insufficient or degenerate matches yield a result with no model.
+///
+/// # Example
+///
+/// ```python
+/// result = kornia_rs.ransac.fundamental(matches, solver="7point", seed=0)
+/// ```
 #[pyfunction]
-#[pyo3(signature = (matches, threshold=1.0, max_iters=1000, confidence=0.999, seed=None))]
+#[pyo3(signature = (matches, threshold=1.0, max_iters=1000, confidence=0.999, seed=None, *, solver="7point"))]
 pub fn fundamental(
     matches: PyReadonlyArray2<'_, f64>,
     threshold: f64,
     max_iters: u32,
     confidence: f64,
     seed: Option<u64>,
+    solver: &str,
 ) -> PyResult<PyRansacTwoViewResult> {
     let samples = parse_two_view_matches(matches)?;
     let mut sampler = UniformSampler::new(StdRng::seed_from_u64(seed.unwrap_or(0)));
     let consensus = ThresholdConsensus { threshold };
     let cfg = make_cfg(threshold, max_iters, confidence);
-    let result = run(
-        &FundamentalEstimator,
-        &consensus,
-        &mut sampler,
-        &samples,
-        &cfg,
-    );
+    let result = match solver {
+        "7point" => run(
+            &FundamentalEstimator,
+            &consensus,
+            &mut sampler,
+            &samples,
+            &cfg,
+        ),
+        "8point" => run(
+            &Fundamental8PointEstimator,
+            &consensus,
+            &mut sampler,
+            &samples,
+            &cfg,
+        ),
+        _ => {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "solver must be '7point' or '8point'",
+            ))
+        }
+    };
     Ok(PyRansacTwoViewResult {
         model: result.model.as_ref().map(mat3_to_row_major_vec),
         inliers: result.inliers,

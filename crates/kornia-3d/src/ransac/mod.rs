@@ -32,6 +32,7 @@ pub mod samples;
 pub mod sprt;
 
 pub use config::{ConsensusKind, RansacConfig};
+pub(crate) use driver::adaptive_max_iters;
 pub use driver::{run, run_parallel, run_with_rng};
 pub use kernels::{
     CauchyKernel, HuberKernel, IdentityKernel, RobustKernel, RobustKernelKind, TukeyKernel,
@@ -57,14 +58,14 @@ pub trait Estimator {
     /// two-view geometry, a 2D-3D pair for PnP).
     type Sample;
 
-    /// Number of samples a minimal solver needs (8 for F8pt, 5 for E5pt,
+    /// Number of samples a minimal solver needs (7 for F7pt, 8 for F8pt, 5 for E5pt,
     /// 4 for H, 3 for P3P).
     const SAMPLE_SIZE: usize;
 
     /// Fit candidate models from exactly `SAMPLE_SIZE` samples.
     ///
     /// Pushes 0 or more candidate models into `out`. Most solvers produce
-    /// at most one (F-8pt, H-4pt, EPnP); multi-solution kernels like
+    /// at most one (F-8pt, H-4pt, EPnP); F-7pt returns up to three, while
     /// Nistér's 5-point essential or P3P may produce up to ~10. The driver
     /// clears `out` before each call and scores every candidate it returns.
     ///
@@ -111,6 +112,57 @@ pub trait Estimator {
             *o = self.residual(model, s);
         }
     }
+
+    /// Evaluate a hard inlier threshold while producing its mask.
+    ///
+    /// Estimators with a vectorized residual kernel can override this hook to
+    /// fuse residual evaluation and thresholding, and may stop once the
+    /// remaining observations cannot beat `best_inlier_count`. Returning
+    /// `None` requests the portable `residual_batch` plus [`Consensus`]
+    /// path. This hook is only used with [`ThresholdConsensus`] and without
+    /// SPRT, so custom consensus strategies retain their exact behavior.
+    ///
+    /// `residuals` is reusable driver scratch and is provided so an override
+    /// can batch residual evaluation without allocating. On
+    /// [`ThresholdInlierResult::Complete`], `inliers_out` must contain one
+    /// entry per sample. Its contents are ignored after `Pruned`.
+    ///
+    /// # Arguments
+    ///
+    /// * `model` - Hypothesis being evaluated.
+    /// * `samples` - All observations, in their original scoring order.
+    /// * `threshold` - Strict residual cutoff, in the estimator's units.
+    /// * `best_inlier_count` - Support of the incumbent hypothesis.
+    /// * `residuals` - Reusable scratch with one entry per observation.
+    /// * `inliers_out` - Reusable mask, complete only on `Complete`.
+    ///
+    /// # Returns
+    ///
+    /// `None` to use the generic path, or a completed count or exact rejection.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible; unsupported inputs should return `None`.
+    fn threshold_inliers(
+        &self,
+        _model: &Self::Model,
+        _samples: &[Self::Sample],
+        _threshold: f64,
+        _best_inlier_count: usize,
+        _residuals: &mut [f64],
+        _inliers_out: &mut Vec<bool>,
+    ) -> Option<ThresholdInlierResult> {
+        None
+    }
+}
+
+/// Result of an estimator-specific hard-threshold scoring pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThresholdInlierResult {
+    /// All samples were evaluated and this many satisfy the strict threshold.
+    Complete(usize),
+    /// The unevaluated suffix cannot beat the current best inlier count.
+    Pruned,
 }
 
 /// Reduces a vector of residuals to a scalar score plus an inlier mask.
@@ -123,6 +175,35 @@ pub trait Consensus {
     /// across hypotheses; impls must clear and refill it without keeping
     /// references after the call.
     fn consensus(&self, residuals: &[f64], inliers_out: &mut Vec<bool>) -> ConsensusOutcome;
+
+    /// Return the strict hard threshold when this consensus is plain RANSAC.
+    ///
+    /// The default keeps arbitrary consensus implementations on the generic
+    /// residual-vector path. [`ThresholdConsensus`] exposes its threshold so
+    /// estimators with an opt-in fused kernel can avoid a second pass.
+    ///
+    /// # Arguments
+    ///
+    /// This method takes no arguments beyond the consensus strategy.
+    ///
+    /// # Returns
+    ///
+    /// A strict residual cutoff, or `None` for any other scoring strategy.
+    /// Returning `Some` promises a score equal to the strict inlier count.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_3d::ransac::{Consensus, ThresholdConsensus};
+    /// assert_eq!(ThresholdConsensus { threshold: 1.0 }.threshold(), Some(1.0));
+    /// ```
+    fn threshold(&self) -> Option<f64> {
+        None
+    }
 }
 
 /// Outcome of one consensus evaluation.
@@ -169,6 +250,11 @@ impl Consensus for ThresholdConsensus {
             score: count as f64,
             inlier_count: count,
         }
+    }
+
+    #[inline]
+    fn threshold(&self) -> Option<f64> {
+        Some(self.threshold)
     }
 }
 

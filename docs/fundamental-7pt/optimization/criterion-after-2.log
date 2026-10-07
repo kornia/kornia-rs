@@ -1,0 +1,87 @@
+Gnuplot not found, using plotters backend
+Benchmarking fundamental_minimal/7point
+Benchmarking fundamental_minimal/7point: Warming up for 500.00 ms
+Benchmarking fundamental_minimal/7point: Collecting 30 samples in estimated 1.0002 s (2.0M iterations)
+Benchmarking fundamental_minimal/7point: Analyzing
+fundamental_minimal/7point
+                        time:   [487.60 ns 488.28 ns 489.18 ns]
+                        change: [+0.2153% +0.6672% +1.1385%] (p = 0.01 < 0.05)
+                        Change within noise threshold.
+Found 5 outliers among 30 measurements (16.67%)
+  5 (16.67%) high severe
+Benchmarking fundamental_minimal/8point
+Benchmarking fundamental_minimal/8point: Warming up for 500.00 ms
+Benchmarking fundamental_minimal/8point: Collecting 30 samples in estimated 1.0004 s (1.0M iterations)
+Benchmarking fundamental_minimal/8point: Analyzing
+fundamental_minimal/8point
+                        time:   [959.01 ns 960.19 ns 961.56 ns]
+                        change: [−0.7328% −0.2370% +0.1960%] (p = 0.34 > 0.05)
+                        No change in performance detected.
+Found 3 outliers among 30 measurements (10.00%)
+  1 (3.33%) high mild
+  2 (6.67%) high severe
+
+Benchmarking fundamental_ransac/7point/0.2
+Benchmarking fundamental_ransac/7point/0.2: Warming up for 500.00 ms
+
+Warning: Unable to complete 30 samples in 1.0s. You may wish to increase target time to 1.1s, enable flat sampling, or reduce sample count to 20.
+Benchmarking fundamental_ransac/7point/0.2: Collecting 30 samples in estimated 1.0728 s (465 iterations)
+Benchmarking fundamental_ransac/7point/0.2: Analyzing
+fundamental_ransac/7point/0.2
+                        time:   [2.2947 ms 2.3056 ms 2.3267 ms]
+                        change: [−0.5734% −0.1559% +0.5370%] (p = 0.64 > 0.05)
+                        No change in performance detected.
+Found 1 outliers among 30 measurements (3.33%)
+  1 (3.33%) high severe
+Benchmarking fundamental_ransac/8point/0.2
+Benchmarking fundamental_ransac/8point/0.2: Warming up for 500.00 ms
+
+Warning: Unable to complete 30 samples in 1.0s. You may wish to increase target time to 1.1s, enable flat sampling, or reduce sample count to 20.
+Benchmarking fundamental_ransac/8point/0.2: Collecting 30 samples in estimated 1.0896 s (465 iterations)
+Benchmarking fundamental_ransac/8point/0.2: Analyzing
+fundamental_ransac/8point/0.2
+                        time:   [1.9534 ms 1.9602 ms 1.9722 ms]
+                        change: [+2.2904% +5.9402% +10.298%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Benchmarking fundamental_ransac/7point/0.5
+Benchmarking fundamental_ransac/7point/0.5: Warming up for 500.00 ms
+Benchmarking fundamental_ransac/7point/0.5: Collecting 30 samples in estimated 1.3145 s (930 iterations)
+Benchmarking fundamental_ransac/7point/0.5: Analyzing
+fundamental_ransac/7point/0.5
+                        time:   [1.5073 ms 1.6940 ms 2.0568 ms]
+                        change: [+14.749% +36.914% +67.018%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 5 outliers among 30 measurements (16.67%)
+  2 (6.67%) high mild
+  3 (10.00%) high severe
+Benchmarking fundamental_ransac/8point/0.5
+Benchmarking fundamental_ransac/8point/0.5: Warming up for 500.00 ms
+Benchmarking fundamental_ransac/8point/0.5: Collecting 30 samples in estimated 1.8445 s (930 iterations)
+Benchmarking fundamental_ransac/8point/0.5: Analyzing
+fundamental_ransac/8point/0.5
+                        time:   [1.9755 ms 1.9850 ms 1.9951 ms]
+                        change: [−0.0073% +0.3503% +0.8188%] (p = 0.09 > 0.05)
+                        No change in performance detected.
+Found 4 outliers among 30 measurements (13.33%)
+  2 (6.67%) high mild
+  2 (6.67%) high severe
+Benchmarking fundamental_ransac/7point/0.8
+Benchmarking fundamental_ransac/7point/0.8: Warming up for 500.00 ms
+Benchmarking fundamental_ransac/7point/0.8: Collecting 30 samples in estimated 1.0136 s (20k iterations)
+Benchmarking fundamental_ransac/7point/0.8: Analyzing
+fundamental_ransac/7point/0.8
+                        time:   [49.381 µs 49.440 µs 49.505 µs]
+                        change: [−0.3101% −0.0696% +0.1790%] (p = 0.59 > 0.05)
+                        No change in performance detected.
+Found 1 outliers among 30 measurements (3.33%)
+  1 (3.33%) high severe
+Benchmarking fundamental_ransac/8point/0.8
+Benchmarking fundamental_ransac/8point/0.8: Warming up for 500.00 ms
+Benchmarking fundamental_ransac/8point/0.8: Collecting 30 samples in estimated 1.0287 s (12k iterations)
+Benchmarking fundamental_ransac/8point/0.8: Analyzing
+fundamental_ransac/8point/0.8
+                        time:   [83.741 µs 84.413 µs 85.591 µs]
+                        change: [−49.528% −34.072% −17.035%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 2 outliers among 30 measurements (6.67%)
+  2 (6.67%) high severe

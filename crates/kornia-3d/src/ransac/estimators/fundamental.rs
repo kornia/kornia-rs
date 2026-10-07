@@ -1,15 +1,19 @@
 //! Fundamental-matrix estimator.
 //!
-//! Wraps [`crate::pose::fundamental::fundamental_8point`] — the normalized
-//! 8-point algorithm — behind the generic [`Estimator`] trait so the RANSAC
-//! driver can drive it the same way it drives any other model.
+//! Seven-point minimal hypotheses and eight-point inlier refinement share
+//! the same SIMD Sampson scoring. The eight-point estimator is also available
+//! for callers that need the previous sampling behavior.
 
 use kornia_algebra::{Mat3F64, Vec2F64};
 
+use crate::pose::fundamental_7point_into;
 use crate::pose::{fundamental_8point, sampson_distance};
-use crate::ransac::{clamp_pair, Estimator, Match2d2d};
+use crate::ransac::{clamp_pair, Estimator, Match2d2d, ThresholdInlierResult};
 
-/// Estimator for the fundamental matrix from 2D-2D pixel correspondences.
+/// Seven-point fundamental matrix estimator from 2D-2D pixel correspondences.
+///
+/// Minimal fitting returns up to three real solutions; inlier sets of eight
+/// or more matches are refined with the normalized eight-point solver.
 ///
 /// **Coordinate convention.** Samples are in raw pixel coordinates; Hartley
 /// normalization is applied internally, mirroring the existing solver.
@@ -21,6 +25,90 @@ use crate::ransac::{clamp_pair, Estimator, Match2d2d};
 pub struct FundamentalEstimator;
 
 impl Estimator for FundamentalEstimator {
+    type Model = Mat3F64;
+    type Sample = Match2d2d;
+    const SAMPLE_SIZE: usize = 7;
+
+    fn fit(&self, samples: &[Self::Sample], out: &mut Vec<Self::Model>) {
+        if samples.len() == Self::SAMPLE_SIZE {
+            let x1 = std::array::from_fn::<_, 7, _>(|i| samples[i].x1);
+            let x2 = std::array::from_fn::<_, 7, _>(|i| samples[i].x2);
+            let mut models = [Mat3F64::ZERO; 3];
+            if let Ok(count) = fundamental_7point_into(&x1, &x2, &mut models) {
+                out.extend_from_slice(&models[..count]);
+            }
+        } else {
+            Fundamental8PointEstimator.fit(samples, out);
+        }
+    }
+
+    fn refit(&self, inliers: &[Self::Sample], out: &mut Vec<Self::Model>) {
+        self.fit(inliers, out);
+    }
+
+    #[inline]
+    fn residual(&self, model: &Self::Model, sample: &Self::Sample) -> f64 {
+        sampson_distance(model, &sample.x1, &sample.x2)
+    }
+
+    fn residual_batch(&self, model: &Self::Model, samples: &[Self::Sample], out: &mut [f64]) {
+        Fundamental8PointEstimator.residual_batch(model, samples, out);
+    }
+
+    /// Scores in fixed SIMD-friendly chunks. A losing seven-point root often
+    /// needs only the first chunk: after it cannot exceed the incumbent,
+    /// RANSAC can skip both the remaining residuals and mask writes.
+    fn threshold_inliers(
+        &self,
+        model: &Self::Model,
+        samples: &[Self::Sample],
+        threshold: f64,
+        best_inlier_count: usize,
+        residuals: &mut [f64],
+        inliers_out: &mut Vec<bool>,
+    ) -> Option<ThresholdInlierResult> {
+        let n = samples.len().min(residuals.len());
+        if n != samples.len() {
+            return None;
+        }
+        if inliers_out.len() != n {
+            inliers_out.resize(n, false);
+        }
+
+        let mut count = 0usize;
+        let mut start = 0usize;
+        while start < n {
+            let end = (start + THRESHOLD_SCORE_CHUNK).min(n);
+            // Retain the existing SIMD residual dispatcher. Thresholding the
+            // fresh chunk immediately avoids materializing/scanning a full
+            // residual vector for roots that cannot beat the incumbent.
+            self.residual_batch(model, &samples[start..end], &mut residuals[start..end]);
+            for (mask, &residual) in inliers_out[start..end]
+                .iter_mut()
+                .zip(&residuals[start..end])
+            {
+                let is_inlier = residual < threshold;
+                *mask = is_inlier;
+                count += is_inlier as usize;
+            }
+            start = end;
+            if count + n - start <= best_inlier_count {
+                return Some(ThresholdInlierResult::Pruned);
+            }
+        }
+        Some(ThresholdInlierResult::Complete(count))
+    }
+}
+
+/// Eight-point fundamental matrix estimator retaining the original RANSAC path.
+///
+/// Uses normalized eight-point fitting for both minimal samples and inlier
+/// refinement, with the same squared-pixel Sampson residuals as
+/// [`FundamentalEstimator`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Fundamental8PointEstimator;
+
+impl Estimator for Fundamental8PointEstimator {
     type Model = Mat3F64;
     type Sample = Match2d2d;
     const SAMPLE_SIZE: usize = 8;
@@ -91,7 +179,9 @@ impl Estimator for FundamentalEstimator {
         }
 
         #[cfg(target_arch = "x86_64")]
-        if kornia_imgproc::simd::cpu_features().has_avx2 {
+        if kornia_imgproc::simd::cpu_features().has_avx2
+            && kornia_imgproc::simd::cpu_features().has_fma
+        {
             // SAFETY: `has_avx2` runtime check; `target_feature(enable=...)`
             // enables AVX2+FMA inside the kernel. Same length invariants.
             unsafe {
@@ -122,6 +212,10 @@ impl Estimator for FundamentalEstimator {
 /// 9 entries of an F-matrix in row-major order — the natural shape for
 /// scalar arithmetic and broadcast-ready for SIMD lane vectors.
 type FPacked = (f64, f64, f64, f64, f64, f64, f64, f64, f64);
+
+/// Residuals per fused hard-threshold pass. This keeps SIMD dispatch overhead
+/// amortized while allowing weak seven-point roots to be rejected early.
+const THRESHOLD_SCORE_CHUNK: usize = 128;
 
 #[inline(always)]
 fn pack_f(model: &Mat3F64) -> FPacked {
@@ -387,6 +481,44 @@ mod tests {
         }
     }
 
+    /// The fused path retains the strict threshold predicate used by
+    /// `ThresholdConsensus`, including degenerate and non-finite residuals.
+    #[test]
+    fn fused_threshold_scoring_keeps_strict_and_nonfinite_semantics() {
+        let est = FundamentalEstimator;
+        let samples = vec![Match2d2d::new(Vec2F64::new(1.0, 2.0), Vec2F64::new(3.0, 4.0)); 129];
+        let mut residuals = vec![0.0; samples.len()];
+        let mut mask = Vec::new();
+
+        // The zero matrix gives a degenerate denominator and residual 0.
+        // Equality at zero is excluded because the predicate is strict.
+        let result =
+            est.threshold_inliers(&Mat3F64::ZERO, &samples, 0.0, 0, &mut residuals, &mut mask);
+        assert_eq!(result, Some(ThresholdInlierResult::Pruned));
+        assert!(mask.iter().take(128).all(|&is_inlier| !is_inlier));
+
+        let result =
+            est.threshold_inliers(&Mat3F64::ZERO, &samples, 1.0, 0, &mut residuals, &mut mask);
+        assert_eq!(result, Some(ThresholdInlierResult::Complete(samples.len())));
+        assert!(mask.iter().all(|&is_inlier| is_inlier));
+
+        let nan_model = Mat3F64::from_cols(
+            Vec3F64::new(f64::NAN, 0.0, 0.0),
+            Vec3F64::ZERO,
+            Vec3F64::ZERO,
+        );
+        let result = est.threshold_inliers(
+            &nan_model,
+            &samples,
+            f64::INFINITY,
+            0,
+            &mut residuals,
+            &mut mask,
+        );
+        assert_eq!(result, Some(ThresholdInlierResult::Pruned));
+        assert!(mask.iter().take(128).all(|&is_inlier| !is_inlier));
+    }
+
     /// Below-minimal input must yield zero candidate models without panicking.
     #[test]
     fn under_min_samples_yields_no_model() {
@@ -395,8 +527,86 @@ mod tests {
         est.fit(&[], &mut models);
         assert!(models.is_empty());
         let one = Match2d2d::new(Vec2F64::new(0.0, 0.0), Vec2F64::new(0.0, 0.0));
-        est.fit(&[one; 7], &mut models);
+        est.fit(&[one; 6], &mut models);
         assert!(models.is_empty());
+    }
+
+    #[test]
+    fn seven_point_candidates_and_eight_point_refit() {
+        let pair = synthetic_pair();
+        let est = FundamentalEstimator;
+        let mut models = Vec::new();
+        est.fit(&pair.matches[..7], &mut models);
+        assert!((1..=3).contains(&models.len()));
+        for f in &models {
+            assert!(pair.matches[..7].iter().all(|m| est.residual(f, m) < 1e-8));
+        }
+        assert!(models
+            .iter()
+            .any(|f| est.residual(f, &pair.matches[7]) < 1e-8));
+
+        models.clear();
+        est.refit(&pair.matches, &mut models);
+        let mut baseline = Vec::new();
+        Fundamental8PointEstimator.refit(&pair.matches, &mut baseline);
+        assert_eq!(
+            models, baseline,
+            "non-minimal refit must retain the eight-point path"
+        );
+        models.clear();
+        est.refit(&pair.matches[..7], &mut models);
+        assert!(!models.is_empty(), "seven-inlier refit must remain valid");
+    }
+
+    #[test]
+    fn seven_point_ransac_scores_every_root() {
+        use crate::ransac::{run, run_parallel, RansacConfig, Sampler, ThresholdConsensus};
+        struct FixedSample;
+        impl Sampler for FixedSample {
+            fn sample(&mut self, _n: usize, out: &mut [usize]) {
+                assert_eq!(out.len(), 7);
+                for (i, index) in out.iter_mut().enumerate() {
+                    *index = i;
+                }
+            }
+        }
+        let pair = synthetic_pair();
+        let mut hypotheses = Vec::new();
+        FundamentalEstimator.fit(&pair.matches[..7], &mut hypotheses);
+        assert!(hypotheses.len() > 1);
+        assert!(
+            FundamentalEstimator.residual(&hypotheses[0], &pair.matches[7]) > 1e-8,
+            "fixture must require scoring a later root to fit the holdout"
+        );
+        let cfg = RansacConfig {
+            max_iters: 1,
+            lo_every: 1,
+            ..Default::default()
+        };
+        let consensus = ThresholdConsensus { threshold: 1e-8 };
+        for result in [
+            run(
+                &FundamentalEstimator,
+                &consensus,
+                &mut FixedSample,
+                &pair.matches,
+                &cfg,
+            ),
+            run_parallel(
+                &FundamentalEstimator,
+                &consensus,
+                &mut FixedSample,
+                &pair.matches,
+                &cfg,
+            ),
+        ] {
+            assert!(result.model.is_some());
+            assert_eq!(result.inlier_count(), pair.matches.len());
+            assert_eq!(
+                result.num_iters, 1,
+                "iterations count samples, rather than roots"
+            );
+        }
     }
 
     struct Pair {

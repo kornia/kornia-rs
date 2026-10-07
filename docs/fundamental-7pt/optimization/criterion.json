@@ -1,0 +1,438 @@
+{
+  "summary": [
+    {
+      "case": "fundamental_minimal/7point",
+      "before": 762.41,
+      "after": 488.28,
+      "speedup": 1.5614196772343738
+    },
+    {
+      "case": "fundamental_minimal/8point",
+      "before": 949.26,
+      "after": 960.27,
+      "speedup": 0.9885344746789966
+    },
+    {
+      "case": "fundamental_ransac/7point/0.2",
+      "before": 3077700.0,
+      "after": 2305600.0,
+      "speedup": 1.334880291464261
+    },
+    {
+      "case": "fundamental_ransac/7point/0.5",
+      "before": 2617800.0,
+      "after": 1412800.0,
+      "speedup": 1.852916194790487
+    },
+    {
+      "case": "fundamental_ransac/7point/0.8",
+      "before": 106220.0,
+      "after": 49441.0,
+      "speedup": 2.148419328088024
+    },
+    {
+      "case": "fundamental_ransac/8point/0.2",
+      "before": 1946900.0,
+      "after": 1956900.0,
+      "speedup": 0.994889876846032
+    },
+    {
+      "case": "fundamental_ransac/8point/0.5",
+      "before": 1974500.0,
+      "after": 1976600.0,
+      "speedup": 0.9989375695638976
+    },
+    {
+      "case": "fundamental_ransac/8point/0.8",
+      "before": 83664.0,
+      "after": 84413.0,
+      "speedup": 0.9911269591176715
+    }
+  ],
+  "results": [
+    {
+      "version": "before",
+      "round": 1,
+      "case": "fundamental_minimal/7point",
+      "estimate_ns": 762.41,
+      "low_ns": 761.2,
+      "high_ns": 764.18
+    },
+    {
+      "version": "before",
+      "round": 1,
+      "case": "fundamental_minimal/8point",
+      "estimate_ns": 949.26,
+      "low_ns": 947.41,
+      "high_ns": 951.79
+    },
+    {
+      "version": "before",
+      "round": 1,
+      "case": "fundamental_ransac/7point/0.2",
+      "estimate_ns": 3190100.0,
+      "low_ns": 3176200.0,
+      "high_ns": 3204600.0
+    },
+    {
+      "version": "before",
+      "round": 1,
+      "case": "fundamental_ransac/8point/0.2",
+      "estimate_ns": 1946900.0,
+      "low_ns": 1945500.0,
+      "high_ns": 1948300.0
+    },
+    {
+      "version": "before",
+      "round": 1,
+      "case": "fundamental_ransac/7point/0.5",
+      "estimate_ns": 2617800.0,
+      "low_ns": 2615800.0,
+      "high_ns": 2620300.0
+    },
+    {
+      "version": "before",
+      "round": 1,
+      "case": "fundamental_ransac/8point/0.5",
+      "estimate_ns": 1974500.0,
+      "low_ns": 1970900.0,
+      "high_ns": 1979700.0
+    },
+    {
+      "version": "before",
+      "round": 1,
+      "case": "fundamental_ransac/7point/0.8",
+      "estimate_ns": 105780.0,
+      "low_ns": 105700.0,
+      "high_ns": 105880.0
+    },
+    {
+      "version": "before",
+      "round": 1,
+      "case": "fundamental_ransac/8point/0.8",
+      "estimate_ns": 83608.0,
+      "low_ns": 83515.0,
+      "high_ns": 83706.0
+    },
+    {
+      "version": "before",
+      "round": 2,
+      "case": "fundamental_minimal/7point",
+      "estimate_ns": 761.3,
+      "low_ns": 760.68,
+      "high_ns": 761.9
+    },
+    {
+      "version": "before",
+      "round": 2,
+      "case": "fundamental_minimal/8point",
+      "estimate_ns": 960.94,
+      "low_ns": 959.24,
+      "high_ns": 963.09
+    },
+    {
+      "version": "before",
+      "round": 2,
+      "case": "fundamental_ransac/7point/0.2",
+      "estimate_ns": 3069600.0,
+      "low_ns": 3066400.0,
+      "high_ns": 3073100.0
+    },
+    {
+      "version": "before",
+      "round": 2,
+      "case": "fundamental_ransac/8point/0.2",
+      "estimate_ns": 1951800.0,
+      "low_ns": 1950400.0,
+      "high_ns": 1953300.0
+    },
+    {
+      "version": "before",
+      "round": 2,
+      "case": "fundamental_ransac/7point/0.5",
+      "estimate_ns": 2614900.0,
+      "low_ns": 2612500.0,
+      "high_ns": 2617400.0
+    },
+    {
+      "version": "before",
+      "round": 2,
+      "case": "fundamental_ransac/8point/0.5",
+      "estimate_ns": 1978200.0,
+      "low_ns": 1975500.0,
+      "high_ns": 1981200.0
+    },
+    {
+      "version": "before",
+      "round": 2,
+      "case": "fundamental_ransac/7point/0.8",
+      "estimate_ns": 124240.0,
+      "low_ns": 106730.0,
+      "high_ns": 156540.0
+    },
+    {
+      "version": "before",
+      "round": 2,
+      "case": "fundamental_ransac/8point/0.8",
+      "estimate_ns": 84495.0,
+      "low_ns": 83953.0,
+      "high_ns": 85467.0
+    },
+    {
+      "version": "before",
+      "round": 3,
+      "case": "fundamental_minimal/7point",
+      "estimate_ns": 774.92,
+      "low_ns": 774.2,
+      "high_ns": 775.81
+    },
+    {
+      "version": "before",
+      "round": 3,
+      "case": "fundamental_minimal/8point",
+      "estimate_ns": 949.06,
+      "low_ns": 947.71,
+      "high_ns": 951.06
+    },
+    {
+      "version": "before",
+      "round": 3,
+      "case": "fundamental_ransac/7point/0.2",
+      "estimate_ns": 3077700.0,
+      "low_ns": 3074500.0,
+      "high_ns": 3080700.0
+    },
+    {
+      "version": "before",
+      "round": 3,
+      "case": "fundamental_ransac/8point/0.2",
+      "estimate_ns": 1945000.0,
+      "low_ns": 1942500.0,
+      "high_ns": 1947800.0
+    },
+    {
+      "version": "before",
+      "round": 3,
+      "case": "fundamental_ransac/7point/0.5",
+      "estimate_ns": 2631500.0,
+      "low_ns": 2627700.0,
+      "high_ns": 2634900.0
+    },
+    {
+      "version": "before",
+      "round": 3,
+      "case": "fundamental_ransac/8point/0.5",
+      "estimate_ns": 1965800.0,
+      "low_ns": 1964600.0,
+      "high_ns": 1967000.0
+    },
+    {
+      "version": "before",
+      "round": 3,
+      "case": "fundamental_ransac/7point/0.8",
+      "estimate_ns": 106220.0,
+      "low_ns": 106020.0,
+      "high_ns": 106500.0
+    },
+    {
+      "version": "before",
+      "round": 3,
+      "case": "fundamental_ransac/8point/0.8",
+      "estimate_ns": 83664.0,
+      "low_ns": 83550.0,
+      "high_ns": 83840.0
+    },
+    {
+      "version": "after",
+      "round": 1,
+      "case": "fundamental_minimal/7point",
+      "estimate_ns": 487.97,
+      "low_ns": 487.32,
+      "high_ns": 488.51
+    },
+    {
+      "version": "after",
+      "round": 1,
+      "case": "fundamental_minimal/8point",
+      "estimate_ns": 969.48,
+      "low_ns": 961.01,
+      "high_ns": 978.32
+    },
+    {
+      "version": "after",
+      "round": 1,
+      "case": "fundamental_ransac/7point/0.2",
+      "estimate_ns": 2306900.0,
+      "low_ns": 2304500.0,
+      "high_ns": 2309900.0
+    },
+    {
+      "version": "after",
+      "round": 1,
+      "case": "fundamental_ransac/8point/0.2",
+      "estimate_ns": 1956900.0,
+      "low_ns": 1953600.0,
+      "high_ns": 1961200.0
+    },
+    {
+      "version": "after",
+      "round": 1,
+      "case": "fundamental_ransac/7point/0.5",
+      "estimate_ns": 1412800.0,
+      "low_ns": 1411300.0,
+      "high_ns": 1414500.0
+    },
+    {
+      "version": "after",
+      "round": 1,
+      "case": "fundamental_ransac/8point/0.5",
+      "estimate_ns": 1976600.0,
+      "low_ns": 1971600.0,
+      "high_ns": 1982100.0
+    },
+    {
+      "version": "after",
+      "round": 1,
+      "case": "fundamental_ransac/7point/0.8",
+      "estimate_ns": 49510.0,
+      "low_ns": 49452.0,
+      "high_ns": 49586.0
+    },
+    {
+      "version": "after",
+      "round": 1,
+      "case": "fundamental_ransac/8point/0.8",
+      "estimate_ns": 102600.0,
+      "low_ns": 96352.0,
+      "high_ns": 112750.0
+    },
+    {
+      "version": "after",
+      "round": 2,
+      "case": "fundamental_minimal/7point",
+      "estimate_ns": 488.28,
+      "low_ns": 487.6,
+      "high_ns": 489.18
+    },
+    {
+      "version": "after",
+      "round": 2,
+      "case": "fundamental_minimal/8point",
+      "estimate_ns": 960.19,
+      "low_ns": 959.01,
+      "high_ns": 961.56
+    },
+    {
+      "version": "after",
+      "round": 2,
+      "case": "fundamental_ransac/7point/0.2",
+      "estimate_ns": 2305600.0,
+      "low_ns": 2294700.0,
+      "high_ns": 2326700.0
+    },
+    {
+      "version": "after",
+      "round": 2,
+      "case": "fundamental_ransac/8point/0.2",
+      "estimate_ns": 1960200.0,
+      "low_ns": 1953400.0,
+      "high_ns": 1972200.0
+    },
+    {
+      "version": "after",
+      "round": 2,
+      "case": "fundamental_ransac/7point/0.5",
+      "estimate_ns": 1694000.0,
+      "low_ns": 1507300.0,
+      "high_ns": 2056800.0
+    },
+    {
+      "version": "after",
+      "round": 2,
+      "case": "fundamental_ransac/8point/0.5",
+      "estimate_ns": 1985000.0,
+      "low_ns": 1975500.0,
+      "high_ns": 1995100.0
+    },
+    {
+      "version": "after",
+      "round": 2,
+      "case": "fundamental_ransac/7point/0.8",
+      "estimate_ns": 49440.0,
+      "low_ns": 49381.0,
+      "high_ns": 49505.0
+    },
+    {
+      "version": "after",
+      "round": 2,
+      "case": "fundamental_ransac/8point/0.8",
+      "estimate_ns": 84413.0,
+      "low_ns": 83741.0,
+      "high_ns": 85591.0
+    },
+    {
+      "version": "after",
+      "round": 3,
+      "case": "fundamental_minimal/7point",
+      "estimate_ns": 489.33,
+      "low_ns": 486.98,
+      "high_ns": 493.31
+    },
+    {
+      "version": "after",
+      "round": 3,
+      "case": "fundamental_minimal/8point",
+      "estimate_ns": 960.27,
+      "low_ns": 959.6,
+      "high_ns": 960.98
+    },
+    {
+      "version": "after",
+      "round": 3,
+      "case": "fundamental_ransac/7point/0.2",
+      "estimate_ns": 2298600.0,
+      "low_ns": 2293200.0,
+      "high_ns": 2305900.0
+    },
+    {
+      "version": "after",
+      "round": 3,
+      "case": "fundamental_ransac/8point/0.2",
+      "estimate_ns": 1949900.0,
+      "low_ns": 1947900.0,
+      "high_ns": 1952200.0
+    },
+    {
+      "version": "after",
+      "round": 3,
+      "case": "fundamental_ransac/7point/0.5",
+      "estimate_ns": 1410300.0,
+      "low_ns": 1408700.0,
+      "high_ns": 1411600.0
+    },
+    {
+      "version": "after",
+      "round": 3,
+      "case": "fundamental_ransac/8point/0.5",
+      "estimate_ns": 1968600.0,
+      "low_ns": 1967200.0,
+      "high_ns": 1969800.0
+    },
+    {
+      "version": "after",
+      "round": 3,
+      "case": "fundamental_ransac/7point/0.8",
+      "estimate_ns": 49441.0,
+      "low_ns": 49388.0,
+      "high_ns": 49505.0
+    },
+    {
+      "version": "after",
+      "round": 3,
+      "case": "fundamental_ransac/8point/0.8",
+      "estimate_ns": 83635.0,
+      "low_ns": 83576.0,
+      "high_ns": 83693.0
+    }
+  ]
+}

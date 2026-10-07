@@ -1,0 +1,261 @@
+{
+  "metadata": {
+    "input_sha256": "be7f6a7878dfa7f358f64b6aed24cd22b9c4dfcf90c6ba69e6d4f9f42d2ad924",
+    "method": "mean per-pair/seed medians; identical settings pooled across threshold-mode labels",
+    "timed_cutoff_px": 0.5,
+    "confidence": 0.999999,
+    "frontier": "observed configurations only; no interpolation or significance claim"
+  },
+  "points": [
+    {
+      "backend": "Rust generic F7",
+      "engine": "generic",
+      "solver": "F7",
+      "budget": 64,
+      "threshold_px": 0.5,
+      "latency_ms": 0.15086965686274517,
+      "maa": 0.23529411764705885,
+      "seed_sd_ms": 0.0035208393166072955,
+      "seed_sd_maa": 0.017890478030288915,
+      "pair_seed_rows": 102
+    },
+    {
+      "backend": "Rust generic F7",
+      "engine": "generic",
+      "solver": "F7",
+      "budget": 256,
+      "threshold_px": 0.5,
+      "latency_ms": 0.3809040392156862,
+      "maa": 0.29411764705882354,
+      "seed_sd_ms": 0.004125862319150488,
+      "seed_sd_maa": 0.03823529411764708,
+      "pair_seed_rows": 102
+    },
+    {
+      "backend": "Rust generic F7",
+      "engine": "generic",
+      "solver": "F7",
+      "budget": 1000,
+      "threshold_px": 0.5,
+      "latency_ms": 1.1166042058823529,
+      "maa": 0.29901960784313725,
+      "seed_sd_ms": 0.034623554827784876,
+      "seed_sd_maa": 0.042655509642759076,
+      "pair_seed_rows": 102
+    },
+    {
+      "backend": "Rust generic F7",
+      "engine": "generic",
+      "solver": "F7",
+      "budget": 4096,
+      "threshold_px": 0.5,
+      "latency_ms": 2.8561176470588223,
+      "maa": 0.3117647058823529,
+      "seed_sd_ms": 0.4151676385809656,
+      "seed_sd_maa": 0.051533574905691895,
+      "pair_seed_rows": 102
+    },
+    {
+      "backend": "Rust generic F7",
+      "engine": "generic",
+      "solver": "F7",
+      "budget": 16384,
+      "threshold_px": 0.5,
+      "latency_ms": 6.612553088235289,
+      "maa": 0.3333333333333332,
+      "seed_sd_ms": 0.1351443036709874,
+      "seed_sd_maa": 0.06129607463662978,
+      "pair_seed_rows": 102
+    },
+    {
+      "backend": "Rust generic F8",
+      "engine": "generic",
+      "solver": "F8",
+      "budget": 64,
+      "threshold_px": 0.5,
+      "latency_ms": 0.18742119607843138,
+      "maa": 0.1735294117647059,
+      "seed_sd_ms": 0.0029488864101516266,
+      "seed_sd_maa": 0.01470588235294118,
+      "pair_seed_rows": 102
+    },
+    {
+      "backend": "Rust generic F8",
+      "engine": "generic",
+      "solver": "F8",
+      "budget": 256,
+      "threshold_px": 0.5,
+      "latency_ms": 0.5310918725490196,
+      "maa": 0.22843137254901968,
+      "seed_sd_ms": 0.0024220485783800734,
+      "seed_sd_maa": 0.01619873690378268,
+      "pair_seed_rows": 102
+    },
+    {
+      "backend": "Rust generic F8",
+      "engine": "generic",
+      "solver": "F8",
+      "budget": 1000,
+      "threshold_px": 0.5,
+      "latency_ms": 1.720167950980392,
+      "maa": 0.28039215686274505,
+      "seed_sd_ms": 0.017168596898043828,
+      "seed_sd_maa": 0.01672423736199214,
+      "pair_seed_rows": 102
+    },
+    {
+      "backend": "Rust generic F8",
+      "engine": "generic",
+      "solver": "F8",
+      "budget": 4096,
+      "threshold_px": 0.5,
+      "latency_ms": 4.67275732352941,
+      "maa": 0.3078431372549019,
+      "seed_sd_ms": 0.10991672173149179,
+      "seed_sd_maa": 0.015092945410137925,
+      "pair_seed_rows": 102
+    },
+    {
+      "backend": "Rust generic F8",
+      "engine": "generic",
+      "solver": "F8",
+      "budget": 16384,
+      "threshold_px": 0.5,
+      "latency_ms": 10.679424852941173,
+      "maa": 0.30882352941176466,
+      "seed_sd_ms": 0.24766826034729697,
+      "seed_sd_maa": 0.03314537549877841,
+      "pair_seed_rows": 102
+    }
+  ],
+  "panels": [
+    {
+      "engine": "generic",
+      "mode": "shared",
+      "frontier": [
+        {
+          "backend": "Rust generic F7",
+          "engine": "generic",
+          "solver": "F7",
+          "budget": 64,
+          "threshold_px": 0.5,
+          "latency_ms": 0.15086965686274517,
+          "maa": 0.23529411764705885,
+          "seed_sd_ms": 0.0035208393166072955,
+          "seed_sd_maa": 0.017890478030288915,
+          "pair_seed_rows": 102
+        },
+        {
+          "backend": "Rust generic F7",
+          "engine": "generic",
+          "solver": "F7",
+          "budget": 256,
+          "threshold_px": 0.5,
+          "latency_ms": 0.3809040392156862,
+          "maa": 0.29411764705882354,
+          "seed_sd_ms": 0.004125862319150488,
+          "seed_sd_maa": 0.03823529411764708,
+          "pair_seed_rows": 102
+        },
+        {
+          "backend": "Rust generic F7",
+          "engine": "generic",
+          "solver": "F7",
+          "budget": 1000,
+          "threshold_px": 0.5,
+          "latency_ms": 1.1166042058823529,
+          "maa": 0.29901960784313725,
+          "seed_sd_ms": 0.034623554827784876,
+          "seed_sd_maa": 0.042655509642759076,
+          "pair_seed_rows": 102
+        },
+        {
+          "backend": "Rust generic F7",
+          "engine": "generic",
+          "solver": "F7",
+          "budget": 4096,
+          "threshold_px": 0.5,
+          "latency_ms": 2.8561176470588223,
+          "maa": 0.3117647058823529,
+          "seed_sd_ms": 0.4151676385809656,
+          "seed_sd_maa": 0.051533574905691895,
+          "pair_seed_rows": 102
+        },
+        {
+          "backend": "Rust generic F7",
+          "engine": "generic",
+          "solver": "F7",
+          "budget": 16384,
+          "threshold_px": 0.5,
+          "latency_ms": 6.612553088235289,
+          "maa": 0.3333333333333332,
+          "seed_sd_ms": 0.1351443036709874,
+          "seed_sd_maa": 0.06129607463662978,
+          "pair_seed_rows": 102
+        }
+      ]
+    }
+  ],
+  "global_frontier": [
+    {
+      "backend": "Rust generic F7",
+      "engine": "generic",
+      "solver": "F7",
+      "budget": 64,
+      "threshold_px": 0.5,
+      "latency_ms": 0.15086965686274517,
+      "maa": 0.23529411764705885,
+      "seed_sd_ms": 0.0035208393166072955,
+      "seed_sd_maa": 0.017890478030288915,
+      "pair_seed_rows": 102
+    },
+    {
+      "backend": "Rust generic F7",
+      "engine": "generic",
+      "solver": "F7",
+      "budget": 256,
+      "threshold_px": 0.5,
+      "latency_ms": 0.3809040392156862,
+      "maa": 0.29411764705882354,
+      "seed_sd_ms": 0.004125862319150488,
+      "seed_sd_maa": 0.03823529411764708,
+      "pair_seed_rows": 102
+    },
+    {
+      "backend": "Rust generic F7",
+      "engine": "generic",
+      "solver": "F7",
+      "budget": 1000,
+      "threshold_px": 0.5,
+      "latency_ms": 1.1166042058823529,
+      "maa": 0.29901960784313725,
+      "seed_sd_ms": 0.034623554827784876,
+      "seed_sd_maa": 0.042655509642759076,
+      "pair_seed_rows": 102
+    },
+    {
+      "backend": "Rust generic F7",
+      "engine": "generic",
+      "solver": "F7",
+      "budget": 4096,
+      "threshold_px": 0.5,
+      "latency_ms": 2.8561176470588223,
+      "maa": 0.3117647058823529,
+      "seed_sd_ms": 0.4151676385809656,
+      "seed_sd_maa": 0.051533574905691895,
+      "pair_seed_rows": 102
+    },
+    {
+      "backend": "Rust generic F7",
+      "engine": "generic",
+      "solver": "F7",
+      "budget": 16384,
+      "threshold_px": 0.5,
+      "latency_ms": 6.612553088235289,
+      "maa": 0.3333333333333332,
+      "seed_sd_ms": 0.1351443036709874,
+      "seed_sd_maa": 0.06129607463662978,
+      "pair_seed_rows": 102
+    }
+  ]
+}

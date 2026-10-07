@@ -16,6 +16,8 @@
 *   **Geometric Transforms:** Apply rigid body transformations (rotation + translation) to point clouds.
 *   **Lie Algebra Integration:** Built on `kornia-algebra` for robust SE(3) and SO(3) manipulations.
 *   **Registration:** Algorithms like Iterative Closest Point (ICP) for aligning point clouds.
+*   **Fundamental RANSAC:** Seven-point minimal hypotheses (all real solutions), with eight-point inlier refinement. `pose::fundamental_7point` exposes the minimal solver; `ransac::estimators::Fundamental8PointEstimator` and `pose::ransac_fundamental_8point` retain the original sampling path for comparisons. The two-view builder also accepts `Fundamental7ptSolver`; its existing `Fundamental8ptSolver` default is preserved.
+    `pose::RansacParams::confidence` accepts an explicit sampling target; `None` preserves each model family's default. Exhaustive struct literals must add `confidence: None` or use `..Default::default()`. Adaptive caps use the all-inlier probability for distinct sampling without replacement.
 *   **PnP Solvers:** Solve for camera pose given 3D-2D point correspondences.
 
 ## 📦 Installation

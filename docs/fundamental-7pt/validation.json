@@ -1,0 +1,43 @@
+{
+  "results_rows": 5712,
+  "unique_coverage": true,
+  "timing_rounds_per_row": 3,
+  "source_and_loaded_binary_hashes_verified": true,
+  "baseline_exact_equality_cases": 204,
+  "baseline_cases": "34 pairs x 3 seeds x 2 engines; 0.5px cutoff; 1000 draws; original F8 binary vs retained F8 path, matrices/masks/iterations identical",
+  "focused_rust_tests": {
+    "fundamental": 32,
+    "ransac_driver": 9,
+    "fundamental_doctests": 3
+  },
+  "python_tests": 7,
+  "clippy": [
+    "kornia-3d lib/tests/new fundamental benchmark with -D warnings",
+    "kornia-py lib no-default-features with -D warnings"
+  ],
+  "format_and_diff_checks": true,
+  "full_suite_run": false,
+  "failures_by_backend_and_stage": {
+    "Rust k3d F8 / budgets / matched": 4,
+    "Rust k3d F8 / budgets / tuned": 4
+  },
+  "source_revision": "a18f4931749a5a53b7e93834cf29f3261c0614f8 + working tree changes",
+  "wheel_sha256": "6c101fa657c5479bed61b1d4a224496425501b3ed1a1efc7e213490bc70038a8",
+  "source_sha256": {
+    "Cargo.lock": "0c70493aa259cb3e2b2ea6ba92194e6ac55ceb27224cb4a7b7343385c8d21d2c",
+    "Cargo.toml": "81b1864c39fb4764e5e019855e36011d1120bc911ce5ed34c149fb753fa99002",
+    "crates/kornia-3d/Cargo.toml": "a5827dd0461698b3cde8cd900e189a0c18554816ef2d16142dadd5f25b4931ef",
+    "kornia-py/Cargo.toml": "c5070ef955fe41e872ec5295b38fd8cb2a60fdd8931449d46d947b1e56c7f4bf",
+    "crates/kornia-3d/src/pose/mod.rs": "daf3841253763b3f3fbe7d6626f1e852580457caba2df84ba9a38675d8b655ad",
+    "crates/kornia-3d/src/ransac/estimators/fundamental.rs": "3d874446b6b02a7d270f9206aefccc43d9e01ef520c825b51fbb4cdb105aef67",
+    "crates/kornia-3d/src/ransac/driver.rs": "ceab28be70910386b207d68fa684c2c0b69fde6a5af19327bf000b61d3dd16ab",
+    "crates/kornia-3d/src/ransac/mod.rs": "aa335368f56716ce45ac83614272e6784b94be25ba3c5b88364dbca42c7311cd",
+    "crates/kornia-3d/src/ransac/config.rs": "2388a3b6384e02f75445573e978479028c2f03ad4eef89ec20a806867821c4b5",
+    "crates/kornia-3d/src/pose/fundamental.rs": "90be09b7a5cb97a1dceda62792210dca7991736455a1a2b06939e503e33eafd4",
+    "crates/kornia-3d/src/pose/fundamental_7pt.rs": "4b5906b048b007c82f3c18b65982caf2af3d431aa375d82696eaa09fabaef724",
+    "crates/kornia-3d/src/pose/twoview.rs": "a2ba6c76cb7c4d32e4696d79afa43b48a2ee3ca73b30acaa9f34c3ec8e244acf",
+    "kornia-py/src/ransac.rs": "ea3a3e09914d851752cc704ce17ad6277163e07ab75a77bea064b9dd0d0a7f42",
+    "kornia-py/src/homography.rs": "03e1d9194b4381bbd725709cd7186d89855e825d28d50b9b07a694004a1b04a4"
+  },
+  "repeat_quality_exact_equality_cases": 5712
+}

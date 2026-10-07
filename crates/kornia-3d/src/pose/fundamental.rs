@@ -37,74 +37,128 @@
 #![allow(clippy::needless_range_loop)]
 
 use kornia_algebra::{linalg::svd::svd3_f64, Mat3F64, Vec2F64, Vec3F64};
+use nalgebra::SMatrix;
 
 /// Error type for fundamental matrix estimation.
 #[derive(thiserror::Error, Debug)]
 pub enum FundamentalError {
     /// Input correspondences are invalid or insufficient.
-    #[error("Need at least 8 correspondences and equal lengths")]
+    #[error("Invalid correspondence count, unequal lengths, or non-finite coordinates")]
     InvalidInput,
     /// SVD failed or produced an invalid result.
     #[error("SVD failed to produce a valid fundamental matrix")]
     SvdFailure,
+    /// The minimal configuration does not determine isolated rank-two models.
+    #[error("Degenerate fundamental matrix configuration")]
+    DegenerateConfiguration,
 }
 
-/// Estimate the fundamental matrix using the normalized 8-point algorithm.
+/// Estimate a fundamental matrix with the normalized 8-point algorithm.
 ///
-/// - `x1`: points in image 1 as `&[Vec2F64]` (length >= 8)
-/// - `x2`: corresponding points in image 2 as `&[Vec2F64]` (same length)
+/// Exactly eight correspondences use a stack-only Householder null-space
+/// solver. Larger sets use the least-squares minimizer of the complete design
+/// matrix, so every correspondence contributes to a RANSAC refit.
+///
+/// # Arguments
+///
+/// * `x1` - Finite points in image 1, with at least eight correspondences.
+/// * `x2` - Finite points in image 2, in one-to-one correspondence with `x1`.
+///
+/// # Returns
+///
+/// A rank-two fundamental matrix in pixel coordinates.
+///
+/// # Errors
+///
+/// Returns [`FundamentalError::InvalidInput`] for unequal, insufficient, or
+/// non-finite input, including coordinates that cannot be normalized without
+/// overflow. Returns [`FundamentalError::DegenerateConfiguration`] when an
+/// exact-eight set does not have rank eight, and [`FundamentalError::SvdFailure`]
+/// when rank enforcement produces non-finite output.
+///
+/// # Example
+///
+/// ```no_run
+/// use kornia_3d::pose::fundamental_8point;
+/// use kornia_algebra::Vec2F64;
+/// let x1 = [
+///     Vec2F64::new(10.0, 20.0), Vec2F64::new(30.0, 40.0),
+///     Vec2F64::new(50.0, 20.0), Vec2F64::new(60.0, 80.0),
+///     Vec2F64::new(15.0, 75.0), Vec2F64::new(90.0, 30.0),
+///     Vec2F64::new(35.0, 60.0), Vec2F64::new(75.0, 50.0),
+/// ];
+/// let x2 = [
+///     Vec2F64::new(11.0, 18.0), Vec2F64::new(33.0, 38.0),
+///     Vec2F64::new(54.0, 19.0), Vec2F64::new(65.0, 78.0),
+///     Vec2F64::new(17.0, 70.0), Vec2F64::new(97.0, 28.0),
+///     Vec2F64::new(39.0, 58.0), Vec2F64::new(82.0, 47.0),
+/// ];
+/// let fundamental = fundamental_8point(&x1, &x2)?;
+/// # Ok::<(), kornia_3d::pose::FundamentalError>(())
+/// ```
 pub fn fundamental_8point(x1: &[Vec2F64], x2: &[Vec2F64]) -> Result<Mat3F64, FundamentalError> {
-    if x1.len() != x2.len() || x1.len() < 8 {
+    if x1.len() != x2.len()
+        || x1.len() < 8
+        || x1
+            .iter()
+            .chain(x2)
+            .any(|point| !point.x.is_finite() || !point.y.is_finite())
+    {
         return Err(FundamentalError::InvalidInput);
     }
 
     let (x1n, t1) = normalize_points_2d(x1);
     let (x2n, t2) = normalize_points_2d(x2);
+    if !points_are_finite(&x1n)
+        || !points_are_finite(&x2n)
+        || !matrix_is_finite(&t1)
+        || !matrix_is_finite(&t2)
+    {
+        return Err(FundamentalError::InvalidInput);
+    }
 
-    // Null-vector of A (the n×9 design matrix). Householder on Aᵀ (9×n) wins
-    // for small n because it skips the fixed 9×9 eigen cost; M = AᵀA + LDLᵀ
-    // amortizes better for large n. Crossover at n ≈ 64.
-    let fvec = if x1n.len() <= 64 {
+    // Null-vector of A (the n×9 design matrix). The Householder kernel is an
+    // exact eight-row solver: its eight reflections intentionally leave the
+    // ninth coordinate as the null vector. For non-minimal fits, form AᵀA so
+    // every correspondence contributes to the least-squares estimate.
+    let fvec = if x1n.len() == 8 {
         null_vector_householder(&x1n, &x2n)
     } else {
         null_vector_mtm(&x1n, &x2n)
-    };
+    }?;
 
     let f = Mat3F64::from_cols(
         Vec3F64::new(fvec[0], fvec[3], fvec[6]),
         Vec3F64::new(fvec[1], fvec[4], fvec[7]),
         Vec3F64::new(fvec[2], fvec[5], fvec[8]),
     );
+    if !matrix_is_finite(&f) {
+        return Err(FundamentalError::SvdFailure);
+    }
 
     let f_rank2 = enforce_rank2(&f)?;
 
     // Denormalize: F = T2^T * F * T1
     let f_denorm = t2.transpose() * f_rank2 * t1;
-    Ok(f_denorm)
+    if matrix_is_finite(&f_denorm) {
+        Ok(f_denorm)
+    } else {
+        Err(FundamentalError::SvdFailure)
+    }
 }
 
-/// Return the 9-vector spanning the null space of the 8-point design matrix A
-/// built from the normalized correspondences `x1n`, `x2n` (length n ≥ 8).
+/// Return the 9-vector spanning the null space of an eight-row design matrix A
+/// built from the normalized correspondences `x1n` and `x2n` (both length 8).
 ///
 /// Builds Aᵀ in column-major layout (9 rows × n cols, each column 9 contiguous
 /// f64), runs 8 Householder reflections, and extracts the null vector as
 /// `Q·e₈` via reverse-order application of the reflectors.
 #[inline]
-fn null_vector_householder(x1n: &[Vec2F64], x2n: &[Vec2F64]) -> [f64; 9] {
+fn null_vector_householder(x1n: &[Vec2F64], x2n: &[Vec2F64]) -> Result<[f64; 9], FundamentalError> {
     let n = x1n.len();
 
-    // Stack-only up to STACK_N correspondences; larger n spills to heap.
-    // STACK_N = 32 covers the RANSAC minimal set (8) plus typical inlier
-    // refits. 32 × 9 × 8B = 2304 B — comfortably within A78AE stack budgets.
-    const STACK_N: usize = 32;
-    let mut stack_buf = [0.0f64; 9 * STACK_N];
-    let mut heap_buf;
-    let at: &mut [f64] = if n <= STACK_N {
-        &mut stack_buf[..9 * n]
-    } else {
-        heap_buf = vec![0.0f64; 9 * n];
-        heap_buf.as_mut_slice()
-    };
+    debug_assert_eq!(n, 8);
+    let mut at = [0.0f64; 9 * 8];
 
     for i in 0..n {
         let (x, y) = (x1n[i].x, x1n[i].y);
@@ -120,6 +174,16 @@ fn null_vector_householder(x1n: &[Vec2F64], x2n: &[Vec2F64]) -> [f64; 9] {
         at[base + 7] = y;
         at[base + 8] = 1.0;
     }
+    if at.iter().any(|value| !value.is_finite()) {
+        return Err(FundamentalError::InvalidInput);
+    }
+    let design_scale = at
+        .iter()
+        .fold(0.0f64, |scale, value| scale.max(value.abs()));
+    if design_scale == 0.0 {
+        return Err(FundamentalError::DegenerateConfiguration);
+    }
+    let pivot_tolerance = 1e-12 * design_scale;
 
     let mut u = [[0.0f64; 9]; 8];
 
@@ -136,16 +200,16 @@ fn null_vector_householder(x1n: &[Vec2F64], x2n: &[Vec2F64]) -> [f64; 9] {
             norm_sq += v * v;
         }
         let norm = norm_sq.sqrt();
-        if norm < 1e-14 {
-            continue;
+        if norm <= pivot_tolerance {
+            return Err(FundamentalError::DegenerateConfiguration);
         }
         let x0 = u_full[k];
         let alpha = if x0 >= 0.0 { -norm } else { norm };
         u_full[k] = x0 - alpha;
         // ||u||² = 2·norm·(norm ± x0) analytically — avoids a second pass.
         let unorm_sq = 2.0 * norm * (norm - alpha.signum() * x0);
-        if unorm_sq < 1e-28 {
-            continue;
+        if unorm_sq <= pivot_tolerance * pivot_tolerance {
+            return Err(FundamentalError::DegenerateConfiguration);
         }
         let inv_unorm = 1.0 / unorm_sq.sqrt();
         for i in 0..m {
@@ -165,7 +229,7 @@ fn null_vector_householder(x1n: &[Vec2F64], x2n: &[Vec2F64]) -> [f64; 9] {
     for k in (0..8).rev() {
         apply_reflector_col(&mut v, &u[k], k);
     }
-    v
+    Ok(v)
 }
 
 /// Apply H = I - 2·u·uᵀ to a 9-element slice `col` in place; `u` is non-zero
@@ -174,8 +238,10 @@ fn null_vector_householder(x1n: &[Vec2F64], x2n: &[Vec2F64]) -> [f64; 9] {
 /// aarch64 path: 2-lane f64 `vfmaq_f64` for both the dot and AXPY passes, one
 /// scalar tail at the end. 9-k ∈ {1..9} gives up to 4 vector iters + 1 scalar.
 #[inline(always)]
-fn apply_reflector_col(col: &mut [f64], u: &[f64; 9], k: usize) {
+pub(super) fn apply_reflector_col(col: &mut [f64], u: &[f64; 9], k: usize) {
     #[cfg(target_arch = "aarch64")]
+    // SAFETY: NEON is baseline on aarch64. Both slices contain nine entries;
+    // vector accesses are bounded by i + 2 <= 9 and the scalar tail by i < 9.
     unsafe {
         use std::arch::aarch64::{
             vaddvq_f64, vdupq_n_f64, vfmaq_f64, vfmsq_f64, vld1q_f64, vst1q_f64,
@@ -210,7 +276,11 @@ fn apply_reflector_col(col: &mut [f64], u: &[f64; 9], k: usize) {
     }
     #[cfg(target_arch = "x86_64")]
     {
-        if kornia_imgproc::simd::cpu_features().has_avx2 {
+        if kornia_imgproc::simd::cpu_features().has_avx2
+            && kornia_imgproc::simd::cpu_features().has_fma
+        {
+            // SAFETY: AVX2/FMA support is runtime checked and both inputs
+            // contain nine entries, as required by the bounded kernel.
             unsafe { apply_reflector_col_avx2(col, u, k) };
             return;
         }
@@ -272,17 +342,19 @@ unsafe fn apply_reflector_col_avx2(col: &mut [f64], u: &[f64; 9], k: usize) {
     }
 }
 
-/// Fallback null-vector path for large n: accumulate M = AᵀA (9×9 symmetric)
-/// via rank-1 outer products, then take the eigenvector of the smallest
-/// eigenvalue. The fixed O(9³) eigen cost amortizes better than Householder's
-/// O(8n) column updates once n exceeds ~70.
+/// Least-squares null-vector path for more than eight correspondences:
+/// accumulate M = AᵀA (9×9 symmetric) via rank-1 outer products, then take
+/// the eigenvector of the smallest eigenvalue.
 #[inline]
-fn null_vector_mtm(x1n: &[Vec2F64], x2n: &[Vec2F64]) -> [f64; 9] {
+fn null_vector_mtm(x1n: &[Vec2F64], x2n: &[Vec2F64]) -> Result<[f64; 9], FundamentalError> {
     let mut m = [[0.0f64; 9]; 9];
     for i in 0..x1n.len() {
         let (x, y) = (x1n[i].x, x1n[i].y);
         let (xp, yp) = (x2n[i].x, x2n[i].y);
         let row = [xp * x, xp * y, xp, yp * x, yp * y, yp, x, y, 1.0];
+        if row.iter().any(|value| !value.is_finite()) {
+            return Err(FundamentalError::InvalidInput);
+        }
         for a in 0..9 {
             let ra = row[a];
             for b in a..9 {
@@ -296,83 +368,43 @@ fn null_vector_mtm(x1n: &[Vec2F64], x2n: &[Vec2F64]) -> [f64; 9] {
         }
     }
 
+    if m.iter().flatten().any(|value| !value.is_finite()) {
+        return Err(FundamentalError::InvalidInput);
+    }
     smallest_eigenvector_9x9_sym(&m)
 }
 
-/// Smallest-eigenvector of a 9×9 symmetric PSD matrix via inverse iteration on
-/// an LDLᵀ factorization of `M + εI`.
+/// Smallest-eigenvector of a 9×9 symmetric PSD matrix.
 ///
-/// For the 8-point problem M is rank-deficient by construction (λ_min ≈ 0), so
-/// the λ_min/λ_2nd convergence ratio is ~0 — 3 iterations converge to double
-/// precision. Total ≈ 420 f64 ops vs ~5000 for a generic eigendecomposition.
-/// The ε-shift keeps LDLᵀ numerically PD without biasing the recovered vector.
+/// Non-minimal fits are noisy, so their smallest eigenvalue is generally not
+/// zero. A full symmetric eigendecomposition is required here: fixed-count
+/// inverse iteration only converges to the least-squares solution when the
+/// smallest eigengap happens to be sufficiently large.
 #[inline]
-fn smallest_eigenvector_9x9_sym(m: &[[f64; 9]; 9]) -> [f64; 9] {
-    let mut trace = 0.0;
-    for i in 0..9 {
-        trace += m[i][i];
-    }
-    let eps = 1e-14 * trace.max(1e-300);
-
-    let mut l = *m;
-    for i in 0..9 {
-        l[i][i] += eps;
-    }
-    for j in 0..9 {
-        let mut djj = l[j][j];
-        for k in 0..j {
-            djj -= l[j][k] * l[j][k] * l[k][k];
-        }
-        l[j][j] = djj;
-        // Safety guard — never triggers on well-conditioned 8-point data, but
-        // keeps division safe if ε underflows against a degenerate input.
-        let inv_djj = if djj.abs() > 1e-300 { 1.0 / djj } else { 0.0 };
-        for i in (j + 1)..9 {
-            let mut sum = l[i][j];
-            for k in 0..j {
-                sum -= l[i][k] * l[j][k] * l[k][k];
-            }
-            l[i][j] = sum * inv_djj;
+fn smallest_eigenvector_9x9_sym(m: &[[f64; 9]; 9]) -> Result<[f64; 9], FundamentalError> {
+    let eig = SMatrix::<f64, 9, 9>::from_fn(|r, c| m[r][c]).symmetric_eigen();
+    let mut min_idx = 0;
+    for i in 1..9 {
+        if eig.eigenvalues[i] < eig.eigenvalues[min_idx] {
+            min_idx = i;
         }
     }
-
-    // Constant seed (1/3, …, 1/3) is safe for the 8-point problem: the null
-    // basis has no systematic sign pattern that would orthogonalize it.
-    let mut v = [1.0f64 / 3.0; 9];
-    for _ in 0..3 {
-        let mut y = v;
-        for i in 1..9 {
-            let mut s = y[i];
-            for k in 0..i {
-                s -= l[i][k] * y[k];
-            }
-            y[i] = s;
-        }
-        for i in 0..9 {
-            let dii = l[i][i];
-            y[i] = if dii.abs() > 1e-300 { y[i] / dii } else { 0.0 };
-        }
-        for i in (0..9).rev() {
-            let mut s = y[i];
-            for k in (i + 1)..9 {
-                s -= l[k][i] * y[k];
-            }
-            y[i] = s;
-        }
-        let mut norm_sq = 0.0;
-        for i in 0..9 {
-            norm_sq += y[i] * y[i];
-        }
-        let inv_norm = if norm_sq > 0.0 {
-            1.0 / norm_sq.sqrt()
-        } else {
-            1.0
-        };
-        for i in 0..9 {
-            v[i] = y[i] * inv_norm;
-        }
+    // More than one numerically null direction leaves the fundamental
+    // matrix underdetermined. Use the squared design's rounding scale;
+    // the smallest eigenvalue itself may be positive for noisy full-rank fits.
+    let largest = eig.eigenvalues.iter().copied().fold(0.0_f64, f64::max);
+    let second = eig
+        .eigenvalues
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != min_idx)
+        .map(|(_, value)| *value)
+        .fold(f64::INFINITY, f64::min);
+    if second <= 64.0 * f64::EPSILON * largest {
+        return Err(FundamentalError::DegenerateConfiguration);
     }
-    v
+    let v = eig.eigenvectors.column(min_idx);
+    Ok([v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8]])
 }
 
 /// Compute the Sampson distance for a correspondence.
@@ -428,6 +460,19 @@ fn normalize_points_2d(x: &[Vec2F64]) -> (Vec<Vec2F64>, Mat3F64) {
     );
 
     (xn, t)
+}
+
+#[inline]
+fn points_are_finite(points: &[Vec2F64]) -> bool {
+    points
+        .iter()
+        .all(|point| point.x.is_finite() && point.y.is_finite())
+}
+
+#[inline]
+fn matrix_is_finite(matrix: &Mat3F64) -> bool {
+    let values: [f64; 9] = (*matrix).into();
+    values.iter().all(|value| value.is_finite())
 }
 
 fn enforce_rank2(f: &Mat3F64) -> Result<Mat3F64, FundamentalError> {
@@ -603,7 +648,7 @@ mod tests {
 
     // ---------------------------------------------------------------------
     // Solver-internal tests: these exercise the null-space kernels directly,
-    // so a regression in Householder/LDLᵀ/NEON gets caught without being
+    // so a regression in Householder/eigensolver/NEON gets caught without being
     // masked by the rank-2 enforcement and denormalization that follow.
     // ---------------------------------------------------------------------
 
@@ -641,7 +686,7 @@ mod tests {
         let (x1n, _) = normalize_points_2d(&x1[..8]);
         let (x2n, _) = normalize_points_2d(&x2[..8]);
 
-        let v = null_vector_householder(&x1n, &x2n);
+        let v = null_vector_householder(&x1n, &x2n).unwrap();
 
         let norm = vec9_norm(&v);
         assert!((norm - 1.0).abs() < 1e-10, "null vector not unit: {norm}");
@@ -652,28 +697,13 @@ mod tests {
 
     #[test]
     fn test_null_vector_mtm_kills_design_matrix() {
-        // Use n>64 to land in the M-build + LDLᵀ + inverse-iteration path.
-        // Synthetic planar homography data has rank-8 design matrix → perfect
-        // null-space recovery.
-        let h_true = Mat3F64::from_cols(
-            Vec3F64::new(1.2, 0.0, 0.001),
-            Vec3F64::new(0.1, 0.9, 0.002),
-            Vec3F64::new(5.0, -3.0, 1.0),
-        );
-        let mut x1 = Vec::new();
-        let mut x2 = Vec::new();
-        for i in 0..80 {
-            let xi = (i as f64 % 10.0) * 2.0 - 10.0;
-            let yi = (i as f64 / 10.0) * 1.5 - 6.0;
-            let p = Vec3F64::new(xi, yi, 1.0);
-            let hp = h_true * p;
-            x1.push(Vec2F64::new(xi, yi));
-            x2.push(Vec2F64::new(hp.x / hp.z, hp.y / hp.z));
-        }
+        // Non-planar clean correspondences determine a unique fundamental
+        // matrix; all twelve rows must share the recovered null direction.
+        let (x1, x2, _) = make_test_correspondences();
         let (x1n, _) = normalize_points_2d(&x1);
         let (x2n, _) = normalize_points_2d(&x2);
 
-        let v = null_vector_mtm(&x1n, &x2n);
+        let v = null_vector_mtm(&x1n, &x2n).unwrap();
         let norm = vec9_norm(&v);
         assert!((norm - 1.0).abs() < 1e-8, "null vector not unit: {norm}");
 
@@ -684,13 +714,13 @@ mod tests {
     #[test]
     fn test_null_vector_householder_and_mtm_agree_on_same_input() {
         // Both kernels must recover the same null vector (up to sign) on
-        // identical input. Exercises the crossover boundary.
+        // identical eight-match input.
         let (x1, x2, _) = make_test_correspondences();
-        let (x1n, _) = normalize_points_2d(&x1);
-        let (x2n, _) = normalize_points_2d(&x2);
+        let (x1n, _) = normalize_points_2d(&x1[..8]);
+        let (x2n, _) = normalize_points_2d(&x2[..8]);
 
-        let vh = null_vector_householder(&x1n, &x2n);
-        let vm = null_vector_mtm(&x1n, &x2n);
+        let vh = null_vector_householder(&x1n, &x2n).unwrap();
+        let vm = null_vector_mtm(&x1n, &x2n).unwrap();
 
         // Align signs by the largest-magnitude entry so comparison is direction-agnostic.
         let mut k = 0;
@@ -715,7 +745,7 @@ mod tests {
         for (i, &lam) in evals.iter().enumerate() {
             m[i][i] = lam;
         }
-        let v = smallest_eigenvector_9x9_sym(&m);
+        let v = smallest_eigenvector_9x9_sym(&m).unwrap();
         // Smallest eigenvalue is at index 8, so v should be ±e₈.
         assert!(v[8].abs() > 0.99, "expected |v[8]|≈1, got {}", v[8]);
         for (i, &x) in v.iter().enumerate().take(8) {
@@ -752,7 +782,7 @@ mod tests {
                 m[i][j] = s;
             }
         }
-        let v = smallest_eigenvector_9x9_sym(&m);
+        let v = smallest_eigenvector_9x9_sym(&m).unwrap();
         let norm = vec9_norm(&v);
         assert!((norm - 1.0).abs() < 1e-10, "not unit: {norm}");
         // Verify M·v ≈ 0 (up to the 1e-10 shift).
@@ -764,6 +794,43 @@ mod tests {
         }
         let res = vec9_norm(&mv);
         assert!(res < 1e-7, "M·v not near zero: {res}");
+    }
+
+    #[test]
+    fn test_smallest_eigenvector_9x9_sym_resolves_close_full_rank_eigenvalues() {
+        // Noisy non-minimal fits have a full-rank AᵀA. With λ₀ and λ₁ this
+        // close, three fixed inverse iterations from the old uniform seed
+        // retain almost equal components in e₀ and e₁ instead of finding the
+        // least-squares direction. The symmetric eigensolver must select e₀.
+        let eigenvalues = [1.0, 1.001, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+        let mut m = [[0.0f64; 9]; 9];
+        for i in 0..9 {
+            m[i][i] = eigenvalues[i];
+        }
+
+        let v = smallest_eigenvector_9x9_sym(&m).unwrap();
+        assert!(v[0].abs() > 0.999_999, "expected the e₀ eigendirection");
+        for (i, &component) in v.iter().enumerate().skip(1) {
+            assert!(component.abs() < 1e-6, "expected v[{i}]≈0, got {component}");
+        }
+
+        // This is the exact behavior of the former three-step inverse
+        // iteration on a diagonal matrix. It demonstrates that the regression
+        // is full-rank and sensitive to the fixed iteration count.
+        let mut old = [1.0 / 3.0; 9];
+        for _ in 0..3 {
+            for i in 0..9 {
+                old[i] /= eigenvalues[i];
+            }
+            let inv_norm = 1.0 / old.iter().map(|x| x * x).sum::<f64>().sqrt();
+            for value in &mut old {
+                *value *= inv_norm;
+            }
+        }
+        assert!(
+            old[0].abs() < 0.8,
+            "three inverse steps unexpectedly resolved the close eigengap"
+        );
     }
 
     #[test]
@@ -844,23 +911,31 @@ mod tests {
 
     #[test]
     fn test_fundamental_8point_large_n_hits_mtm_path() {
-        // n=100 ≥ 65 → crossover dispatch sends this through null_vector_mtm.
-        // Verify the full pipeline (including LDLᵀ inverse iteration) still
+        // n=100 → dispatch sends this through null_vector_mtm. Verify the full
+        // pipeline (including the symmetric eigensolver) still
         // produces a valid F.
-        let h_true = Mat3F64::from_cols(
-            Vec3F64::new(1.2, 0.0, 0.001),
-            Vec3F64::new(0.1, 0.9, 0.002),
-            Vec3F64::new(5.0, -3.0, 1.0),
-        );
         let mut x1 = Vec::new();
         let mut x2 = Vec::new();
         for i in 0..100 {
-            let xi = (i as f64 % 10.0) * 2.0 - 10.0;
-            let yi = (i as f64 / 10.0) * 1.5 - 6.0;
-            let p = Vec3F64::new(xi, yi, 1.0);
-            let hp = h_true * p;
-            x1.push(Vec2F64::new(xi, yi));
-            x2.push(Vec2F64::new(hp.x / hp.z, hp.y / hp.z));
+            let p = Vec3F64::new(
+                (i % 10) as f64 * 0.4 - 2.0,
+                (i / 10) as f64 * 0.3 - 1.5,
+                3.0 + (i * 7 % 13) as f64 * 0.4,
+            );
+            let angle = 0.1_f64;
+            let q = Vec3F64::new(
+                angle.cos() * p.x + angle.sin() * p.z + 0.5,
+                p.y + 0.1,
+                -angle.sin() * p.x + angle.cos() * p.z + 0.2,
+            );
+            x1.push(Vec2F64::new(
+                800.0 * p.x / p.z + 320.0,
+                800.0 * p.y / p.z + 240.0,
+            ));
+            x2.push(Vec2F64::new(
+                800.0 * q.x / q.z + 320.0,
+                800.0 * q.y / q.z + 240.0,
+            ));
         }
         let f = fundamental_8point(&x1, &x2).expect("should succeed on clean data");
         // Rank-2 constraint enforced by the solver.
@@ -916,5 +991,126 @@ mod tests {
             median_d < 1.0,
             "median Sampson distance under light noise exploded: {median_d}"
         );
+    }
+
+    #[test]
+    fn test_fundamental_8point_nonminimal_noisy_fit_uses_every_match() {
+        // A non-minimal RANSAC refit is a least-squares problem. Reordering
+        // its noisy matches must therefore leave its estimate unchanged (up
+        // to the summation round-off in AᵀA). This catches implementations
+        // that accidentally use only the first eight rows of the design
+        // matrix.
+        let (mut x1, mut x2, _) = make_test_correspondences();
+        for (i, p) in x2.iter_mut().enumerate() {
+            let s = if i % 2 == 0 { 1.0 } else { -1.0 };
+            p.x += s * (0.11 + 0.017 * i as f64);
+            p.y -= s * (0.07 + 0.013 * i as f64);
+        }
+
+        let f = fundamental_8point(&x1, &x2).expect("non-minimal fit should succeed");
+        x1.reverse();
+        x2.reverse();
+        let f_reversed =
+            fundamental_8point(&x1, &x2).expect("permuted non-minimal fit should succeed");
+
+        let a: [f64; 9] = f.into();
+        let b: [f64; 9] = f_reversed.into();
+        let norm_a = a.iter().map(|x| x * x).sum::<f64>().sqrt();
+        let norm_b = b.iter().map(|x| x * x).sum::<f64>().sqrt();
+        let sign = if a.iter().zip(b).map(|(x, y)| x * y).sum::<f64>() < 0.0 {
+            -1.0
+        } else {
+            1.0
+        };
+        let direction_error = a
+            .iter()
+            .zip(b)
+            .map(|(x, y)| (x / norm_a - sign * y / norm_b).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        assert!(
+            direction_error < 1e-10,
+            "non-minimal fit changed after permutation: direction error = {direction_error}"
+        );
+    }
+
+    #[test]
+    fn test_fundamental_8point_rejects_nonfinite_nonminimal_input() {
+        let (mut x1, mut x2, _) = make_test_correspondences();
+        x1[8].x = f64::NAN;
+        assert!(matches!(
+            fundamental_8point(&x1, &x2),
+            Err(FundamentalError::InvalidInput)
+        ));
+
+        x1[8].x = 0.0;
+        x2[10].y = f64::INFINITY;
+        assert!(matches!(
+            fundamental_8point(&x1, &x2),
+            Err(FundamentalError::InvalidInput)
+        ));
+    }
+
+    #[test]
+    fn test_fundamental_8point_rejects_finite_coordinates_that_overflow_normalization() {
+        let (mut x1, mut x2, _) = make_test_correspondences();
+        x1[0].x = f64::MAX;
+        x1[1].x = f64::MAX;
+        assert!(matches!(
+            fundamental_8point(&x1, &x2),
+            Err(FundamentalError::InvalidInput)
+        ));
+
+        x1[0].x = 0.0;
+        x1[1].x = 0.0;
+        x2[0].y = -f64::MAX;
+        x2[1].y = -f64::MAX;
+        assert!(matches!(
+            fundamental_8point(&x1, &x2),
+            Err(FundamentalError::InvalidInput)
+        ));
+    }
+
+    #[test]
+    fn test_fundamental_8point_rejects_degenerate_exact_eight_sets() {
+        let repeated1 = vec![Vec2F64::new(4.0, -2.0); 8];
+        let repeated2 = vec![Vec2F64::new(-3.0, 5.0); 8];
+        assert!(matches!(
+            fundamental_8point(&repeated1, &repeated2),
+            Err(FundamentalError::DegenerateConfiguration)
+        ));
+
+        let collinear1: Vec<_> = (0..8)
+            .map(|i| Vec2F64::new(i as f64, 2.0 * i as f64 + 1.0))
+            .collect();
+        let collinear2: Vec<_> = (0..8)
+            .map(|i| Vec2F64::new(3.0 * i as f64 - 4.0, -i as f64))
+            .collect();
+        assert!(matches!(
+            fundamental_8point(&collinear1, &collinear2),
+            Err(FundamentalError::DegenerateConfiguration)
+        ));
+    }
+
+    #[test]
+    fn test_fundamental_8point_rejects_degenerate_nonminimal_sets() {
+        for n in [9, 12, 65] {
+            let repeated1 = vec![Vec2F64::new(4.0, -2.0); n];
+            let repeated2 = vec![Vec2F64::new(-3.0, 5.0); n];
+            assert!(matches!(
+                fundamental_8point(&repeated1, &repeated2),
+                Err(FundamentalError::DegenerateConfiguration)
+            ));
+            let collinear1: Vec<_> = (0..n)
+                .map(|i| Vec2F64::new(i as f64, 2.0 * i as f64 + 1.0))
+                .collect();
+            let collinear2: Vec<_> = (0..n)
+                .map(|i| Vec2F64::new(3.0 * i as f64 - 4.0, -(i as f64)))
+                .collect();
+            assert!(matches!(
+                fundamental_8point(&collinear1, &collinear2),
+                Err(FundamentalError::DegenerateConfiguration)
+            ));
+        }
     }
 }

@@ -1,0 +1,614 @@
+[
+  {
+    "index": 0,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 4.377027148685287e-16
+  },
+  {
+    "index": 1,
+    "rust_count": 1,
+    "kornia_count": 1,
+    "worst_projective_distance": 1.1108041552603118e-16
+  },
+  {
+    "index": 2,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 3.071799239220619e-17
+  },
+  {
+    "index": 3,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 6.534133300883885e-16
+  },
+  {
+    "index": 4,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 5.090704713869311e-16
+  },
+  {
+    "index": 5,
+    "rust_count": 1,
+    "kornia_count": 1,
+    "worst_projective_distance": 1.1311058772609172e-16
+  },
+  {
+    "index": 6,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 1.8113382343298606e-16
+  },
+  {
+    "index": 7,
+    "rust_count": 1,
+    "kornia_count": 1,
+    "worst_projective_distance": 3.806950629713461e-16
+  },
+  {
+    "index": 8,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 2.2065048488560714e-15
+  },
+  {
+    "index": 9,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 1.2433496312480194e-15
+  },
+  {
+    "index": 10,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 1.1210425155041747e-16
+  },
+  {
+    "index": 11,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 1.2154153923929358e-16
+  },
+  {
+    "index": 12,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 4.161550677216014e-16
+  },
+  {
+    "index": 13,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 1.2289250291199947e-16
+  },
+  {
+    "index": 14,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 1.8746262388924863e-16
+  },
+  {
+    "index": 15,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 1.539404630397634e-16
+  },
+  {
+    "index": 16,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 2.9962606730414074e-16
+  },
+  {
+    "index": 17,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 1.1816512901633293e-15
+  },
+  {
+    "index": 18,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 4.1993242731042353e-17
+  },
+  {
+    "index": 19,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 8.748168998134242e-16
+  },
+  {
+    "index": 20,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 1.9692696150196208e-16
+  },
+  {
+    "index": 21,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 1.9421394726503353e-15
+  },
+  {
+    "index": 22,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 2.746938257960359e-16
+  },
+  {
+    "index": 23,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 2.315531402381376e-16
+  },
+  {
+    "index": 24,
+    "rust_count": 1,
+    "kornia_count": 1,
+    "worst_projective_distance": 1.6617860115799138e-16
+  },
+  {
+    "index": 25,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 1.3697031170376654e-15
+  },
+  {
+    "index": 26,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 2.523021074989688e-16
+  },
+  {
+    "index": 27,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 2.2209513005256524e-16
+  },
+  {
+    "index": 28,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 1.9202567568590566e-16
+  },
+  {
+    "index": 29,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 4.481246889465109e-16
+  },
+  {
+    "index": 30,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 1.9419705423238523e-16
+  },
+  {
+    "index": 31,
+    "rust_count": 1,
+    "kornia_count": 1,
+    "worst_projective_distance": 9.91319180166431e-18
+  },
+  {
+    "index": 32,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 4.1914468414662416e-16
+  },
+  {
+    "index": 33,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 5.861419266165966e-15
+  },
+  {
+    "index": 34,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 9.769446145695145e-16
+  },
+  {
+    "index": 35,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 2.6191455101917414e-16
+  },
+  {
+    "index": 36,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 2.1717394327851117e-16
+  },
+  {
+    "index": 37,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 2.3743171905388276e-16
+  },
+  {
+    "index": 38,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 1.3177035461307093e-16
+  },
+  {
+    "index": 39,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 6.285689129946292e-15
+  },
+  {
+    "index": 40,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 9.783652269420874e-15
+  },
+  {
+    "index": 41,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 9.115680391427425e-15
+  },
+  {
+    "index": 42,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 2.101696428929595e-12
+  },
+  {
+    "index": 43,
+    "rust_count": 1,
+    "kornia_count": 1,
+    "worst_projective_distance": 4.8180326604687895e-15
+  },
+  {
+    "index": 44,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 5.490890753769763e-16
+  },
+  {
+    "index": 45,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 1.6013698181346446e-16
+  },
+  {
+    "index": 46,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 5.2426779966739966e-15
+  },
+  {
+    "index": 47,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 1.6102146995033352e-16
+  },
+  {
+    "index": 48,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 1.1250886054601627e-16
+  },
+  {
+    "index": 49,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 1.2394221912685887e-16
+  },
+  {
+    "index": 50,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 7.186066460768384e-18
+  },
+  {
+    "index": 51,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 1.1111168160902353e-16
+  },
+  {
+    "index": 52,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 3.8713184421593064e-16
+  },
+  {
+    "index": 53,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 1.1497222072784233e-16
+  },
+  {
+    "index": 54,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 1.1357741202931092e-16
+  },
+  {
+    "index": 55,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 1.1247776135298654e-16
+  },
+  {
+    "index": 56,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 1.9945712858168535e-16
+  },
+  {
+    "index": 57,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 1.3756156701566475e-15
+  },
+  {
+    "index": 58,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 1.3036991311525463e-15
+  },
+  {
+    "index": 59,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 1.3147046161743527e-16
+  },
+  {
+    "index": 60,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 7.929557622819652e-16
+  },
+  {
+    "index": 61,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 2.645059745396602e-15
+  },
+  {
+    "index": 62,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 2.6892925384089183e-15
+  },
+  {
+    "index": 63,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 2.3264606971626072e-14
+  },
+  {
+    "index": 64,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 2.1398897244506487e-14
+  },
+  {
+    "index": 65,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 7.918673796332688e-15
+  },
+  {
+    "index": 66,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 2.2209552701805994e-16
+  },
+  {
+    "index": 67,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 1.1217700504323089e-16
+  },
+  {
+    "index": 68,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 2.2360058188274486e-14
+  },
+  {
+    "index": 69,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 1.1114611286475627e-16
+  },
+  {
+    "index": 70,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 1.2907061368397657e-16
+  },
+  {
+    "index": 71,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 2.866149419939404e-16
+  },
+  {
+    "index": 72,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 5.880161537542074e-15
+  },
+  {
+    "index": 73,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 2.9844464072483436e-15
+  },
+  {
+    "index": 74,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 2.2443048802211723e-15
+  },
+  {
+    "index": 75,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 2.583024434502066e-13
+  },
+  {
+    "index": 76,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 1.652292789982455e-14
+  },
+  {
+    "index": 77,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 2.615591722073462e-14
+  },
+  {
+    "index": 78,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 5.296016807196531e-15
+  },
+  {
+    "index": 79,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 2.7853405373313655e-15
+  },
+  {
+    "index": 80,
+    "rust_count": 1,
+    "kornia_count": 1,
+    "worst_projective_distance": 1.8847922276497668e-16
+  },
+  {
+    "index": 81,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 1.1404627681967445e-15
+  },
+  {
+    "index": 82,
+    "rust_count": 1,
+    "kornia_count": 1,
+    "worst_projective_distance": 1.0110548554803547e-14
+  },
+  {
+    "index": 83,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 2.696906412370719e-17
+  },
+  {
+    "index": 84,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 1.4718919382327572e-16
+  },
+  {
+    "index": 85,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 1.9839709175701936e-15
+  },
+  {
+    "index": 86,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 2.4344317168854645e-16
+  },
+  {
+    "index": 87,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 2.7518427514129474e-15
+  },
+  {
+    "index": 88,
+    "rust_count": 1,
+    "kornia_count": 1,
+    "worst_projective_distance": 2.2351863577769377e-16
+  },
+  {
+    "index": 89,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 2.0745733253060067e-14
+  },
+  {
+    "index": 90,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 1.7576605879828296e-15
+  },
+  {
+    "index": 91,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 9.91733208969798e-14
+  },
+  {
+    "index": 92,
+    "rust_count": 1,
+    "kornia_count": 1,
+    "worst_projective_distance": 3.154605397292016e-15
+  },
+  {
+    "index": 93,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 1.586242775542337e-15
+  },
+  {
+    "index": 94,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 1.1387844827056552e-16
+  },
+  {
+    "index": 95,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 1.9281031839410885e-15
+  },
+  {
+    "index": 96,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 8.97433354378543e-16
+  },
+  {
+    "index": 97,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 2.2485657279623955e-16
+  },
+  {
+    "index": 98,
+    "rust_count": 1,
+    "kornia_count": 1,
+    "worst_projective_distance": 1.3243515080706907e-16
+  },
+  {
+    "index": 99,
+    "rust_count": 1,
+    "kornia_count": 1,
+    "worst_projective_distance": 4.54276473874036e-16
+  },
+  {
+    "index": 100,
+    "rust_count": 1,
+    "kornia_count": 1,
+    "worst_projective_distance": 3.796098692098273e-16
+  },
+  {
+    "index": 101,
+    "rust_count": 3,
+    "kornia_count": 3,
+    "worst_projective_distance": 1.2925846675594223e-15
+  }
+]

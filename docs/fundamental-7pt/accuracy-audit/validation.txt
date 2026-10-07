@@ -1,0 +1,133 @@
+fundamental
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling kornia-3d v0.2.0 (/Users/oldufo/dev/kornia-rs/crates/kornia-3d)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.40s
+     Running unittests src/lib.rs (/tmp/ransac-compare.ADVJWx/target/debug/deps/kornia_3d-805cebf301cb0d61)
+
+running 44 tests
+test pose::fundamental::tests::test_apply_reflector_col_is_involution ... ok
+test pose::fundamental::tests::test_apply_reflector_col_reflects_u_to_minus_u ... ok
+test pose::fundamental::tests::test_apply_reflector_col_preserves_norm ... ok
+test pose::fundamental::tests::test_fundamental_8point_rejects_degenerate_exact_eight_sets ... ok
+test pose::fundamental::tests::test_fundamental_8point_rejects_finite_coordinates_that_overflow_normalization ... ok
+test pose::fundamental::tests::test_fundamental_8point_large_n_hits_mtm_path ... ok
+test pose::fundamental::tests::test_fundamental_8point_proportional_to_true ... ok
+test pose::fundamental::tests::test_fundamental_8point_nonminimal_noisy_fit_uses_every_match ... ok
+test pose::fundamental::tests::test_fundamental_8point_noisy_data_is_stable ... ok
+test pose::fundamental::tests::test_fundamental_8point_rejects_nonfinite_nonminimal_input ... ok
+test pose::fundamental::tests::test_fundamental_8point_epipolar_constraint ... ok
+test pose::fundamental::tests::test_fundamental_8point_sampson_distance_near_zero ... ok
+test pose::fundamental::tests::test_null_vector_householder_and_mtm_agree_on_same_input ... ok
+test pose::fundamental::tests::test_sampson_distance_zero_on_epipolar_line ... ok
+test pose::fundamental::tests::test_smallest_eigenvector_9x9_sym_known_spectrum ... ok
+test pose::fundamental::tests::test_null_vector_householder_kills_design_matrix ... ok
+test pose::fundamental_7pt::tests::fast_norm_falls_back_for_extreme_magnitudes ... ok
+test pose::fundamental::tests::test_null_vector_mtm_kills_design_matrix ... ok
+test pose::fundamental::tests::test_smallest_eigenvector_9x9_sym_resolves_close_full_rank_eigenvalues ... ok
+test pose::fundamental::tests::test_smallest_eigenvector_9x9_sym_rotated_spectrum ... ok
+test pose::fundamental::tests::test_fundamental_8point_rejects_degenerate_nonminimal_sets ... ok
+test pose::fundamental_7pt::tests::degree_drop_includes_projective_infinity_candidate ... ok
+test pose::fundamental_7pt::tests::fixed_buffer_preserves_input_errors ... ok
+test pose::fundamental_7pt::tests::fixed_buffer_matches_public_wrapper_without_writing_past_results ... ok
+test pose::fundamental_7pt::tests::invalid_and_degenerate_inputs_are_rejected ... ok
+test pose::fundamental_7pt::tests::polynomial_solver_handles_cubic_and_lower_degrees ... ok
+test pose::fundamental_7pt::tests::polynomial_solver_preserves_close_and_tiny_roots ... ok
+test pose::fundamental_7pt::tests::rank_one_candidate_is_not_a_fundamental_matrix ... ok
+test pose::fundamental_7pt::tests::real_sample_with_ill_conditioned_lu_gauge_keeps_rank_two ... ok
+test pose::essential::tests::test_fundamental_to_essential_to_pose_round_trip ... ok
+test pose::fundamental_7pt::tests::singular_pencil_endpoints_keep_both_distinct_solutions ... ok
+test pose::fundamental_7pt::tests::seven_point_models_fit_sample_and_holdout ... ok
+test pose::fundamental_7pt::tests::seven_point_is_stable_under_order_and_coordinate_scale ... ok
+test pose::twoview::tests::test_ransac_fundamental_invalid_input ... ok
+test pose::fundamental_7pt::tests::random_nonplanar_samples_fit_every_candidate_and_a_holdout ... ok
+test ransac::estimators::fundamental::tests::batch_dispatcher_matches_scalar_residual ... ok
+test pose::twoview::tests::test_ransac_fundamental_basic ... ok
+test ransac::estimators::fundamental::tests::fits_and_scores_clean_correspondences ... ok
+test ransac::estimators::fundamental::tests::fused_threshold_scoring_keeps_strict_and_nonfinite_semantics ... ok
+test ransac::estimators::fundamental::tests::seven_point_candidates_and_eight_point_refit ... ok
+test ransac::estimators::fundamental::tests::under_min_samples_yields_no_model ... ok
+test ransac::estimators::fundamental::tests::seven_point_ransac_scores_every_root ... ok
+test pose::twoview::tests::test_ransac_fundamental_seven_matches_and_all_roots ... ok
+test pose::twoview::tests::test_ransac_fundamental_refit_improves_accuracy ... ok
+
+test result: ok. 44 passed; 0 failed; 0 ignored; 0 measured; 237 filtered out; finished in 0.01s
+
+
+
+twoview
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on artifact directory
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.60s
+     Running unittests src/lib.rs (/tmp/ransac-compare.ADVJWx/target/debug/deps/kornia_3d-805cebf301cb0d61)
+
+running 31 tests
+test pose::twoview::tests::test_default_triangulation_config_values ... ok
+test pose::twoview::tests::test_lm_pose_refine_does_no_harm_when_already_optimal ... ok
+test pose::twoview::tests::test_bounded_f_scorer_rejects_when_count_cannot_catch_up ... ok
+test pose::twoview::tests::test_bounded_f_scorer_rejects_count_and_score_ties ... ok
+test pose::twoview::tests::test_median_parallax_empty_inliers ... ok
+test pose::twoview::tests::test_bounded_f_scorer_matches_full_winner_and_zero_denominator ... ok
+test pose::twoview::tests::test_median_parallax_known_angle ... ok
+test pose::twoview::tests::test_median_parallax_out_of_bounds_indices_ignored ... ok
+test pose::twoview::tests::test_median_parallax_identical_points ... ok
+test pose::twoview::tests::test_ransac_confidence_monotonically_increases_adaptive_cap ... ok
+test pose::twoview::tests::test_ransac_essential_5pt_invalid_input ... ok
+test pose::twoview::tests::test_ransac_confidence_validation_and_defaults ... ok
+test pose::twoview::tests::test_ransac_fundamental_invalid_input ... ok
+test pose::twoview::tests::test_median_parallax_multiple_inliers ... ok
+test pose::twoview::tests::test_ransac_fundamental_basic ... ok
+test pose::twoview::tests::test_ransac_homography_adaptive_stops_early_on_clean_data ... ok
+test pose::twoview::tests::test_ransac_homography_basic ... ok
+test pose::twoview::tests::test_ransac_fundamental_refit_improves_accuracy ... ok
+test pose::twoview::tests::test_ransac_homography_invalid_input ... ok
+test pose::twoview::tests::test_sample_degenerate_collinear_rejected ... ok
+test pose::twoview::tests::test_sample_non_degenerate_accepted ... ok
+test pose::twoview::tests::test_lm_pose_refine_noisy_improves ... ok
+test pose::twoview::tests::test_score_inliers_f_matches_scalar ... ok
+test pose::twoview::tests::test_score_inliers_h_matches_scalar ... ok
+test pose::twoview::tests::test_lm_pose_refine_synthetic_perfect ... ok
+test pose::twoview::tests::test_ransac_fundamental_seven_matches_and_all_roots ... ok
+test pose::twoview::tests::test_ransac_essential_5pt_recovers_known_e ... ok
+test pose::twoview::tests::test_cheirality_ambiguity_guard_fires_on_degenerate_motion ... ok
+test pose::twoview::tests::test_cheirality_ambiguity_guard_permissive_default ... ok
+test pose::twoview::tests::test_two_view_estimate_with_5pt_essential ... ok
+test pose::twoview::tests::test_two_view_euroc_mh01 ... ok
+
+test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 250 filtered out; finished in 5.77s
+
+
+
+python
+.........                                                                [100%]
+9 passed in 0.84s
+
+
+docs
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling kornia-3d v0.2.0 (/Users/oldufo/dev/kornia-rs/crates/kornia-3d)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.56s
+   Doc-tests kornia_3d
+
+running 4 tests
+test crates/kornia-3d/src/pose/fundamental.rs - pose::fundamental::fundamental_8point (line 81) - compile ... ok
+test crates/kornia-3d/src/pose/fundamental_7pt.rs - pose::fundamental_7pt::fundamental_7point (line 34) - compile ... ok
+test crates/kornia-3d/src/pose/twoview.rs - pose::twoview::ransac_fundamental (line 1083) ... ok
+test crates/kornia-3d/src/pose/twoview.rs - pose::twoview::ransac_fundamental_8point (line 1117) ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 17 filtered out; finished in 1.49s
+
+
+
+clippy
+    Checking kornia-tensor v0.2.0 (/Users/oldufo/dev/kornia-rs/crates/kornia-tensor)
+    Checking kornia-algebra v0.2.0 (/Users/oldufo/dev/kornia-rs/crates/kornia-algebra)
+    Checking kornia-image v0.2.0 (/Users/oldufo/dev/kornia-rs/crates/kornia-image)
+    Checking kornia-imgproc v0.2.0 (/Users/oldufo/dev/kornia-rs/crates/kornia-imgproc)
+    Checking kornia-io v0.2.0 (/Users/oldufo/dev/kornia-rs/crates/kornia-io)
+    Checking kornia-3d v0.2.0 (/Users/oldufo/dev/kornia-rs/crates/kornia-3d)
+    Checking kornia-apriltag v0.2.0 (/Users/oldufo/dev/kornia-rs/crates/kornia-apriltag)
+    Checking kornia-py v0.2.0 (/Users/oldufo/dev/kornia-rs/kornia-py)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 10.15s

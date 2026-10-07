@@ -1,0 +1,17 @@
+{
+  "sample_index": 705,
+  "input": "/tmp/fundamental-opt.yjwkzc/real-minimal-samples.npy",
+  "comparison": "C wrapper normalized vs Rust/Kornia minimal candidates, projective Frobenius distance threshold 1e-6",
+  "candidate_counts": {"c_wrapper": 3, "rust": 3, "kornia": 3, "raw_pydegensac": 3},
+  "max_c_wrapper_distance_to_rust": 5.09907956072863e-05,
+  "c_wrapper_distances_to_nearest_rust": [5.063056372442228e-13, 8.872297926405603e-12, 5.09907956072863e-05],
+  "rust_kornia_max_projective_distance": 3.936003938787402e-13,
+  "normalized_design_singular_values": [6.20625002, 3.73416035, 3.18159751, 2.90073726, 2.42636895, 1.99989529, 0.2620552],
+  "normalized_design_condition_number": 23.68298753264403,
+  "pydegensac_rref_null_basis_norms_before_slcm_mutation": [198.54132372, 1626.19305786],
+  "pydegensac_cubic_roots": [0.87365334, 0.87924682, 0.87769115],
+  "c_wrapper_normalized_candidate_abs_determinants": [1.0670140169754927e-08, 1.0690953266278129e-08, 1.0685250073592472e-08],
+  "c_wrapper_normalized_candidate_smallest_singular_values": [6.93102765e-10, 3.35612098e-09, 8.89254052e-09],
+  "c_wrapper_normalized_design_epipolar_max_residual": 3.702593787124897e-14,
+  "conclusion": "The C wrapper formula is correct: its normalized candidate matrices preserve the input constraints and its denormalized matrices preserve pixel residuals. The discrepancy is the legacy pydegensac partial-pivot RREF null-space gauge, whose coordinates are 200-1600 despite a well-conditioned normalized design. It magnifies Cardano/root-combination roundoff, leaving rank-three residual singular values around 1e-9. Rust's orthonormal Householder null space and Kornia's reparameterized pencil agree. This is not a Rust solver regression and must not be used as a strict normalized-C parity requirement."
+}
