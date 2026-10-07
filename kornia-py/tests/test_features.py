@@ -71,6 +71,20 @@ def test_match_descriptors_max_ratio():
     assert len(rejected) == 0
 
 
+@pytest.mark.parametrize("cross_check", [False, True])
+@pytest.mark.parametrize("max_ratio,accepted", [(0.8, False), (1.0, True), (float("nan"), True)])
+def test_match_descriptors_zero_tie_ratio(cross_check, max_ratio, accepted):
+    query = np.zeros((1, 32), dtype=np.uint8)
+    candidates = np.zeros((2, 32), dtype=np.uint8)
+    matches = K.features.match_descriptors(
+        query, candidates, cross_check=cross_check, max_ratio=max_ratio
+    )
+    if accepted:
+        np.testing.assert_array_equal(matches, [[0, 0]])
+    else:
+        assert matches.shape == (0, 2)
+
+
 def test_match_descriptors_rejects_wrong_descriptor_size():
     bad = np.zeros((4, 16), dtype=np.uint8)  # must be 32 bytes.
     with pytest.raises(ValueError):

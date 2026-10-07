@@ -29,8 +29,8 @@ fn bench_hamming_match(c: &mut Criterion) {
             for cross_check in [false, true] {
                 let direction = if cross_check { "mutual" } else { "forward" };
                 group.bench_with_input(BenchmarkId::new(direction, count), &count, |b, _| {
-                    pool.install(|| {
-                        b.iter(|| {
+                    b.iter(|| {
+                        pool.install(|| {
                             std::hint::black_box(match_descriptors(
                                 std::hint::black_box(&queries),
                                 std::hint::black_box(&candidates),
@@ -38,7 +38,7 @@ fn bench_hamming_match(c: &mut Criterion) {
                                 cross_check,
                                 None,
                             ))
-                        });
+                        })
                     });
                 });
             }

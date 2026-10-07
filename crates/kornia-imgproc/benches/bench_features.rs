@@ -168,30 +168,80 @@ fn bench_descriptor_matching(c: &mut Criterion) {
     let mut group = c.benchmark_group("descriptor_matching");
     group.sample_size(20);
 
-    for &n_kp in &[500, 1000, 2000] {
-        group.bench_with_input(BenchmarkId::new("n_keypoints", n_kp), &n_kp, |b, &n_kp| {
-            let orb = OrbDetector {
-                n_keypoints: n_kp,
-                ..Default::default()
-            };
-            let feat0 = orb.detect_and_extract(&frame0).unwrap();
-            let feat1 = orb.detect_and_extract(&frame1).unwrap();
-            let config = OrbMatchConfig {
-                nn_ratio: 0.6,
-                th_low: 50,
-                check_orientation: true,
-                histo_length: 30,
-            };
+    for &n_kp in &[500, 1000, 2000, 4096] {
+        let orb = OrbDetector {
+            n_keypoints: n_kp,
+            ..Default::default()
+        };
+        let feat0 = orb.detect_and_extract(&frame0).unwrap();
+        let feat1 = orb.detect_and_extract(&frame1).unwrap();
+        let config = OrbMatchConfig::default();
+        group.bench_with_input(BenchmarkId::new("n_keypoints", n_kp), &n_kp, |b, _| {
             b.iter(|| {
                 std::hint::black_box(match_orb_descriptors(
-                    &feat0.orientations,
-                    &feat0.descriptors,
-                    &feat1.orientations,
-                    &feat1.descriptors,
+                    std::hint::black_box(&feat0.orientations),
+                    std::hint::black_box(&feat0.descriptors),
+                    std::hint::black_box(&feat1.orientations),
+                    std::hint::black_box(&feat1.descriptors),
                     config,
                 ))
             });
         });
+        for threads in [1, 4] {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            for cross_check in [false, true] {
+                let direction = if cross_check { "mutual" } else { "forward" };
+                group.bench_with_input(
+                    BenchmarkId::new(format!("hamming_{direction}_{threads}_threads"), n_kp),
+                    &n_kp,
+                    |b, _| {
+                        // Include entry into the pool in each timed call, as real
+                        // callers do. Feature extraction stays outside the timing.
+                        b.iter(|| {
+                            pool.install(|| {
+                                std::hint::black_box(match_descriptors(
+                                    std::hint::black_box(&feat0.descriptors),
+                                    std::hint::black_box(&feat1.descriptors),
+                                    None,
+                                    cross_check,
+                                    None,
+                                ))
+                            })
+                        });
+                    },
+                );
+            }
+            let predicted = OrbFeaturesView {
+                descriptors: &feat0.descriptors,
+                keypoints_xy: &feat0.keypoints_xy,
+                octaves: &feat0.octaves,
+            };
+            let observed = OrbFeaturesView {
+                descriptors: &feat1.descriptors,
+                keypoints_xy: &feat1.keypoints_xy,
+                octaves: &feat1.octaves,
+            };
+            let cfg = ByProjectionConfig {
+                scale_factors: (0..orb.n_scales)
+                    .map(|o| orb.downscale.powi(o as i32))
+                    .collect(),
+                ..Default::default()
+            };
+            group.bench_with_input(
+                BenchmarkId::new(format!("projection_{threads}_threads"), n_kp),
+                &n_kp,
+                |b, _| {
+                    b.iter(|| {
+                        pool.install(|| {
+                            std::hint::black_box(match_orb_by_projection(predicted, observed, &cfg))
+                        })
+                    });
+                },
+            );
+        }
     }
     group.finish();
 }

@@ -120,6 +120,24 @@ You can find comprehensive examples in the `examples` folder of the repository:
 *   [`pnp_demo`](../../examples/pnp_demo): Uses image processing for PnP.
 *   [`ros-z-nodes`](../../examples/ros-z-nodes): ROS nodes using image processing.
 
+### Binary descriptor matching
+
+`features::match_descriptors` matches fixed-width binary descriptors with
+Hamming distance, an optional distance cap, mutual nearest neighbors, and a
+forward Lowe ratio filter. ORB's 32-byte descriptors use AVX2 or NEON row
+kernels; other widths and CPUs use a scalar row kernel. Large mutual scans
+reuse forward distances for reverse minima with worker-local scratch buffers.
+The ORB and projection matchers share these row kernels.
+
+An enabled ratio filter (`max_ratio < 1.0`) rejects ambiguous zero-distance
+ties. `None`, NaN, and ratios >= 1.0 disable the generic matcher's ratio filter.
+Projection matching omits queries with no eligible candidate, including when
+the distance cap is `u32::MAX`.
+
+For real EuRoC ORB matching benchmarks, including timed Rayon pool entry, run
+`cargo bench -p kornia-imgproc --bench bench_features -- descriptor_matching`.
+`bench_hamming_match` also provides deterministic synthetic workloads.
+
 ## 🤝 Contributing
 
 Contributions are welcome! This crate is part of the Kornia workspace. Please refer to the main repository for contribution guidelines.
