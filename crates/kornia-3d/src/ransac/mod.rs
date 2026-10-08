@@ -13,8 +13,8 @@
 //! - [`Sampler`] draws minimal subsets. [`UniformSampler`] is the default;
 //!   PROSAC-style guided sampling can plug in later.
 //!
-//! The driver loop (`core::run`, landing in a follow-up) consumes one of each
-//! and emits a [`RansacResult`].
+//! The driver loop ([`run`], [`run_parallel`]) consumes one of each and emits
+//! a [`RansacResult`].
 //!
 //! # Why the split?
 //! Existing estimators in [`crate::pose`] each carry their own copy of the

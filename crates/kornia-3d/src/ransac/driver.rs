@@ -1,9 +1,9 @@
 //! Generic RANSAC driver loop.
 //!
 //! Drives any [`Estimator`] + [`Consensus`] + [`Sampler`] triple to
-//! produce a [`RansacResult`]. Sequential v1; LO step and parallel
-//! hypothesis evaluation are deferred to follow-up modules to keep the
-//! generic signature clean.
+//! produce a [`RansacResult`]. The serial driver supports optional local
+//! optimization; [`run_parallel`] evaluates independent hypotheses in
+//! batches.
 //!
 //! Pre-allocates every per-iteration scratch buffer (residuals, inlier
 //! masks, sample-index slots, model out-vec) so the hot loop performs
@@ -47,6 +47,105 @@ use rayon::prelude::*;
 /// or `None` if the kernel returned no candidates. Aliased to keep the
 /// inner `par_iter` closure's return type readable.
 type ChunkBest<M> = Option<(M, f64, usize, Vec<bool>)>;
+
+/// Mutable best-hypothesis state for the serial driver.
+struct BestHypothesis<M> {
+    score: f64,
+    model: Option<M>,
+    inlier_count: usize,
+    inliers: Vec<bool>,
+}
+
+/// Immutable inputs to the classic adaptive iteration bound.
+#[derive(Clone, Copy)]
+struct AdaptiveCapConfig {
+    population: usize,
+    sample_size: usize,
+    confidence: f64,
+}
+
+impl<M: Clone> BestHypothesis<M> {
+    /// Replace the incumbent when `outcome` is strictly better and tighten
+    /// the iteration cap. `partial_cmp` preserves the driver's former `>`
+    /// behavior: an unordered (NaN) score never wins.
+    #[inline]
+    fn try_accept(
+        &mut self,
+        model: &M,
+        outcome: ConsensusOutcome,
+        current_inliers: &mut Vec<bool>,
+        max_iters: &mut u32,
+        cap: AdaptiveCapConfig,
+    ) -> bool {
+        if outcome.score.partial_cmp(&self.score) != Some(std::cmp::Ordering::Greater) {
+            return false;
+        }
+
+        self.score = outcome.score;
+        self.inlier_count = outcome.inlier_count;
+        self.model = Some(model.clone());
+        std::mem::swap(&mut self.inliers, current_inliers);
+
+        if outcome.inlier_count > 0 {
+            let new_max = adaptive_max_iters(
+                outcome.inlier_count,
+                cap.population,
+                cap.sample_size,
+                cap.confidence,
+                *max_iters as usize,
+            ) as u32;
+            if new_max < *max_iters {
+                *max_iters = new_max;
+            }
+        }
+        true
+    }
+}
+
+/// Score a non-SPRT hypothesis. The fused threshold hook is intentionally
+/// unavailable to invalid-SPRT fallback: that configuration retains the
+/// historical residual-vector plus consensus behavior.
+fn evaluate_without_sprt<E, C>(
+    estimator: &E,
+    consensus: &C,
+    model: &E::Model,
+    samples: &[E::Sample],
+    best: &BestHypothesis<E::Model>,
+    residuals: &mut [f64],
+    current_inliers: &mut Vec<bool>,
+) -> Option<ConsensusOutcome>
+where
+    E: Estimator,
+    C: Consensus,
+{
+    if best.model.is_none() {
+        // The first candidate must be fully scored: a zero-inlier model
+        // still beats the initial -∞ score.
+        estimator.residual_batch(model, samples, residuals);
+        return Some(consensus.consensus(residuals, current_inliers));
+    }
+
+    match consensus.threshold().and_then(|threshold| {
+        estimator.threshold_inliers(
+            model,
+            samples,
+            threshold,
+            best.inlier_count,
+            residuals,
+            current_inliers,
+        )
+    }) {
+        Some(ThresholdInlierResult::Complete(inlier_count)) => Some(ConsensusOutcome {
+            score: inlier_count as f64,
+            inlier_count,
+        }),
+        Some(ThresholdInlierResult::Pruned) => None,
+        None => {
+            estimator.residual_batch(model, samples, residuals);
+            Some(consensus.consensus(residuals, current_inliers))
+        }
+    }
+}
 
 /// Run RANSAC.
 ///
@@ -138,7 +237,6 @@ where
     // Per-iteration scratch buffers — allocated once, reused every loop.
     let mut residuals = vec![0.0f64; n];
     let mut current_inliers: Vec<bool> = Vec::with_capacity(n);
-    let mut best_inliers: Vec<bool> = Vec::with_capacity(n);
     let mut sample_idx = vec![0usize; E::SAMPLE_SIZE];
     let mut sample_buf: Vec<E::Sample> = Vec::with_capacity(E::SAMPLE_SIZE);
     // LO-RANSAC scratch: when the configured `lo_every` is non-zero we
@@ -151,9 +249,17 @@ where
     // (Nistér 5pt → up to 10 candidates, P3P → up to 4).
     let mut models: Vec<E::Model> = Vec::with_capacity(10);
 
-    let mut best_score = f64::NEG_INFINITY;
-    let mut best_model: Option<E::Model> = None;
-    let mut best_inlier_count = 0;
+    let mut best = BestHypothesis {
+        score: f64::NEG_INFINITY,
+        model: None,
+        inlier_count: 0,
+        inliers: Vec::with_capacity(n),
+    };
+    let cap = AdaptiveCapConfig {
+        population: n,
+        sample_size: E::SAMPLE_SIZE,
+        confidence: cfg.confidence,
+    };
 
     // SPRT scratch: the point-evaluation order, kept as one base
     // permutation that is re-shuffled every `SPRT_RESHUF_PERIOD`
@@ -182,180 +288,71 @@ where
         // Multi-solution kernels: score every candidate; the best across
         // all candidates from this minimal sample feeds the adaptive cap.
         for model in models.iter() {
-            // SPRT early-exit path: stream residuals through SPRT first,
-            // bail out the moment the hypothesis is rejected. Only on a
-            // pass do we materialise the full residual vector for the
-            // regular consensus step.
-            if let Some(sprt_cfg) = cfg.sprt.as_ref() {
-                if !sprt_cfg.is_valid() {
-                    // Invalid config: fall back to non-SPRT evaluation.
+            // Evaluate every candidate through exactly one policy. Invalid
+            // SPRT intentionally takes the historical generic path and does
+            // not enable the threshold hook.
+            let outcome = match cfg.sprt.as_ref() {
+                Some(sprt_cfg) if !sprt_cfg.is_valid() => {
                     estimator.residual_batch(model, samples, &mut residuals);
-                    let outcome = consensus.consensus(&residuals, &mut current_inliers);
-                    if outcome.score > best_score {
-                        best_score = outcome.score;
-                        best_inlier_count = outcome.inlier_count;
-                        best_model = Some(model.clone());
-                        std::mem::swap(&mut best_inliers, &mut current_inliers);
-                        accepted_since_lo += 1;
-                        if outcome.inlier_count > 0 {
-                            let new_max = adaptive_max_iters(
-                                outcome.inlier_count,
-                                n,
-                                E::SAMPLE_SIZE,
-                                cfg.confidence,
-                                max_iters as usize,
-                            ) as u32;
-                            if new_max < max_iters {
-                                max_iters = new_max;
-                            }
+                    Some(consensus.consensus(&residuals, &mut current_inliers))
+                }
+                Some(sprt_cfg) => {
+                    // The LLR step sizes use the observed best-model inlier
+                    // ratio after first acceptance, otherwise the bounded
+                    // caller prior. Keep the RNG sequence and grace policy
+                    // stable: seeded SPRT runs are a public testing tool.
+                    let eps = if best.inlier_count >= E::SAMPLE_SIZE {
+                        (best.inlier_count as f64 / n as f64).clamp(0.05, 0.95)
+                    } else {
+                        sprt_cfg.epsilon.min(0.3)
+                    };
+                    let eps_clamped = eps.clamp(1e-10, 1.0 - 1e-10);
+                    let delta_clamped =
+                        crate::ransac::sprt::DEFAULT_CHANCE_PROB.clamp(1e-10, 1.0 - 1e-10);
+                    let inlier_step = (delta_clamped / eps_clamped).ln();
+                    let outlier_step = ((1.0 - delta_clamped) / (1.0 - eps_clamped)).ln();
+                    let grace = if best.inlier_count >= E::SAMPLE_SIZE {
+                        0
+                    } else {
+                        (n / 4).max(E::SAMPLE_SIZE * 4)
+                    };
+
+                    if i.is_multiple_of(SPRT_RESHUF_PERIOD) {
+                        sprt_perm.shuffle(rng);
+                    }
+                    let sprt_start = rng.random_range(0..n);
+                    let mut state =
+                        super::sprt::SPRTState::new(sprt_cfg, crate::ransac::sprt::DEFAULT_BETA);
+                    let mut rejected = false;
+                    for k in 0..n {
+                        let p_idx = sprt_perm[(sprt_start + k) % n];
+                        residuals[p_idx] = estimator.residual(model, &samples[p_idx]);
+                        state.update_with_steps(
+                            residuals[p_idx] < cfg.inlier_threshold,
+                            inlier_step,
+                            outlier_step,
+                        );
+                        if state.is_rejected() && state.num_tested >= grace {
+                            rejected = true;
+                            break;
                         }
                     }
-                    continue;
+                    (!rejected).then(|| consensus.consensus(&residuals, &mut current_inliers))
                 }
-
-                // The LLR step sizes need an estimate of the inlier ratio
-                // `eps`. Once we have a real consensus we track the
-                // *observed* ratio of the best model — never clamped up to
-                // the prior, since a prior above the true ratio would make
-                // even a good hypothesis look bad to the test. Before any
-                // model has been accepted we use the caller's prior capped
-                // at 0.3: a grossly optimistic prior would otherwise give a
-                // good hypothesis a positive LLR drift and let SPRT reject
-                // the very models it is supposed to find.
-                let eps = if best_inlier_count >= E::SAMPLE_SIZE {
-                    (best_inlier_count as f64 / n as f64).clamp(0.05, 0.95)
-                } else {
-                    sprt_cfg.epsilon.min(0.3)
-                };
-                let eps_clamped = eps.clamp(1e-10, 1.0 - 1e-10);
-                let delta_clamped =
-                    crate::ransac::sprt::DEFAULT_CHANCE_PROB.clamp(1e-10, 1.0 - 1e-10);
-                let inlier_step = (delta_clamped / eps_clamped).ln();
-                let outlier_step = ((1.0 - delta_clamped) / (1.0 - eps_clamped)).ln();
-
-                // Before the first accepted model the epsilon prior is
-                // unverified: give every hypothesis a minimum look at the
-                // data before SPRT may reject it, so a mismatched prior
-                // cannot starve the run of its first good model.
-                let grace = if best_inlier_count >= E::SAMPLE_SIZE {
-                    0
-                } else {
-                    (n / 4).max(E::SAMPLE_SIZE * 4)
-                };
-
-                // Randomise the evaluation order per hypothesis: rotate
-                // the base permutation by a random offset, refreshing the
-                // base order every `SPRT_RESHUF_PERIOD` hypotheses. Runs
-                // are reproducible under a seeded RNG.
-                if i.is_multiple_of(SPRT_RESHUF_PERIOD) {
-                    sprt_perm.shuffle(rng);
-                }
-                let sprt_start = rng.random_range(0..n);
-
-                let mut state =
-                    super::sprt::SPRTState::new(sprt_cfg, crate::ransac::sprt::DEFAULT_BETA);
-                let mut rejected = false;
-                for k in 0..n {
-                    let p_idx = sprt_perm[(sprt_start + k) % n];
-                    // Lazy residual computation — only the points actually
-                    // visited are scored; rejected hypotheses never touch
-                    // the rest.
-                    residuals[p_idx] = estimator.residual(model, &samples[p_idx]);
-                    state.update_with_steps(
-                        residuals[p_idx] < cfg.inlier_threshold,
-                        inlier_step,
-                        outlier_step,
-                    );
-                    if state.is_rejected() && state.num_tested >= grace {
-                        rejected = true;
-                        break;
-                    }
-                }
-
-                // SPRT rejected → drop hypothesis, don't run consensus.
-                if rejected {
-                    continue;
-                }
-
-                // SPRT passed: compute the full inlier mask via consensus.
-                // `residuals` is complete because a pass visits all points.
-                let cons_outcome = consensus.consensus(&residuals, &mut current_inliers);
-                if cons_outcome.score > best_score {
-                    best_score = cons_outcome.score;
-                    best_inlier_count = cons_outcome.inlier_count;
-                    best_model = Some(model.clone());
-                    std::mem::swap(&mut best_inliers, &mut current_inliers);
-                    accepted_since_lo += 1;
-
-                    // Adaptive cap update — only ever tightens.
-                    if cons_outcome.inlier_count > 0 {
-                        let new_max = adaptive_max_iters(
-                            cons_outcome.inlier_count,
-                            n,
-                            E::SAMPLE_SIZE,
-                            cfg.confidence,
-                            max_iters as usize,
-                        ) as u32;
-                        if new_max < max_iters {
-                            max_iters = new_max;
-                        }
-                    }
-                }
-                continue;
-            }
-
-            // Plain RANSAC path (no SPRT). Seven-point fundamental fitting
-            // can yield several roots, most of which lose quickly. When both
-            // sides opt in to strict threshold scoring, let the estimator
-            // process SIMD-sized chunks and stop once the remaining points
-            // cannot beat the incumbent. Custom consensus remains on the
-            // generic residual-vector path.
-            let outcome = if best_model.is_some() {
-                match consensus.threshold().and_then(|threshold| {
-                    estimator.threshold_inliers(
-                        model,
-                        samples,
-                        threshold,
-                        best_inlier_count,
-                        &mut residuals,
-                        &mut current_inliers,
-                    )
-                }) {
-                    Some(ThresholdInlierResult::Complete(inlier_count)) => ConsensusOutcome {
-                        score: inlier_count as f64,
-                        inlier_count,
-                    },
-                    Some(ThresholdInlierResult::Pruned) => continue,
-                    None => {
-                        estimator.residual_batch(model, samples, &mut residuals);
-                        consensus.consensus(&residuals, &mut current_inliers)
-                    }
-                }
-            } else {
-                // The first candidate must be fully scored: a zero-inlier
-                // model still beats the initial -∞ score.
-                estimator.residual_batch(model, samples, &mut residuals);
-                consensus.consensus(&residuals, &mut current_inliers)
+                None => evaluate_without_sprt(
+                    estimator,
+                    consensus,
+                    model,
+                    samples,
+                    &best,
+                    &mut residuals,
+                    &mut current_inliers,
+                ),
             };
-            if outcome.score > best_score {
-                best_score = outcome.score;
-                best_inlier_count = outcome.inlier_count;
-                best_model = Some(model.clone());
-                std::mem::swap(&mut best_inliers, &mut current_inliers);
-                accepted_since_lo += 1;
 
-                // Adaptive cap update — only ever tightens.
-                if outcome.inlier_count > 0 {
-                    let new_max = adaptive_max_iters(
-                        outcome.inlier_count,
-                        n,
-                        E::SAMPLE_SIZE,
-                        cfg.confidence,
-                        max_iters as usize,
-                    ) as u32;
-                    if new_max < max_iters {
-                        max_iters = new_max;
-                    }
+            if let Some(outcome) = outcome {
+                if best.try_accept(model, outcome, &mut current_inliers, &mut max_iters, cap) {
+                    accepted_since_lo += 1;
                 }
             }
         }
@@ -364,11 +361,11 @@ where
         // the current best inlier set and try the polished model. Skipped
         // when `lo_every == 0` (default) — keeps vanilla RANSAC behaviour
         // identical to the pre-LO driver.
-        if cfg.lo_every > 0 && accepted_since_lo >= cfg.lo_every && best_inliers.iter().any(|&b| b)
+        if cfg.lo_every > 0 && accepted_since_lo >= cfg.lo_every && best.inliers.iter().any(|&b| b)
         {
             accepted_since_lo = 0;
             lo_inlier_buf.clear();
-            for (idx, &is_in) in best_inliers.iter().enumerate() {
+            for (idx, &is_in) in best.inliers.iter().enumerate() {
                 if is_in {
                     lo_inlier_buf.push(samples[idx]);
                 }
@@ -381,25 +378,13 @@ where
                 for lo_model in lo_models.iter() {
                     estimator.residual_batch(lo_model, samples, &mut residuals);
                     let lo_outcome = consensus.consensus(&residuals, &mut current_inliers);
-                    if lo_outcome.score > best_score {
-                        best_score = lo_outcome.score;
-                        best_inlier_count = lo_outcome.inlier_count;
-                        best_model = Some(lo_model.clone());
-                        std::mem::swap(&mut best_inliers, &mut current_inliers);
-                        // LO acceptance also tightens the adaptive cap.
-                        if lo_outcome.inlier_count > 0 {
-                            let new_max = adaptive_max_iters(
-                                lo_outcome.inlier_count,
-                                n,
-                                E::SAMPLE_SIZE,
-                                cfg.confidence,
-                                max_iters as usize,
-                            ) as u32;
-                            if new_max < max_iters {
-                                max_iters = new_max;
-                            }
-                        }
-                    }
+                    best.try_accept(
+                        lo_model,
+                        lo_outcome,
+                        &mut current_inliers,
+                        &mut max_iters,
+                        cap,
+                    );
                 }
             }
         }
@@ -407,11 +392,11 @@ where
         i += 1;
     }
 
-    let mut final_model = best_model.clone();
+    let mut final_model = best.model.clone();
 
     if final_model.is_some() {
         let mut final_inliers_buf = Vec::with_capacity(n);
-        for (idx, &is_in) in best_inliers.iter().enumerate() {
+        for (idx, &is_in) in best.inliers.iter().enumerate() {
             if is_in {
                 final_inliers_buf.push(samples[idx]);
             }
@@ -424,10 +409,10 @@ where
             for fm in final_models.iter() {
                 estimator.residual_batch(fm, samples, &mut residuals);
                 let final_outcome = consensus.consensus(&residuals, &mut current_inliers);
-                if final_outcome.score >= best_score {
-                    best_score = final_outcome.score;
+                if final_outcome.score >= best.score {
+                    best.score = final_outcome.score;
                     final_model = Some(fm.clone());
-                    best_inliers = current_inliers.clone();
+                    best.inliers = current_inliers.clone();
                 }
             }
         }
@@ -435,9 +420,9 @@ where
 
     RansacResult {
         model: final_model,
-        inliers: best_inliers,
+        inliers: best.inliers,
         num_iters: i,
-        score: best_score,
+        score: best.score,
     }
 }
 
@@ -628,6 +613,7 @@ mod tests {
     };
     use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64};
     use rand::{rngs::StdRng, SeedableRng};
+    use std::cell::Cell;
 
     /// Delegates every operation to the seven-point estimator except the
     /// optional fused threshold hook. It pins the optimized driver path to
@@ -653,6 +639,66 @@ mod tests {
 
         fn refit(&self, inliers: &[Self::Sample], out: &mut Vec<Self::Model>) {
             FundamentalEstimator.refit(inliers, out);
+        }
+    }
+
+    /// Small deterministic estimator used to observe threshold-hook routing.
+    struct ThresholdHookProbe {
+        calls: Cell<usize>,
+    }
+
+    impl Estimator for ThresholdHookProbe {
+        type Model = u8;
+        type Sample = u8;
+        const SAMPLE_SIZE: usize = 1;
+
+        fn fit(&self, samples: &[Self::Sample], out: &mut Vec<Self::Model>) {
+            out.push(samples[0]);
+        }
+
+        fn residual(&self, model: &Self::Model, sample: &Self::Sample) -> f64 {
+            if model == sample {
+                0.0
+            } else {
+                1.0
+            }
+        }
+
+        fn threshold_inliers(
+            &self,
+            model: &Self::Model,
+            samples: &[Self::Sample],
+            threshold: f64,
+            _best_inlier_count: usize,
+            residuals: &mut [f64],
+            inliers_out: &mut Vec<bool>,
+        ) -> Option<ThresholdInlierResult> {
+            self.calls.set(self.calls.get() + 1);
+            inliers_out.clear();
+            let mut count = 0;
+            for (residual, sample) in residuals.iter_mut().zip(samples) {
+                *residual = self.residual(model, sample);
+                let is_inlier = *residual < threshold;
+                if is_inlier {
+                    count += 1;
+                }
+                inliers_out.push(is_inlier);
+            }
+            Some(ThresholdInlierResult::Complete(count))
+        }
+    }
+
+    /// Returns an unordered score to pin the driver's strict-comparison
+    /// behavior: NaN must never replace an incumbent.
+    struct NanConsensus;
+
+    impl Consensus for NanConsensus {
+        fn consensus(&self, _residuals: &[f64], inliers_out: &mut Vec<bool>) -> ConsensusOutcome {
+            inliers_out.clear();
+            ConsensusOutcome {
+                score: f64::NAN,
+                inlier_count: 0,
+            }
         }
     }
 
@@ -763,6 +809,89 @@ mod tests {
         assert_eq!(optimized.score, unfused.score);
         assert_eq!(optimized.inliers, unfused.inliers);
         assert_eq!(optimized.model, unfused.model);
+    }
+
+    /// An invalid SPRT configuration is a compatibility fallback, rather
+    /// than permission to switch to the optional threshold fast path. This
+    /// protects callers that accidentally provide an invalid config from a
+    /// change in their scoring control flow or result.
+    #[test]
+    fn invalid_sprt_uses_residual_consensus_not_threshold_hook() {
+        let samples = [0_u8, 0, 1, 1];
+        let consensus = ThresholdConsensus { threshold: 0.5 };
+        let base_cfg = RansacConfig {
+            max_iters: 3,
+            confidence: 0.999,
+            inlier_threshold: 0.5,
+            ..Default::default()
+        };
+
+        let plain_probe = ThresholdHookProbe {
+            calls: Cell::new(0),
+        };
+        let mut plain_sampler = UniformSampler::new(StdRng::seed_from_u64(17));
+        let plain = run(
+            &plain_probe,
+            &consensus,
+            &mut plain_sampler,
+            &samples,
+            &base_cfg,
+        );
+        assert!(
+            plain_probe.calls.get() > 0,
+            "plain RANSAC should use the hook"
+        );
+
+        let invalid_cfg = RansacConfig {
+            sprt: Some(SPRTConfig {
+                epsilon: 1.0,
+                delta: 0.01,
+                t_M: 1.0,
+                t_m: 1.0,
+            }),
+            ..base_cfg.clone()
+        };
+        let invalid_probe = ThresholdHookProbe {
+            calls: Cell::new(0),
+        };
+        let mut invalid_sampler = UniformSampler::new(StdRng::seed_from_u64(17));
+        let invalid = run(
+            &invalid_probe,
+            &consensus,
+            &mut invalid_sampler,
+            &samples,
+            &invalid_cfg,
+        );
+
+        assert_eq!(invalid_probe.calls.get(), 0);
+        assert_eq!(invalid.num_iters, base_cfg.max_iters);
+        assert_eq!(invalid.score, 2.0);
+        assert_eq!(invalid.inliers.iter().filter(|&&inlier| inlier).count(), 2);
+        assert!(plain.model.is_some());
+    }
+
+    /// `score > best_score` rejected unordered scores before the acceptance
+    /// helper existed; keep that exact behavior for custom consensus code.
+    #[test]
+    fn nan_consensus_score_does_not_replace_empty_incumbent() {
+        let estimator = ThresholdHookProbe {
+            calls: Cell::new(0),
+        };
+        let mut sampler = UniformSampler::new(StdRng::seed_from_u64(3));
+        let result = run(
+            &estimator,
+            &NanConsensus,
+            &mut sampler,
+            &[0_u8],
+            &RansacConfig {
+                max_iters: 1,
+                ..Default::default()
+            },
+        );
+
+        assert!(result.model.is_none());
+        assert_eq!(result.score, f64::NEG_INFINITY);
+        assert!(result.inliers.is_empty());
     }
 
     /// A consensus implementation that does not explicitly expose a hard
