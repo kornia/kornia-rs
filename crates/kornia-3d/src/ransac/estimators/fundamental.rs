@@ -55,9 +55,11 @@ impl Estimator for FundamentalEstimator {
         Fundamental8PointEstimator.residual_batch(model, samples, out);
     }
 
-    /// Scores in fixed SIMD-friendly chunks. A losing seven-point root often
-    /// needs only the first chunk: after it cannot exceed the incumbent,
-    /// RANSAC can skip both the remaining residuals and mask writes.
+    /// Scores in two passes. A division-free pass bounds the support from
+    /// above and rejects, every 32 matches, a root whose bound can no longer
+    /// exceed the incumbent; most seven-point roots end there without
+    /// residual or mask writes. A surviving root is scored exactly in fixed
+    /// SIMD-friendly chunks, with the same pruning on its exact count.
     fn threshold_inliers(
         &self,
         model: &Self::Model,
@@ -265,8 +267,9 @@ const UPPER_BOUND_MIN_THRESHOLD: f64 = 1e-280;
 /// exact path's 1e-12 guard (or NaN) are always counted, and the scalar
 /// tail uses exact residuals with `<=`. Every exact inlier is therefore
 /// counted, so rejecting on the bound never discards a possible winner.
-/// Without a SIMD kernel, or for thresholds outside the rounding argument,
-/// the bound is the trivial `samples.len()`.
+/// Without a SIMD kernel the exact scalar residuals are counted instead;
+/// for thresholds outside the rounding argument the bound is the trivial
+/// `samples.len()`.
 #[inline]
 fn sampson_support_upper_bound(
     f: FPacked,
@@ -296,10 +299,30 @@ fn sampson_support_upper_bound(
     }
 
     #[allow(unreachable_code)]
-    {
-        let _ = (f, prune_at);
-        Some(samples.len())
+    sampson_support_upper_bound_scalar(f, samples, threshold, prune_at)
+}
+
+/// Scalar support bound. The exact pass is scalar too on these targets, so
+/// its own residuals bound the count; this keeps the cheap count-only
+/// rejection of losing roots.
+fn sampson_support_upper_bound_scalar(
+    f: FPacked,
+    samples: &[Match2d2d],
+    threshold: f64,
+    prune_at: usize,
+) -> Option<usize> {
+    let n = samples.len();
+    let mut count = 0;
+    let mut start = 0;
+    while start < n {
+        let end = (start + UPPER_BOUND_CHUNK).min(n);
+        count += sampson_tail_upper_bound(f, &samples[start..end], threshold);
+        if count + (n - end) <= prune_at {
+            return None;
+        }
+        start = end;
     }
+    (count > prune_at).then_some(count)
 }
 
 /// Exact residuals of the scalar tail, counted with the bound's `<=`.
@@ -997,6 +1020,8 @@ mod tests {
     /// strict count, including at thresholds equal to a residual, across
     /// SIMD tails and with degenerate or non-finite correspondences, and it
     /// may only prune a candidate whose exact count cannot win.
+    type SupportBound = fn(FPacked, &[Match2d2d], f64, usize) -> Option<usize>;
+
     #[test]
     fn support_upper_bound_never_undercounts_exact_count() {
         let mut state = 0x0b0e_5eed_u64;
@@ -1040,13 +1065,17 @@ mod tests {
                 thresholds.extend([0.0, 1e-6, 1.0, 1e6]);
                 for threshold in thresholds {
                     let exact = residuals.iter().filter(|&&r| r < threshold).count();
-                    let bound = sampson_support_upper_bound(pack_f(&f), &samples, threshold, 0);
-                    assert!(bound.unwrap_or(0) >= exact, "n={n} t={threshold}");
-                    for prune_at in [exact.saturating_sub(1), exact, exact + 1] {
-                        if sampson_support_upper_bound(pack_f(&f), &samples, threshold, prune_at)
-                            .is_none()
-                        {
-                            assert!(exact <= prune_at, "pruned a winner: n={n} t={threshold}");
+                    let bounds: [SupportBound; 2] = [
+                        sampson_support_upper_bound,
+                        sampson_support_upper_bound_scalar,
+                    ];
+                    for bound in bounds {
+                        let total = bound(pack_f(&f), &samples, threshold, 0);
+                        assert!(total.unwrap_or(0) >= exact, "n={n} t={threshold}");
+                        for prune_at in [exact.saturating_sub(1), exact, exact + 1] {
+                            if bound(pack_f(&f), &samples, threshold, prune_at).is_none() {
+                                assert!(exact <= prune_at, "pruned a winner: n={n} t={threshold}");
+                            }
                         }
                     }
                 }

@@ -2217,9 +2217,9 @@ fn score_inliers_f_bounded_masked(
 /// test `e² <= t'·d` with a slightly inflated `t' = t·(1 + 8ε)` instead of
 /// dividing; denominators at or below the 1e-12 guard (or NaN) are always
 /// counted and the scalar tail is scored exactly. Every match the exact
-/// scorer accepts is therefore counted. Platforms without a SIMD kernel,
-/// and thresholds too small for that rounding argument, get the trivial
-/// bound `n`.
+/// scorer accepts is therefore counted. Platforms without a SIMD kernel
+/// count with the exact scalar residuals instead; thresholds too small for
+/// the rounding argument get the trivial bound `n`.
 #[inline]
 #[allow(clippy::too_many_arguments)]
 fn score_inliers_f_upper_bound(
@@ -2256,9 +2256,44 @@ fn score_inliers_f_upper_bound(
                 score_inliers_f_upper_bound_avx2(f, x1_x, x1_y, x2_x, x2_y, thresh_sq, prune_at)
             };
         }
-        let _ = (f, prune_at);
-        Some(n)
+        score_inliers_f_upper_bound_scalar(f, x1_x, x1_y, x2_x, x2_y, thresh_sq, prune_at)
     }
+}
+
+/// Scalar support bound. The exact scorer is scalar too on these targets,
+/// so its own count is the bound; this keeps the cheap count-only rejection
+/// of losing roots.
+#[cfg_attr(target_arch = "aarch64", allow(dead_code))]
+#[allow(clippy::too_many_arguments)]
+fn score_inliers_f_upper_bound_scalar(
+    f: (f64, f64, f64, f64, f64, f64, f64, f64, f64),
+    x1_x: &[f64],
+    x1_y: &[f64],
+    x2_x: &[f64],
+    x2_y: &[f64],
+    thresh_sq: f64,
+    prune_at: usize,
+) -> Option<usize> {
+    let n = x1_x.len();
+    let mut count = 0;
+    let mut start = 0;
+    while start < n {
+        let end = (start + F_UPPER_BOUND_CHUNK).min(n);
+        count += score_inliers_f_tail_count(
+            f,
+            &x1_x[start..end],
+            &x1_y[start..end],
+            &x2_x[start..end],
+            &x2_y[start..end],
+            thresh_sq,
+            0,
+        );
+        if count + (n - end) <= prune_at {
+            return None;
+        }
+        start = end;
+    }
+    (count > prune_at).then_some(count)
 }
 
 /// Matches between pruning checks of [`score_inliers_f_upper_bound`].
@@ -3226,16 +3261,28 @@ mod tests {
                 let mut mask = vec![false; n];
                 let (exact, _) =
                     score_inliers_f(&f_mat, &x1_x, &x1_y, &x2_x, &x2_y, threshold, &mut mask);
-                let bound =
-                    score_inliers_f_upper_bound(&f_mat, &x1_x, &x1_y, &x2_x, &x2_y, threshold, 0);
-                assert!(bound.unwrap_or(0) >= exact, "n={n} t={threshold}");
-                for prune_at in [exact.saturating_sub(1), exact, exact + 1] {
-                    if score_inliers_f_upper_bound(
+                let scalar = |prune_at| {
+                    score_inliers_f_upper_bound_scalar(
+                        f_score_coefficients(&f_mat),
+                        &x1_x,
+                        &x1_y,
+                        &x2_x,
+                        &x2_y,
+                        threshold,
+                        prune_at,
+                    )
+                };
+                let dispatched = |prune_at| {
+                    score_inliers_f_upper_bound(
                         &f_mat, &x1_x, &x1_y, &x2_x, &x2_y, threshold, prune_at,
                     )
-                    .is_none()
-                    {
-                        assert!(exact <= prune_at, "pruned a winner: n={n} t={threshold}");
+                };
+                for bound in [&scalar as &dyn Fn(usize) -> Option<usize>, &dispatched] {
+                    assert!(bound(0).unwrap_or(0) >= exact, "n={n} t={threshold}");
+                    for prune_at in [exact.saturating_sub(1), exact, exact + 1] {
+                        if bound(prune_at).is_none() {
+                            assert!(exact <= prune_at, "pruned a winner: n={n} t={threshold}");
+                        }
                     }
                 }
             }
