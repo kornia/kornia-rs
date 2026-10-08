@@ -15,7 +15,7 @@ This handbook provides an easy-to-read, comprehensive comparison between `kornia
 ```
 1. Filter Operations     [████████████████░░░░] 83%  (10 of 12 supported: 8 full, 2 partial)
 2. Geometric Operations  [███████████░░░░░░░░░] 57%  (4 of 7 supported: 3 full, 1 partial)
-3. Color / Hist / CLAHE  [███████████████░░░░░] 77%  (17 of 22 supported: 15 full, 2 partial)
+3. Color / Hist / CLAHE  [████████████████░░░░] 82%  (18 of 22 supported: 16 full, 2 partial)
 4. Feature Operations    [███░░░░░░░░░░░░░░░░░] 17%  (1 of 6 supported: 1 full)
 ```
 
@@ -94,7 +94,7 @@ Color space transformations live in [`crates/kornia-imgproc/src/color/`](../crat
 | **Sensor Demosaicing** | `rgb_from_bayer` | ✅ | Supports RGGB, BGGR, GBRG, GRBG patterns. |
 | **Histogramming** | `compute_histogram`, `equalize_hist` | ✅ | Single-channel `u8` full parity. |
 | **Contrast** | `clahe` | ✅ | Contrast Limited Adaptive Histogram Equalization. |
-| **Colormaps** | `apply_colormap` | ❌ | 21 OpenCV colormaps (Jet, Viridis, Turbo) are CPU-only. |
+| **Colormaps** | `apply_colormap` | ✅ | Full parity for `u8` across all 21 OpenCV colormaps. |
 | **Color Matrix** | `transform_color` | ❌ | Custom 3×3 matrix color transform is CPU-only. |
 | **Thresholding** | `threshold_binary`, `truncate`, `otsu` | ❌ | All thresholding ops in `threshold.rs` are CPU-only. |
 
@@ -158,8 +158,8 @@ python scripts/verify_cuda_coverage.py --check
 ```
 
 This script asserts that:
-* Every operation marked as ✅ or 🟡 has valid device implementations in `crates/kornia-imgproc/src/cuda/`.
-* Operations marked as ❌ (missing) are scanned and verified to ensure no matching CUDA kernels or modules exist in `crates/kornia-imgproc/src/cuda/`.
+* Every operation marked as ✅ or 🟡 has valid device implementations and matching symbols in `crates/kornia-imgproc/src/cuda/`.
+* Operations marked as ❌ (missing) undergo heuristic validation to check for unmapped implementation files or declarations in `crates/kornia-imgproc/src/cuda/` (supplementing manual source audits).
 * All top-level CUDA modules declared in `crates/kornia-imgproc/src/cuda/mod.rs` are represented.
 
 ### Update Checklist for PRs Touching CUDA
@@ -192,12 +192,13 @@ If you want to contribute code after this audit, here are the 4 best bite-sized 
   1. Add element-wise kernel in `crates/kornia-imgproc/src/cuda/` for `threshold_binary` and `threshold_truncate`.
   2. Connect to `crates/kornia-imgproc/src/threshold.rs`.
 
-### 3. `feat(cuda): implement CUDA apply_colormap`
+### 3. `feat(cuda): implement standalone CUDA pad operations`
 * **Crate**: `kornia-imgproc`
 * **Difficulty**: 🟡 Medium (2–3 days)
 * **What to do**:
-  1. Upload the 256×3 byte LUTs from `colormap_luts.rs` to device memory.
-  2. Map grayscale input pixels to output RGB triplets via device array indexing.
+  1. Add NVRTC kernel in `crates/kornia-imgproc/src/cuda/` for constant, replicate, and reflect padding modes.
+  2. Expose a standalone public `pad` function in `crates/kornia-imgproc/src/pad.rs` with `try_device!` residency dispatch.
+  3. Add parity unit tests comparing CPU and CUDA outputs.
 
 ### 4. `feat(cuda): expose spatial_gradient_f32`
 * **Crate**: `kornia-imgproc`
