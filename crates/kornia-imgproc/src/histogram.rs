@@ -1,6 +1,8 @@
 use kornia_image::{Image, ImageError};
 use rayon::prelude::*;
 
+use crate::parallel::par_row_chunks;
+
 /// Compute the pixel intensity histogram of an image.
 ///
 /// NOTE: this is limited to 8-bit 1-channel images.
@@ -70,8 +72,7 @@ pub fn compute_histogram(
     // O(rows). Each task accumulates its rows into one local histogram before
     // the reduce step merges them.
     const ROWS_PER_TASK: usize = 16;
-    let partial_hist = src_slice
-        .par_chunks(ROWS_PER_TASK * width)
+    let partial_hist = par_row_chunks(src_slice, width, ROWS_PER_TASK)
         .map(|chunk| {
             let mut local_hist = vec![0_usize; num_bins];
             for &pixel in chunk {
@@ -115,6 +116,20 @@ mod tests {
 
         super::compute_histogram(&image, &mut histogram, 3)?;
         assert_eq!(histogram, vec![3, 3, 3]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_compute_histogram_empty_image() -> Result<(), ImageError> {
+        for (width, height) in [(0, 5), (5, 0), (0, 0)] {
+            let image = Image::<u8, 1>::new(ImageSize { width, height }, vec![])?;
+            let mut histogram = vec![7; 4];
+
+            let result = super::compute_histogram(&image, &mut histogram, 4);
+            assert!(result.is_ok(), "case {width}x{height}: got {result:?}");
+            assert_eq!(histogram, vec![7; 4], "case {width}x{height}");
+        }
 
         Ok(())
     }
