@@ -6,7 +6,7 @@
 
 use kornia_algebra::{Mat3F64, Vec2F64};
 
-use crate::pose::fundamental_7point_into;
+use crate::pose::fundamental_7point_oriented_into;
 use crate::pose::{fundamental_8point, sampson_distance};
 use crate::ransac::{clamp_pair, Estimator, Match2d2d, ThresholdInlierResult};
 
@@ -14,6 +14,11 @@ use crate::ransac::{clamp_pair, Estimator, Match2d2d, ThresholdInlierResult};
 ///
 /// Minimal fitting returns up to three real solutions; inlier sets of eight
 /// or more matches are refined with the normalized eight-point solver.
+///
+/// **Oriented epipolar constraint.** As in DEGENSAC, a minimal solution is
+/// discarded when it orients its own seven correspondences inconsistently
+/// (Chum, Werner and Matas, ICPR 2004): no camera pair seeing those points in
+/// front of both cameras can produce it, so it is never scored.
 ///
 /// **Coordinate convention.** Samples are in raw pixel coordinates; Hartley
 /// normalization is applied internally, mirroring the existing solver.
@@ -34,7 +39,7 @@ impl Estimator for FundamentalEstimator {
             let x1 = std::array::from_fn::<_, 7, _>(|i| samples[i].x1);
             let x2 = std::array::from_fn::<_, 7, _>(|i| samples[i].x2);
             let mut models = [Mat3F64::ZERO; 3];
-            if let Ok(count) = fundamental_7point_into(&x1, &x2, &mut models) {
+            if let Ok(count) = fundamental_7point_oriented_into(&x1, &x2, &mut models) {
                 out.extend_from_slice(&models[..count]);
             }
         } else {

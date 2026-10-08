@@ -85,6 +85,47 @@ pub(crate) fn fundamental_7point_into(
     x2: &[Vec2F64],
     models: &mut [Mat3F64; 3],
 ) -> Result<usize, FundamentalError> {
+    fundamental_7point_dispatch::<false>(x1, x2, models)
+}
+
+/// Like [`fundamental_7point_into`], keeping only roots that satisfy the
+/// oriented epipolar constraint on the seven correspondences.
+///
+/// For points in front of both cameras, the epipolar line `Fᵀ x2` and the
+/// line `e1 × x1` through the first epipole have the same orientation for
+/// every correspondence (Chum, Werner and Matas, "Epipolar geometry
+/// estimation via RANSAC benefits from the oriented epipolar constraint",
+/// ICPR 2004). A root that orients the sample inconsistently cannot be the
+/// geometry of an all-inlier sample, so RANSAC need not score it.
+///
+/// # Arguments
+///
+/// * `x1` - Exactly seven finite points in the first image.
+/// * `x2` - Corresponding finite points in the second image.
+/// * `models` - Buffer whose result prefix is overwritten on success.
+///
+/// # Returns
+///
+/// The number of distinct consistent matrices written to the buffer.
+///
+/// # Errors
+///
+/// Returns the errors of [`fundamental_7point_into`], and
+/// [`FundamentalError::DegenerateConfiguration`] when no root is consistent.
+pub(crate) fn fundamental_7point_oriented_into(
+    x1: &[Vec2F64],
+    x2: &[Vec2F64],
+    models: &mut [Mat3F64; 3],
+) -> Result<usize, FundamentalError> {
+    fundamental_7point_dispatch::<true>(x1, x2, models)
+}
+
+#[inline(always)]
+fn fundamental_7point_dispatch<const ORIENTED: bool>(
+    x1: &[Vec2F64],
+    x2: &[Vec2F64],
+    models: &mut [Mat3F64; 3],
+) -> Result<usize, FundamentalError> {
     let (Ok(x1), Ok(x2)) = (<&[Vec2F64; 7]>::try_from(x1), <&[Vec2F64; 7]>::try_from(x2)) else {
         return Err(FundamentalError::InvalidInput);
     };
@@ -101,23 +142,23 @@ pub(crate) fn fundamental_7point_into(
     {
         // SAFETY: AVX2 and FMA support is checked at runtime; the solver only
         // uses fixed-size arrays and has no other preconditions.
-        return unsafe { solve_avx2_fma(x1, x2, models) };
+        return unsafe { solve_avx2_fma::<ORIENTED>(x1, x2, models) };
     }
 
     // aarch64 always has fused multiply-add; elsewhere stay with plain arithmetic.
-    solve::<{ cfg!(target_arch = "aarch64") }>(x1, x2, models)
+    solve::<{ cfg!(target_arch = "aarch64") }, ORIENTED>(x1, x2, models)
 }
 
 /// Compiles the whole solver with AVX2/FMA enabled, so `mul_add` lowers to a
 /// single instruction and the fixed-size loops vectorize.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
-unsafe fn solve_avx2_fma(
+unsafe fn solve_avx2_fma<const ORIENTED: bool>(
     x1: &[Vec2F64; 7],
     x2: &[Vec2F64; 7],
     models: &mut [Mat3F64; 3],
 ) -> Result<usize, FundamentalError> {
-    solve::<true>(x1, x2, models)
+    solve::<true, ORIENTED>(x1, x2, models)
 }
 
 /// `a * b + c`, fused when the instantiation targets hardware FMA.
@@ -148,7 +189,7 @@ fn sum7(v: &[f64; 7]) -> f64 {
 }
 
 #[inline(always)]
-fn solve<const FMA: bool>(
+fn solve<const FMA: bool, const ORIENTED: bool>(
     x1: &[Vec2F64; 7],
     x2: &[Vec2F64; 7],
     models: &mut [Mat3F64; 3],
@@ -172,6 +213,11 @@ fn solve<const FMA: bool>(
     let mut candidates = [None; 3];
     for (candidate, &(_, alpha, beta)) in candidates.iter_mut().zip(&roots[..root_count]) {
         let f = std::array::from_fn(|i| fma::<FMA>(alpha, f0[i], beta * f1[i]));
+        // Hartley transforms scale positively, so orientation can be checked
+        // before denormalizing; rejected roots skip that work entirely.
+        if ORIENTED && !oriented_epipolar_consistent(&f, &h1, &h2) {
+            continue;
+        }
         *candidate = validated_model::<FMA>(&f, &h1, &h2);
     }
     let mut model_count = 0;
@@ -403,6 +449,58 @@ fn null_space_7x9<const FMA: bool>(h1: &Hartley, h2: &Hartley) -> Option<[[f64; 
     basis[1][free0] = w[7] * inv_w;
     basis[1][free1] = w[8] * inv_w;
     Some(basis)
+}
+
+/// Oriented epipolar constraint on the normalized sample.
+///
+/// The side of correspondence `i` is `(Fᵀ x2_i) · (e1 × x1_i)`, with `e1` the
+/// right null vector of `F`; for an exact fit both lines coincide, so the
+/// side is their relative orientation. Consistent geometry gives one sign
+/// for all seven. Sides within their rounding error (a point at an epipole)
+/// do not vote.
+#[inline(always)]
+fn oriented_epipolar_consistent(f: &[f64; 9], h1: &Hartley, h2: &Hartley) -> bool {
+    let rows = [[f[0], f[1], f[2]], [f[3], f[4], f[5]], [f[6], f[7], f[8]]];
+    let cross = |a: [f64; 3], b: [f64; 3]| {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    };
+    let norm2 = |v: [f64; 3]| v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
+    // A rank-two F has a one-dimensional row space complement; use the best
+    // conditioned pair of rows for the epipole.
+    let c02 = cross(rows[0], rows[2]);
+    let c12 = cross(rows[1], rows[2]);
+    let c01 = cross(rows[0], rows[1]);
+    let (n02, n12, n01) = (norm2(c02), norm2(c12), norm2(c01));
+    let e = if n02 >= n12 && n02 >= n01 {
+        c02
+    } else if n12 >= n01 {
+        c12
+    } else {
+        c01
+    };
+    let e_size = e[0].abs() + e[1].abs() + e[2].abs();
+
+    let mut positive = false;
+    let mut negative = false;
+    for i in 0..7 {
+        let (x, y, xp, yp) = (h1.x[i], h1.y[i], h2.x[i], h2.y[i]);
+        let line: [f64; 3] =
+            std::array::from_fn(|j| xp * rows[0][j] + yp * rows[1][j] + rows[2][j]);
+        let through = [e[1] - e[2] * y, e[2] * x - e[0], e[0] * y - e[1] * x];
+        let side = line[0] * through[0] + line[1] * through[1] + line[2] * through[2];
+        let rounding = 64.0
+            * f64::EPSILON
+            * (line[0].abs() + line[1].abs() + line[2].abs())
+            * e_size
+            * (1.0 + x.abs() + y.abs());
+        positive |= side > rounding;
+        negative |= side < -rounding;
+    }
+    !(positive && negative)
 }
 
 /// Validate one root of the pencil and map it to a pixel-space matrix.
@@ -921,6 +1019,86 @@ mod tests {
         assert!(fundamental_7point(&non_finite, &x2[..7]).is_err());
         let repeated = [Vec2F64::new(2.0, -1.0); 7];
         assert!(fundamental_7point(&repeated, &x2[..7]).is_err());
+    }
+
+    /// Projects scene points `(x, y, z)` into two cameras, the second
+    /// rotated by `angle` about y and translated by `t`.
+    fn project_pair(
+        points: &[(f64, f64, f64)],
+        angle: f64,
+        t: [f64; 3],
+    ) -> (Vec<Vec2F64>, Vec<Vec2F64>) {
+        let (sin, cos) = angle.sin_cos();
+        points
+            .iter()
+            .map(|&(x, y, z)| {
+                let (xr, yr, zr) = (
+                    cos * x + sin * z + t[0],
+                    y + t[1],
+                    -sin * x + cos * z + t[2],
+                );
+                (Vec2F64::new(x / z, y / z), Vec2F64::new(xr / zr, yr / zr))
+            })
+            .unzip()
+    }
+
+    fn fits(model: &Mat3F64, x1: Vec2F64, x2: Vec2F64) -> bool {
+        epipolar_error(model, x1, x2).abs() < 1e-9
+    }
+
+    #[test]
+    fn oriented_solver_keeps_the_true_root_of_visible_points() {
+        let mut seed = 0x5eed_0ec0_u64;
+        for trial in 0..500 {
+            let angle = 0.05 + 0.3 * pseudo_random(&mut seed);
+            let t = [
+                pseudo_random(&mut seed) - 0.5,
+                pseudo_random(&mut seed) - 0.5,
+                pseudo_random(&mut seed) - 0.5,
+            ];
+            let points: Vec<_> = (0..8)
+                .map(|_| {
+                    (
+                        4.0 * pseudo_random(&mut seed) - 2.0,
+                        3.0 * pseudo_random(&mut seed) - 1.5,
+                        3.0 + 5.0 * pseudo_random(&mut seed),
+                    )
+                })
+                .collect();
+            let (x1, x2) = project_pair(&points, angle, t);
+            let mut models = [Mat3F64::ZERO; 3];
+            let count = fundamental_7point_oriented_into(&x1[..7], &x2[..7], &mut models)
+                .unwrap_or_else(|error| panic!("trial {trial}: {error:?}"));
+            assert!(
+                models[..count].iter().any(|m| fits(m, x1[7], x2[7])),
+                "trial {trial}: true root rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn oriented_solver_rejects_a_point_behind_the_second_camera() {
+        // The second camera sits five units ahead; z = 3 is in front of the
+        // first camera but behind the second. That correspondence still
+        // satisfies x2ᵀ F x1 = 0, so the plain solver recovers the true F.
+        let points = [
+            (-0.9, 0.4, 7.5),
+            (0.8, -0.6, 8.2),
+            (0.3, 0.9, 6.9),
+            (-0.5, -0.8, 9.1),
+            (1.1, 0.2, 7.8),
+            (-0.2, 0.7, 8.6),
+            (0.4, -0.3, 3.0),
+            (0.6, 0.5, 8.0),
+        ];
+        let (x1, x2) = project_pair(&points, 0.1, [0.3, 0.1, -5.0]);
+        let mut models = [Mat3F64::ZERO; 3];
+        let count = fundamental_7point_into(&x1[..7], &x2[..7], &mut models).unwrap();
+        assert!(models[..count].iter().any(|m| fits(m, x1[7], x2[7])));
+
+        let oriented = fundamental_7point_oriented_into(&x1[..7], &x2[..7], &mut models)
+            .map_or(0, |count| count);
+        assert!(!models[..oriented].iter().any(|m| fits(m, x1[7], x2[7])));
     }
 
     #[test]

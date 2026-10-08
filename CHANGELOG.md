@@ -28,6 +28,11 @@ matrices and inlier masks change, even with a fixed seed. The eight-point path r
 `TwoViewEstimator` keeps `Fundamental8ptSolver` as its default; opt in to seven-point with
 `.epipolar_solver(Fundamental7ptSolver::default())`.
 
+Seven-point RANSAC also applies the oriented epipolar constraint, as DEGENSAC does: a minimal
+solution that orients its own seven correspondences inconsistently cannot come from points in
+front of both cameras and is skipped before scoring. On 1000 St Peter's Square pairs this made
+seven-point RANSAC about 1.3× faster at a cost of about 0.01 pose mAA.
+
 Also breaking for Rust code:
 - `pose::RansacParams` has a new public field, `confidence: Option<f64>`, which overrides the
   adaptive-stopping target. `None` keeps the previous targets (0.9999 for fundamental and

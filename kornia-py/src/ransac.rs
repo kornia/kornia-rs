@@ -86,7 +86,8 @@ fn mat3_to_row_major_vec(m: &kornia_algebra::Mat3F64) -> Vec<f64> {
 /// * `max_iters` - Maximum number of minimal samples drawn.
 /// * `confidence` - Target probability of drawing an all-inlier sample.
 /// * `seed` - Optional deterministic RNG seed (defaults to zero).
-/// * `solver` - `"7point"` (default) or `"8point"` for the original solver.
+/// * `solver` - `"7point"` (default; minimal solutions violating the oriented
+///   epipolar constraint are skipped) or `"8point"` for the original solver.
 ///
 /// # Returns
 ///

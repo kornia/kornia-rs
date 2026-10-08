@@ -73,7 +73,7 @@
 
 #![allow(clippy::needless_range_loop)]
 
-use super::fundamental_7pt::fundamental_7point_into;
+use super::fundamental_7pt::fundamental_7point_oriented_into;
 use crate::pose::fundamental::{fundamental_8point, FundamentalError};
 use crate::pose::lm_pose::{fundamental_from_rt, refine_pose_lm, LmPoseConfig};
 use crate::pose::triangulation::{triangulate_inliers, TriangulateParams, TriangulationConfig};
@@ -301,8 +301,9 @@ impl EpipolarSolver for Fundamental8ptSolver {
 /// Seven-point fundamental matrix strategy with eight-point inlier refinement.
 ///
 /// Opt in via [`TwoViewEstimatorBuilder::epipolar_solver`]. Hypotheses are fitted
-/// in pixel space, and the resulting fundamental matrix is lifted to the
-/// essential manifold using the supplied intrinsics.
+/// in pixel space, screened with the oriented epipolar constraint as in
+/// [`ransac_fundamental`], and the resulting fundamental matrix is lifted to
+/// the essential manifold using the supplied intrinsics.
 #[derive(Clone, Debug, Default)]
 pub struct Fundamental7ptSolver {
     /// RANSAC parameters for the fundamental fit.
@@ -1059,7 +1060,9 @@ fn count_cheirality_fast(
 
 /// Estimate a fundamental matrix with seven-point RANSAC hypotheses.
 ///
-/// Every real solution of a minimal sample is scored. Optional local
+/// Every real solution of a minimal sample that satisfies the oriented
+/// epipolar constraint on that sample is scored, as in DEGENSAC; the others
+/// cannot come from points in front of both cameras. Optional local
 /// refinement uses the eight-point solver on sets of at least eight inliers.
 ///
 /// # Arguments
@@ -1178,7 +1181,7 @@ fn ransac_fundamental_impl<const SAMPLE_SIZE: usize>(
         let mut seven_models = [Mat3F64::ZERO; 3];
         let eight_model;
         let models: &[Mat3F64] = if SAMPLE_SIZE == 7 {
-            let count = match fundamental_7point_into(&s1, &s2, &mut seven_models) {
+            let count = match fundamental_7point_oriented_into(&s1, &s2, &mut seven_models) {
                 Ok(count) => count,
                 Err(_) => continue,
             };

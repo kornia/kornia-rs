@@ -185,7 +185,9 @@ pub fn find_homography_py(
 ///     min_inliers: minimum inliers required for a valid RANSAC fit (default 8);
 ///                  set to 7 when passing exactly seven matches with solver="7point".
 ///     seed: optional RNG seed for deterministic RANSAC runs.
-///     solver: "7point" (default) or "8point" for RANSAC; method=0 uses 8-point DLT.
+///     solver: "7point" (default; minimal solutions violating the oriented
+///             epipolar constraint are skipped) or "8point" for RANSAC;
+///             method=0 uses 8-point DLT.
 ///
 /// # Returns
 ///     `(F, inlier_mask)` where:
