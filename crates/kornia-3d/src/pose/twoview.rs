@@ -82,7 +82,7 @@ use crate::pose::{
     essential_from_fundamental, homography_4pt2d, homography_dlt, HomographyError,
 };
 
-use crate::ransac::adaptive_max_iters;
+use crate::ransac::{adaptive_max_iters, sample_distinct_indices};
 use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64};
 use rand::prelude::*;
 use rand::SeedableRng;
@@ -1167,10 +1167,11 @@ fn ransac_fundamental_impl<const SAMPLE_SIZE: usize>(
     let mut iter = 0usize;
     while iter < dynamic_max {
         iter += 1;
-        let sample = rand::seq::index::sample(&mut rng, n, SAMPLE_SIZE);
+        let mut sample = [0usize; SAMPLE_SIZE];
+        sample_distinct_indices(&mut rng, n, &mut sample);
         let mut s1 = [Vec2F64::ZERO; SAMPLE_SIZE];
         let mut s2 = [Vec2F64::ZERO; SAMPLE_SIZE];
-        for (i, idx) in sample.iter().enumerate() {
+        for (i, &idx) in sample.iter().enumerate() {
             s1[i] = x1[idx];
             s2[i] = x2[idx];
         }

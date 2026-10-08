@@ -165,7 +165,7 @@ fn solve<const FMA: bool>(
     if !coefficient_scale.is_finite() || coefficient_scale <= ROOT_EPS {
         return Err(FundamentalError::DegenerateConfiguration);
     }
-    let (roots, root_count) = conditioned_roots(coefficients);
+    let (roots, root_count) = conditioned_roots::<FMA>(coefficients);
 
     // Candidates are independent; build them all before the order-dependent
     // deduplication so their latency chains overlap.
@@ -197,7 +197,7 @@ fn solve<const FMA: bool>(
 /// Preserve the original pencil's candidate order so count ties in RANSAC
 /// remain independent of this numerical conditioning choice.
 #[inline(always)]
-fn conditioned_roots([a, b, c, d]: [f64; 4]) -> ([(f64, f64, f64); 3], usize) {
+fn conditioned_roots<const FMA: bool>([a, b, c, d]: [f64; 4]) -> ([(f64, f64, f64); 3], usize) {
     let choices = [
         [a, b, c, d],
         [d, c, b, a],
@@ -213,7 +213,7 @@ fn conditioned_roots([a, b, c, d]: [f64; 4]) -> ([(f64, f64, f64); 3], usize) {
     // A nonzero homogeneous cubic cannot vanish at all four distinct
     // projective directions. The selected polynomial therefore has full
     // degree, including when the original basis had a root at infinity.
-    let (roots, count) = real_polynomial_roots(choices[choice]);
+    let (roots, count) = real_polynomial_roots::<FMA>(choices[choice]);
     let mut keyed = [(f64::INFINITY, 0.0, 0.0); 3];
     for (entry, root) in keyed.iter_mut().zip(roots).take(count) {
         let (alpha, beta) = match choice {
@@ -324,30 +324,31 @@ fn null_space_7x9<const FMA: bool>(h1: &Hartley, h2: &Hartley) -> Option<[[f64; 
         ];
     }
 
+    // Non-negative doubles order like their bit patterns. A pivot key keeps
+    // a coefficient's magnitude bits and stores its column in the four low
+    // mantissa bits, so the pivot search is an integer maximum. The mask
+    // clears the sign and those low bits, or everything once the column has
+    // been used, leaving the bare column index as a losing key.
+    let mut key_masks = [0x7fff_ffff_ffff_fff0_u64; 9];
     let mut used = 0u64;
     let mut pivot_columns = [0usize; 7];
     // Accumulated power-of-two-normalized scale of the rows still to pivot.
     let mut growth = 1.0f64;
     for k in 0..7 {
         let row = a[k];
-        // Non-negative doubles order like their bit patterns. Packing the
-        // column index into the low mantissa bits turns the pivot search
-        // into an integer maximum; used columns are masked to zero.
-        let key = |column: usize| -> u64 {
-            let unused = ((used >> column) & 1).wrapping_sub(1);
-            ((row[column].abs().to_bits() & !15) | column as u64) & unused
-        };
+        let key = |column: usize| (row[column].to_bits() & key_masks[column]) | column as u64;
         let best = key(0)
             .max(key(1))
             .max(key(2).max(key(3)))
             .max(key(4).max(key(5)).max(key(6).max(key(7))))
             .max(key(8));
         let best_magnitude = f64::from_bits(best & !15);
-        if best_magnitude.is_nan() || best_magnitude <= PIVOT_EPS * growth {
+        if !best_magnitude.is_finite() || best_magnitude <= PIVOT_EPS * growth {
             return None;
         }
         let column = (best & 15) as usize;
         let pivot = row[column];
+        key_masks[column] = 0;
         used |= 1 << column;
         pivot_columns[k] = column;
 
@@ -475,12 +476,13 @@ fn determinant(f: &[f64; 9]) -> f64 {
 
 /// Return all distinct finite real roots of a polynomial of degree at most three.
 #[inline(always)]
-fn real_polynomial_roots([a, b, c, d]: [f64; 4]) -> ([f64; 3], usize) {
+fn real_polynomial_roots<const FMA: bool>([a, b, c, d]: [f64; 4]) -> ([f64; 3], usize) {
     let scale = a.abs().max(b.abs()).max(c.abs()).max(d.abs());
     if !scale.is_finite() || scale == 0.0 {
         return ([0.0; 3], 0);
     }
-    let [a, b, c, d] = [a / scale, b / scale, c / scale, d / scale];
+    let inv_scale = 1.0 / scale;
+    let [a, b, c, d] = [a * inv_scale, b * inv_scale, c * inv_scale, d * inv_scale];
     let epsilon = ROOT_EPS;
     let (mut roots, root_count) = if a.abs() <= epsilon {
         quadratic_roots(b, c, d, epsilon)
@@ -494,11 +496,11 @@ fn real_polynomial_roots([a, b, c, d]: [f64; 4]) -> ([f64; 3], usize) {
         let mut moved = false;
         for root in &mut roots[..root_count] {
             let r = *root;
-            let value = ((a * r + b) * r + c) * r + d;
+            let value = fma::<FMA>(fma::<FMA>(fma::<FMA>(a, r, b), r, c), r, d);
             // Once the Horner residual is at its rounding-error floor,
             // Newton can only amplify noise, particularly at a double root.
             let magnitude = ((a.abs() * r.abs() + b.abs()) * r.abs() + c.abs()) * r.abs() + d.abs();
-            let derivative = (3.0 * a * r + 2.0 * b) * r + c;
+            let derivative = fma::<FMA>(fma::<FMA>(3.0 * a, r, 2.0 * b), r, c);
             let next = r - value / derivative;
             let step = value.abs() > 4.0 * f64::EPSILON * magnitude
                 && value.is_finite()
@@ -788,16 +790,16 @@ mod tests {
 
     #[test]
     fn polynomial_solver_handles_cubic_and_lower_degrees() {
-        assert_eq!(real_polynomial_roots([1.0, -6.0, 11.0, -6.0]).1, 3);
-        assert_eq!(real_polynomial_roots([1.0, -3.0, 3.0, -1.0]).1, 1);
-        assert_eq!(real_polynomial_roots([0.0, 1.0, -3.0, 2.0]).1, 2);
-        let (roots, count) = real_polynomial_roots([0.0, 0.0, 2.0, -4.0]);
+        assert_eq!(real_polynomial_roots::<false>([1.0, -6.0, 11.0, -6.0]).1, 3);
+        assert_eq!(real_polynomial_roots::<false>([1.0, -3.0, 3.0, -1.0]).1, 1);
+        assert_eq!(real_polynomial_roots::<false>([0.0, 1.0, -3.0, 2.0]).1, 2);
+        let (roots, count) = real_polynomial_roots::<false>([0.0, 0.0, 2.0, -4.0]);
         assert_eq!((&roots[..count]), &[2.0]);
     }
 
     #[test]
     fn polynomial_solver_preserves_close_and_tiny_roots() {
-        let (roots, count) = real_polynomial_roots([0.0, 1.0, 0.0, -1e-16]);
+        let (roots, count) = real_polynomial_roots::<false>([0.0, 1.0, 0.0, -1e-16]);
         assert_eq!(count, 2);
         assert!(roots[..count]
             .iter()
@@ -807,7 +809,7 @@ mod tests {
             .any(|root| (*root + 1e-8).abs() < 1e-14));
 
         let coefficients = [3e-200, -6e-200, -9e-200, 18e-200];
-        let (roots, count) = real_polynomial_roots(coefficients);
+        let (roots, count) = real_polynomial_roots::<false>(coefficients);
         assert_eq!(count, 3);
         for root in roots[..count].iter().copied() {
             let residual = ((coefficients[0] * root + coefficients[1]) * root + coefficients[2])
@@ -823,7 +825,7 @@ mod tests {
         let f1 = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0];
         let coefficients = determinant_polynomial(&f0, &f1);
         assert_eq!(coefficients, [0.0, 3.0, 9.0, 6.0]);
-        let (roots, count) = conditioned_roots(coefficients);
+        let (roots, count) = conditioned_roots::<false>(coefficients);
         assert_eq!(count, 3);
         let expected = frobenius_normalize::<false>(f1).unwrap();
         assert!(roots[..count].iter().any(|&(_, alpha, beta)| {
@@ -919,6 +921,21 @@ mod tests {
         assert!(fundamental_7point(&non_finite, &x2[..7]).is_err());
         let repeated = [Vec2F64::new(2.0, -1.0); 7];
         assert!(fundamental_7point(&repeated, &x2[..7]).is_err());
+    }
+
+    #[test]
+    fn rank_deficient_design_matrix_is_degenerate() {
+        // A repeated correspondence leaves the design matrix with rank six,
+        // so elimination runs out of pivots before the seventh row.
+        let (x1, x2) = sample();
+        let mut x1 = [x1[0], x1[1], x1[2], x1[3], x1[4], x1[5], x1[6]];
+        let mut x2 = [x2[0], x2[1], x2[2], x2[3], x2[4], x2[5], x2[6]];
+        x1[6] = x1[2];
+        x2[6] = x2[2];
+        assert!(matches!(
+            fundamental_7point(&x1, &x2),
+            Err(FundamentalError::DegenerateConfiguration)
+        ));
     }
 
     #[test]

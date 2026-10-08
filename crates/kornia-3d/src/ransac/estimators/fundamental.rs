@@ -420,12 +420,8 @@ fn sampson_residual_batch_scalar_threshold_bounded(
     Some(count)
 }
 
-/// 2-lane f64 NEON kernel.
-///
-/// `Match2d2d` is `#[repr(C)]` `{x1: Vec2F64, x2: Vec2F64}` → 4 contiguous
-/// f64s per match. Two consecutive matches are exactly the 8 f64s
-/// `vld4q_f64` reads and deinterleaves into `(x1_x, x1_y, x2_x, x2_y)`
-/// lane-vectors — perfect AoS→SoA load in a single instruction.
+/// 2-lane f64 NEON kernel; loads and arithmetic are shared with the
+/// support bound through [`sampson_terms_neon`].
 ///
 /// # Safety
 /// - aarch64 architectural (no runtime probe needed); `target_feature` is
@@ -495,20 +491,8 @@ unsafe fn sampson_residual_batch_neon<const COUNT: bool, const BOUNDED: bool>(
     }
 }
 
-/// 4-lane f64 AVX2+FMA kernel.
-///
-/// `Match2d2d` is 32 B = exactly one `__m256d`. Four consecutive matches
-/// are 4 × `__m256d` loads; we deinterleave them into the four needed
-/// lane-vectors via the standard AVX 4×4 transpose
-/// (`unpacklo` / `unpackhi` + two `permute2f128`):
-///
-/// ```text
-///   Loaded:                      After transpose:
-///     a = m[0].(x1x x1y x2x x2y)   x1_x = (m0.x1x, m1.x1x, m2.x1x, m3.x1x)
-///     b = m[1].(...)               x1_y = (m0.x1y, m1.x1y, m2.x1y, m3.x1y)
-///     c = m[2].(...)               x2_x = (m0.x2x, m1.x2x, m2.x2x, m3.x2x)
-///     d = m[3].(...)               x2_y = (m0.x2y, m1.x2y, m2.x2y, m3.x2y)
-/// ```
+/// 4-lane f64 AVX2+FMA kernel; loads and arithmetic are shared with the
+/// support bound through [`sampson_terms_avx2`].
 ///
 /// # Safety
 /// - Caller has runtime-checked `cpu_features().has_avx2`.
@@ -1007,6 +991,67 @@ mod tests {
 
         assert_eq!(actual, expected);
         assert_eq!(count, expected_count);
+    }
+
+    /// The division-free support bound must never undercount the exact
+    /// strict count, including at thresholds equal to a residual, across
+    /// SIMD tails and with degenerate or non-finite correspondences, and it
+    /// may only prune a candidate whose exact count cannot win.
+    #[test]
+    fn support_upper_bound_never_undercounts_exact_count() {
+        let mut state = 0x0b0e_5eed_u64;
+        let mut uniform = move || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            ((state >> 11) as f64) * (1.0 / ((1_u64 << 53) as f64))
+        };
+        for trial in 0..60 {
+            let n = 1 + trial * 7 % 97;
+            let model = Mat3F64::from_cols(
+                Vec3F64::new(uniform() - 0.5, uniform() - 0.5, uniform() - 0.5),
+                Vec3F64::new(uniform() - 0.5, uniform() - 0.5, uniform() - 0.5),
+                Vec3F64::new(uniform() - 0.5, uniform() - 0.5, uniform() - 0.5),
+            ) * 1e-3;
+            let mut samples: Vec<_> = (0..n)
+                .map(|_| {
+                    Match2d2d::new(
+                        Vec2F64::new(640.0 * uniform(), 480.0 * uniform()),
+                        Vec2F64::new(640.0 * uniform(), 480.0 * uniform()),
+                    )
+                })
+                .collect();
+            if trial % 5 == 0 {
+                samples[n / 2].x1.x = f64::NAN;
+            }
+            let models = if trial % 7 == 0 {
+                vec![model, Mat3F64::ZERO]
+            } else {
+                vec![model]
+            };
+            for f in models {
+                let mut residuals = vec![0.0; n];
+                FundamentalEstimator.residual_batch(&f, &samples, &mut residuals);
+                let mut thresholds: Vec<f64> = residuals
+                    .iter()
+                    .copied()
+                    .filter(|r| r.is_finite())
+                    .collect();
+                thresholds.extend([0.0, 1e-6, 1.0, 1e6]);
+                for threshold in thresholds {
+                    let exact = residuals.iter().filter(|&&r| r < threshold).count();
+                    let bound = sampson_support_upper_bound(pack_f(&f), &samples, threshold, 0);
+                    assert!(bound.unwrap_or(0) >= exact, "n={n} t={threshold}");
+                    for prune_at in [exact.saturating_sub(1), exact, exact + 1] {
+                        if sampson_support_upper_bound(pack_f(&f), &samples, threshold, prune_at)
+                            .is_none()
+                        {
+                            assert!(exact <= prune_at, "pruned a winner: n={n} t={threshold}");
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Below-minimal input must yield zero candidate models without panicking.

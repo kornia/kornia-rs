@@ -42,7 +42,7 @@ pub use result::RansacResult;
 pub use samples::{Match2d2d, Match2d3d};
 pub use sprt::{SPRTConfig, SPRTState};
 
-use rand::Rng;
+use rand::{Rng, RngExt};
 
 /// A minimal-sample model fitter and residual evaluator.
 ///
@@ -260,9 +260,9 @@ impl Consensus for ThresholdConsensus {
 
 /// Uniform-without-replacement sampler.
 ///
-/// Wraps `rand::seq::index::sample`, matching the pattern used elsewhere in
-/// this crate (see `pose::twoview`). Carries its own RNG so the driver stays
-/// deterministic when seeded.
+/// Draws the same indices as `rand::seq::index::sample`, matching the pattern
+/// used elsewhere in this crate (see `pose::twoview`), without allocating per
+/// sample. Carries its own RNG so the driver stays deterministic when seeded.
 pub struct UniformSampler<R: Rng> {
     rng: R,
 }
@@ -278,12 +278,39 @@ impl<R: Rng> Sampler for UniformSampler<R> {
     fn sample(&mut self, n: usize, out: &mut [usize]) {
         let k = out.len();
         debug_assert!(k <= n, "sample size {k} exceeds population {n}");
-        let drawn = rand::seq::index::sample(&mut self.rng, n, k);
+        sample_distinct_indices(&mut self.rng, n, out);
+    }
+}
+
+/// Fill `out` with `out.len()` distinct uniform indices from `0..n`.
+///
+/// Minimal RANSAC samples are small, where `rand::seq::index::sample` uses
+/// Floyd's combination algorithm. This is that algorithm on the caller's
+/// buffer: it draws the same random values in the same order and returns
+/// the same indices, without allocating an index vector per draw. Other
+/// sizes delegate to `rand`.
+#[inline]
+pub(crate) fn sample_distinct_indices<R: Rng + ?Sized>(rng: &mut R, n: usize, out: &mut [usize]) {
+    let k = out.len();
+    if k >= FLOYD_MAX_AMOUNT || n > u32::MAX as usize || k > n {
+        let drawn = rand::seq::index::sample(rng, n, k);
         for (slot, idx) in out.iter_mut().zip(drawn.iter()) {
             *slot = idx;
         }
+        return;
+    }
+    let (length, amount) = (n as u32, k as u32);
+    for (filled, j) in (length - amount..length).enumerate() {
+        let t = rng.random_range(..=j) as usize;
+        if let Some(pos) = out[..filled].iter().position(|&x| x == t) {
+            out[pos] = j as usize;
+        }
+        out[filled] = t;
     }
 }
+
+/// `rand::seq::index::sample` always uses Floyd's algorithm below this size.
+const FLOYD_MAX_AMOUNT: usize = 12;
 
 /// Clamps `samples` and `out` to their common length, so a batch residual kernel
 /// that walks both slices in lockstep (e.g. through raw SIMD pointers) can never
@@ -300,6 +327,35 @@ pub(crate) fn clamp_pair<'s, 'o, S>(
 mod tests {
     use super::*;
     use kornia_algebra::{Mat3F64, Vec2F64};
+
+    /// The allocation-free sampler must reproduce `rand::seq::index::sample`
+    /// exactly, including the RNG state it leaves behind, so seeded RANSAC
+    /// results do not change.
+    #[test]
+    fn distinct_index_sampler_matches_rand() {
+        use rand::{rngs::StdRng, SeedableRng};
+        for (n, k) in [
+            (7, 7),
+            (8, 7),
+            (10, 8),
+            (300, 7),
+            (5000, 8),
+            (40, 11),
+            (40, 12),
+            (9, 0),
+        ] {
+            let seed = n as u64 * 31 + k as u64;
+            let mut ours_rng = StdRng::seed_from_u64(seed);
+            let mut rand_rng = StdRng::seed_from_u64(seed);
+            for _ in 0..200 {
+                let mut ours = vec![usize::MAX; k];
+                sample_distinct_indices(&mut ours_rng, n, &mut ours);
+                let expected = rand::seq::index::sample(&mut rand_rng, n, k).into_vec();
+                assert_eq!(ours, expected, "n={n} k={k}");
+            }
+            assert_eq!(ours_rng.random::<u64>(), rand_rng.random::<u64>());
+        }
+    }
 
     /// Regression: `out.len() == samples.len()` was only a debug_assert, so in
     /// release builds the SIMD kernels wrote past a short `out` slice.
