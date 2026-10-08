@@ -1078,8 +1078,10 @@ fn count_cheirality_fast(
 /// # Errors
 ///
 /// Returns [`TwoViewError::InvalidInput`] for unequal lengths or fewer than
-/// seven matches, or [`TwoViewError::RansacFailure`] if no model meets the
-/// requested minimum support.
+/// seven matches, [`TwoViewError::InvalidConfidence`] if `params.confidence` is
+/// not finite and strictly between zero and one, or
+/// [`TwoViewError::RansacFailure`] if no model meets the requested minimum
+/// support.
 ///
 /// # Example
 ///
@@ -1112,8 +1114,10 @@ pub fn ransac_fundamental(
 /// # Errors
 ///
 /// Returns [`TwoViewError::InvalidInput`] for unequal lengths or fewer than
-/// eight matches, or [`TwoViewError::RansacFailure`] if no model meets the
-/// requested minimum support.
+/// eight matches, [`TwoViewError::InvalidConfidence`] if `params.confidence` is
+/// not finite and strictly between zero and one, or
+/// [`TwoViewError::RansacFailure`] if no model meets the requested minimum
+/// support.
 ///
 /// # Example
 ///
@@ -1323,6 +1327,14 @@ fn ransac_fundamental_impl<const SAMPLE_SIZE: usize>(
 /// `F = K2⁻ᵀ E K1⁻¹`) so the threshold semantics match `ransac_fundamental`.
 ///
 /// `k1` / `k2` must be invertible upper-triangular intrinsics matrices.
+///
+/// # Errors
+///
+/// Returns [`TwoViewError::InvalidConfidence`] if `params.confidence` is not
+/// finite and strictly between zero and one, [`TwoViewError::InvalidInput`]
+/// for unequal lengths, fewer than five matches or a point mapped to infinity
+/// by an inverse intrinsics matrix, or [`TwoViewError::RansacFailure`] if no
+/// model meets the requested minimum support.
 pub fn ransac_essential_5pt(
     x1: &[Vec2F64],
     x2: &[Vec2F64],
@@ -1434,6 +1446,14 @@ pub fn ransac_essential_5pt(
 }
 
 /// Estimate a homography with RANSAC using the 4-point solver.
+///
+/// # Errors
+///
+/// Returns [`TwoViewError::InvalidConfidence`] if `params.confidence` is not
+/// finite and strictly between zero and one, [`TwoViewError::InvalidInput`]
+/// for unequal lengths or fewer than four matches, or
+/// [`TwoViewError::RansacFailure`] if no model meets the requested minimum
+/// support.
 pub fn ransac_homography(
     x1: &[Vec2F64],
     x2: &[Vec2F64],

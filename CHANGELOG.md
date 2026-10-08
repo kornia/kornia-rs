@@ -40,8 +40,14 @@ Also breaking for Rust code:
   `..Default::default()`.
 - New error variants: `TwoViewError::InvalidConfidence { confidence }` for a confidence outside
   (0, 1), and `FundamentalError::DegenerateConfiguration`, returned by `fundamental_7point` and by
-  `fundamental_8point` when exactly eight matches are rank-deficient. Exhaustive `match`es need a
-  new arm.
+  `fundamental_8point` when exactly eight matches are rank-deficient or when a larger set is
+  repeated, collinear or otherwise underdetermined. Exhaustive `match`es need a new arm.
+- A `ransac::RansacConfig::confidence` of one or more now disables adaptive stopping, so
+  `ransac::run` draws all `max_iters` samples; it was clamped just below one before.
+
+Also breaking for Python: `kornia_rs.ransac.fundamental`, `.essential` and `.homography` raise
+`ValueError` for a confidence that is not finite and strictly between 0 and 1, as
+`kornia_rs.k3d.find_fundamental` does; one or more was clamped just below one before.
 
 Fixed:
 - `fundamental_8point` with more than eight correspondences did not reliably return the

@@ -64,7 +64,7 @@ def test_seven_match_boundary_and_default():
     )
     assert np.all(mask)
     assert np.max(residuals(f, a, b)) < 1e-6
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="at least 8"):
         kr.k3d.find_fundamental(a, b, method=8, min_inliers=7, solver="8point")
 
 
@@ -75,8 +75,17 @@ def test_invalid_solver_and_degenerate_input():
     with pytest.raises(ValueError, match="solver"):
         kr.k3d.find_fundamental(a, b, method=8, solver="unknown")
     assert kr.ransac.fundamental(np.zeros((7, 4)), solver="7point").model is None
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="RANSAC failed"):
         kr.k3d.find_fundamental(np.zeros((7, 2)), np.zeros((7, 2)), method=8, min_inliers=7)
+
+
+@pytest.mark.parametrize("estimator", ["fundamental", "essential", "homography"])
+def test_generic_ransac_validates_confidence(estimator):
+    a, b = correspondences()
+    estimate = getattr(kr.ransac, estimator)
+    for confidence in [0.0, 1.0, -0.5, 1.5, np.nan, np.inf]:
+        with pytest.raises(ValueError, match="confidence"):
+            estimate(np.c_[a, b], confidence=confidence)
 
 
 @pytest.mark.parametrize("solver", ["7point", "8point"])

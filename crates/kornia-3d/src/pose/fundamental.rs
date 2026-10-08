@@ -48,7 +48,7 @@ pub enum FundamentalError {
     /// SVD failed or produced an invalid result.
     #[error("SVD failed to produce a valid fundamental matrix")]
     SvdFailure,
-    /// The minimal configuration does not determine isolated rank-two models.
+    /// The correspondences do not determine isolated rank-two models.
     #[error("Degenerate fundamental matrix configuration")]
     DegenerateConfiguration,
 }
@@ -73,8 +73,10 @@ pub enum FundamentalError {
 /// Returns [`FundamentalError::InvalidInput`] for unequal, insufficient, or
 /// non-finite input, including coordinates that cannot be normalized without
 /// overflow. Returns [`FundamentalError::DegenerateConfiguration`] when an
-/// exact-eight set does not have rank eight, and [`FundamentalError::SvdFailure`]
-/// when rank enforcement produces non-finite output.
+/// exact-eight set does not have rank eight, or when a larger set leaves more
+/// than one numerically null direction (repeated, collinear or otherwise
+/// underdetermined correspondences), and [`FundamentalError::SvdFailure`] when
+/// rank enforcement produces non-finite output.
 ///
 /// # Example
 ///
