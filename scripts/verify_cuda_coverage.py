@@ -27,25 +27,30 @@ CUDA_EXT = ROOT / "kornia-py" / "src" / "cuda_ext"
 CUDA_TESTS = ROOT / "kornia-py" / "tests"
 
 
-# Map audit operations to expected source artifacts or keywords in crates/kornia-imgproc/src/cuda
+# Map audit operations to expected source artifacts in crates/kornia-imgproc/src/cuda
 OP_SRC_MAP: dict[str, list[str]] = {
-    # Filters
+    # Filters (Chapter 1)
     "box_blur": ["filter.rs"],
     "box_blur_u8": ["filter.rs"],
+    "box_blur_fast": [],
     "gaussian_blur": ["filter.rs"],
     "gaussian_blur_u8": ["filter.rs"],
     "sobel": ["filter.rs"],
     "scharr": ["filter.rs"],
+    "spatial_gradient": [],
     "laplacian_u8": ["filter/laplacian/cuda.rs", "filter.rs"],
     "bilateral_filter": ["bilateral.rs"],
     "median_blur": ["median.rs"],
     "integral_image": ["filter/integral/cuda.rs", "filter.rs"],
-    # Geometry
+    # Geometry (Chapter 2)
     "resize": ["resize.rs", "resize_u8.rs"],
     "warp_affine": ["warp_affine.rs", "warp_affine_u8.rs"],
     "warp_perspective": ["warp_perspective.rs", "warp_perspective_u8.rs"],
     "remap": ["remap.rs"],
-    # Color
+    "crop": [],
+    "pad": [],
+    "flip": [],
+    # Color, Hist & CLAHE (Chapter 3)
     "gray_from_rgb": ["color/gray.rs"],
     "rgb_from_gray": ["color/gray.rs"],
     "bgr_from_rgb": ["color/swizzle.rs"],
@@ -63,32 +68,23 @@ OP_SRC_MAP: dict[str, list[str]] = {
     "compute_histogram": ["histogram.rs"],
     "equalize_hist": ["histogram.rs"],
     "clahe": ["clahe.rs"],
-    # Features
+    "apply_colormap": [],
+    "transform_color": [],
+    "threshold_binary": [],
+    "truncate": [],
+    "otsu": [],
+    # Features (Chapter 4)
     "sift": ["sift/mod.rs", "sift/detect.rs", "sift/matcher.rs"],
-}
-
-# CPU-only operations known to be missing from CUDA (marked with ❌)
-CPU_ONLY_OPS = {
-    "box_blur_fast",
-    "spatial_gradient",
-    "crop",
-    "pad",
-    "flip",
-    "apply_colormap",
-    "transform_color",
-    "threshold_binary",
-    "truncate",
-    "otsu",
-    "fast",
-    "orb",
-    "responses",
-    "match",
-    "cells",
+    "fast": [],
+    "orb": [],
+    "responses": [],
+    "match": [],
+    "cells": [],
 }
 
 
 def parse_audit_table(content: str) -> dict[str, str]:
-    """Parse markdown tables to extract operation -> status mapping."""
+    """Parse markdown tables to extract operation -> status mapping accurately."""
     status_map: dict[str, str] = {}
 
     for line in content.splitlines():
@@ -105,11 +101,17 @@ def parse_audit_table(content: str) -> dict[str, str]:
             continue
         status = status_match.group(0)
 
-        # Extract all backticked identifiers in the first two columns
-        ops_col = parts[0] + " " + parts[1]
-        backticked_ops = re.findall(r"`([a-zA-Z0-9_]+)`", ops_col)
-        for op in backticked_ops:
-            status_map[op] = status
+        # In Chapter 3 (Color), column 0 is Subsystem and column 1 lists the operations.
+        # In all other chapters, column 0 contains the operation name (e.g. `**`box_blur`**`).
+        col0_ops = re.findall(r"`([a-zA-Z0-9_]+)`", parts[0])
+        col1_ops = re.findall(r"`([a-zA-Z0-9_]+)`", parts[1])
+
+        if col0_ops:
+            for op in col0_ops:
+                status_map[op] = status
+        elif col1_ops:
+            for op in col1_ops:
+                status_map[op] = status
 
     return status_map
 
@@ -125,16 +127,19 @@ def verify_coverage(strict: bool = False) -> int:
     print(f"Found {len(status_map)} audited operations in {DOC_PATH.name}")
 
     errors: list[str] = []
-    warnings: list[str] = []
 
-    # 1. Verify audited supported operations have backing CUDA files
+    # 1. Verify every mapped operation exists in the audit document
     for op, expected_files in OP_SRC_MAP.items():
         status = status_map.get(op)
         if not status:
-            warnings.append(f"Operation '{op}' is known in mapper but missing from audit document")
+            errors.append(f"Operation '{op}' is defined in mapper but missing from audit document")
             continue
 
         if status in ("✅", "🟡"):
+            if not expected_files:
+                errors.append(f"Operation '{op}' marked as {status} but has no CUDA kernel mapped")
+                continue
+
             found = False
             for rel_file in expected_files:
                 candidate = CUDA_SRC / rel_file
@@ -151,14 +156,17 @@ def verify_coverage(strict: bool = False) -> int:
                 errors.append(
                     f"Status {status} for '{op}': expected one of {expected_files} to exist in {CUDA_SRC}"
                 )
+        elif status == "❌":
+            # If marked ❌, assert it has no implemented CUDA files mapped
+            if expected_files:
+                errors.append(
+                    f"Operation '{op}' marked as ❌ (missing) in audit, but mapped to implemented files {expected_files}"
+                )
 
-    # 2. Verify CPU-only operations in the audit
-    for missing_op in CPU_ONLY_OPS:
-        status = status_map.get(missing_op)
-        if status and status not in ("❌", "🟡"):
-            errors.append(
-                f"Op '{missing_op}' marked as '{status}' in audit, but expected ❌ (CPU-only)"
-            )
+    # 2. Check that all declared operations in audit are present in OP_SRC_MAP
+    for audited_op in status_map:
+        if audited_op not in OP_SRC_MAP:
+            errors.append(f"Audited operation '{audited_op}' is not registered in OP_SRC_MAP")
 
     # 3. Check that top-level CUDA modules in src/cuda/mod.rs are accounted for
     cuda_mod_path = CUDA_SRC / "mod.rs"
@@ -171,20 +179,14 @@ def verify_coverage(strict: bool = False) -> int:
     cuda_tests = list(CUDA_TESTS.glob("test_cuda*.py"))
     print(f"Detected {len(cuda_tests)} Python CUDA test suites in {CUDA_TESTS.name}")
 
-    # Output report
-    if warnings:
-        print("\nWarnings:")
-        for w in warnings:
-            print(f"  [WARN] {w}")
-
     if errors:
-        print("\nDiscrepancies found:")
+        print(f"\nDiscrepancies found ({len(errors)}):")
         for err in errors:
             print(f"  [FAIL] {err}")
         if strict:
             return 1
     else:
-        print("\n[OK] All audited operations match codebase reality!")
+        print("\n[OK] All audited operations and statuses match codebase reality!")
 
     return 0
 

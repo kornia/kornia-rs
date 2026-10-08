@@ -10,11 +10,13 @@ This handbook provides an easy-to-read, comprehensive comparison between `kornia
 
 ### Coverage at a Glance
 
+> *Note: Percentages include both full parity (✅) and partial support (🟡).*
+
 ```
-1. Filter Operations     [██████████████░░░░░░] 70%  (11 of 16 supported)
-2. Geometric Operations  [████████████░░░░░░░░] 60%  (4 of 7 supported)
-3. Color / Hist / CLAHE  [█████████████████░░░] 85%  (25+ of 28 supported)
-4. Feature Operations    [█████░░░░░░░░░░░░░░░] 25%  (1 of 4 suites supported)
+1. Filter Operations     [████████████████░░░░] 83%  (10 of 12 supported: 8 full, 2 partial)
+2. Geometric Operations  [███████████░░░░░░░░░] 57%  (4 of 7 supported: 3 full, 1 partial)
+3. Color / Hist / CLAHE  [█████████████████░░░] 86%  (19 of 22 supported: 17 full, 2 partial)
+4. Feature Operations    [███░░░░░░░░░░░░░░░░░] 17%  (1 of 6 supported: 1 full)
 ```
 
 ### Status Legend
@@ -26,7 +28,7 @@ This handbook provides an easy-to-read, comprehensive comparison between `kornia
 
 ## 🔍 Chapter 1: Filter Operations
 
-Filter operations are located in [`crates/kornia-imgproc/src/filter/`](file:///c:/Users/dkhan/Desktop/kornia-rs/crates/kornia-imgproc/src/filter). Most separable filters are accelerated through a shared 2-pass launcher (`separable_filter_f32_cuda` and `separable_blur_u8_cuda`).
+Filter operations are located in [`crates/kornia-imgproc/src/filter/`](../crates/kornia-imgproc/src/filter/). Most separable filters are accelerated through a shared 2-pass launcher (`separable_filter_f32_cuda` and `separable_blur_u8_cuda`).
 
 ### Quick Status Matrix
 
@@ -53,7 +55,7 @@ Filter operations are located in [`crates/kornia-imgproc/src/filter/`](file:///c
 
 ## 📐 Chapter 2: Geometric Operations
 
-Geometric operations are in [`crates/kornia-imgproc/src/warp/`](file:///c:/Users/dkhan/Desktop/kornia-rs/crates/kornia-imgproc/src/warp), [`resize/`](file:///c:/Users/dkhan/Desktop/kornia-rs/crates/kornia-imgproc/src/resize), and [`interpolation/`](file:///c:/Users/dkhan/Desktop/kornia-rs/crates/kornia-imgproc/src/interpolation).
+Geometric operations are in [`crates/kornia-imgproc/src/warp/`](../crates/kornia-imgproc/src/warp/), [`resize/`](../crates/kornia-imgproc/src/resize/), and [`interpolation/`](../crates/kornia-imgproc/src/interpolation/).
 
 ### Quick Status Matrix
 
@@ -78,7 +80,7 @@ Geometric operations are in [`crates/kornia-imgproc/src/warp/`](file:///c:/Users
 
 ## 🎨 Chapter 3: Color, Histogram & CLAHE Operations
 
-Color space transformations live in [`crates/kornia-imgproc/src/color/`](file:///c:/Users/dkhan/Desktop/kornia-rs/crates/kornia-imgproc/src/color). This is the most complete CUDA subsystem in the library.
+Color space transformations live in [`crates/kornia-imgproc/src/color/`](../crates/kornia-imgproc/src/color/). This is the most complete CUDA subsystem in the library.
 
 ### Quick Status Matrix
 
@@ -111,7 +113,7 @@ Color space transformations live in [`crates/kornia-imgproc/src/color/`](file://
 
 ## 🎯 Chapter 4: Feature Detection & Matching
 
-Feature algorithms live in [`crates/kornia-imgproc/src/features/`](file:///c:/Users/dkhan/Desktop/kornia-rs/crates/kornia-imgproc/src/features).
+Feature algorithms live in [`crates/kornia-imgproc/src/features/`](../crates/kornia-imgproc/src/features/).
 
 ### Quick Status Matrix
 
@@ -135,17 +137,17 @@ To prevent this audit from becoming stale and to guide future contributors and A
 Before updating an operation's status in this document, verify its implementation across all four layers:
 
 1. **Rust Device Kernel**:
-   * Inspect [`crates/kornia-imgproc/src/cuda/`](file:///c:/Users/dkhan/Desktop/kornia-rs/crates/kornia-imgproc/src/cuda) and subsystem folders (e.g. `color/`, `sift/`).
+   * Inspect [`crates/kornia-imgproc/src/cuda/`](../crates/kornia-imgproc/src/cuda/) and subsystem folders (e.g. `color/`, `sift/`).
    * Verify the NVRTC kernel string or device launch function (e.g. `crates/kornia-imgproc/src/<module>/cuda.rs`) is compiled and registered under `#[cfg(feature = "cuda")]`.
 2. **Residency Dispatch**:
-   * Inspect the public API entry points in [`crates/kornia-imgproc/src/`](file:///c:/Users/dkhan/Desktop/kornia-rs/crates/kornia-imgproc/src/).
+   * Inspect the public API entry points in [`crates/kornia-imgproc/src/`](../crates/kornia-imgproc/src/).
    * Verify that device memory triggers the GPU launcher (via `try_device!` residency macro or device tensor dispatch) instead of falling back to CPU host copies.
 3. **Python Bindings & Type Stubs**:
-   * Inspect [`kornia-py/src/cuda_ext/`](file:///c:/Users/dkhan/Desktop/kornia-rs/kornia-py/src/cuda_ext) for PyO3 module bindings.
-   * Verify type annotations exist in [`kornia-py/python/kornia_rs/cuda.pyi`](file:///c:/Users/dkhan/Desktop/kornia-rs/kornia-py/python/kornia_rs/cuda.pyi).
+   * Inspect [`kornia-py/src/cuda_ext/`](../kornia-py/src/cuda_ext/) for PyO3 module bindings.
+   * Verify type annotations exist in [`kornia-py/python/kornia_rs/cuda.pyi`](../kornia-py/python/kornia_rs/cuda.pyi).
 4. **Numerical Parity Tests**:
    * Run device tests: `pixi run rust-test-cuda` or `cargo test --features cuda`.
-   * Check Python parity test suites in [`kornia-py/tests/`](file:///c:/Users/dkhan/Desktop/kornia-rs/kornia-py/tests) (`test_cuda_*.py`) comparing device results with CPU implementations or OpenCV within precision tolerances (`atol` / `rtol`).
+   * Check Python parity test suites in [`kornia-py/tests/`](../kornia-py/tests/) (`test_cuda_*.py`) comparing device results with CPU implementations or OpenCV within precision tolerances (`atol` / `rtol`).
 
 ### Automated Verification Script
 
@@ -167,7 +169,7 @@ Whenever a PR adds or modifies a CUDA kernel:
 - [ ] **Update Matrix Status**: Change status symbols (`❌` $\to$ `🟡` $\to$ `✅`) and document supported types/channels in the respective Chapter table.
 - [ ] **Update Progress Bars**: Recalculate supported counts and percentage bars in the [Executive Dashboard](#-executive-dashboard).
 - [ ] **Update Playbook**: If the PR closes an issue in the [Implementation Playbook](#%EF%B8%8F-implementation-playbook-top-4-gap-issues-to-file--solve), mark it completed and nominate the next candidate gap.
-- [ ] **Run Linter**: Run `python scripts/verify_cuda_coverage.py --check` to ensure no drift.
+- [ ] **Run Linter**: Run `python scripts/verify_cuda_coverage.py --check` to ensure no drift (and update `OP_SRC_MAP` in `scripts/verify_cuda_coverage.py` when adding new ops).
 
 ---
 
@@ -180,7 +182,7 @@ If you want to contribute code after this audit, here are the 4 best bite-sized 
 * **Difficulty**: 🟢 Easy (1–2 days)
 * **What to do**:
   1. Add NVRTC kernel in `crates/kornia-imgproc/src/cuda/` mapping `dst[y, x] = src[y, (w - 1) - x]` (horizontal) and `dst[(h - 1) - y, x]` (vertical).
-  2. Add `try_device!` residency branch in [`crates/kornia-imgproc/src/flip.rs`](file:///c:/Users/dkhan/Desktop/kornia-rs/crates/kornia-imgproc/src/flip.rs).
+  2. Add `try_device!` residency branch in [`crates/kornia-imgproc/src/flip.rs`](../crates/kornia-imgproc/src/flip.rs).
   3. Add parity tests comparing CPU and CUDA outputs.
 
 ### 2. `feat(cuda): implement binary threshold operations`
