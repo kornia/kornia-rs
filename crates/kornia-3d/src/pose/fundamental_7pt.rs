@@ -2,9 +2,11 @@
 
 use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64};
 
-use crate::pose::fundamental::{apply_reflector_col, FundamentalError};
+use crate::pose::fundamental::FundamentalError;
 
-const RANK_EPS: f64 = 1e-12;
+/// Smallest Gauss-Jordan pivot accepted, relative to the unit-scale rows of
+/// the Hartley-normalized design matrix.
+const PIVOT_EPS: f64 = 1e-12;
 const ROOT_EPS: f64 = 32.0 * f64::EPSILON;
 
 /// Estimate every real fundamental matrix consistent with seven correspondences.
@@ -83,19 +85,78 @@ pub(crate) fn fundamental_7point_into(
     x2: &[Vec2F64],
     models: &mut [Mat3F64; 3],
 ) -> Result<usize, FundamentalError> {
-    if x1.len() != 7
-        || x2.len() != 7
-        || x1
-            .iter()
-            .chain(x2)
-            .any(|p| !p.x.is_finite() || !p.y.is_finite())
+    let (Ok(x1), Ok(x2)) = (<&[Vec2F64; 7]>::try_from(x1), <&[Vec2F64; 7]>::try_from(x2)) else {
+        return Err(FundamentalError::InvalidInput);
+    };
+    if x1
+        .iter()
+        .chain(x2)
+        .any(|p| !p.x.is_finite() || !p.y.is_finite())
     {
         return Err(FundamentalError::InvalidInput);
     }
 
-    let (x1n, t1) = hartley_normalize(x1).ok_or(FundamentalError::DegenerateConfiguration)?;
-    let (x2n, t2) = hartley_normalize(x2).ok_or(FundamentalError::DegenerateConfiguration)?;
-    let [f0, f1] = null_space_7x9(&x1n, &x2n).ok_or(FundamentalError::DegenerateConfiguration)?;
+    #[cfg(target_arch = "x86_64")]
+    if kornia_imgproc::simd::cpu_features().has_avx2 && kornia_imgproc::simd::cpu_features().has_fma
+    {
+        // SAFETY: AVX2 and FMA support is checked at runtime; the solver only
+        // uses fixed-size arrays and has no other preconditions.
+        return unsafe { solve_avx2_fma(x1, x2, models) };
+    }
+
+    // aarch64 always has fused multiply-add; elsewhere stay with plain arithmetic.
+    solve::<{ cfg!(target_arch = "aarch64") }>(x1, x2, models)
+}
+
+/// Compiles the whole solver with AVX2/FMA enabled, so `mul_add` lowers to a
+/// single instruction and the fixed-size loops vectorize.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn solve_avx2_fma(
+    x1: &[Vec2F64; 7],
+    x2: &[Vec2F64; 7],
+    models: &mut [Mat3F64; 3],
+) -> Result<usize, FundamentalError> {
+    solve::<true>(x1, x2, models)
+}
+
+/// `a * b + c`, fused when the instantiation targets hardware FMA.
+#[inline(always)]
+fn fma<const FMA: bool>(a: f64, b: f64, c: f64) -> f64 {
+    if FMA {
+        a.mul_add(b, c)
+    } else {
+        a * b + c
+    }
+}
+
+/// Nine-term dot product with a balanced reduction tree. The seven-point
+/// solver is latency bound, so short dependency chains matter more than
+/// operation count.
+#[inline(always)]
+fn dot9<const FMA: bool>(a: &[f64; 9], b: &[f64; 9]) -> f64 {
+    let s0 = fma::<FMA>(a[1], b[1], a[0] * b[0]);
+    let s1 = fma::<FMA>(a[3], b[3], a[2] * b[2]);
+    let s2 = fma::<FMA>(a[5], b[5], a[4] * b[4]);
+    let s3 = fma::<FMA>(a[7], b[7], a[6] * b[6]);
+    fma::<FMA>(a[8], b[8], (s0 + s1) + (s2 + s3))
+}
+
+#[inline(always)]
+fn sum7(v: &[f64; 7]) -> f64 {
+    ((v[0] + v[1]) + (v[2] + v[3])) + ((v[4] + v[5]) + v[6])
+}
+
+#[inline(always)]
+fn solve<const FMA: bool>(
+    x1: &[Vec2F64; 7],
+    x2: &[Vec2F64; 7],
+    models: &mut [Mat3F64; 3],
+) -> Result<usize, FundamentalError> {
+    let h1 = Hartley::new(x1).ok_or(FundamentalError::DegenerateConfiguration)?;
+    let h2 = Hartley::new(x2).ok_or(FundamentalError::DegenerateConfiguration)?;
+    let [f0, f1] =
+        null_space_7x9::<FMA>(&h1, &h2).ok_or(FundamentalError::DegenerateConfiguration)?;
 
     let coefficients = determinant_polynomial(&f0, &f1);
     let coefficient_scale = coefficients
@@ -105,10 +166,23 @@ pub(crate) fn fundamental_7point_into(
         return Err(FundamentalError::DegenerateConfiguration);
     }
     let (roots, root_count) = conditioned_roots(coefficients);
+
+    // Candidates are independent; build them all before the order-dependent
+    // deduplication so their latency chains overlap.
+    let mut candidates = [None; 3];
+    for (candidate, &(_, alpha, beta)) in candidates.iter_mut().zip(&roots[..root_count]) {
+        let f = std::array::from_fn(|i| fma::<FMA>(alpha, f0[i], beta * f1[i]));
+        *candidate = validated_model::<FMA>(&f, &h1, &h2);
+    }
     let mut model_count = 0;
-    for &(_, alpha, beta) in &roots[..root_count] {
-        let f = std::array::from_fn(|i| alpha * f0[i] + beta * f1[i]);
-        add_model(models, &mut model_count, f, &t1, &t2);
+    for model in candidates.iter().flatten() {
+        if !models[..model_count]
+            .iter()
+            .any(|other| matrices_proportional(other, model))
+        {
+            models[model_count] = *model;
+            model_count += 1;
+        }
     }
 
     if model_count == 0 {
@@ -122,6 +196,7 @@ pub(crate) fn fundamental_7point_into(
 /// The four determinants are already available from the homogeneous cubic.
 /// Preserve the original pencil's candidate order so count ties in RANSAC
 /// remain independent of this numerical conditioning choice.
+#[inline(always)]
 fn conditioned_roots([a, b, c, d]: [f64; 4]) -> ([(f64, f64, f64); 3], usize) {
     let choices = [
         [a, b, c, d],
@@ -139,7 +214,7 @@ fn conditioned_roots([a, b, c, d]: [f64; 4]) -> ([(f64, f64, f64); 3], usize) {
     // projective directions. The selected polynomial therefore has full
     // degree, including when the original basis had a root at infinity.
     let (roots, count) = real_polynomial_roots(choices[choice]);
-    let mut keyed = [(0.0, 0.0, 0.0); 3];
+    let mut keyed = [(f64::INFINITY, 0.0, 0.0); 3];
     for (entry, root) in keyed.iter_mut().zip(roots).take(count) {
         let (alpha, beta) = match choice {
             0 => (1.0, root),
@@ -154,173 +229,200 @@ fn conditioned_roots([a, b, c, d]: [f64; 4]) -> ([(f64, f64, f64); 3], usize) {
         };
         *entry = (key, alpha, beta);
     }
-    keyed[..count].sort_by(|left, right| left.0.total_cmp(&right.0));
+    // Three-element sorting network; unused entries stay last.
+    let swap_if_less = |v: &mut [(f64, f64, f64); 3], i: usize, j: usize| {
+        if v[j].0.total_cmp(&v[i].0).is_lt() {
+            v.swap(i, j);
+        }
+    };
+    if count > 1 {
+        swap_if_less(&mut keyed, 0, 1);
+        if count > 2 {
+            swap_if_less(&mut keyed, 1, 2);
+            swap_if_less(&mut keyed, 0, 1);
+        }
+    }
     (keyed, count)
 }
 
-fn hartley_normalize(points: &[Vec2F64]) -> Option<([Vec2F64; 7], Mat3F64)> {
-    let mut cx = 0.0;
-    let mut cy = 0.0;
-    for point in points {
-        cx += point.x;
-        cy += point.y;
-    }
-    cx /= 7.0;
-    cy /= 7.0;
+/// Hartley normalization of seven points: centroid at the origin and mean
+/// distance √2, represented by `T = [[s, 0, -s c_x], [0, s, -s c_y], [0, 0, 1]]`.
+struct Hartley {
+    x: [f64; 7],
+    y: [f64; 7],
+    scale: f64,
+    cx: f64,
+    cy: f64,
+}
 
-    let mut sum_distance = 0.0;
-    for point in points {
-        let dx = point.x - cx;
-        let dy = point.y - cy;
-        sum_distance += (dx * dx + dy * dy).sqrt();
+impl Hartley {
+    #[inline(always)]
+    fn new(points: &[Vec2F64; 7]) -> Option<Self> {
+        let xs: [f64; 7] = std::array::from_fn(|i| points[i].x);
+        let ys: [f64; 7] = std::array::from_fn(|i| points[i].y);
+        let cx = sum7(&xs) / 7.0;
+        let cy = sum7(&ys) / 7.0;
+        let mut x = [0.0; 7];
+        let mut y = [0.0; 7];
+        let mut distance = [0.0; 7];
+        for i in 0..7 {
+            x[i] = xs[i] - cx;
+            y[i] = ys[i] - cy;
+            distance[i] = (x[i] * x[i] + y[i] * y[i]).sqrt();
+        }
+        let mean_distance = sum7(&distance) / 7.0;
+        if !mean_distance.is_finite() || mean_distance <= f64::EPSILON {
+            return None;
+        }
+        let scale = std::f64::consts::SQRT_2 / mean_distance;
+        for i in 0..7 {
+            x[i] *= scale;
+            y[i] *= scale;
+        }
+        Some(Self {
+            x,
+            y,
+            scale,
+            cx,
+            cy,
+        })
     }
-    let mean_distance = sum_distance / 7.0;
-    if !mean_distance.is_finite() || mean_distance <= f64::EPSILON {
-        return None;
-    }
-    let scale = std::f64::consts::SQRT_2 / mean_distance;
-    let mut normalized = [Vec2F64::ZERO; 7];
-    for (dst, src) in normalized.iter_mut().zip(points) {
-        *dst = Vec2F64::new((src.x - cx) * scale, (src.y - cy) * scale);
-    }
-    Some((
-        normalized,
-        Mat3F64::from_cols(
-            Vec3F64::new(scale, 0.0, 0.0),
-            Vec3F64::new(0.0, scale, 0.0),
-            Vec3F64::new(-scale * cx, -scale * cy, 1.0),
-        ),
-    ))
 }
 
 /// Compute an orthonormal basis of the two-dimensional null space of A.
 ///
-/// The input matrix is stored as A-transpose (nine rows by seven columns), so
-/// seven Householder reflections reduce it directly and leave Q e7 and Q e8
-/// as the two null vectors.
-fn null_space_7x9(x1: &[Vec2F64; 7], x2: &[Vec2F64; 7]) -> Option<[[f64; 9]; 2]> {
-    let mut at = [[0.0; 9]; 7];
-    for i in 0..7 {
-        let x = x1[i].x;
-        let y = x1[i].y;
-        let xp = x2[i].x;
-        let yp = x2[i].y;
-        at[i] = [xp * x, xp * y, xp, yp * x, yp * y, yp, x, y, 1.0];
+/// Gauss-Jordan elimination of the 7x9 design matrix with column pivoting:
+/// each row pivots on its largest coefficient among the columns not yet
+/// used, so the two free coefficients are chosen adaptively rather than
+/// fixed in advance. Pivot choices use branch-free packed keys, and rows are
+/// combined without division (`p·row_j - row_j[c]·row_k`, rescaled by the
+/// exact power of two of `p`), which keeps the per-step dependency chain
+/// short while staying within a factor 2^7 of ordinary elimination. The two
+/// resulting null vectors are orthonormalized so the determinant pencil is
+/// well scaled.
+#[inline(always)]
+fn null_space_7x9<const FMA: bool>(h1: &Hartley, h2: &Hartley) -> Option<[[f64; 9]; 2]> {
+    // Rows are padded to three full four-lane vectors: every update is then
+    // stored and reloaded with the same widths, which avoids store-forwarding
+    // stalls between elimination steps.
+    let mut a = [[0.0f64; 12]; 7];
+    for (row, i) in a.iter_mut().zip(0..7) {
+        let (x, y, xp, yp) = (h1.x[i], h1.y[i], h2.x[i], h2.y[i]);
+        *row = [
+            xp * x,
+            xp * y,
+            xp,
+            yp * x,
+            yp * y,
+            yp,
+            x,
+            y,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+        ];
     }
 
-    let mut reflectors = [[0.0; 9]; 7];
-    let mut first_norm = 0.0;
-    // The fixed minimal problem lets each reflector specialize its bounds.
-    // LLVM can unroll the short SIMD loops instead of testing dynamic lengths.
-    macro_rules! reduce {
-        ($k:literal) => {
-            reduce_column::<$k>(&mut at, &mut reflectors, &mut first_norm)?;
+    let mut used = 0u64;
+    let mut pivot_columns = [0usize; 7];
+    // Accumulated power-of-two-normalized scale of the rows still to pivot.
+    let mut growth = 1.0f64;
+    for k in 0..7 {
+        let row = a[k];
+        // Non-negative doubles order like their bit patterns. Packing the
+        // column index into the low mantissa bits turns the pivot search
+        // into an integer maximum; used columns are masked to zero.
+        let key = |column: usize| -> u64 {
+            let unused = ((used >> column) & 1).wrapping_sub(1);
+            ((row[column].abs().to_bits() & !15) | column as u64) & unused
         };
-    }
-    reduce!(0);
-    reduce!(1);
-    reduce!(2);
-    reduce!(3);
-    reduce!(4);
-    reduce!(5);
-    reduce!(6);
+        let best = key(0)
+            .max(key(1))
+            .max(key(2).max(key(3)))
+            .max(key(4).max(key(5)).max(key(6).max(key(7))))
+            .max(key(8));
+        let best_magnitude = f64::from_bits(best & !15);
+        if best_magnitude.is_nan() || best_magnitude <= PIVOT_EPS * growth {
+            return None;
+        }
+        let column = (best & 15) as usize;
+        let pivot = row[column];
+        used |= 1 << column;
+        pivot_columns[k] = column;
 
-    let mut basis = [[0.0; 9]; 2];
-    basis[0][7] = 1.0;
-    basis[1][8] = 1.0;
-    macro_rules! reflect_basis {
-        ($k:literal) => {
-            apply_reflector(&mut basis[0], &reflectors[$k], $k);
-            apply_reflector(&mut basis[1], &reflectors[$k], $k);
-        };
+        // 2^-exponent(pivot) is exact and maps the pivot into ±[1, 2).
+        let pow2 = f64::from_bits((2046 - ((pivot.to_bits() >> 52) & 0x7ff)) << 52);
+        let scaled_pivot = pivot * pow2;
+        growth *= scaled_pivot.abs();
+        let mut pivot_row = row;
+        for value in &mut pivot_row {
+            *value *= pow2;
+        }
+        for (j, other) in a.iter_mut().enumerate() {
+            if j != k {
+                let factor = other[column];
+                for (value, &p) in other.iter_mut().zip(&pivot_row) {
+                    *value = fma::<FMA>(scaled_pivot, *value, -(factor * p));
+                }
+            }
+        }
     }
-    reflect_basis!(6);
-    reflect_basis!(5);
-    reflect_basis!(4);
-    reflect_basis!(3);
-    reflect_basis!(2);
-    reflect_basis!(1);
-    reflect_basis!(0);
+
+    let free = !used & 0x1ff;
+    let free0 = free.trailing_zeros() as usize;
+    let free1 = (free & (free - 1)).trailing_zeros() as usize;
+    // Null vectors in pivot order: entry k belongs to coefficient
+    // `pivot_columns[k]`; entries 7 and 8 are the two free coefficients.
+    let mut x = [0.0f64; 9];
+    let mut y = [0.0f64; 9];
+    for k in 0..7 {
+        let inv_pivot = 1.0 / a[k][pivot_columns[k]];
+        x[k] = -a[k][free0] * inv_pivot;
+        y[k] = -a[k][free1] * inv_pivot;
+    }
+    x[7] = 1.0;
+    y[8] = 1.0;
+
+    // Gram-Schmidt on the pair; dot products do not depend on the order.
+    let xx = dot9::<FMA>(&x, &x);
+    let ratio = dot9::<FMA>(&x, &y) / xx;
+    let w: [f64; 9] = std::array::from_fn(|i| fma::<FMA>(-ratio, x[i], y[i]));
+    let inv_x = 1.0 / xx.sqrt();
+    let inv_w = 1.0 / dot9::<FMA>(&w, &w).sqrt();
+    if !inv_x.is_finite() || !inv_w.is_finite() {
+        return None;
+    }
+    let mut basis = [[0.0f64; 9]; 2];
+    for k in 0..7 {
+        basis[0][pivot_columns[k]] = x[k] * inv_x;
+        basis[1][pivot_columns[k]] = w[k] * inv_w;
+    }
+    basis[0][free0] = inv_x;
+    basis[1][free0] = w[7] * inv_w;
+    basis[1][free1] = w[8] * inv_w;
     Some(basis)
 }
 
+/// Validate one root of the pencil and map it to a pixel-space matrix.
 #[inline(always)]
-fn reduce_column<const K: usize>(
-    at: &mut [[f64; 9]; 7],
-    reflectors: &mut [[f64; 9]; 7],
-    first_norm: &mut f64,
-) -> Option<()> {
-    let mut u = [0.0; 9];
-    let mut norm_sq = 0.0;
-    for i in K..9 {
-        u[i] = at[K][i];
-        norm_sq += u[i] * u[i];
-    }
-    let norm = norm_sq.sqrt();
-    if K == 0 {
-        *first_norm = norm;
-    }
-    if !norm.is_finite() || norm <= RANK_EPS * first_norm.max(1.0) {
-        return None;
-    }
-    let x0 = u[K];
-    let alpha = if x0 >= 0.0 { -norm } else { norm };
-    u[K] -= alpha;
-    // Hartley normalization bounds the design matrix. The analytic norm
-    // avoids rescaling and scanning the reflector a second time.
-    let u_norm = (2.0 * norm * (norm + x0.abs())).sqrt();
-    if !u_norm.is_finite() || u_norm <= f64::MIN_POSITIVE {
-        return None;
-    }
-    let inv_norm = 1.0 / u_norm;
-    for value in &mut u[K..] {
-        *value *= inv_norm;
-    }
-    reflectors[K] = u;
-    // The pivot column is never read again; only trailing columns need H.
-    for column in at.iter_mut().skip(K + 1) {
-        apply_reflector(column, &u, K);
-    }
-    Some(())
-}
-
-#[inline(always)]
-fn apply_reflector(column: &mut [f64; 9], vector: &[f64; 9], start: usize) {
-    apply_reflector_col(column, vector, start);
-}
-
-fn add_model(
-    models: &mut [Mat3F64; 3],
-    model_count: &mut usize,
-    f: [f64; 9],
-    t1: &Mat3F64,
-    t2: &Mat3F64,
-) {
-    let fnorm = vector_norm(&f);
+fn validated_model<const FMA: bool>(f: &[f64; 9], t1: &Hartley, t2: &Hartley) -> Option<Mat3F64> {
+    let fnorm = vector_norm::<FMA>(f);
     if !fnorm.is_finite()
         || fnorm <= f64::MIN_POSITIVE
-        || determinant(&f).abs() > 1e-8 * fnorm.powi(3)
-        || !has_rank_at_least_two(&f, fnorm)
+        || determinant(f).abs() > 1e-8 * fnorm.powi(3)
+        || !has_rank_at_least_two(f, fnorm)
     {
-        return;
+        return None;
     }
-    let denormalized = denormalize(&f, t1, t2);
-    let Some(result) = frobenius_normalize(denormalized) else {
-        return;
-    };
-    if !models[..*model_count]
-        .iter()
-        .any(|other| matrices_proportional(other, &result))
-    {
-        models[*model_count] = result;
-        *model_count += 1;
-    }
+    frobenius_normalize::<FMA>(denormalize(f, t1, t2))
 }
 
 /// Check that a rank-two candidate has a numerically nonzero two-by-two minor.
 ///
 /// The determinant constraint alone also admits rank-one matrices, which do not
 /// represent a valid fundamental matrix and must not reach RANSAC scoring.
+#[inline(always)]
 fn has_rank_at_least_two(f: &[f64; 9], norm: f64) -> bool {
     let threshold = 1e-10 * norm * norm;
     for row0 in 0..3 {
@@ -340,6 +442,7 @@ fn has_rank_at_least_two(f: &[f64; 9], norm: f64) -> bool {
 }
 
 /// Coefficients `[a, b, c, d]` of det(f0 + lambda f1).
+#[inline(always)]
 fn determinant_polynomial(f0: &[f64; 9], f1: &[f64; 9]) -> [f64; 4] {
     let c0 = |f: &[f64; 9]| [f[0], f[3], f[6]];
     let c1 = |f: &[f64; 9]| [f[1], f[4], f[7]];
@@ -358,17 +461,20 @@ fn determinant_polynomial(f0: &[f64; 9], f1: &[f64; 9]) -> [f64; 4] {
     ]
 }
 
+#[inline(always)]
 fn determinant_columns(c0: [f64; 3], c1: [f64; 3], c2: [f64; 3]) -> f64 {
     c0[0] * (c1[1] * c2[2] - c1[2] * c2[1]) - c1[0] * (c0[1] * c2[2] - c0[2] * c2[1])
         + c2[0] * (c0[1] * c1[2] - c0[2] * c1[1])
 }
 
+#[inline(always)]
 fn determinant(f: &[f64; 9]) -> f64 {
     f[0] * (f[4] * f[8] - f[5] * f[7]) - f[1] * (f[3] * f[8] - f[5] * f[6])
         + f[2] * (f[3] * f[7] - f[4] * f[6])
 }
 
 /// Return all distinct finite real roots of a polynomial of degree at most three.
+#[inline(always)]
 fn real_polynomial_roots([a, b, c, d]: [f64; 4]) -> ([f64; 3], usize) {
     let scale = a.abs().max(b.abs()).max(c.abs()).max(d.abs());
     if !scale.is_finite() || scale == 0.0 {
@@ -376,54 +482,64 @@ fn real_polynomial_roots([a, b, c, d]: [f64; 4]) -> ([f64; 3], usize) {
     }
     let [a, b, c, d] = [a / scale, b / scale, c / scale, d / scale];
     let epsilon = ROOT_EPS;
-    let (mut roots, mut root_count) = if a.abs() <= epsilon {
+    let (mut roots, root_count) = if a.abs() <= epsilon {
         quadratic_roots(b, c, d, epsilon)
     } else {
         cubic_roots(a, b, c, d)
     };
-    for root in &mut roots[..root_count] {
-        for _ in 0..3 {
-            let value = ((a * *root + b) * *root + c) * *root + d;
+    // Up to three Newton steps, applied to all roots together so their
+    // latency chains overlap. A root whose step is rejected keeps its value
+    // and is rejected again, exactly as if its own iteration had stopped.
+    for _ in 0..3 {
+        let mut moved = false;
+        for root in &mut roots[..root_count] {
+            let r = *root;
+            let value = ((a * r + b) * r + c) * r + d;
             // Once the Horner residual is at its rounding-error floor,
             // Newton can only amplify noise, particularly at a double root.
-            let magnitude =
-                ((a.abs() * root.abs() + b.abs()) * root.abs() + c.abs()) * root.abs() + d.abs();
-            if value.abs() <= 4.0 * f64::EPSILON * magnitude {
-                break;
-            }
-            let derivative = (3.0 * a * *root + 2.0 * b) * *root + c;
-            if !value.is_finite() || !derivative.is_finite() || derivative.abs() <= ROOT_EPS {
-                break;
-            }
-            let next = *root - value / derivative;
-            if !next.is_finite() {
-                break;
-            }
-            *root = next;
+            let magnitude = ((a.abs() * r.abs() + b.abs()) * r.abs() + c.abs()) * r.abs() + d.abs();
+            let derivative = (3.0 * a * r + 2.0 * b) * r + c;
+            let next = r - value / derivative;
+            let step = value.abs() > 4.0 * f64::EPSILON * magnitude
+                && value.is_finite()
+                && derivative.is_finite()
+                && derivative.abs() > ROOT_EPS
+                && next.is_finite();
+            *root = if step { next } else { r };
+            moved |= step;
+        }
+        if !moved {
+            break;
         }
     }
+
+    // Finite roots in ascending order, without near-duplicates.
+    let mut sorted = [f64::INFINITY; 3];
+    let mut finite = 0;
+    for &root in &roots[..root_count] {
+        if root.is_finite() {
+            sorted[finite] = root;
+            finite += 1;
+        }
+    }
+    let (low, high) = (sorted[0].min(sorted[1]), sorted[0].max(sorted[1]));
+    let (middle, top) = (high.min(sorted[2]), high.max(sorted[2]));
+    let sorted = [low.min(middle), low.max(middle), top];
+    let mut distinct = [0.0; 3];
     let mut write = 0;
-    for read in 0..root_count {
-        if roots[read].is_finite() {
-            roots[write] = roots[read];
-            write += 1;
-        }
-    }
-    root_count = write;
-    roots[..root_count].sort_by(f64::total_cmp);
-    write = 0;
-    for read in 0..root_count {
+    for &root in &sorted[..finite] {
         if write == 0
-            || (roots[read] - roots[write - 1]).abs()
-                > ROOT_EPS * roots[read].abs().max(roots[write - 1].abs()).max(1.0)
+            || (root - distinct[write - 1]).abs()
+                > ROOT_EPS * root.abs().max(distinct[write - 1].abs()).max(1.0)
         {
-            roots[write] = roots[read];
+            distinct[write] = root;
             write += 1;
         }
     }
-    (roots, write)
+    (distinct, write)
 }
 
+#[inline(always)]
 fn quadratic_roots(a: f64, b: f64, c: f64, epsilon: f64) -> ([f64; 3], usize) {
     if a.abs() <= epsilon {
         return if b.abs() <= epsilon {
@@ -432,7 +548,7 @@ fn quadratic_roots(a: f64, b: f64, c: f64, epsilon: f64) -> ([f64; 3], usize) {
             ([-c / b, 0.0, 0.0], 1)
         };
     }
-    let discriminant = b.mul_add(b, -4.0 * a * c);
+    let discriminant = b * b - 4.0 * a * c;
     let discriminant_tolerance = epsilon * (b * b + (4.0 * a * c).abs());
     if discriminant < -discriminant_tolerance {
         return ([0.0; 3], 0);
@@ -456,15 +572,18 @@ fn quadratic_roots(a: f64, b: f64, c: f64, epsilon: f64) -> ([f64; 3], usize) {
     }
 }
 
+#[inline(always)]
 fn cubic_roots(a: f64, b: f64, c: f64, d: f64) -> ([f64; 3], usize) {
     let p = (3.0 * a * c - b * b) / (3.0 * a * a);
     let q = (2.0 * b * b * b - 9.0 * a * b * c + 27.0 * a * a * d) / (27.0 * a * a * a);
     let offset = -b / (3.0 * a);
     let half_q = q * 0.5;
-    let discriminant = half_q * half_q + (p / 3.0).powi(3);
-    // Include rounding from the QR basis, mixed determinant coefficients and
-    // projective reparameterization, as well as Cardano cancellation.
-    let tolerance = 128.0 * f64::EPSILON * (half_q * half_q + (p / 3.0).abs().powi(3));
+    let third_p = p / 3.0;
+    let discriminant = half_q * half_q + third_p * third_p * third_p;
+    // Include rounding from the null-space basis, mixed determinant
+    // coefficients and projective reparameterization, as well as Cardano
+    // cancellation.
+    let tolerance = 128.0 * f64::EPSILON * (half_q * half_q + third_p.abs() * third_p * third_p);
     if discriminant > tolerance {
         // Choose the larger-magnitude Cardano term to avoid cancellation,
         // then use u*v = -p/3 instead of taking a second cube root.
@@ -476,7 +595,7 @@ fn cubic_roots(a: f64, b: f64, c: f64, d: f64) -> ([f64; 3], usize) {
         let u = (-half_q).cbrt();
         return ([offset + 2.0 * u, offset - u, 0.0], 2);
     }
-    let radius = 2.0 * (-p / 3.0).sqrt();
+    let radius = 2.0 * (-third_p).sqrt();
     let angle = ((3.0 * q / (2.0 * p)) * (-3.0 / p).sqrt())
         .clamp(-1.0, 1.0)
         .acos()
@@ -495,14 +614,10 @@ fn cubic_roots(a: f64, b: f64, c: f64, d: f64) -> ([f64; 3], usize) {
 }
 
 /// Expand T2^T F T1 using the scale/translation structure of Hartley transforms.
-/// The sparse products preserve the multiplication order of the general path.
-fn denormalize(f: &[f64; 9], t1: &Mat3F64, t2: &Mat3F64) -> Mat3F64 {
-    let s1 = t1.x_axis.x;
-    let s2 = t2.x_axis.x;
-    let tx1 = t1.z_axis.x;
-    let ty1 = t1.z_axis.y;
-    let tx2 = t2.z_axis.x;
-    let ty2 = t2.z_axis.y;
+#[inline(always)]
+fn denormalize(f: &[f64; 9], t1: &Hartley, t2: &Hartley) -> [f64; 9] {
+    let (s1, tx1, ty1) = (t1.scale, -t1.scale * t1.cx, -t1.scale * t1.cy);
+    let (s2, tx2, ty2) = (t2.scale, -t2.scale * t2.cx, -t2.scale * t2.cy);
     let row0 = [s2 * f[0], s2 * f[1], s2 * f[2]];
     let row1 = [s2 * f[3], s2 * f[4], s2 * f[5]];
     let row2 = [
@@ -510,32 +625,31 @@ fn denormalize(f: &[f64; 9], t1: &Mat3F64, t2: &Mat3F64) -> Mat3F64 {
         tx2 * f[1] + ty2 * f[4] + f[7],
         tx2 * f[2] + ty2 * f[5] + f[8],
     ];
-    Mat3F64::from_cols(
-        Vec3F64::new(row0[0] * s1, row1[0] * s1, row2[0] * s1),
-        Vec3F64::new(row0[1] * s1, row1[1] * s1, row2[1] * s1),
-        Vec3F64::new(
-            row0[0] * tx1 + row0[1] * ty1 + row0[2],
-            row1[0] * tx1 + row1[1] * ty1 + row1[2],
-            row2[0] * tx1 + row2[1] * ty1 + row2[2],
-        ),
-    )
+    [
+        row0[0] * s1,
+        row0[1] * s1,
+        row0[0] * tx1 + row0[1] * ty1 + row0[2],
+        row1[0] * s1,
+        row1[1] * s1,
+        row1[0] * tx1 + row1[1] * ty1 + row1[2],
+        row2[0] * s1,
+        row2[1] * s1,
+        row2[0] * tx1 + row2[1] * ty1 + row2[2],
+    ]
 }
 
-#[cfg(test)]
-fn vec9_to_mat3(f: &[f64; 9]) -> Mat3F64 {
-    Mat3F64::from_cols(
-        Vec3F64::new(f[0], f[3], f[6]),
-        Vec3F64::new(f[1], f[4], f[7]),
-        Vec3F64::new(f[2], f[5], f[8]),
-    )
-}
-
-fn vector_norm(values: &[f64; 9]) -> f64 {
-    let squared = values.iter().map(|value| value * value).sum::<f64>();
+#[inline(always)]
+fn vector_norm<const FMA: bool>(values: &[f64; 9]) -> f64 {
+    let squared = dot9::<FMA>(values, values);
     if squared.is_finite() && squared >= f64::MIN_POSITIVE {
         return squared.sqrt();
     }
-    // Retain scaled arithmetic for extreme projective roots and coordinates.
+    scaled_norm(values)
+}
+
+/// Overflow/underflow-safe fallback for extreme projective roots and coordinates.
+#[cold]
+fn scaled_norm(values: &[f64; 9]) -> f64 {
     let maximum = values
         .iter()
         .fold(0.0_f64, |maximum, value| maximum.max(value.abs()));
@@ -550,37 +664,31 @@ fn vector_norm(values: &[f64; 9]) -> f64 {
             .sqrt()
 }
 
-fn frobenius_normalize(matrix: Mat3F64) -> Option<Mat3F64> {
-    let flat: [f64; 9] = matrix.into();
-    let norm = vector_norm(&flat);
+/// Row-major entries scaled to unit Frobenius norm, as a matrix.
+#[inline(always)]
+fn frobenius_normalize<const FMA: bool>(f: [f64; 9]) -> Option<Mat3F64> {
+    let norm = vector_norm::<FMA>(&f);
     if !norm.is_finite() || norm <= f64::MIN_POSITIVE {
         return None;
     }
-    let mut normalized = flat;
     let inv_norm = 1.0 / norm;
-    for value in &mut normalized {
-        *value *= inv_norm;
-    }
     Some(Mat3F64::from_cols(
-        Vec3F64::new(normalized[0], normalized[1], normalized[2]),
-        Vec3F64::new(normalized[3], normalized[4], normalized[5]),
-        Vec3F64::new(normalized[6], normalized[7], normalized[8]),
+        Vec3F64::new(f[0] * inv_norm, f[3] * inv_norm, f[6] * inv_norm),
+        Vec3F64::new(f[1] * inv_norm, f[4] * inv_norm, f[7] * inv_norm),
+        Vec3F64::new(f[2] * inv_norm, f[5] * inv_norm, f[8] * inv_norm),
     ))
 }
 
+#[inline(always)]
 fn matrices_proportional(left: &Mat3F64, right: &Mat3F64) -> bool {
-    let left_flat: [f64; 9] = (*left).into();
-    let right_flat: [f64; 9] = (*right).into();
-    let same = left_flat
-        .iter()
-        .zip(right_flat)
-        .map(|(a, b)| (a - b).powi(2))
-        .sum::<f64>();
-    let opposite = left_flat
-        .iter()
-        .zip(right_flat)
-        .map(|(a, b)| (a + b).powi(2))
-        .sum::<f64>();
+    let left: [f64; 9] = (*left).into();
+    let right: [f64; 9] = (*right).into();
+    let mut same = 0.0;
+    let mut opposite = 0.0;
+    for (a, b) in left.iter().zip(right) {
+        same += (a - b) * (a - b);
+        opposite += (a + b) * (a + b);
+    }
     same.min(opposite) <= ROOT_EPS * ROOT_EPS
 }
 
@@ -717,10 +825,10 @@ mod tests {
         assert_eq!(coefficients, [0.0, 3.0, 9.0, 6.0]);
         let (roots, count) = conditioned_roots(coefficients);
         assert_eq!(count, 3);
-        let expected = frobenius_normalize(vec9_to_mat3(&f1)).unwrap();
+        let expected = frobenius_normalize::<false>(f1).unwrap();
         assert!(roots[..count].iter().any(|&(_, alpha, beta)| {
             let f = std::array::from_fn(|i| alpha * f0[i] + beta * f1[i]);
-            let actual = frobenius_normalize(vec9_to_mat3(&f)).unwrap();
+            let actual = frobenius_normalize::<false>(f).unwrap();
             matrices_proportional(&actual, &expected)
         }));
     }
@@ -729,8 +837,14 @@ mod tests {
     fn rank_one_candidate_is_not_a_fundamental_matrix() {
         let rank_one = [1.0, 2.0, 3.0, -2.0, -4.0, -6.0, 0.5, 1.0, 1.5];
         let rank_two = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0];
-        assert!(!has_rank_at_least_two(&rank_one, vector_norm(&rank_one)));
-        assert!(has_rank_at_least_two(&rank_two, vector_norm(&rank_two)));
+        assert!(!has_rank_at_least_two(
+            &rank_one,
+            vector_norm::<false>(&rank_one)
+        ));
+        assert!(has_rank_at_least_two(
+            &rank_two,
+            vector_norm::<false>(&rank_two)
+        ));
     }
 
     #[test]
@@ -780,7 +894,7 @@ mod tests {
             [2.0, 4.0, 0.0, 0.0, -1.0, 0.0, -2.0, -2.0, 0.0],
             [12.0, 0.0, 0.0, -9.0, -1.0, 1.0, -6.0, 2.0, -2.0],
         ] {
-            let expected = frobenius_normalize(vec9_to_mat3(&expected)).unwrap();
+            let expected = frobenius_normalize::<false>(expected).unwrap();
             assert!(models.iter().any(|model| {
                 let a: [f64; 9] = (*model).into();
                 let b: [f64; 9] = expected.into();
@@ -825,8 +939,9 @@ mod tests {
     #[test]
     fn real_sample_with_ill_conditioned_lu_gauge_keeps_rank_two() {
         // A real St Peter's sample has well-conditioned constraints but an
-        // unstable LU basis. Its legacy Cardano reconstruction leaves a
-        // normalized determinant near 1e-8; orthonormal QR avoids cancellation.
+        // unstable LU basis when F21/F22 are fixed as the free coefficients.
+        // Its legacy Cardano reconstruction leaves a normalized determinant
+        // near 1e-8; adaptive pivoting plus an orthonormal pencil avoids that.
         let x1 = [
             Vec2F64::new(1.7077890204133563, 0.5580373472864585),
             Vec2F64::new(1.4107393432076643, -0.37911106559914304),
@@ -859,7 +974,7 @@ mod tests {
     fn fast_norm_falls_back_for_extreme_magnitudes() {
         for scale in [1e-300, 1.0, 1e300] {
             let values = [scale; 9];
-            let norm = vector_norm(&values);
+            let norm = vector_norm::<false>(&values);
             assert!(norm.is_finite());
             assert!((norm / scale - 3.0).abs() < 1e-14);
         }

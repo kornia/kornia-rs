@@ -238,7 +238,7 @@ fn null_vector_householder(x1n: &[Vec2F64], x2n: &[Vec2F64]) -> Result<[f64; 9],
 /// aarch64 path: 2-lane f64 `vfmaq_f64` for both the dot and AXPY passes, one
 /// scalar tail at the end. 9-k ∈ {1..9} gives up to 4 vector iters + 1 scalar.
 #[inline(always)]
-pub(super) fn apply_reflector_col(col: &mut [f64], u: &[f64; 9], k: usize) {
+fn apply_reflector_col(col: &mut [f64], u: &[f64; 9], k: usize) {
     #[cfg(target_arch = "aarch64")]
     // SAFETY: NEON is baseline on aarch64. Both slices contain nine entries;
     // vector accesses are bounded by i + 2 <= 9 and the scalar tail by i < 9.

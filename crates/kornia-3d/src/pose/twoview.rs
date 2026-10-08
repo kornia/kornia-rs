@@ -1191,18 +1191,31 @@ fn ransac_fundamental_impl<const SAMPLE_SIZE: usize>(
         };
 
         for &f in models {
-            // With a high-support incumbent, a candidate that wins is likely
-            // to require a full pass. Materializing its mask during that pass
-            // avoids rescoring the winner; otherwise, avoid mask traffic for
-            // the common losing-root case.
-            let use_masked_bounded = SAMPLE_SIZE == 7 && best_count >= n - n / 4;
-            // A 7-point sample may yield up to three hypotheses.  Once a
-            // strong consensus exists, most of those cannot possibly win.
-            // Score in fixed, SIMD-aligned chunks and stop only when the
-            // mathematical upper bound cannot beat the current winner.  The
+            // A 7-point sample may yield up to three hypotheses, and most of
+            // them cannot win. A division-free pass bounds each root's
+            // support from above; roots that cannot even tie the incumbent
+            // are dropped before any exact scoring or mask traffic. The
             // 8-point path deliberately keeps its original full scorer.
-            let scored = if SAMPLE_SIZE == 7 && use_masked_bounded {
-                scratch_inliers.fill(false);
+            if SAMPLE_SIZE == 7
+                && best_count > 0
+                && score_inliers_f_upper_bound(
+                    &f,
+                    &x1_x,
+                    &x1_y,
+                    &x2_x,
+                    &x2_y,
+                    thresh_sq,
+                    best_count - 1,
+                )
+                .is_none()
+            {
+                continue;
+            }
+            // Survivors usually win or tie, so score them exactly in fixed,
+            // SIMD-aligned chunks while materializing the mask, stopping only
+            // when the exact bound cannot beat the current winner.
+            scratch_inliers.fill(false);
+            let scored = if SAMPLE_SIZE == 7 {
                 score_inliers_f_bounded_masked(
                     &f,
                     &x1_x,
@@ -1214,12 +1227,7 @@ fn ransac_fundamental_impl<const SAMPLE_SIZE: usize>(
                     best_count,
                     best_score,
                 )
-            } else if SAMPLE_SIZE == 7 {
-                score_inliers_f_bounded_count(
-                    &f, &x1_x, &x1_y, &x2_x, &x2_y, thresh_sq, best_count, best_score,
-                )
             } else {
-                scratch_inliers.fill(false);
                 Some(score_inliers_f(
                     &f,
                     &x1_x,
@@ -1236,23 +1244,6 @@ fn ransac_fundamental_impl<const SAMPLE_SIZE: usize>(
 
             let improved = count > best_count || (count == best_count && score < best_score);
             if improved {
-                if SAMPLE_SIZE == 7 && !use_masked_bounded {
-                    // Most seven-point roots lose the bounded count/score
-                    // pass, so defer the O(N) mask clear and writes until a
-                    // root has proved that it will replace the winner.
-                    scratch_inliers.fill(false);
-                    let materialized = score_inliers_f(
-                        &f,
-                        &x1_x,
-                        &x1_y,
-                        &x2_x,
-                        &x2_y,
-                        thresh_sq,
-                        &mut scratch_inliers,
-                    );
-                    debug_assert_eq!(materialized.0, count);
-                    debug_assert_eq!(materialized.1.to_bits(), score.to_bits());
-                }
                 best_model = Some(f);
                 std::mem::swap(&mut best_inliers, &mut scratch_inliers);
                 best_count = count;
@@ -2218,29 +2209,38 @@ fn score_inliers_f_bounded_masked(
     Some((count, score))
 }
 
+/// Upper bound on the Sampson support of `f_mat`, or `None` once the bound
+/// proves it cannot exceed `prune_at` matches.
+///
+/// The SIMD kernels repeat the exact scorers' `e²` and `d` arithmetic and
+/// test `e² <= t'·d` with a slightly inflated `t' = t·(1 + 8ε)` instead of
+/// dividing; denominators at or below the 1e-12 guard (or NaN) are always
+/// counted and the scalar tail is scored exactly. Every match the exact
+/// scorer accepts is therefore counted. Platforms without a SIMD kernel,
+/// and thresholds too small for that rounding argument, get the trivial
+/// bound `n`.
 #[inline]
 #[allow(clippy::too_many_arguments)]
-fn score_inliers_f_bounded_count(
+fn score_inliers_f_upper_bound(
     f_mat: &Mat3F64,
     x1_x: &[f64],
     x1_y: &[f64],
     x2_x: &[f64],
     x2_y: &[f64],
     thresh_sq: f64,
-    best_count: usize,
-    best_score: f64,
-) -> Option<(usize, f64)> {
+    prune_at: usize,
+) -> Option<usize> {
+    let n = x1_x.len();
+    if thresh_sq.is_nan() || thresh_sq < F_UPPER_BOUND_MIN_THRESHOLD {
+        return Some(n);
+    }
     let f = f_score_coefficients(f_mat);
 
     #[cfg(target_arch = "aarch64")]
     return {
-        // SAFETY: NEON is baseline on aarch64 and this scorer only performs
+        // SAFETY: NEON is baseline on aarch64 and the kernel only performs
         // bounded loads from equally sized SoA coordinate slices.
-        unsafe {
-            score_inliers_f_bounded_count_neon(
-                f, x1_x, x1_y, x2_x, x2_y, thresh_sq, best_count, best_score,
-            )
-        }
+        unsafe { score_inliers_f_upper_bound_neon(f, x1_x, x1_y, x2_x, x2_y, thresh_sq, prune_at) }
     };
 
     #[cfg(not(target_arch = "aarch64"))]
@@ -2250,20 +2250,25 @@ fn score_inliers_f_bounded_count(
             && kornia_imgproc::simd::cpu_features().has_fma
         {
             // SAFETY: AVX2/FMA support is runtime checked; all coordinate
-            // slices have the same length and the kernel bounds every vector
-            // load.
+            // slices have the same length and the kernel bounds every load.
             return unsafe {
-                score_inliers_f_bounded_count_avx2(
-                    f, x1_x, x1_y, x2_x, x2_y, thresh_sq, best_count, best_score,
-                )
+                score_inliers_f_upper_bound_avx2(f, x1_x, x1_y, x2_x, x2_y, thresh_sq, prune_at)
             };
         }
-
-        score_inliers_f_bounded_count_scalar(
-            f, x1_x, x1_y, x2_x, x2_y, thresh_sq, best_count, best_score,
-        )
+        let _ = (f, prune_at);
+        Some(n)
     }
 }
+
+/// Matches between pruning checks of [`score_inliers_f_upper_bound`].
+const F_UPPER_BOUND_CHUNK: usize = 32;
+
+/// Inflation of the threshold in [`score_inliers_f_upper_bound`]: it covers
+/// the three roundings of `e² <= t'·d` against the one of `e²/d <= t`.
+const F_UPPER_BOUND_SLACK: f64 = 1.0 + 8.0 * f64::EPSILON;
+
+/// Smallest threshold for which `t'·d` stays normal whenever `d > 1e-12`.
+const F_UPPER_BOUND_MIN_THRESHOLD: f64 = 1e-280;
 
 #[inline]
 fn f_score_coefficients(f_mat: &Mat3F64) -> (f64, f64, f64, f64, f64, f64, f64, f64, f64) {
@@ -2280,77 +2285,52 @@ fn f_score_coefficients(f_mat: &Mat3F64) -> (f64, f64, f64, f64, f64, f64, f64, 
     )
 }
 
-#[cfg(not(target_arch = "aarch64"))]
+/// Exact scalar residuals of the tail, counted like the exact scorer.
 #[inline]
 #[allow(clippy::too_many_arguments)]
-fn score_inliers_f_bounded_count_scalar(
+fn score_inliers_f_tail_count(
     f: (f64, f64, f64, f64, f64, f64, f64, f64, f64),
     x1_x: &[f64],
     x1_y: &[f64],
     x2_x: &[f64],
     x2_y: &[f64],
     thresh_sq: f64,
-    best_count: usize,
-    best_score: f64,
-) -> Option<(usize, f64)> {
-    // 64 is divisible by the 4-wide AVX2 and 2-wide NEON f64 paths.  It is
-    // large enough that the bound check is negligible beside scoring.
-    const CHUNK_SIZE: usize = 64;
-
-    let n = x1_x.len();
-    let mut start = 0usize;
-    let mut count = 0usize;
-    let mut score = 0.0f64;
+    start: usize,
+) -> usize {
     let (f00, f01, f02, f10, f11, f12, f20, f21, f22) = f;
-    while start < n {
-        let end = (start + CHUNK_SIZE).min(n);
-        for idx in start..end {
-            let fx1x = f00 * x1_x[idx] + f01 * x1_y[idx] + f02;
-            let fx1y = f10 * x1_x[idx] + f11 * x1_y[idx] + f12;
-            let fx1z = f20 * x1_x[idx] + f21 * x1_y[idx] + f22;
-            let ftx2x = f00 * x2_x[idx] + f10 * x2_y[idx] + f20;
-            let ftx2y = f01 * x2_x[idx] + f11 * x2_y[idx] + f21;
-            let err = fx1x * x2_x[idx] + fx1y * x2_y[idx] + fx1z;
-            let denom = fx1x * fx1x + fx1y * fx1y + ftx2x * ftx2x + ftx2y * ftx2y;
-            let dd = if denom <= 1e-12 {
-                err * err
-            } else {
-                (err * err) / denom
-            };
-            if dd <= thresh_sq {
-                count += 1;
-                score += dd;
-            }
-        }
-        let remaining = n - end;
-        if count + remaining < best_count
-            || (count + remaining == best_count && score >= best_score)
-        {
-            return None;
-        }
-        start = end;
+    let mut count = 0;
+    for idx in start..x1_x.len() {
+        let fx1x = f00 * x1_x[idx] + f01 * x1_y[idx] + f02;
+        let fx1y = f10 * x1_x[idx] + f11 * x1_y[idx] + f12;
+        let fx1z = f20 * x1_x[idx] + f21 * x1_y[idx] + f22;
+        let ftx2x = f00 * x2_x[idx] + f10 * x2_y[idx] + f20;
+        let ftx2y = f01 * x2_x[idx] + f11 * x2_y[idx] + f21;
+        let err = fx1x * x2_x[idx] + fx1y * x2_y[idx] + fx1z;
+        let denom = fx1x * fx1x + fx1y * fx1y + ftx2x * ftx2x + ftx2y * ftx2y;
+        let dd = if denom <= 1e-12 {
+            err * err
+        } else {
+            (err * err) / denom
+        };
+        count += (dd <= thresh_sq) as usize;
     }
-    Some((count, score))
+    count
 }
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
-#[inline]
 #[allow(clippy::too_many_arguments)]
-unsafe fn score_inliers_f_bounded_count_avx2(
+unsafe fn score_inliers_f_upper_bound_avx2(
     f: (f64, f64, f64, f64, f64, f64, f64, f64, f64),
     x1_x: &[f64],
     x1_y: &[f64],
     x2_x: &[f64],
     x2_y: &[f64],
     thresh_sq: f64,
-    best_count: usize,
-    best_score: f64,
-) -> Option<(usize, f64)> {
+    prune_at: usize,
+) -> Option<usize> {
     use std::arch::x86_64::*;
-    const CHUNK_SIZE: usize = 64;
     let (f00, f01, f02, f10, f11, f12, f20, f21, f22) = f;
-    // Broadcast once per hypothesis, rather than once for every pruning chunk.
     let (f00v, f01v, f02v) = (
         _mm256_set1_pd(f00),
         _mm256_set1_pd(f01),
@@ -2366,173 +2346,121 @@ unsafe fn score_inliers_f_bounded_count_avx2(
         _mm256_set1_pd(f21),
         _mm256_set1_pd(f22),
     );
-    let one_v = _mm256_set1_pd(1.0);
+    let bound_v = _mm256_set1_pd(thresh_sq * F_UPPER_BOUND_SLACK);
     let eps_v = _mm256_set1_pd(1e-12);
     let n = x1_x.len();
-    let mut start = 0;
-    let mut count = 0;
-    let mut score = 0.0;
-    while start < n {
-        let end = (start + CHUNK_SIZE).min(n);
-        let mut idx = start;
-        while idx + 4 <= end {
-            let x1 = _mm256_loadu_pd(x1_x.as_ptr().add(idx));
-            let y1 = _mm256_loadu_pd(x1_y.as_ptr().add(idx));
-            let x2 = _mm256_loadu_pd(x2_x.as_ptr().add(idx));
-            let y2 = _mm256_loadu_pd(x2_y.as_ptr().add(idx));
-            let fx1x = _mm256_fmadd_pd(y1, f01v, _mm256_fmadd_pd(x1, f00v, f02v));
-            let fx1y = _mm256_fmadd_pd(y1, f11v, _mm256_fmadd_pd(x1, f10v, f12v));
-            let fx1z = _mm256_fmadd_pd(y1, f21v, _mm256_fmadd_pd(x1, f20v, f22v));
-            let ftx2x = _mm256_fmadd_pd(y2, f10v, _mm256_fmadd_pd(x2, f00v, f20v));
-            let ftx2y = _mm256_fmadd_pd(y2, f11v, _mm256_fmadd_pd(x2, f01v, f21v));
-            let err = _mm256_fmadd_pd(y2, fx1y, _mm256_fmadd_pd(x2, fx1x, fx1z));
-            let denom = _mm256_fmadd_pd(
-                ftx2y,
-                ftx2y,
-                _mm256_fmadd_pd(
-                    ftx2x,
-                    ftx2x,
-                    _mm256_fmadd_pd(fx1y, fx1y, _mm256_mul_pd(fx1x, fx1x)),
-                ),
-            );
-            let err_sq = _mm256_mul_pd(err, err);
-            let denom_ok = _mm256_cmp_pd::<_CMP_GT_OQ>(denom, eps_v);
-            let dd = _mm256_blendv_pd(
-                err_sq,
-                _mm256_div_pd(err_sq, _mm256_blendv_pd(one_v, denom, denom_ok)),
-                denom_ok,
-            );
-            let mut residuals = [0.0; 4];
-            _mm256_storeu_pd(residuals.as_mut_ptr(), dd);
-            for dd in residuals {
-                if dd.is_finite() && dd <= thresh_sq {
-                    count += 1;
-                    score += dd;
-                }
+    let simd_end = n & !3;
+    let lane_sum = |v: __m256i| -> usize {
+        let pair = _mm_add_epi64(_mm256_castsi256_si128(v), _mm256_extracti128_si256::<1>(v));
+        (_mm_cvtsi128_si64(pair) + _mm_extract_epi64::<1>(pair)) as usize
+    };
+    // Lane counters: a true comparison is all ones, i.e. -1 as an integer.
+    let mut possible = _mm256_setzero_si256();
+    let mut idx = 0;
+    let mut next_check = F_UPPER_BOUND_CHUNK.min(simd_end);
+    while idx < simd_end {
+        let x1 = _mm256_loadu_pd(x1_x.as_ptr().add(idx));
+        let y1 = _mm256_loadu_pd(x1_y.as_ptr().add(idx));
+        let x2 = _mm256_loadu_pd(x2_x.as_ptr().add(idx));
+        let y2 = _mm256_loadu_pd(x2_y.as_ptr().add(idx));
+        // Same operation sequence as `score_inliers_f_avx2`.
+        let fx1x = _mm256_fmadd_pd(y1, f01v, _mm256_fmadd_pd(x1, f00v, f02v));
+        let fx1y = _mm256_fmadd_pd(y1, f11v, _mm256_fmadd_pd(x1, f10v, f12v));
+        let fx1z = _mm256_fmadd_pd(y1, f21v, _mm256_fmadd_pd(x1, f20v, f22v));
+        let ftx2x = _mm256_fmadd_pd(y2, f10v, _mm256_fmadd_pd(x2, f00v, f20v));
+        let ftx2y = _mm256_fmadd_pd(y2, f11v, _mm256_fmadd_pd(x2, f01v, f21v));
+        let err = _mm256_fmadd_pd(y2, fx1y, _mm256_fmadd_pd(x2, fx1x, fx1z));
+        let denom = _mm256_fmadd_pd(
+            ftx2y,
+            ftx2y,
+            _mm256_fmadd_pd(
+                ftx2x,
+                ftx2x,
+                _mm256_fmadd_pd(fx1y, fx1y, _mm256_mul_pd(fx1x, fx1x)),
+            ),
+        );
+        let err_sq = _mm256_mul_pd(err, err);
+        let inside = _mm256_cmp_pd::<_CMP_LE_OQ>(err_sq, _mm256_mul_pd(bound_v, denom));
+        // `!(d > eps)` also catches NaN denominators.
+        let degenerate = _mm256_cmp_pd::<_CMP_NGT_UQ>(denom, eps_v);
+        possible = _mm256_sub_epi64(
+            possible,
+            _mm256_castpd_si256(_mm256_or_pd(inside, degenerate)),
+        );
+        idx += 4;
+        if idx == next_check {
+            if lane_sum(possible) + (n - idx) <= prune_at {
+                return None;
             }
-            idx += 4;
+            next_check = (idx + F_UPPER_BOUND_CHUNK).min(simd_end);
         }
-        while idx < end {
-            let fx1x = f00 * x1_x[idx] + f01 * x1_y[idx] + f02;
-            let fx1y = f10 * x1_x[idx] + f11 * x1_y[idx] + f12;
-            let fx1z = f20 * x1_x[idx] + f21 * x1_y[idx] + f22;
-            let ftx2x = f00 * x2_x[idx] + f10 * x2_y[idx] + f20;
-            let ftx2y = f01 * x2_x[idx] + f11 * x2_y[idx] + f21;
-            let err = fx1x * x2_x[idx] + fx1y * x2_y[idx] + fx1z;
-            let denom = fx1x * fx1x + fx1y * fx1y + ftx2x * ftx2x + ftx2y * ftx2y;
-            let dd = if denom <= 1e-12 {
-                err * err
-            } else {
-                (err * err) / denom
-            };
-            if dd <= thresh_sq {
-                count += 1;
-                score += dd;
-            }
-            idx += 1;
-        }
-        let remaining = n - end;
-        if count + remaining < best_count
-            || (count + remaining == best_count && score >= best_score)
-        {
-            return None;
-        }
-        start = end;
     }
-    Some((count, score))
+    let count = lane_sum(possible)
+        + score_inliers_f_tail_count(f, x1_x, x1_y, x2_x, x2_y, thresh_sq, simd_end);
+    (count > prune_at).then_some(count)
 }
 
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
-#[inline]
 #[allow(clippy::too_many_arguments)]
-unsafe fn score_inliers_f_bounded_count_neon(
+unsafe fn score_inliers_f_upper_bound_neon(
     f: (f64, f64, f64, f64, f64, f64, f64, f64, f64),
     x1_x: &[f64],
     x1_y: &[f64],
     x2_x: &[f64],
     x2_y: &[f64],
     thresh_sq: f64,
-    best_count: usize,
-    best_score: f64,
-) -> Option<(usize, f64)> {
+    prune_at: usize,
+) -> Option<usize> {
     use std::arch::aarch64::*;
-    const CHUNK_SIZE: usize = 64;
     let (f00, f01, f02, f10, f11, f12, f20, f21, f22) = f;
-    // As with AVX2, build this model's vector constants once per root.
     let (f00v, f01v, f02v) = (vdupq_n_f64(f00), vdupq_n_f64(f01), vdupq_n_f64(f02));
     let (f10v, f11v, f12v) = (vdupq_n_f64(f10), vdupq_n_f64(f11), vdupq_n_f64(f12));
     let (f20v, f21v, f22v) = (vdupq_n_f64(f20), vdupq_n_f64(f21), vdupq_n_f64(f22));
-    let one_v = vdupq_n_f64(1.0);
+    let bound_v = vdupq_n_f64(thresh_sq * F_UPPER_BOUND_SLACK);
     let eps_v = vdupq_n_f64(1e-12);
     let n = x1_x.len();
-    let mut start = 0;
-    let mut count = 0;
-    let mut score = 0.0;
-    while start < n {
-        let end = (start + CHUNK_SIZE).min(n);
-        let mut idx = start;
-        while idx + 2 <= end {
-            let x1 = vld1q_f64(x1_x.as_ptr().add(idx));
-            let y1 = vld1q_f64(x1_y.as_ptr().add(idx));
-            let x2 = vld1q_f64(x2_x.as_ptr().add(idx));
-            let y2 = vld1q_f64(x2_y.as_ptr().add(idx));
-            let fx1x = vfmaq_f64(vfmaq_f64(f02v, x1, f00v), y1, f01v);
-            let fx1y = vfmaq_f64(vfmaq_f64(f12v, x1, f10v), y1, f11v);
-            let fx1z = vfmaq_f64(vfmaq_f64(f22v, x1, f20v), y1, f21v);
-            let ftx2x = vfmaq_f64(vfmaq_f64(f20v, x2, f00v), y2, f10v);
-            let ftx2y = vfmaq_f64(vfmaq_f64(f21v, x2, f01v), y2, f11v);
-            let err = vfmaq_f64(vfmaq_f64(fx1z, x2, fx1x), y2, fx1y);
-            let denom = vfmaq_f64(
-                vfmaq_f64(vfmaq_f64(vmulq_f64(fx1x, fx1x), fx1y, fx1y), ftx2x, ftx2x),
-                ftx2y,
-                ftx2y,
-            );
-            let err_sq = vmulq_f64(err, err);
-            let denom_ok = vcgtq_f64(denom, eps_v);
-            let dd = vbslq_f64(
-                denom_ok,
-                vdivq_f64(err_sq, vbslq_f64(denom_ok, denom, one_v)),
-                err_sq,
-            );
-            let mut residuals = [0.0; 2];
-            vst1q_f64(residuals.as_mut_ptr(), dd);
-            for dd in residuals {
-                if dd.is_finite() && dd <= thresh_sq {
-                    count += 1;
-                    score += dd;
-                }
+    let simd_end = n & !1;
+    // Lane counters: a true comparison is all ones, i.e. -1 as an integer.
+    let mut possible = vdupq_n_u64(0);
+    let mut idx = 0;
+    let mut next_check = F_UPPER_BOUND_CHUNK.min(simd_end);
+    while idx < simd_end {
+        let x1 = vld1q_f64(x1_x.as_ptr().add(idx));
+        let y1 = vld1q_f64(x1_y.as_ptr().add(idx));
+        let x2 = vld1q_f64(x2_x.as_ptr().add(idx));
+        let y2 = vld1q_f64(x2_y.as_ptr().add(idx));
+        // Same operation sequence as `score_inliers_f_neon`.
+        let fx1x = vfmaq_f64(vfmaq_f64(f02v, x1, f00v), y1, f01v);
+        let fx1y = vfmaq_f64(vfmaq_f64(f12v, x1, f10v), y1, f11v);
+        let fx1z = vfmaq_f64(vfmaq_f64(f22v, x1, f20v), y1, f21v);
+        let ftx2x = vfmaq_f64(vfmaq_f64(f20v, x2, f00v), y2, f10v);
+        let ftx2y = vfmaq_f64(vfmaq_f64(f21v, x2, f01v), y2, f11v);
+        let err = vfmaq_f64(vfmaq_f64(fx1z, x2, fx1x), y2, fx1y);
+        let denom = vfmaq_f64(
+            vfmaq_f64(vfmaq_f64(vmulq_f64(fx1x, fx1x), fx1y, fx1y), ftx2x, ftx2x),
+            ftx2y,
+            ftx2y,
+        );
+        let err_sq = vmulq_f64(err, err);
+        let inside = vcleq_f64(err_sq, vmulq_f64(bound_v, denom));
+        // `!(d > eps)` also catches NaN denominators.
+        let degenerate = vmvnq_u32(vreinterpretq_u32_u64(vcgtq_f64(denom, eps_v)));
+        possible = vsubq_u64(
+            possible,
+            vorrq_u64(inside, vreinterpretq_u64_u32(degenerate)),
+        );
+        idx += 2;
+        if idx == next_check {
+            if vaddvq_u64(possible) as usize + (n - idx) <= prune_at {
+                return None;
             }
-            idx += 2;
+            next_check = (idx + F_UPPER_BOUND_CHUNK).min(simd_end);
         }
-        while idx < end {
-            let fx1x = f00 * x1_x[idx] + f01 * x1_y[idx] + f02;
-            let fx1y = f10 * x1_x[idx] + f11 * x1_y[idx] + f12;
-            let fx1z = f20 * x1_x[idx] + f21 * x1_y[idx] + f22;
-            let ftx2x = f00 * x2_x[idx] + f10 * x2_y[idx] + f20;
-            let ftx2y = f01 * x2_x[idx] + f11 * x2_y[idx] + f21;
-            let err = fx1x * x2_x[idx] + fx1y * x2_y[idx] + fx1z;
-            let denom = fx1x * fx1x + fx1y * fx1y + ftx2x * ftx2x + ftx2y * ftx2y;
-            let dd = if denom <= 1e-12 {
-                err * err
-            } else {
-                (err * err) / denom
-            };
-            if dd <= thresh_sq {
-                count += 1;
-                score += dd;
-            }
-            idx += 1;
-        }
-        let remaining = n - end;
-        if count + remaining < best_count
-            || (count + remaining == best_count && score >= best_score)
-        {
-            return None;
-        }
-        start = end;
     }
-    Some((count, score))
+    let count = vaddvq_u64(possible) as usize
+        + score_inliers_f_tail_count(f, x1_x, x1_y, x2_x, x2_y, thresh_sq, simd_end);
+    (count > prune_at).then_some(count)
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -3150,22 +3078,14 @@ mod tests {
 
         let mut full_mask = vec![false; x1.len()];
         let full = score_inliers_f(&f_mat, &x1_x, &x1_y, &x2_x, &x2_y, 0.0, &mut full_mask);
-        let bounded = score_inliers_f_bounded_count(
-            &f_mat,
-            &x1_x,
-            &x1_y,
-            &x2_x,
-            &x2_y,
-            0.0,
-            0,
-            f64::INFINITY,
-        )
-        .unwrap();
-
-        assert_eq!(bounded.0, full.0);
-        assert_eq!(bounded.1.to_bits(), full.1.to_bits());
         assert_eq!(full.0, x1.len());
         assert_eq!(full.1, 0.0);
+        // Zero denominators fall back to err² in the exact scorer; the
+        // bound must count every one of them.
+        assert_eq!(
+            score_inliers_f_upper_bound(&f_mat, &x1_x, &x1_y, &x2_x, &x2_y, 0.0, 0),
+            Some(x1.len())
+        );
 
         // A non-zero score catches accidental reassociation at chunk borders.
         let finite_f = Mat3F64::from_cols(
@@ -3183,19 +3103,9 @@ mod tests {
             1e20,
             &mut finite_full_mask,
         );
-        let finite_bounded = score_inliers_f_bounded_count(
-            &finite_f,
-            &x1_x,
-            &x1_y,
-            &x2_x,
-            &x2_y,
-            1e20,
-            0,
-            f64::INFINITY,
-        )
-        .unwrap();
-        assert_eq!(finite_bounded.0, finite_full.0);
-        assert_eq!(finite_bounded.1.to_bits(), finite_full.1.to_bits());
+        let finite_bound =
+            score_inliers_f_upper_bound(&finite_f, &x1_x, &x1_y, &x2_x, &x2_y, 1e20, 0).unwrap();
+        assert!(finite_bound >= finite_full.0);
 
         let mut masked_mask = vec![false; x1.len()];
         let masked = score_inliers_f_bounded_masked(
@@ -3227,36 +3137,108 @@ mod tests {
         let full = score_inliers_f(&f_mat, &x1_x, &x1_y, &x2_x, &x2_y, 0.0, &mut full_mask);
         assert_eq!(full, (128, 0.0));
 
-        assert!(score_inliers_f_bounded_count(
-            &f_mat, &x1_x, &x1_y, &x2_x, &x2_y, 0.0, full.0, full.1,
+        // A count tie can still win on score, so the support bound keeps it...
+        assert_eq!(
+            score_inliers_f_upper_bound(&f_mat, &x1_x, &x1_y, &x2_x, &x2_y, 0.0, full.0 - 1),
+            Some(full.0)
+        );
+        // ...and the exact scorer rejects it once the score cannot improve.
+        let mut mask = vec![false; x1.len()];
+        assert!(score_inliers_f_bounded_masked(
+            &f_mat, &x1_x, &x1_y, &x2_x, &x2_y, 0.0, &mut mask, full.0, full.1,
         )
         .is_none());
     }
 
     #[test]
     fn test_bounded_f_scorer_rejects_when_count_cannot_catch_up() {
-        let f_mat = Mat3F64::from_cols(Vec3F64::ZERO, Vec3F64::ZERO, Vec3F64::new(0.0, 0.0, 1.0));
-        let x1: Vec<_> = (0..128).map(|i| Vec2F64::new(i as f64, 1.0)).collect();
-        let x2: Vec<_> = (0..128).map(|i| Vec2F64::new(2.0, i as f64)).collect();
+        let f_mat = Mat3F64::from_cols(
+            Vec3F64::new(0.0, -0.001, 0.02),
+            Vec3F64::new(0.0015, 0.0, -0.01),
+            Vec3F64::new(-0.03, 0.04, 1.0),
+        );
+        let x1: Vec<_> = (0..130).map(|i| Vec2F64::new(i as f64, 1.0)).collect();
+        let x2: Vec<_> = (0..130).map(|i| Vec2F64::new(2.0, i as f64)).collect();
         let (x1_x, x1_y) = split_xy(&x1);
         let (x2_x, x2_y) = split_xy(&x2);
 
         let mut full_mask = vec![false; x1.len()];
-        let full = score_inliers_f(&f_mat, &x1_x, &x1_y, &x2_x, &x2_y, 0.0, &mut full_mask);
+        let full = score_inliers_f(&f_mat, &x1_x, &x1_y, &x2_x, &x2_y, 1e-30, &mut full_mask);
         assert_eq!(full, (0, 0.0));
-        assert!(full_mask.iter().all(|&v| !v));
 
-        assert!(score_inliers_f_bounded_count(
-            &f_mat,
-            &x1_x,
-            &x1_y,
-            &x2_x,
-            &x2_y,
-            0.0,
-            100,
-            f64::INFINITY,
-        )
-        .is_none());
+        assert!(
+            score_inliers_f_upper_bound(&f_mat, &x1_x, &x1_y, &x2_x, &x2_y, 1e-30, 100).is_none()
+        );
+    }
+
+    /// The support bound must never undercount the exact scorer, including at
+    /// thresholds equal to a residual, across SIMD tails and with degenerate
+    /// or non-finite correspondences; pruning must imply a losing count.
+    #[test]
+    fn test_f_upper_bound_never_undercounts_exact_scorer() {
+        let mut state = 0x5eed_1234_u64;
+        let mut uniform = move || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            ((state >> 11) as f64) * (1.0 / ((1_u64 << 53) as f64))
+        };
+        for trial in 0..60 {
+            let n = 1 + trial * 7 % 97;
+            let f_mat = Mat3F64::from_cols(
+                Vec3F64::new(uniform() - 0.5, uniform() - 0.5, uniform() - 0.5),
+                Vec3F64::new(uniform() - 0.5, uniform() - 0.5, uniform() - 0.5),
+                Vec3F64::new(uniform() - 0.5, uniform() - 0.5, uniform() - 0.5),
+            ) * 1e-3;
+            let mut x1: Vec<_> = (0..n)
+                .map(|_| Vec2F64::new(640.0 * uniform(), 480.0 * uniform()))
+                .collect();
+            let x2: Vec<_> = (0..n)
+                .map(|_| Vec2F64::new(640.0 * uniform(), 480.0 * uniform()))
+                .collect();
+            if trial % 5 == 0 {
+                x1[n / 2] = Vec2F64::new(f64::NAN, 1.0);
+            }
+            let (x1_x, x1_y) = split_xy(&x1);
+            let (x2_x, x2_y) = split_xy(&x2);
+            let mut residuals = vec![0.0; n];
+            for (i, residual) in residuals.iter_mut().enumerate() {
+                let mut one = [false];
+                *residual = score_inliers_f(
+                    &f_mat,
+                    &x1_x[i..=i],
+                    &x1_y[i..=i],
+                    &x2_x[i..=i],
+                    &x2_y[i..=i],
+                    f64::INFINITY,
+                    &mut one,
+                )
+                .1;
+            }
+            let mut thresholds: Vec<f64> = residuals
+                .iter()
+                .copied()
+                .filter(|r| r.is_finite())
+                .collect();
+            thresholds.extend([0.0, 1e-6, 1.0, 1e6]);
+            for threshold in thresholds {
+                let mut mask = vec![false; n];
+                let (exact, _) =
+                    score_inliers_f(&f_mat, &x1_x, &x1_y, &x2_x, &x2_y, threshold, &mut mask);
+                let bound =
+                    score_inliers_f_upper_bound(&f_mat, &x1_x, &x1_y, &x2_x, &x2_y, threshold, 0);
+                assert!(bound.unwrap_or(0) >= exact, "n={n} t={threshold}");
+                for prune_at in [exact.saturating_sub(1), exact, exact + 1] {
+                    if score_inliers_f_upper_bound(
+                        &f_mat, &x1_x, &x1_y, &x2_x, &x2_y, threshold, prune_at,
+                    )
+                    .is_none()
+                    {
+                        assert!(exact <= prune_at, "pruned a winner: n={n} t={threshold}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]

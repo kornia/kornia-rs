@@ -74,6 +74,13 @@ impl Estimator for FundamentalEstimator {
 
         // Pack once per candidate rather than once per scoring chunk.
         let f = pack_f(model);
+        // Most roots lose. A division-free pass bounds their support from
+        // above and rejects them without residual or mask writes; only a
+        // candidate that might still beat the incumbent pays for the exact
+        // pass below, so the outcome matches exact scoring alone.
+        if sampson_support_upper_bound(f, samples, threshold, best_inlier_count).is_none() {
+            return Some(ThresholdInlierResult::Pruned);
+        }
         // The selected backend keeps its vector constants live across the
         // fixed-size chunks and performs the same safe pruning check.
         let Some(count) =
@@ -238,6 +245,78 @@ fn sampson_residual_batch_threshold(
     }
 }
 
+/// Correspondences between pruning checks of the support upper bound.
+const UPPER_BOUND_CHUNK: usize = 32;
+
+/// Threshold inflation of the support upper bound. Comparing `e² <= t'·d`
+/// with `t' = t·(1 + 8ε)` rounds three times, while the exact `e²/d < t`
+/// rounds once; the slack keeps every exact inlier inside the bound.
+const UPPER_BOUND_SLACK: f64 = 1.0 + 8.0 * f64::EPSILON;
+
+/// Smallest threshold for which `t'·d` stays normal whenever `d > 1e-12`,
+/// so the relative rounding argument above applies.
+const UPPER_BOUND_MIN_THRESHOLD: f64 = 1e-280;
+
+/// Upper bound on the number of strict Sampson inliers, or `None` once the
+/// bound proves the candidate cannot exceed `prune_at` inliers.
+///
+/// The SIMD kernels share the exact kernels' `e²` and `d` arithmetic and
+/// test `e² <= t'·d` instead of dividing. Denominators at or below the
+/// exact path's 1e-12 guard (or NaN) are always counted, and the scalar
+/// tail uses exact residuals with `<=`. Every exact inlier is therefore
+/// counted, so rejecting on the bound never discards a possible winner.
+/// Without a SIMD kernel, or for thresholds outside the rounding argument,
+/// the bound is the trivial `samples.len()`.
+#[inline]
+fn sampson_support_upper_bound(
+    f: FPacked,
+    samples: &[Match2d2d],
+    threshold: f64,
+    prune_at: usize,
+) -> Option<usize> {
+    if threshold.is_nan() || threshold < UPPER_BOUND_MIN_THRESHOLD {
+        return Some(samples.len());
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: NEON is architectural on aarch64; the kernel reads only
+    // complete lane groups within `samples`.
+    unsafe {
+        return sampson_support_upper_bound_neon(f, samples, threshold, prune_at);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    if kornia_imgproc::simd::cpu_features().has_avx2 && kornia_imgproc::simd::cpu_features().has_fma
+    {
+        // SAFETY: runtime feature checks match the kernel target features;
+        // the kernel reads only complete lane groups within `samples`.
+        unsafe {
+            return sampson_support_upper_bound_avx2(f, samples, threshold, prune_at);
+        }
+    }
+
+    #[allow(unreachable_code)]
+    {
+        let _ = (f, prune_at);
+        Some(samples.len())
+    }
+}
+
+/// Exact residuals of the scalar tail, counted with the bound's `<=`.
+#[inline]
+fn sampson_tail_upper_bound(f: FPacked, tail: &[Match2d2d], threshold: f64) -> usize {
+    let mut residuals = [0.0f64; 4];
+    let mut count = 0;
+    for chunk in tail.chunks(4) {
+        sampson_residual_batch_scalar(f, chunk, &mut residuals[..chunk.len()]);
+        count += residuals[..chunk.len()]
+            .iter()
+            .filter(|&&residual| residual <= threshold)
+            .count();
+    }
+    count
+}
+
 // ---------------------------------------------------------------------------
 // Sampson-residual kernels (scalar reference + NEON + AVX2)
 //
@@ -366,16 +445,7 @@ unsafe fn sampson_residual_batch_neon<const COUNT: bool, const BOUNDED: bool>(
 ) -> Option<usize> {
     unsafe {
         use std::arch::aarch64::*;
-        let (f00, f01, f02, f10, f11, f12, f20, f21, f22) = f;
-        let f00v = vdupq_n_f64(f00);
-        let f01v = vdupq_n_f64(f01);
-        let f02v = vdupq_n_f64(f02);
-        let f10v = vdupq_n_f64(f10);
-        let f11v = vdupq_n_f64(f11);
-        let f12v = vdupq_n_f64(f12);
-        let f20v = vdupq_n_f64(f20);
-        let f21v = vdupq_n_f64(f21);
-        let f22v = vdupq_n_f64(f22);
+        let fv = broadcast_f_neon(f);
         let eps = vdupq_n_f64(1e-12);
         let one = vdupq_n_f64(1.0);
         let threshold_v = vdupq_n_f64(threshold);
@@ -391,26 +461,8 @@ unsafe fn sampson_residual_batch_neon<const COUNT: bool, const BOUNDED: bool>(
             };
             let mut idx = start;
             while idx + 2 <= end {
-                let base = samples.as_ptr().add(idx) as *const f64;
-                let lanes = vld4q_f64(base);
-                let x1 = lanes.0;
-                let y1 = lanes.1;
-                let x2 = lanes.2;
-                let y2 = lanes.3;
-
-                let fx1x = vfmaq_f64(vfmaq_f64(f02v, x1, f00v), y1, f01v);
-                let fx1y = vfmaq_f64(vfmaq_f64(f12v, x1, f10v), y1, f11v);
-                let fx1z = vfmaq_f64(vfmaq_f64(f22v, x1, f20v), y1, f21v);
-                let ftx2x = vfmaq_f64(vfmaq_f64(f20v, x2, f00v), y2, f10v);
-                let ftx2y = vfmaq_f64(vfmaq_f64(f21v, x2, f01v), y2, f11v);
-
-                let err = vfmaq_f64(vfmaq_f64(fx1z, x2, fx1x), y2, fx1y);
-                let denom = vfmaq_f64(
-                    vfmaq_f64(vfmaq_f64(vmulq_f64(fx1x, fx1x), fx1y, fx1y), ftx2x, ftx2x),
-                    ftx2y,
-                    ftx2y,
-                );
-                let err_sq = vmulq_f64(err, err);
+                let (err_sq, denom) =
+                    sampson_terms_neon(&fv, samples.as_ptr().add(idx) as *const f64);
                 let denom_ok = vcgtq_f64(denom, eps);
                 let safe_denom = vbslq_f64(denom_ok, denom, one);
                 let div_val = vdivq_f64(err_sq, safe_denom);
@@ -474,16 +526,7 @@ unsafe fn sampson_residual_batch_avx2<const COUNT: bool, const BOUNDED: bool>(
     best_inlier_count: usize,
 ) -> Option<usize> {
     use std::arch::x86_64::*;
-    let (f00, f01, f02, f10, f11, f12, f20, f21, f22) = f;
-    let f00v = _mm256_set1_pd(f00);
-    let f01v = _mm256_set1_pd(f01);
-    let f02v = _mm256_set1_pd(f02);
-    let f10v = _mm256_set1_pd(f10);
-    let f11v = _mm256_set1_pd(f11);
-    let f12v = _mm256_set1_pd(f12);
-    let f20v = _mm256_set1_pd(f20);
-    let f21v = _mm256_set1_pd(f21);
-    let f22v = _mm256_set1_pd(f22);
+    let fv = broadcast_f_avx2(f);
     let eps = _mm256_set1_pd(1e-12);
     let one = _mm256_set1_pd(1.0);
     let threshold_v = _mm256_set1_pd(threshold);
@@ -499,39 +542,7 @@ unsafe fn sampson_residual_batch_avx2<const COUNT: bool, const BOUNDED: bool>(
         };
         let mut idx = start;
         while idx + 4 <= end {
-            let base = samples.as_ptr().add(idx) as *const f64;
-            // Each Match2d2d is 32 B = exactly one __m256d. Load 4 of them.
-            let a = _mm256_loadu_pd(base);
-            let b = _mm256_loadu_pd(base.add(4));
-            let c = _mm256_loadu_pd(base.add(8));
-            let d = _mm256_loadu_pd(base.add(12));
-            // 4×4 transpose: per-128b-lane unpack, then cross-lane permute.
-            let t0 = _mm256_unpacklo_pd(a, b);
-            let t1 = _mm256_unpackhi_pd(a, b);
-            let t2 = _mm256_unpacklo_pd(c, d);
-            let t3 = _mm256_unpackhi_pd(c, d);
-            let x1 = _mm256_permute2f128_pd::<0x20>(t0, t2);
-            let y1 = _mm256_permute2f128_pd::<0x20>(t1, t3);
-            let x2 = _mm256_permute2f128_pd::<0x31>(t0, t2);
-            let y2 = _mm256_permute2f128_pd::<0x31>(t1, t3);
-
-            let fx1x = _mm256_fmadd_pd(x1, f00v, _mm256_fmadd_pd(y1, f01v, f02v));
-            let fx1y = _mm256_fmadd_pd(x1, f10v, _mm256_fmadd_pd(y1, f11v, f12v));
-            let fx1z = _mm256_fmadd_pd(x1, f20v, _mm256_fmadd_pd(y1, f21v, f22v));
-            let ftx2x = _mm256_fmadd_pd(x2, f00v, _mm256_fmadd_pd(y2, f10v, f20v));
-            let ftx2y = _mm256_fmadd_pd(x2, f01v, _mm256_fmadd_pd(y2, f11v, f21v));
-
-            let err = _mm256_fmadd_pd(fx1x, x2, _mm256_fmadd_pd(fx1y, y2, fx1z));
-            let denom = _mm256_fmadd_pd(
-                ftx2y,
-                ftx2y,
-                _mm256_fmadd_pd(
-                    ftx2x,
-                    ftx2x,
-                    _mm256_fmadd_pd(fx1y, fx1y, _mm256_mul_pd(fx1x, fx1x)),
-                ),
-            );
-            let err_sq = _mm256_mul_pd(err, err);
+            let (err_sq, denom) = sampson_terms_avx2(&fv, samples.as_ptr().add(idx) as *const f64);
             // Mask: denom > 1e-12. `_mm256_blendv_pd` selects per-lane on the
             // *sign bit* of the mask — `_CMP_GT_OQ` produces all-ones on true,
             // all-zeros on false.
@@ -562,6 +573,222 @@ unsafe fn sampson_residual_batch_avx2<const COUNT: bool, const BOUNDED: bool>(
         start = end;
     }
     Some(count)
+}
+
+/// Broadcast the nine F entries into NEON lane vectors.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+#[inline]
+unsafe fn broadcast_f_neon(f: FPacked) -> [std::arch::aarch64::float64x2_t; 9] {
+    use std::arch::aarch64::vdupq_n_f64;
+    let (f00, f01, f02, f10, f11, f12, f20, f21, f22) = f;
+    [f00, f01, f02, f10, f11, f12, f20, f21, f22].map(|value| vdupq_n_f64(value))
+}
+
+/// `(e², d)` of the Sampson residual `e²/d` for two consecutive matches.
+///
+/// `Match2d2d` is `#[repr(C)]` `{x1: Vec2F64, x2: Vec2F64}` → 4 contiguous
+/// f64s per match, so `vld4q_f64` deinterleaves two matches into
+/// `(x1_x, x1_y, x2_x, x2_y)` lane vectors in a single instruction. Every
+/// NEON kernel uses this exact operation sequence.
+///
+/// # Safety
+/// `base` must point to two readable consecutive `Match2d2d` values.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+#[inline]
+unsafe fn sampson_terms_neon(
+    f: &[std::arch::aarch64::float64x2_t; 9],
+    base: *const f64,
+) -> (
+    std::arch::aarch64::float64x2_t,
+    std::arch::aarch64::float64x2_t,
+) {
+    use std::arch::aarch64::*;
+    let lanes = vld4q_f64(base);
+    let (x1, y1, x2, y2) = (lanes.0, lanes.1, lanes.2, lanes.3);
+    let fx1x = vfmaq_f64(vfmaq_f64(f[2], x1, f[0]), y1, f[1]);
+    let fx1y = vfmaq_f64(vfmaq_f64(f[5], x1, f[3]), y1, f[4]);
+    let fx1z = vfmaq_f64(vfmaq_f64(f[8], x1, f[6]), y1, f[7]);
+    let ftx2x = vfmaq_f64(vfmaq_f64(f[6], x2, f[0]), y2, f[3]);
+    let ftx2y = vfmaq_f64(vfmaq_f64(f[7], x2, f[1]), y2, f[4]);
+    let err = vfmaq_f64(vfmaq_f64(fx1z, x2, fx1x), y2, fx1y);
+    let denom = vfmaq_f64(
+        vfmaq_f64(vfmaq_f64(vmulq_f64(fx1x, fx1x), fx1y, fx1y), ftx2x, ftx2x),
+        ftx2y,
+        ftx2y,
+    );
+    (vmulq_f64(err, err), denom)
+}
+
+/// NEON support upper bound; see [`sampson_support_upper_bound`].
+///
+/// # Safety
+/// NEON is architectural on aarch64; only complete lane pairs of `samples`
+/// are read by vector loads.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn sampson_support_upper_bound_neon(
+    f: FPacked,
+    samples: &[Match2d2d],
+    threshold: f64,
+    prune_at: usize,
+) -> Option<usize> {
+    use std::arch::aarch64::*;
+    let fv = broadcast_f_neon(f);
+    let bound = vdupq_n_f64(threshold * UPPER_BOUND_SLACK);
+    let eps = vdupq_n_f64(1e-12);
+    let n = samples.len();
+    let simd_end = n & !1;
+    // Lane counters: a true comparison is all ones, i.e. -1 as an integer.
+    let mut possible = vdupq_n_u64(0);
+    let mut idx = 0;
+    let mut next_check = UPPER_BOUND_CHUNK.min(simd_end);
+    while idx < simd_end {
+        let (err_sq, denom) = sampson_terms_neon(&fv, samples.as_ptr().add(idx) as *const f64);
+        let inside = vcleq_f64(err_sq, vmulq_f64(bound, denom));
+        // `!(d > eps)` also catches NaN denominators.
+        let degenerate = vmvnq_u32(vreinterpretq_u32_u64(vcgtq_f64(denom, eps)));
+        possible = vsubq_u64(
+            possible,
+            vorrq_u64(inside, vreinterpretq_u64_u32(degenerate)),
+        );
+        idx += 2;
+        if idx == next_check {
+            if vaddvq_u64(possible) as usize + (n - idx) <= prune_at {
+                return None;
+            }
+            next_check = (idx + UPPER_BOUND_CHUNK).min(simd_end);
+        }
+    }
+    let count = vaddvq_u64(possible) as usize
+        + sampson_tail_upper_bound(f, &samples[simd_end..], threshold);
+    (count > prune_at).then_some(count)
+}
+
+/// Broadcast the nine F entries into AVX lane vectors.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+#[inline]
+unsafe fn broadcast_f_avx2(f: FPacked) -> [std::arch::x86_64::__m256d; 9] {
+    use std::arch::x86_64::_mm256_set1_pd;
+    let (f00, f01, f02, f10, f11, f12, f20, f21, f22) = f;
+    [f00, f01, f02, f10, f11, f12, f20, f21, f22].map(|value| _mm256_set1_pd(value))
+}
+
+/// `(e², d)` of the Sampson residual `e²/d` for four consecutive matches.
+///
+/// `Match2d2d` is 32 B = exactly one `__m256d`. Four consecutive matches
+/// are 4 × `__m256d` loads; we deinterleave them into the four needed
+/// lane-vectors via the standard AVX 4×4 transpose
+/// (`unpacklo` / `unpackhi` + two `permute2f128`):
+///
+/// ```text
+///   Loaded:                      After transpose:
+///     a = m[0].(x1x x1y x2x x2y)   x1_x = (m0.x1x, m1.x1x, m2.x1x, m3.x1x)
+///     b = m[1].(...)               x1_y = (m0.x1y, m1.x1y, m2.x1y, m3.x1y)
+///     c = m[2].(...)               x2_x = (m0.x2x, m1.x2x, m2.x2x, m3.x2x)
+///     d = m[3].(...)               x2_y = (m0.x2y, m1.x2y, m2.x2y, m3.x2y)
+/// ```
+///
+/// Every AVX2 kernel uses this exact operation sequence.
+///
+/// # Safety
+/// The CPU must support AVX2 and FMA, and `base` must point to four
+/// readable consecutive `Match2d2d` values.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+#[inline]
+unsafe fn sampson_terms_avx2(
+    f: &[std::arch::x86_64::__m256d; 9],
+    base: *const f64,
+) -> (std::arch::x86_64::__m256d, std::arch::x86_64::__m256d) {
+    use std::arch::x86_64::*;
+    let a = _mm256_loadu_pd(base);
+    let b = _mm256_loadu_pd(base.add(4));
+    let c = _mm256_loadu_pd(base.add(8));
+    let d = _mm256_loadu_pd(base.add(12));
+    let t0 = _mm256_unpacklo_pd(a, b);
+    let t1 = _mm256_unpackhi_pd(a, b);
+    let t2 = _mm256_unpacklo_pd(c, d);
+    let t3 = _mm256_unpackhi_pd(c, d);
+    let x1 = _mm256_permute2f128_pd::<0x20>(t0, t2);
+    let y1 = _mm256_permute2f128_pd::<0x20>(t1, t3);
+    let x2 = _mm256_permute2f128_pd::<0x31>(t0, t2);
+    let y2 = _mm256_permute2f128_pd::<0x31>(t1, t3);
+
+    let fx1x = _mm256_fmadd_pd(x1, f[0], _mm256_fmadd_pd(y1, f[1], f[2]));
+    let fx1y = _mm256_fmadd_pd(x1, f[3], _mm256_fmadd_pd(y1, f[4], f[5]));
+    let fx1z = _mm256_fmadd_pd(x1, f[6], _mm256_fmadd_pd(y1, f[7], f[8]));
+    let ftx2x = _mm256_fmadd_pd(x2, f[0], _mm256_fmadd_pd(y2, f[3], f[6]));
+    let ftx2y = _mm256_fmadd_pd(x2, f[1], _mm256_fmadd_pd(y2, f[4], f[7]));
+
+    let err = _mm256_fmadd_pd(fx1x, x2, _mm256_fmadd_pd(fx1y, y2, fx1z));
+    let denom = _mm256_fmadd_pd(
+        ftx2y,
+        ftx2y,
+        _mm256_fmadd_pd(
+            ftx2x,
+            ftx2x,
+            _mm256_fmadd_pd(fx1y, fx1y, _mm256_mul_pd(fx1x, fx1x)),
+        ),
+    );
+    (_mm256_mul_pd(err, err), denom)
+}
+
+/// Sum of the four 64-bit lane counters.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+#[inline]
+unsafe fn horizontal_sum_epi64(v: std::arch::x86_64::__m256i) -> usize {
+    use std::arch::x86_64::*;
+    let pair = _mm_add_epi64(_mm256_castsi256_si128(v), _mm256_extracti128_si256::<1>(v));
+    (_mm_cvtsi128_si64(pair) + _mm_extract_epi64::<1>(pair)) as usize
+}
+
+/// AVX2 support upper bound; see [`sampson_support_upper_bound`].
+///
+/// # Safety
+/// The CPU must support AVX2 and FMA; only complete groups of four
+/// `samples` are read by vector loads.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn sampson_support_upper_bound_avx2(
+    f: FPacked,
+    samples: &[Match2d2d],
+    threshold: f64,
+    prune_at: usize,
+) -> Option<usize> {
+    use std::arch::x86_64::*;
+    let fv = broadcast_f_avx2(f);
+    let bound = _mm256_set1_pd(threshold * UPPER_BOUND_SLACK);
+    let eps = _mm256_set1_pd(1e-12);
+    let n = samples.len();
+    let simd_end = n & !3;
+    // Lane counters: a true comparison is all ones, i.e. -1 as an integer.
+    let mut possible = _mm256_setzero_si256();
+    let mut idx = 0;
+    let mut next_check = UPPER_BOUND_CHUNK.min(simd_end);
+    while idx < simd_end {
+        let (err_sq, denom) = sampson_terms_avx2(&fv, samples.as_ptr().add(idx) as *const f64);
+        let inside = _mm256_cmp_pd::<_CMP_LE_OQ>(err_sq, _mm256_mul_pd(bound, denom));
+        // `!(d > eps)` also catches NaN denominators.
+        let degenerate = _mm256_cmp_pd::<_CMP_NGT_UQ>(denom, eps);
+        possible = _mm256_sub_epi64(
+            possible,
+            _mm256_castpd_si256(_mm256_or_pd(inside, degenerate)),
+        );
+        idx += 4;
+        if idx == next_check {
+            if horizontal_sum_epi64(possible) + (n - idx) <= prune_at {
+                return None;
+            }
+            next_check = (idx + UPPER_BOUND_CHUNK).min(simd_end);
+        }
+    }
+    let count = horizontal_sum_epi64(possible)
+        + sampson_tail_upper_bound(f, &samples[simd_end..], threshold);
+    (count > prune_at).then_some(count)
 }
 
 #[cfg(test)]
@@ -833,12 +1060,67 @@ mod tests {
                 }
             }
         }
+        /// Seven-point estimator that returns the root fitting `holdout`
+        /// last, so the driver must score every root to find the winner
+        /// whatever order the solver produces.
+        struct TrueRootLast {
+            holdout: Match2d2d,
+        }
+        impl Estimator for TrueRootLast {
+            type Model = Mat3F64;
+            type Sample = Match2d2d;
+            const SAMPLE_SIZE: usize = FundamentalEstimator::SAMPLE_SIZE;
+
+            fn fit(&self, samples: &[Self::Sample], out: &mut Vec<Self::Model>) {
+                FundamentalEstimator.fit(samples, out);
+                out.sort_by_key(|f| FundamentalEstimator.residual(f, &self.holdout) < 1e-8);
+            }
+
+            fn residual(&self, model: &Self::Model, sample: &Self::Sample) -> f64 {
+                FundamentalEstimator.residual(model, sample)
+            }
+
+            fn residual_batch(
+                &self,
+                model: &Self::Model,
+                samples: &[Self::Sample],
+                out: &mut [f64],
+            ) {
+                FundamentalEstimator.residual_batch(model, samples, out);
+            }
+
+            fn refit(&self, inliers: &[Self::Sample], out: &mut Vec<Self::Model>) {
+                FundamentalEstimator.refit(inliers, out);
+            }
+
+            fn threshold_inliers(
+                &self,
+                model: &Self::Model,
+                samples: &[Self::Sample],
+                threshold: f64,
+                best_inlier_count: usize,
+                residuals: &mut [f64],
+                inliers_out: &mut Vec<bool>,
+            ) -> Option<ThresholdInlierResult> {
+                FundamentalEstimator.threshold_inliers(
+                    model,
+                    samples,
+                    threshold,
+                    best_inlier_count,
+                    residuals,
+                    inliers_out,
+                )
+            }
+        }
         let pair = synthetic_pair();
+        let estimator = TrueRootLast {
+            holdout: pair.matches[7],
+        };
         let mut hypotheses = Vec::new();
-        FundamentalEstimator.fit(&pair.matches[..7], &mut hypotheses);
+        estimator.fit(&pair.matches[..7], &mut hypotheses);
         assert!(hypotheses.len() > 1);
         assert!(
-            FundamentalEstimator.residual(&hypotheses[0], &pair.matches[7]) > 1e-8,
+            estimator.residual(&hypotheses[0], &pair.matches[7]) > 1e-8,
             "fixture must require scoring a later root to fit the holdout"
         );
         let cfg = RansacConfig {
@@ -849,14 +1131,14 @@ mod tests {
         let consensus = ThresholdConsensus { threshold: 1e-8 };
         for result in [
             run(
-                &FundamentalEstimator,
+                &estimator,
                 &consensus,
                 &mut FixedSample,
                 &pair.matches,
                 &cfg,
             ),
             run_parallel(
-                &FundamentalEstimator,
+                &estimator,
                 &consensus,
                 &mut FixedSample,
                 &pair.matches,
