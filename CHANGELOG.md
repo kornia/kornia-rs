@@ -13,6 +13,47 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
 
 ## [Unreleased]
 
+**Breaking: fundamental-matrix RANSAC now samples seven points by default.** A seven-point
+hypothesis needs one correspondence fewer than an eight-point one, so RANSAC reaches the same
+confidence with fewer draws; every real root of a sample (up to three) is scored. Estimated
+matrices and inlier masks change, even with a fixed seed. The eight-point path remains available:
+
+| Entry point | Default now | Previous behaviour |
+|---|---|---|
+| `kornia_3d::pose::ransac_fundamental` | seven-point; accepts 7+ matches | `ransac_fundamental_8point` |
+| `kornia_3d::ransac::estimators::FundamentalEstimator` | seven-point (`SAMPLE_SIZE = 7`) | `Fundamental8PointEstimator` |
+| Python `kornia_rs.ransac.fundamental` | `solver="7point"` | `solver="8point"` |
+| Python `kornia_rs.k3d.find_fundamental(method=8)` | `solver="7point"` | `solver="8point"` |
+
+`TwoViewEstimator` keeps `Fundamental8ptSolver` as its default; opt in to seven-point with
+`.epipolar_solver(Fundamental7ptSolver::default())`.
+
+Also breaking for Rust code:
+- `pose::RansacParams` has a new public field, `confidence: Option<f64>`, which overrides the
+  adaptive-stopping target. `None` keeps the previous targets (0.9999 for fundamental and
+  essential, 0.99 for homography). Struct literals that name every field must add it or end with
+  `..Default::default()`.
+- New error variants: `TwoViewError::InvalidConfidence { confidence }` for a confidence outside
+  (0, 1), and `FundamentalError::DegenerateConfiguration`, returned by `fundamental_7point` and by
+  `fundamental_8point` when exactly eight matches are rank-deficient. Exhaustive `match`es need a
+  new arm.
+
+Fixed:
+- `fundamental_8point` with more than eight correspondences did not reliably return the
+  least-squares solution: 9–64 matches used only eight of the constraints, and larger sets relied
+  on three fixed inverse iterations that need a large eigengap. Every set above eight now uses the
+  full design matrix and an exact symmetric eigensolver, which affects local-optimization and
+  final refits; results for those inputs change.
+- Adaptive stopping uses the exact probability of drawing an all-inlier sample without
+  replacement instead of `inlier_ratio^k`, so runs can take slightly more iterations.
+
+Added:
+- `kornia_3d::pose::fundamental_7point` minimal solver, and `Fundamental7ptSolver` for
+  `TwoViewEstimator`.
+- Opt-in fused threshold scoring for custom generic-driver components:
+  `Estimator::threshold_inliers`, `Consensus::threshold` and `ThresholdInlierResult`. The default
+  implementations keep the existing scoring path.
+
 ## [0.2.0] — 2026-09-26
 
 **0.2.0 is 0.1.15 re-released under the right version.** 0.1.15 shipped breaking API changes as a
