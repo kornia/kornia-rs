@@ -1,6 +1,8 @@
 use kornia_image::{Image, ImageError};
 use rayon::prelude::*;
 
+use crate::parallel::par_row_chunks;
+
 /// Compute the pixel intensity histogram of an image.
 ///
 /// NOTE: this is limited to 8-bit 1-channel images.
@@ -18,7 +20,6 @@ use rayon::prelude::*;
 /// # Errors
 ///
 /// Returns an error if the number of bins is invalid.
-/// Returns [`ImageError::EmptyImage`] if `src` has zero width or zero height.
 ///
 /// # Example
 ///
@@ -52,10 +53,6 @@ pub fn compute_histogram(
         return Err(ImageError::InvalidHistogramBins(num_bins));
     }
 
-    if src.width() == 0 || src.height() == 0 {
-        return Err(ImageError::EmptyImage(src.width(), src.height()));
-    }
-
     // we assume 8-bit images for now and range [0, 255]
     let scale = 256.0 / num_bins as f32;
 
@@ -75,8 +72,7 @@ pub fn compute_histogram(
     // O(rows). Each task accumulates its rows into one local histogram before
     // the reduce step merges them.
     const ROWS_PER_TASK: usize = 16;
-    let partial_hist = src_slice
-        .par_chunks(ROWS_PER_TASK * width)
+    let partial_hist = par_row_chunks(src_slice, width, ROWS_PER_TASK)
         .map(|chunk| {
             let mut local_hist = vec![0_usize; num_bins];
             for &pixel in chunk {
@@ -128,13 +124,11 @@ mod tests {
     fn test_compute_histogram_empty_image() -> Result<(), ImageError> {
         for (width, height) in [(0, 5), (5, 0), (0, 0)] {
             let image = Image::<u8, 1>::new(ImageSize { width, height }, vec![])?;
-            let mut histogram = vec![0; 4];
+            let mut histogram = vec![7; 4];
 
             let result = super::compute_histogram(&image, &mut histogram, 4);
-            assert!(
-                matches!(result, Err(ImageError::EmptyImage(w, h)) if w == width && h == height)
-            );
-            assert_eq!(histogram, vec![0; 4]);
+            assert!(result.is_ok(), "case {width}x{height}: got {result:?}");
+            assert_eq!(histogram, vec![7; 4], "case {width}x{height}");
         }
 
         Ok(())
