@@ -15,7 +15,7 @@ This handbook provides an easy-to-read, comprehensive comparison between `kornia
 ```
 1. Filter Operations     [████████████████░░░░] 83%  (10 of 12 supported: 8 full, 2 partial)
 2. Geometric Operations  [███████████░░░░░░░░░] 57%  (4 of 7 supported: 3 full, 1 partial)
-3. Color / Hist / CLAHE  [█████████████████░░░] 86%  (19 of 22 supported: 17 full, 2 partial)
+3. Color / Hist / CLAHE  [███████████████░░░░░] 77%  (17 of 22 supported: 15 full, 2 partial)
 4. Feature Operations    [███░░░░░░░░░░░░░░░░░] 17%  (1 of 6 supported: 1 full)
 ```
 
@@ -159,7 +159,7 @@ python scripts/verify_cuda_coverage.py --check
 
 This script asserts that:
 * Every operation marked as ✅ or 🟡 has valid device implementations in `crates/kornia-imgproc/src/cuda/`.
-* Operations marked as ❌ (missing) have not been implemented without updating this audit.
+* Operations marked as ❌ (missing) are scanned and verified to ensure no matching CUDA kernels or modules exist in `crates/kornia-imgproc/src/cuda/`.
 * All top-level CUDA modules declared in `crates/kornia-imgproc/src/cuda/mod.rs` are represented.
 
 ### Update Checklist for PRs Touching CUDA

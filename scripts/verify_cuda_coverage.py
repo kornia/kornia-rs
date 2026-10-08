@@ -84,36 +84,81 @@ OP_SRC_MAP: dict[str, list[str]] = {
 
 
 def parse_audit_table(content: str) -> dict[str, str]:
-    """Parse markdown tables to extract operation -> status mapping accurately."""
+    """Parse markdown tables to extract operation -> status mapping via header column detection."""
     status_map: dict[str, str] = {}
+    current_op_col: int | None = None
+    current_status_col: int | None = None
 
     for line in content.splitlines():
-        if not line.startswith("|") or "---" in line or "Status" in line:
+        line = line.strip()
+        if not line.startswith("|"):
+            current_op_col = None
+            current_status_col = None
             continue
 
         parts = [p.strip() for p in line.split("|")[1:-1]]
-        if len(parts) < 3:
+        if not parts:
             continue
 
-        # Find status symbol in row
-        status_match = re.search(r"[✅🟡❌]", line)
-        if not status_match:
+        lower_parts = [p.lower() for p in parts]
+
+        # Detect table header row by matching column titles
+        if any("status" in p for p in lower_parts) and (
+            any("operation" in p for p in lower_parts) or any("module" in p for p in lower_parts)
+        ):
+            current_op_col = next(
+                (i for i, p in enumerate(lower_parts) if "operation" in p or "module" in p),
+                None,
+            )
+            current_status_col = next(
+                (i for i, p in enumerate(lower_parts) if "status" in p),
+                None,
+            )
             continue
-        status = status_match.group(0)
 
-        # In Chapter 3 (Color), column 0 is Subsystem and column 1 lists the operations.
-        # In all other chapters, column 0 contains the operation name (e.g. `**`box_blur`**`).
-        col0_ops = re.findall(r"`([a-zA-Z0-9_]+)`", parts[0])
-        col1_ops = re.findall(r"`([a-zA-Z0-9_]+)`", parts[1])
+        # Skip markdown table divider row (e.g. |---|:---:|)
+        if all(re.match(r"^:?-+:?$", p) for p in parts):
+            continue
 
-        if col0_ops:
-            for op in col0_ops:
-                status_map[op] = status
-        elif col1_ops:
-            for op in col1_ops:
-                status_map[op] = status
+        # Parse data row using detected header column indices
+        if (
+            current_op_col is not None
+            and current_status_col is not None
+            and current_op_col < len(parts)
+            and current_status_col < len(parts)
+        ):
+            status_match = re.search(r"[✅🟡❌]", parts[current_status_col])
+            if status_match:
+                status = status_match.group(0)
+                ops = re.findall(r"`([a-zA-Z0-9_]+)`", parts[current_op_col])
+                for op in ops:
+                    status_map[op] = status
 
     return status_map
+
+
+def find_implemented_cuda_artifacts(op: str) -> list[str]:
+    """Scan crates/kornia-imgproc/src/cuda/ for unexpected implementations of an op."""
+    found: list[str] = []
+
+    # 1. Check for filename matches (e.g., flip.rs, flip_u8.rs)
+    for pattern in (f"{op}.rs", f"{op}_*.rs", f"*_{op}.rs"):
+        for path in CUDA_SRC.glob(f"**/{pattern}"):
+            found.append(str(path.relative_to(CUDA_SRC)))
+
+    # 2. Check for public functions/modules inside Rust source files in src/cuda/
+    fn_pattern = re.compile(rf"\bpub\s+(?:fn|mod)\s+{re.escape(op)}\b")
+    for rs_file in CUDA_SRC.glob("**/*.rs"):
+        try:
+            code = rs_file.read_text(encoding="utf-8")
+            if fn_pattern.search(code):
+                rel = str(rs_file.relative_to(CUDA_SRC))
+                if rel not in found:
+                    found.append(f"{rel}::{op}")
+        except Exception:
+            pass
+
+    return found
 
 
 def verify_coverage(strict: bool = False) -> int:
@@ -157,16 +202,24 @@ def verify_coverage(strict: bool = False) -> int:
                     f"Status {status} for '{op}': expected one of {expected_files} to exist in {CUDA_SRC}"
                 )
         elif status == "❌":
-            # If marked ❌, assert it has no implemented CUDA files mapped
+            # Assert no expected files mapped
             if expected_files:
                 errors.append(
                     f"Operation '{op}' marked as ❌ (missing) in audit, but mapped to implemented files {expected_files}"
                 )
+            # Scan crates/kornia-imgproc/src/cuda/ to enforce that it is indeed not implemented
+            unexpected = find_implemented_cuda_artifacts(op)
+            if unexpected:
+                errors.append(
+                    f"Operation '{op}' marked as ❌ in audit, but unexpected CUDA artifacts were found: {unexpected}"
+                )
 
-    # 2. Check that all declared operations in audit are present in OP_SRC_MAP
-    for audited_op in status_map:
-        if audited_op not in OP_SRC_MAP:
-            errors.append(f"Audited operation '{audited_op}' is not registered in OP_SRC_MAP")
+    # 2. Check that all declared operations in audit are registered in OP_SRC_MAP (PERF401)
+    errors.extend(
+        f"Audited operation '{audited_op}' is not registered in OP_SRC_MAP"
+        for audited_op in status_map
+        if audited_op not in OP_SRC_MAP
+    )
 
     # 3. Check that top-level CUDA modules in src/cuda/mod.rs are accounted for
     cuda_mod_path = CUDA_SRC / "mod.rs"
