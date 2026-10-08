@@ -136,52 +136,89 @@ impl MemoryResource for GstResource {
     }
 }
 
-/// Construct a borrowed [`Image`] backed by a GStreamer [`MappedBuffer`].
+/// Construct an RGB [`Image`] from a GStreamer [`MappedBuffer`].
+///
+/// GStreamer may pad every row so that it starts on an aligned address. For RGB, a row of
+/// `width * 3` bytes is rounded up to a multiple of 4, so an 854-pixel row is 2564 bytes in the
+/// buffer instead of 2562. `stride` is the real row length in bytes and `offset` is where the
+/// first row starts, both taken from the frame's `VideoMeta` or `VideoInfo`.
+///
+/// When the rows are already tightly packed (`offset == 0` and `stride == width * 3`) the
+/// image borrows the GStreamer buffer without copying. Otherwise the pixels of each row are
+/// copied into a new packed image and the padding bytes are skipped.
 ///
 /// # Arguments
 ///
 /// * `size` - image dimensions.
-/// * `mapped_buffer` - the read-mapped GStreamer buffer; ownership is transferred
-///   into a [`GstResource`] keepalive that is Arc-shared with the tensor's `ForeignResource`.
+/// * `stride` - number of bytes between the start of two consecutive rows in the buffer.
+/// * `offset` - byte offset of the first row in the buffer.
+/// * `mapped_buffer` - the read-mapped GStreamer buffer. In the zero-copy case its ownership
+///   moves into a [`GstResource`] keepalive that is Arc-shared with the tensor's
+///   `ForeignResource`.
 ///
 /// # Returns
 ///
-/// An `Image<u8, 3>` whose memory is the GStreamer buffer.
-/// The buffer remains live (and the pointer valid) for exactly the lifetime of the
-/// returned `Image`; dropping the `Image` releases the buffer ref exactly once.
+/// An `Image<u8, 3>` with tightly packed rows.
 ///
-/// # Safety
+/// # Errors
 ///
-/// The caller must ensure the pointer has not been aliased as mutable elsewhere.
+/// Returns [`StreamCaptureError::InvalidImageFormat`] if `stride` is smaller than one row of
+/// pixels or the size overflows, and [`StreamCaptureError::BufferSizeMismatch`] if the buffer
+/// is too small to hold `size.height` rows with the given `stride` and `offset`.
 pub(crate) fn image_from_gst_buffer(
     size: kornia_image::ImageSize,
+    stride: usize,
+    offset: usize,
     mapped_buffer: gstreamer::buffer::MappedBuffer<gstreamer::buffer::Readable>,
-) -> Result<kornia_image::Image<u8, 3>, crate::stream::error::StreamCaptureError> {
-    // Capture pointer and length BEFORE moving mapped_buffer into GstResource.
-    let data_ptr: *const u8 = mapped_buffer.as_ptr();
-    let data_len: usize = mapped_buffer.len();
-
-    // Defense-in-depth: verify the buffer is large enough for an RGB24 frame.
-    // The pipeline normally enforces RGB caps, but a misconfigured or non-RGB
-    // pipeline would silently produce out-of-bounds stride-based access otherwise.
-    let expected_len = size
-        .width
-        .checked_mul(size.height)
-        .and_then(|n| n.checked_mul(3))
-        .ok_or_else(|| {
-            crate::stream::error::StreamCaptureError::InvalidImageFormat(format!(
-                "frame dimensions overflow: {}x{}",
-                size.width, size.height
-            ))
-        })?;
-    if data_len < expected_len {
-        return Err(
-            crate::stream::error::StreamCaptureError::BufferSizeMismatch {
-                expected: expected_len,
-                got: data_len,
-            },
-        );
+) -> Result<kornia_image::Image<u8, 3>, StreamCaptureError> {
+    let row_bytes = size.width.checked_mul(3).ok_or_else(|| {
+        StreamCaptureError::InvalidImageFormat(format!(
+            "frame dimensions overflow: {}x{}",
+            size.width, size.height
+        ))
+    })?;
+    if stride < row_bytes {
+        return Err(StreamCaptureError::InvalidImageFormat(format!(
+            "row stride {stride} is smaller than width * 3 = {row_bytes}"
+        )));
     }
+
+    // Bytes needed to read every row: all rows but the last are a full stride, the last row
+    // only needs its pixels (GStreamer may omit the trailing padding).
+    let required_len = match size.height.checked_sub(1) {
+        None => 0,
+        Some(last_row) => last_row
+            .checked_mul(stride)
+            .and_then(|n| n.checked_add(row_bytes))
+            .and_then(|n| n.checked_add(offset))
+            .ok_or_else(|| {
+                StreamCaptureError::InvalidImageFormat(format!(
+                    "frame layout overflows: {}x{} with stride {stride}",
+                    size.width, size.height
+                ))
+            })?,
+    };
+    let data_len = mapped_buffer.len();
+    if data_len < required_len {
+        return Err(StreamCaptureError::BufferSizeMismatch {
+            expected: required_len,
+            got: data_len,
+        });
+    }
+
+    if offset != 0 || stride != row_bytes {
+        let packed = pack_rows(
+            mapped_buffer.as_slice(),
+            offset,
+            stride,
+            row_bytes,
+            size.height,
+        );
+        return Image::<u8, 3>::new(size, packed).map_err(StreamCaptureError::ImageError);
+    }
+
+    // Capture the pointer BEFORE moving mapped_buffer into GstResource.
+    let data_ptr: *const u8 = mapped_buffer.as_ptr();
 
     // Move the MappedBuffer into a GstResource; its Drop releases the buffer.
     let resource = GstResource {
@@ -191,14 +228,36 @@ pub(crate) fn image_from_gst_buffer(
 
     // SAFETY:
     // - `data_ptr` is non-null as GStreamer sysmem buffers are always non-null.
-    // - We verified `data_len >= expected_len` above, preventing out-of-bounds reads.
+    // - The rows are tightly packed (offset 0, stride == width * 3) and we verified
+    //   `data_len >= width * height * 3` above, preventing out-of-bounds reads.
     // - `keepalive` (GstResource) holds the map alive for the lifetime of the Image.
     let image = unsafe {
         Image::<u8, 3>::from_borrowed_host_readonly(size, data_ptr, keepalive)
-            .map_err(crate::stream::error::StreamCaptureError::ImageError)?
+            .map_err(StreamCaptureError::ImageError)?
     };
 
     Ok(image)
+}
+
+/// Copies `height` rows of `row_bytes` bytes out of a padded buffer into a packed `Vec`.
+///
+/// Row `i` starts at `offset + i * stride` in `data`; the `stride - row_bytes` padding bytes
+/// after each row are skipped. The caller must have checked that `data` holds every row.
+fn pack_rows(
+    data: &[u8],
+    offset: usize,
+    stride: usize,
+    row_bytes: usize,
+    height: usize,
+) -> Vec<u8> {
+    if height == 0 || row_bytes == 0 {
+        return Vec::new();
+    }
+    let mut packed = Vec::with_capacity(row_bytes * height);
+    for row in data[offset..].chunks(stride).take(height) {
+        packed.extend_from_slice(&row[..row_bytes]);
+    }
+    packed
 }
 
 #[cfg(test)]
@@ -336,30 +395,81 @@ mod tests {
         Ok(())
     }
 
-    /// Validates the buffer-size guard arithmetic used in `image_from_gst_buffer`.
-    ///
-    /// A real `MappedBuffer<Readable>` requires a live GStreamer pipeline and cannot
-    /// be constructed in a pure unit test, so this test asserts the validation formula
-    /// `expected = width * height * 3` for representative boundary values.
+    /// `pack_rows` must drop the padding after every row and keep the pixel bytes in order.
     #[test]
-    fn gst_buffer_size_validation_arithmetic() {
-        // expected bytes for an RGB24 frame of various sizes
-        assert_eq!(8usize * 4 * 3, 96, "8x4 RGB24 = 96 bytes");
-        assert_eq!(640usize * 480 * 3, 921_600, "640x480 RGB24 = 921600 bytes");
+    fn pack_rows_skips_row_padding() {
+        // 2x3 RGB image: 6 pixel bytes per row, padded to a stride of 8, starting at offset 1.
+        let data: Vec<u8> = vec![
+            99, // offset byte before the first row
+            1, 2, 3, 4, 5, 6, 0, 0, // row 0 + 2 padding bytes
+            7, 8, 9, 10, 11, 12, 0, 0, // row 1 + 2 padding bytes
+            13, 14, 15, 16, 17, 18, // row 2, no trailing padding
+        ];
+        let packed = super::pack_rows(&data, 1, 8, 6, 3);
+        assert_eq!(packed, (1..=18).collect::<Vec<u8>>());
+
+        // Tightly packed rows come back unchanged.
+        let tight: Vec<u8> = (0..12).collect();
+        assert_eq!(super::pack_rows(&tight, 0, 6, 6, 2), tight);
+
+        // Zero rows or zero-width rows produce an empty buffer instead of panicking.
+        assert!(super::pack_rows(&[], 5, 0, 0, 0).is_empty());
+    }
+
+    /// Regression test for #1160: for widths where `width * 3` is not a multiple of 4,
+    /// GStreamer pads every RGB row. Reading the frame as if it were tightly packed shears
+    /// it, so each row ends up shifted further than the one above it.
+    ///
+    /// `videotestsrc` paints the default SMPTE pattern: the top part of the frame is vertical
+    /// colour bars, so every row in the top half must be identical to row 0.
+    #[test]
+    fn capture_unaligned_width_is_not_sheared() -> Result<(), Box<dyn std::error::Error>> {
+        const WIDTH: usize = 854; // 854 * 3 = 2562 bytes, padded to a 2564-byte stride
+        const HEIGHT: usize = 480;
+
+        if !gstreamer::INITIALIZED.load(std::sync::atomic::Ordering::Relaxed) {
+            gstreamer::init()?;
+        }
+
+        let pipeline_desc = format!(
+            "videotestsrc num-buffers=1 pattern=smpte ! \
+             video/x-raw,format=RGB,width={WIDTH},height={HEIGHT},framerate=30/1 ! \
+             appsink name=sink sync=false"
+        );
+        let mut capture = StreamCapture::new(&pipeline_desc)?;
+        capture.start()?;
+
+        let mut frame = None;
+        for _ in 0..200 {
+            if let Some(image) = capture.grab_rgb8()? {
+                frame = Some(image);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        capture.close()?;
+        let image = frame.ok_or("no frame received from videotestsrc")?;
+
+        assert_eq!(image.width(), WIDTH);
+        assert_eq!(image.height(), HEIGHT);
+        let data = image.as_slice();
         assert_eq!(
-            1920usize * 1080 * 3,
-            6_220_800,
-            "1920x1080 RGB24 = 6220800 bytes"
+            data.len(),
+            WIDTH * HEIGHT * 3,
+            "rows must be tightly packed"
         );
-        // A buffer smaller than the expected size must be rejected.
-        // The actual rejection is inside image_from_gst_buffer; this test
-        // documents the check boundary: expected-1 < expected → rejected.
-        let width = 8usize;
-        let height = 4usize;
-        let expected = width * height * 3;
+
+        let row_bytes = WIDTH * 3;
+        let row0 = &data[..row_bytes];
+        // Sanity check: the bars make row 0 non-uniform, so a shifted row cannot match it.
         assert!(
-            (expected - 1) < expected,
-            "a buffer of size expected-1 is strictly smaller than expected"
+            row0.iter().any(|&b| b != row0[0]),
+            "row 0 has no colour bars"
         );
+        for y in 1..HEIGHT / 2 {
+            let row = &data[y * row_bytes..(y + 1) * row_bytes];
+            assert!(row == row0, "row {y} differs from row 0: frame is sheared");
+        }
+        Ok(())
     }
 }

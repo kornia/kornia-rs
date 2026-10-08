@@ -10,6 +10,10 @@ struct FrameBuffer {
     buffer: gstreamer::Buffer,
     width: i32,
     height: i32,
+    /// Bytes between the start of two consecutive rows, including any padding.
+    stride: usize,
+    /// Byte offset of the first row in the buffer.
+    offset: usize,
 }
 
 /// A enum representing the state of [VideoReader] pipeline.
@@ -147,20 +151,23 @@ impl StreamCapture {
         // unpack the frame buffer
         let width = frame_buffer.width;
         let height = frame_buffer.height;
+        let stride = frame_buffer.stride;
+        let offset = frame_buffer.offset;
         let buffer = frame_buffer.buffer;
 
         let mapped_buffer = buffer
             .into_mapped_buffer_readable()
             .map_err(|_| StreamCaptureError::GetBufferError)?;
 
-        // Construct a zero-copy Image backed by the GStreamer buffer.
-        // `GstResource` keeps the MappedBuffer (and thus the Buffer ref-count) alive
-        // for exactly the lifetime of the returned Image — no unsafe ptr arithmetic here.
+        // Zero-copy when the rows are tightly packed; otherwise the padded rows are copied
+        // into a packed image. See `image_from_gst_buffer`.
         let image = image_from_gst_buffer(
             ImageSize {
                 width: width as usize,
                 height: height as usize,
             },
+            stride,
+            offset,
             mapped_buffer,
         )?;
 
@@ -219,13 +226,69 @@ impl StreamCapture {
             .buffer_owned()
             .ok_or_else(|| StreamCaptureError::GetBufferError)?;
 
+        let (stride, offset) = Self::first_plane_layout(caps, &buffer)?;
+
         let frame_buffer = FrameBuffer {
             buffer,
             width,
             height,
+            stride,
+            offset,
         };
 
         Ok((frame_buffer, fps))
+    }
+
+    /// Returns the row stride and start offset, in bytes, of the first plane of a frame.
+    ///
+    /// GStreamer pads rows to an aligned length (for RGB, `width * 3` rounded up to a multiple
+    /// of 4), so the stride can be larger than `width * 3`. A `VideoMeta` attached to the
+    /// buffer describes the actual layout when the producer used a non-default one; otherwise
+    /// the default layout for the caps applies.
+    ///
+    /// # Arguments
+    ///
+    /// * `caps` - The caps of the sample the buffer came from.
+    /// * `buffer` - The frame buffer.
+    ///
+    /// # Returns
+    ///
+    /// A `(stride, offset)` tuple in bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StreamCaptureError::GetCapsError`] if the caps are not raw video caps, and
+    /// [`StreamCaptureError::InvalidImageFormat`] if the frame has no planes or the stride is
+    /// negative (bottom-up rows).
+    fn first_plane_layout(
+        caps: &gstreamer::CapsRef,
+        buffer: &gstreamer::Buffer,
+    ) -> Result<(usize, usize), StreamCaptureError> {
+        let (stride, offset) = match buffer.meta::<gstreamer_video::VideoMeta>() {
+            Some(meta) => (
+                meta.stride().first().copied(),
+                meta.offset().first().copied(),
+            ),
+            None => {
+                let info = gstreamer_video::VideoInfo::from_caps(caps)
+                    .map_err(|e| StreamCaptureError::GetCapsError(e.to_string()))?;
+                (
+                    info.stride().first().copied(),
+                    info.offset().first().copied(),
+                )
+            }
+        };
+        let (Some(stride), Some(offset)) = (stride, offset) else {
+            return Err(StreamCaptureError::InvalidImageFormat(
+                "video frame has no planes".to_string(),
+            ));
+        };
+        let stride = usize::try_from(stride).map_err(|_| {
+            StreamCaptureError::InvalidImageFormat(format!(
+                "negative row stride {stride} is not supported"
+            ))
+        })?;
+        Ok((stride, offset))
     }
 }
 
