@@ -21,6 +21,10 @@ name = "bench_twoview"
 
 [[bench]]
 harness = false
+name = "bench_fundamental"
+
+[[bench]]
+harness = false
 name = "bench_stereo_match"
 
 [dependencies]

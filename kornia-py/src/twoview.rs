@@ -231,6 +231,7 @@ impl PyFundamental8ptSolver {
                     threshold,
                     min_inliers,
                     random_seed: seed,
+                    confidence: None,
                     refit,
                 },
             },
@@ -304,6 +305,7 @@ impl PyEssentialNister5ptSolver {
                     threshold,
                     min_inliers,
                     random_seed: seed,
+                    confidence: None,
                     refit,
                 },
             },
@@ -487,6 +489,7 @@ impl PyTwoViewEstimator {
             threshold: homography_threshold,
             min_inliers: homography_min_inliers,
             random_seed: seed,
+            confidence: None,
             refit: true,
         };
         let triangulation = TriangulationConfig {
@@ -629,6 +632,7 @@ pub fn two_view_estimate_py(
         threshold: ransac_threshold,
         min_inliers: min_inliers_f,
         random_seed: seed,
+        confidence: None,
         refit: true,
     };
     let ransac_h = RansacParams {
@@ -636,6 +640,7 @@ pub fn two_view_estimate_py(
         threshold: ransac_threshold,
         min_inliers: min_inliers_h,
         random_seed: seed,
+        confidence: None,
         refit: true,
     };
     let triangulation = TriangulationConfig {
