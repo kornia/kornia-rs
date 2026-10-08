@@ -142,11 +142,31 @@ struct Args {
     wide_baseline: usize,
 }
 
+/// Validate CLI values that must be positive.
+///
+/// `--frame-step 0` otherwise reaches `video::read_frames`'s `assert!` and
+/// panics (a backtrace hint, not a CLI error); `--match-window 0` produces zero
+/// frame pairs and only fails later with an opaque bootstrap error. Reject both
+/// up front.
+fn validate_positive_args(frame_step: usize, match_window: usize) -> Result<(), String> {
+    if frame_step == 0 {
+        return Err("--frame-step must be >= 1".into());
+    }
+    if match_window == 0 {
+        return Err("--match-window must be >= 1".into());
+    }
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Args = argh::from_env();
 
     // Configure the rayon thread pool (0 = auto-detect).
     features::configure_thread_pool(args.threads)?;
+
+    // Reject zero values up front rather than panicking deep in the pipeline.
+    validate_positive_args(args.frame_step, args.match_window)
+        .map_err(|e| -> Box<dyn Error> { e.into() })?;
 
     // 1. Decode frames.
     eprintln!("[1/6] reading video: {}", args.video.display());
@@ -379,4 +399,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_positive_args_rejects_zero() {
+        assert!(validate_positive_args(1, 5).is_ok());
+        assert!(validate_positive_args(10, 1).is_ok());
+        assert!(validate_positive_args(0, 5).is_err(), "frame-step 0");
+        assert!(validate_positive_args(1, 0).is_err(), "match-window 0");
+        assert!(validate_positive_args(0, 0).is_err());
+    }
 }
