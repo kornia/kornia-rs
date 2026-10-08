@@ -1,0 +1,23 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# Repository overrides on top of the kornia organization settings in the
+# CodeRabbit UI. Without `inheritance`, this file would replace them.
+inheritance: true
+reviews:
+  pre_merge_checks:
+    # The built-in check counts every function a diff touches, tests
+    # included, and cannot exclude any. The custom check below keeps its
+    # 80% threshold for everything except test code.
+    docstrings:
+      mode: "off"
+    custom_checks:
+      - name: "Docstring coverage (non-test code)"
+        mode: "warning"
+        instructions: |
+          Count the functions and methods that this pull request adds or modifies, excluding test code.
+          Test code is: Rust functions marked #[test] or another test attribute, any item inside a
+          #[cfg(test)] module, any file under a tests/ directory, and Python files named test_*.py,
+          *_test.py or conftest.py.
+          A counted function is documented if it has a doc comment (/// or //! in Rust) or a
+          docstring (Python).
+          Pass if no functions are counted or at least 80% of the counted functions are documented.
+          Otherwise fail and list the undocumented counted functions.
