@@ -13,6 +13,25 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
 
 ## [Unreleased]
 
+**Sparse stereo matching in `kornia-3d`** (`kornia_3d::stereo::StereoMatcher`), the step after
+`StereoRectifier`: per-left-keypoint disparity and metric depth for a rectified pair, with a CUDA
+twin behind the `cuda` feature.
+- ORB-SLAM3's `ComputeStereoMatches`, generalised over the descriptor: binary (Hamming, e.g. ORB)
+  or `f32` (dot product, e.g. XFeat). Optional pyramid octaves with the per-octave row band and
+  ±1 octave gate; centred-SAD sub-pixel refinement; median outlier reject.
+- Sub-pixel fit defaults to `SubPixelFit::Equiangular`, which cut the mean disparity error from
+  0.065 to 0.042 px against ORB-SLAM3's parabola on a synthetic pair; `Parabola` is kept for parity.
+- The right search window is bounds-checked on both sides (ORB-SLAM3 checks one, which a detector
+  firing near the image border turns into an out-of-bounds read).
+- The median reject keeps zero-SAD matches; ORB-SLAM3's `sad >= 2.1 * median` drops every match
+  when the median is 0 (byte-identical patches). The octave gate applies whenever either side
+  carries octaves.
+- `StereoMatcher::to_cuda` → `CudaStereoMatcher::match_device`: device keypoints in, device
+  matches out, no host sync; the keypoint count may live on the device. Output is bit-identical to
+  the CPU path (tested), including the median reject.
+- 752x480, 2048 keypoints, Orin Nano MAXN: CUDA 287 µs (binary) / 410 µs (f32); CPU 3.0 / 3.8 ms on
+  6 threads, 10.5 / 13.8 ms on one. `cargo bench -p kornia-3d --bench bench_stereo_match --features cuda`.
+
 ## [0.2.0] — 2026-09-26
 
 **0.2.0 is 0.1.15 re-released under the right version.** 0.1.15 shipped breaking API changes as a
