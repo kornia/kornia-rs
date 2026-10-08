@@ -271,11 +271,15 @@ fn match_pair(
     if let (Some(d1), Some(d2)) = (&a.descriptors_orb, &b.descriptors_orb) {
         return match_descriptors::<32>(d1, d2, None, true, Some(ratio));
     }
-    // SIFT on device (avoids a host round-trip when --cuda is used).
+    // SIFT on device (avoids a host round-trip when --cuda is used). Use the
+    // keypoint count, not the buffer length: the descriptor block may have
+    // spare rows (capacity/padding), and the matcher could then return an index
+    // >= keypoints.len(), which panics when we look up features[i].keypoints.
+    // The host path uses the same count.
     if let (Some(c1), Some(c2), Some(m)) =
         (&a.descriptors_sift_cuda, &b.descriptors_sift_cuda, cuda)
     {
-        return m.match_pair(c1, c1.len() / 128, c2, c2.len() / 128, ratio);
+        return m.match_pair(c1, a.n_keypoints(), c2, b.n_keypoints(), ratio);
     }
     // SIFT on host: L2 matching with ratio test + mutual NN.
     if let (Some(d1), Some(d2)) = (&a.descriptors_sift, &b.descriptors_sift) {
