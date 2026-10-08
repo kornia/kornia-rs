@@ -15220,6 +15220,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "sfm"
+version = "0.2.0"
+dependencies = [
+ "argh",
+ "cudarc 0.19.9",
+ "kiddo",
+ "kornia-3d",
+ "kornia-algebra",
+ "kornia-calib",
+ "kornia-image",
+ "kornia-imgproc",
+ "kornia-io",
+ "rayon",
+ "rerun",
+ "tempfile",
+]
+
+[[package]]
 name = "sha-1"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
