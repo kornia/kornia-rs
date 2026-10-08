@@ -189,6 +189,8 @@ Err(KorniaError::SizeMismatch {
 - Do not clone images or tensors unnecessarily — pass references
 - Benchmark before and after any change to a core algorithm using `cargo bench`
 - **SIMD / cross-arch work in `kornia-imgproc`**: see [`crates/kornia-imgproc/SIMD.md`](crates/kornia-imgproc/SIMD.md) for the dispatch pattern, cross-arch testing setup (qemu + tonistiigi/binfmt on aarch64 hosts), correctness-vs-scalar harness, benchmark methodology (best-of-N rounds), and common gotchas (qemu overhead, `is_x86_feature_detected!` compile-time behavior, rayon row-chunking).
+- **CUDA backend coverage in `kornia-imgproc`**: see [`docs/CUDA_COVERAGE_AUDIT.md`](docs/CUDA_COVERAGE_AUDIT.md) for the CPU-vs-CUDA parity matrix and implementation roadmap. When adding or modifying CUDA kernels, agents must follow the verification protocol and keep [`docs/CUDA_COVERAGE_AUDIT.md`](docs/CUDA_COVERAGE_AUDIT.md) updated.
+
 
 ---
 
@@ -236,4 +238,5 @@ Follow [Conventional Commits](https://www.conventionalcommits.org)
 - [ ] Every `unsafe` block has a `// SAFETY:` comment
 - [ ] No `unwrap()`/`expect()` added to library code
 - [ ] New functionality has unit tests; bug fixes have regression tests
+- [ ] If CUDA kernels or ops were added/modified, updated [`docs/CUDA_COVERAGE_AUDIT.md`](docs/CUDA_COVERAGE_AUDIT.md)
 - [ ] Commit messages follow Conventional Commits

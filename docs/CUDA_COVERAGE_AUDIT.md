@@ -126,6 +126,51 @@ Feature algorithms live in [`crates/kornia-imgproc/src/features/`](file:///c:/Us
 
 ---
 
+## 🔄 Maintenance & Verification Protocol (For Agents & Contributors)
+
+To prevent this audit from becoming stale and to guide future contributors and AI agents when implementing or extending CUDA kernels, follow this standardized verification protocol.
+
+### The 4-Layer Verification Rubric
+
+Before updating an operation's status in this document, verify its implementation across all four layers:
+
+1. **Rust Device Kernel**:
+   * Inspect [`crates/kornia-imgproc/src/cuda/`](file:///c:/Users/dkhan/Desktop/kornia-rs/crates/kornia-imgproc/src/cuda) and subsystem folders (e.g. `color/`, `sift/`).
+   * Verify the NVRTC kernel string or device launch function (e.g. `crates/kornia-imgproc/src/<module>/cuda.rs`) is compiled and registered under `#[cfg(feature = "cuda")]`.
+2. **Residency Dispatch**:
+   * Inspect the public API entry points in [`crates/kornia-imgproc/src/`](file:///c:/Users/dkhan/Desktop/kornia-rs/crates/kornia-imgproc/src/).
+   * Verify that device memory triggers the GPU launcher (via `try_device!` residency macro or device tensor dispatch) instead of falling back to CPU host copies.
+3. **Python Bindings & Type Stubs**:
+   * Inspect [`kornia-py/src/cuda_ext/`](file:///c:/Users/dkhan/Desktop/kornia-rs/kornia-py/src/cuda_ext) for PyO3 module bindings.
+   * Verify type annotations exist in [`kornia-py/python/kornia_rs/cuda.pyi`](file:///c:/Users/dkhan/Desktop/kornia-rs/kornia-py/python/kornia_rs/cuda.pyi).
+4. **Numerical Parity Tests**:
+   * Run device tests: `pixi run rust-test-cuda` or `cargo test --features cuda`.
+   * Check Python parity test suites in [`kornia-py/tests/`](file:///c:/Users/dkhan/Desktop/kornia-rs/kornia-py/tests) (`test_cuda_*.py`) comparing device results with CPU implementations or OpenCV within precision tolerances (`atol` / `rtol`).
+
+### Automated Verification Script
+
+Run the automated verification script to cross-reference this document with the repository's codebase:
+
+```bash
+python scripts/verify_cuda_coverage.py --check
+```
+
+This script asserts that:
+* Every operation marked as ✅ or 🟡 has valid device implementations in `crates/kornia-imgproc/src/cuda/`.
+* Operations marked as ❌ (missing) have not been implemented without updating this audit.
+* All top-level CUDA modules declared in `crates/kornia-imgproc/src/cuda/mod.rs` are represented.
+
+### Update Checklist for PRs Touching CUDA
+
+Whenever a PR adds or modifies a CUDA kernel:
+
+- [ ] **Update Matrix Status**: Change status symbols (`❌` $\to$ `🟡` $\to$ `✅`) and document supported types/channels in the respective Chapter table.
+- [ ] **Update Progress Bars**: Recalculate supported counts and percentage bars in the [Executive Dashboard](#-executive-dashboard).
+- [ ] **Update Playbook**: If the PR closes an issue in the [Implementation Playbook](#%EF%B8%8F-implementation-playbook-top-4-gap-issues-to-file--solve), mark it completed and nominate the next candidate gap.
+- [ ] **Run Linter**: Run `python scripts/verify_cuda_coverage.py --check` to ensure no drift.
+
+---
+
 ## 🛠️ Implementation Playbook: Top 4 Gap Issues to File & Solve
 
 If you want to contribute code after this audit, here are the 4 best bite-sized issues ranked by difficulty:
