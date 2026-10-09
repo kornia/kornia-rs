@@ -3,8 +3,8 @@ use pyo3::prelude::*;
 
 use kornia_3d::pose::{
     fundamental_8point as fundamental_8point_fn, homography_dlt as homography_dlt_fn,
-    ransac_fundamental as ransac_fundamental_fn, ransac_homography as ransac_homography_fn,
-    RansacParams,
+    ransac_fundamental as ransac_fundamental_fn, ransac_fundamental_8point,
+    ransac_homography as ransac_homography_fn, RansacParams,
 };
 
 use crate::pyutils::{mask_to_py, mat3_to_py, unpack_pts};
@@ -150,6 +150,7 @@ pub fn find_homography_py(
                 threshold: ransac_threshold,
                 min_inliers,
                 random_seed: seed,
+                confidence: None,
                 refit: true,
             };
             let res = py
@@ -171,25 +172,40 @@ pub fn find_homography_py(
 
 /// Estimate a fundamental matrix between two point sets — cv2.findFundamentalMat-style.
 ///
-/// Args:
-///     pts1: `(N, 2)` float64 source points (N ≥ 8).
+/// # Arguments
+///     pts1: `(N, 2)` float64 source points (N ≥ 7 for RANSAC, N ≥ 8 for DLT).
 ///     pts2: `(N, 2)` float64 destination points (same length as pts1).
 ///     method: `0` for direct 8-point DLT (least-squares over all points, no
 ///             outlier rejection), `8` (alias for `cv2.FM_RANSAC`) for RANSAC
-///             on the 8-point solver with Sampson-distance inlier scoring.
+///             on the selected minimal solver with Sampson-distance inlier scoring.
 ///     ransac_threshold: inlier Sampson-distance threshold in pixels (RANSAC only).
 ///     max_iterations: RANSAC iteration cap.
-///     min_inliers: minimum inliers required for a valid RANSAC fit.
+///     confidence: probability of sampling an all-inlier minimal set (RANSAC
+///                 only; default 0.9999).
+///     min_inliers: minimum inliers required for a valid RANSAC fit (default 8);
+///                  set to 7 when passing exactly seven matches with solver="7point".
 ///     seed: optional RNG seed for deterministic RANSAC runs.
+///     solver: "7point" (default; minimal solutions violating the oriented
+///             epipolar constraint are skipped) or "8point" for RANSAC;
+///             method=0 uses 8-point DLT.
 ///
-/// Returns:
+/// # Returns
 ///     `(F, inlier_mask)` where:
 ///     * `F` — `(3, 3)` float64 row-major fundamental matrix satisfying
 ///       `x2ᵀ · F · x1 = 0` for corresponding points.
 ///     * `inlier_mask` — `(N,)` uint8; for method=0 it's all-ones; for RANSAC
 ///       it's 1 on inliers, 0 on outliers.
 ///
-/// Raises ValueError on singular/insufficient input or RANSAC failure.
+/// # Errors
+///
+/// Returns `ValueError` on singular/insufficient input, an unknown solver,
+/// or RANSAC failure.
+///
+/// # Example
+///
+/// ```python
+/// f, mask = kornia_rs.k3d.find_fundamental(pts1, pts2, method=8, solver="7point", seed=0)
+/// ```
 #[pyfunction(name = "find_fundamental")]
 #[pyo3(signature = (
     pts1,
@@ -199,6 +215,9 @@ pub fn find_homography_py(
     max_iterations=2000,
     min_inliers=8,
     seed=None,
+    *,
+    solver="7point",
+    confidence=0.9999,
 ))]
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn find_fundamental_py(
@@ -210,7 +229,18 @@ pub fn find_fundamental_py(
     max_iterations: usize,
     min_inliers: usize,
     seed: Option<u64>,
+    solver: &str,
+    confidence: f64,
 ) -> PyResult<(Py<PyArray2<f64>>, Py<PyArray1<u8>>)> {
+    let ransac_solver = match solver {
+        "7point" => ransac_fundamental_fn,
+        "8point" => ransac_fundamental_8point,
+        _ => {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "solver must be '7point' or '8point'",
+            ))
+        }
+    };
     if !pts1.is_c_contiguous() || !pts2.is_c_contiguous() {
         return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
             "point arrays must be C-contiguous",
@@ -236,15 +266,21 @@ pub fn find_fundamental_py(
             (f, vec![true; n])
         }
         METHOD_RANSAC => {
+            if !confidence.is_finite() || confidence <= 0.0 || confidence >= 1.0 {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "confidence must be finite and strictly between 0 and 1",
+                ));
+            }
             let params = RansacParams {
                 max_iterations,
                 threshold: ransac_threshold,
                 min_inliers,
                 random_seed: seed,
+                confidence: Some(confidence),
                 refit: false,
             };
             let res = py
-                .detach(|| ransac_fundamental_fn(&x1, &x2, &params))
+                .detach(|| ransac_solver(&x1, &x2, &params))
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("{}", e)))?;
             (res.model, res.inliers)
         }

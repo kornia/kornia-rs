@@ -37,11 +37,11 @@
 //!
 //! ## Solver choice
 //!
-//! Two epipolar solvers ship with this crate; the builder picks one:
-//! - [`Fundamental8ptSolver`] (default) — pixel-space normalization gets a clean
-//!   rotation null-space, and the 8-point linear solve is cheaper than 10-degree
-//!   polynomial root-finding × cheirality. The σ-equalization step bleeds noise
-//!   into the translation direction. Returns [`TwoViewModel::Fundamental`].
+//! Three epipolar solvers ship with this crate; the builder picks one:
+//! - [`Fundamental7ptSolver`] — seven-point pixel-space hypotheses,
+//!   scoring all real roots and refining with the eight-point solver. Returns
+//!   [`TwoViewModel::Fundamental`].
+//! - [`Fundamental8ptSolver`] (default) — the original eight-point sampling strategy.
 //! - [`EssentialNister5ptSolver`] — stays on the E manifold by construction (no
 //!   σ-projection round-trip), preserving translation-direction accuracy at the
 //!   cost of a slower per-sample polynomial solve. Returns
@@ -73,6 +73,7 @@
 
 #![allow(clippy::needless_range_loop)]
 
+use super::fundamental_7pt::fundamental_7point_oriented_into;
 use crate::pose::fundamental::{fundamental_8point, FundamentalError};
 use crate::pose::lm_pose::{fundamental_from_rt, refine_pose_lm, LmPoseConfig};
 use crate::pose::triangulation::{triangulate_inliers, TriangulateParams, TriangulationConfig};
@@ -80,6 +81,8 @@ use crate::pose::{
     decompose_essential, decompose_homography, enforce_essential_constraints, essential_5pt,
     essential_from_fundamental, homography_4pt2d, homography_dlt, HomographyError,
 };
+
+use crate::ransac::{adaptive_max_iters, sample_distinct_indices};
 use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64};
 use rand::prelude::*;
 use rand::SeedableRng;
@@ -96,6 +99,14 @@ pub enum TwoViewError {
     /// RANSAC failed to find a valid model.
     #[error("RANSAC failed to find a valid model")]
     RansacFailure,
+    /// Requested RANSAC confidence is outside the open unit interval.
+    #[error(
+        "RANSAC confidence must be finite and strictly between zero and one, got {confidence}"
+    )]
+    InvalidConfidence {
+        /// Invalid requested confidence.
+        confidence: f64,
+    },
     /// Two of the four E-decomposition candidates triangulate similar inlier
     /// counts (within `cheirality_ambiguity_max`), so the recovered pose is
     /// not uniquely determined — typical of pure-rotation, planar, or
@@ -136,10 +147,14 @@ pub struct RansacParams {
     pub min_inliers: usize,
     /// Optional RNG seed for deterministic runs.
     pub random_seed: Option<u64>,
+    /// Optional probability of sampling at least one all-inlier minimal set.
+    /// When `None`, each estimator family preserves its historical default:
+    /// 0.9999 for fundamental and essential estimation, 0.99 for homography.
+    pub confidence: Option<f64>,
     /// If true, after the main RANSAC loop refit the model across ALL inliers
     /// using a least-squares solver (LO-RANSAC). The refit is kept only if it
-    /// improves the inlier reprojection score. Only `ransac_homography` honors
-    /// this flag today; default is `false` for bit-identical backward compat.
+    /// improves the inlier reprojection score. Fundamental and homography
+    /// RANSAC honor this flag; default is `false` for backward compatibility.
     pub refit: bool,
 }
 
@@ -150,9 +165,40 @@ impl Default for RansacParams {
             threshold: 1.0,
             min_inliers: 15,
             random_seed: Some(0),
+            confidence: None,
             refit: false,
         }
     }
+}
+
+#[inline]
+fn ransac_confidence(params: &RansacParams, default: f64) -> Result<f64, TwoViewError> {
+    match params.confidence {
+        Some(confidence) if confidence.is_finite() && confidence > 0.0 && confidence < 1.0 => {
+            Ok(confidence)
+        }
+        Some(confidence) => Err(TwoViewError::InvalidConfidence { confidence }),
+        None => Ok(default),
+    }
+}
+
+#[inline]
+fn adaptive_ransac_cap(
+    inlier_count: usize,
+    population: usize,
+    sample_size: usize,
+    confidence: f64,
+    current_cap: usize,
+    completed: usize,
+) -> usize {
+    adaptive_max_iters(
+        inlier_count,
+        population,
+        sample_size,
+        confidence,
+        current_cap,
+    )
+    .max(completed)
 }
 
 /// Result of a RANSAC model fit.
@@ -202,7 +248,8 @@ pub struct EpipolarFit {
 
 /// Strategy for the epipolar arm of the F-vs-H race in [`TwoViewEstimator`].
 ///
-/// Two implementations ship in this crate:
+/// Three implementations ship in this crate:
+/// - [`Fundamental7ptSolver`] — seven-point F with eight-point refinement.
 /// - [`Fundamental8ptSolver`] — pixel-space 8-point F + (σ, σ, 0) lift to E.
 /// - [`EssentialNister5ptSolver`] — calibrated 5-point Nistér E (on-manifold).
 ///
@@ -230,6 +277,40 @@ pub struct Fundamental8ptSolver {
 }
 
 impl EpipolarSolver for Fundamental8ptSolver {
+    fn estimate(
+        &self,
+        x1: &[Vec2F64],
+        x2: &[Vec2F64],
+        k1: &Mat3F64,
+        k2: &Mat3F64,
+    ) -> Result<EpipolarFit, TwoViewError> {
+        let res = ransac_fundamental_8point(x1, x2, &self.ransac)?;
+        let f = res.model;
+        let e_raw = essential_from_fundamental(&f, k1, k2);
+        let e = enforce_essential_constraints(&e_raw).ok_or(TwoViewError::NumericalFailure)?;
+        Ok(EpipolarFit {
+            e,
+            model: TwoViewModel::Fundamental(f),
+            inliers: res.inliers,
+            inlier_count: res.inlier_count,
+            residual_threshold: self.ransac.threshold,
+        })
+    }
+}
+
+/// Seven-point fundamental matrix strategy with eight-point inlier refinement.
+///
+/// Opt in via [`TwoViewEstimatorBuilder::epipolar_solver`]. Hypotheses are fitted
+/// in pixel space, screened with the oriented epipolar constraint as in
+/// [`ransac_fundamental`], and the resulting fundamental matrix is lifted to
+/// the essential manifold using the supplied intrinsics.
+#[derive(Clone, Debug, Default)]
+pub struct Fundamental7ptSolver {
+    /// RANSAC parameters for the fundamental fit.
+    pub ransac: RansacParams,
+}
+
+impl EpipolarSolver for Fundamental7ptSolver {
     fn estimate(
         &self,
         x1: &[Vec2F64],
@@ -977,14 +1058,93 @@ fn count_cheirality_fast(
     count
 }
 
-/// Estimate a fundamental matrix with RANSAC using the 8-point solver.
+/// Estimate a fundamental matrix with seven-point RANSAC hypotheses.
+///
+/// Every real solution of a minimal sample that satisfies the oriented
+/// epipolar constraint on that sample is scored, as in DEGENSAC; the others
+/// cannot come from points in front of both cameras. Optional local
+/// refinement uses the eight-point solver on sets of at least eight inliers.
+///
+/// # Arguments
+///
+/// * `x1` - Pixel coordinates in the first image (at least seven points).
+/// * `x2` - Corresponding pixel coordinates in the second image.
+/// * `params` - Sampling budget, pixel threshold, minimum support, seed and refit flag.
+///
+/// # Returns
+///
+/// The best fundamental matrix, its inlier mask, count and Sampson score.
+///
+/// # Errors
+///
+/// Returns [`TwoViewError::InvalidInput`] for unequal lengths or fewer than
+/// seven matches, [`TwoViewError::InvalidConfidence`] if `params.confidence` is
+/// not finite and strictly between zero and one, or
+/// [`TwoViewError::RansacFailure`] if no model meets the requested minimum
+/// support.
+///
+/// # Example
+///
+/// ```
+/// use kornia_3d::pose::{ransac_fundamental, RansacParams};
+/// use kornia_algebra::Vec2F64;
+/// let x1 = vec![Vec2F64::ZERO; 6];
+/// assert!(ransac_fundamental(&x1, &x1, &RansacParams::default()).is_err());
+/// ```
 pub fn ransac_fundamental(
     x1: &[Vec2F64],
     x2: &[Vec2F64],
     params: &RansacParams,
 ) -> Result<RansacResult<Mat3F64>, TwoViewError> {
-    if x1.len() != x2.len() || x1.len() < 8 {
-        return Err(TwoViewError::InvalidInput { required: 8 });
+    ransac_fundamental_impl::<7>(x1, x2, params)
+}
+
+/// Estimate a fundamental matrix with the original eight-point RANSAC solver.
+///
+/// # Arguments
+///
+/// * `x1` - Pixel coordinates in the first image (at least eight points).
+/// * `x2` - Corresponding pixel coordinates in the second image.
+/// * `params` - Sampling budget, pixel threshold, minimum support, seed and refit flag.
+///
+/// # Returns
+///
+/// The best fundamental matrix, its inlier mask, count and Sampson score.
+///
+/// # Errors
+///
+/// Returns [`TwoViewError::InvalidInput`] for unequal lengths or fewer than
+/// eight matches, [`TwoViewError::InvalidConfidence`] if `params.confidence` is
+/// not finite and strictly between zero and one, or
+/// [`TwoViewError::RansacFailure`] if no model meets the requested minimum
+/// support.
+///
+/// # Example
+///
+/// ```
+/// use kornia_3d::pose::{ransac_fundamental_8point, RansacParams};
+/// use kornia_algebra::Vec2F64;
+/// let x1 = vec![Vec2F64::ZERO; 7];
+/// assert!(ransac_fundamental_8point(&x1, &x1, &RansacParams::default()).is_err());
+/// ```
+pub fn ransac_fundamental_8point(
+    x1: &[Vec2F64],
+    x2: &[Vec2F64],
+    params: &RansacParams,
+) -> Result<RansacResult<Mat3F64>, TwoViewError> {
+    ransac_fundamental_impl::<8>(x1, x2, params)
+}
+
+fn ransac_fundamental_impl<const SAMPLE_SIZE: usize>(
+    x1: &[Vec2F64],
+    x2: &[Vec2F64],
+    params: &RansacParams,
+) -> Result<RansacResult<Mat3F64>, TwoViewError> {
+    let confidence = ransac_confidence(params, 0.9999)?;
+    if x1.len() != x2.len() || x1.len() < SAMPLE_SIZE {
+        return Err(TwoViewError::InvalidInput {
+            required: SAMPLE_SIZE,
+        });
     }
 
     let mut rng = match params.random_seed {
@@ -1009,56 +1169,101 @@ pub fn ransac_fundamental(
     // is much cheaper than allocator churn.
     let mut scratch_inliers = vec![false; n];
 
-    // Adaptive iteration count: same log(1-p)/log(1-w^s) formula as H, with s=8
-    // (minimal sample size for the 8-point algorithm). Confidence p=0.9999 — F
-    // conditioning is more fragile than H, so we buy a few extra iterations.
-    let log_fail = (1.0_f64 - 0.9999).ln();
+    // Confidence applies to minimal samples, rather than individual roots.
     let mut dynamic_max = params.max_iterations;
     let mut iter = 0usize;
     while iter < dynamic_max {
         iter += 1;
-        let sample = rand::seq::index::sample(&mut rng, n, 8);
-        let mut s1 = [Vec2F64::ZERO; 8];
-        let mut s2 = [Vec2F64::ZERO; 8];
-        for (i, idx) in sample.iter().enumerate() {
+        let mut sample = [0usize; SAMPLE_SIZE];
+        sample_distinct_indices(&mut rng, n, &mut sample);
+        let mut s1 = [Vec2F64::ZERO; SAMPLE_SIZE];
+        let mut s2 = [Vec2F64::ZERO; SAMPLE_SIZE];
+        for (i, &idx) in sample.iter().enumerate() {
             s1[i] = x1[idx];
             s2[i] = x2[idx];
         }
-        let f = match fundamental_8point(&s1, &s2) {
-            Ok(f) => f,
-            Err(_) => continue,
+        let mut seven_models = [Mat3F64::ZERO; 3];
+        let eight_model;
+        let models: &[Mat3F64] = if SAMPLE_SIZE == 7 {
+            let count = match fundamental_7point_oriented_into(&s1, &s2, &mut seven_models) {
+                Ok(count) => count,
+                Err(_) => continue,
+            };
+            &seven_models[..count]
+        } else {
+            match fundamental_8point(&s1, &s2) {
+                Ok(f) => eight_model = [f],
+                Err(_) => continue,
+            }
+            &eight_model
         };
 
-        for s in scratch_inliers.iter_mut() {
-            *s = false;
-        }
-        let (count, score) = score_inliers_f(
-            &f,
-            &x1_x,
-            &x1_y,
-            &x2_x,
-            &x2_y,
-            thresh_sq,
-            &mut scratch_inliers,
-        );
-
-        let improved = count > best_count || (count == best_count && score < best_score);
-        if improved {
-            best_model = Some(f);
-            std::mem::swap(&mut best_inliers, &mut scratch_inliers);
-            best_count = count;
-            best_score = score;
-
-            if best_count == n {
-                break;
+        for &f in models {
+            // A 7-point sample may yield up to three hypotheses, and most of
+            // them cannot win. A division-free pass bounds each root's
+            // support from above; roots that cannot even tie the incumbent
+            // are dropped before any exact scoring or mask traffic. The
+            // 8-point path deliberately keeps its original full scorer.
+            if SAMPLE_SIZE == 7
+                && best_count > 0
+                && score_inliers_f_upper_bound(
+                    &f,
+                    &x1_x,
+                    &x1_y,
+                    &x2_x,
+                    &x2_y,
+                    thresh_sq,
+                    best_count - 1,
+                )
+                .is_none()
+            {
+                continue;
             }
-            let w = best_count as f64 / n as f64;
-            let denom = (1.0 - w.powi(8)).ln();
-            if denom < -1e-12 {
-                let need = (log_fail / denom).ceil();
-                if need.is_finite() && need >= 0.0 {
-                    dynamic_max = (need as usize).min(params.max_iterations).max(iter);
+            // Survivors usually win or tie, so score them exactly in fixed,
+            // SIMD-aligned chunks while materializing the mask, stopping only
+            // when the exact bound cannot beat the current winner.
+            scratch_inliers.fill(false);
+            let scored = if SAMPLE_SIZE == 7 {
+                score_inliers_f_bounded_masked(
+                    &f,
+                    &x1_x,
+                    &x1_y,
+                    &x2_x,
+                    &x2_y,
+                    thresh_sq,
+                    &mut scratch_inliers,
+                    best_count,
+                    best_score,
+                )
+            } else {
+                Some(score_inliers_f(
+                    &f,
+                    &x1_x,
+                    &x1_y,
+                    &x2_x,
+                    &x2_y,
+                    thresh_sq,
+                    &mut scratch_inliers,
+                ))
+            };
+            let Some((count, score)) = scored else {
+                continue;
+            };
+
+            let improved = count > best_count || (count == best_count && score < best_score);
+            if improved {
+                best_model = Some(f);
+                std::mem::swap(&mut best_inliers, &mut scratch_inliers);
+                best_count = count;
+                best_score = score;
+
+                if best_count == n {
+                    // Finish scoring this sample's roots before stopping.
+                    dynamic_max = iter;
+                    continue;
                 }
+                dynamic_max =
+                    adaptive_ransac_cap(best_count, n, SAMPLE_SIZE, confidence, dynamic_max, iter);
             }
         }
     }
@@ -1122,6 +1327,14 @@ pub fn ransac_fundamental(
 /// `F = K2⁻ᵀ E K1⁻¹`) so the threshold semantics match `ransac_fundamental`.
 ///
 /// `k1` / `k2` must be invertible upper-triangular intrinsics matrices.
+///
+/// # Errors
+///
+/// Returns [`TwoViewError::InvalidConfidence`] if `params.confidence` is not
+/// finite and strictly between zero and one, [`TwoViewError::InvalidInput`]
+/// for unequal lengths, fewer than five matches or a point mapped to infinity
+/// by an inverse intrinsics matrix, or [`TwoViewError::RansacFailure`] if no
+/// model meets the requested minimum support.
 pub fn ransac_essential_5pt(
     x1: &[Vec2F64],
     x2: &[Vec2F64],
@@ -1129,6 +1342,7 @@ pub fn ransac_essential_5pt(
     k2: &Mat3F64,
     params: &RansacParams,
 ) -> Result<RansacResult<Mat3F64>, TwoViewError> {
+    let confidence = ransac_confidence(params, 0.9999)?;
     if x1.len() != x2.len() || x1.len() < 5 {
         return Err(TwoViewError::InvalidInput { required: 5 });
     }
@@ -1173,9 +1387,8 @@ pub fn ransac_essential_5pt(
     let mut best_count = 0usize;
     let mut best_score = f64::INFINITY;
 
-    // Adaptive iteration cap. s = 5, p = 0.9999 (same conservative confidence
-    // we use for F — E is comparably fragile in low-parallax regimes).
-    let log_fail = (1.0_f64 - 0.9999).ln();
+    // Adaptive iteration cap. The default is 0.9999, matching fundamental
+    // estimation; callers can override it through `RansacParams::confidence`.
     let mut dynamic_max = params.max_iterations;
     let mut iter = 0usize;
     while iter < dynamic_max {
@@ -1214,14 +1427,8 @@ pub fn ransac_essential_5pt(
             if best_count == n {
                 break;
             }
-            let w = best_count as f64 / n as f64;
-            let denom = (1.0 - w.powi(5)).ln();
-            if denom < -1e-12 {
-                let need = (log_fail / denom).ceil();
-                if need.is_finite() && need >= 0.0 {
-                    dynamic_max = (need as usize).min(params.max_iterations).max(iter);
-                }
-            }
+            dynamic_max =
+                adaptive_ransac_cap(best_count, n, 5, confidence, params.max_iterations, iter);
         }
     }
 
@@ -1239,11 +1446,20 @@ pub fn ransac_essential_5pt(
 }
 
 /// Estimate a homography with RANSAC using the 4-point solver.
+///
+/// # Errors
+///
+/// Returns [`TwoViewError::InvalidConfidence`] if `params.confidence` is not
+/// finite and strictly between zero and one, [`TwoViewError::InvalidInput`]
+/// for unequal lengths or fewer than four matches, or
+/// [`TwoViewError::RansacFailure`] if no model meets the requested minimum
+/// support.
 pub fn ransac_homography(
     x1: &[Vec2F64],
     x2: &[Vec2F64],
     params: &RansacParams,
 ) -> Result<RansacResult<Mat3F64>, TwoViewError> {
+    let confidence = ransac_confidence(params, 0.99)?;
     if x1.len() != x2.len() || x1.len() < 4 {
         return Err(TwoViewError::InvalidInput { required: 4 });
     }
@@ -1288,7 +1504,6 @@ pub fn ransac_homography(
     // with the adaptive cap: adaptive shrinks fast at high w; stagnation
     // shrinks fast at low w (where adaptive can't tighten).
     const STAGNATION_LIMIT: usize = 200;
-    let log_fail = (1.0_f64 - 0.99).ln();
     let mut dynamic_max = params.max_iterations;
     let mut last_improve = 0usize;
     let mut iter = 0usize;
@@ -1344,14 +1559,8 @@ pub fn ransac_homography(
             if best_count == n {
                 break;
             }
-            let w = best_count as f64 / n as f64;
-            let denom = (1.0 - w.powi(4)).ln();
-            if denom < -1e-12 {
-                let need = (log_fail / denom).ceil();
-                if need.is_finite() && need >= 0.0 {
-                    dynamic_max = (need as usize).min(params.max_iterations).max(iter);
-                }
-            }
+            dynamic_max =
+                adaptive_ransac_cap(best_count, n, 4, confidence, params.max_iterations, iter);
         }
     }
 
@@ -1688,7 +1897,9 @@ fn score_inliers_h(
     };
 
     #[cfg(target_arch = "x86_64")]
-    let mut idx = if kornia_imgproc::simd::cpu_features().has_avx2 {
+    let mut idx = if kornia_imgproc::simd::cpu_features().has_avx2
+        && kornia_imgproc::simd::cpu_features().has_fma
+    {
         unsafe {
             score_inliers_h_avx2(
                 (a, b, c, d, e, f, g, hh, ii),
@@ -1862,6 +2073,32 @@ fn score_inliers_f(
     thresh_sq: f64,
     inliers: &mut [bool],
 ) -> (usize, f64) {
+    let mut count = 0usize;
+    let mut score = 0.0f64;
+    score_inliers_f_accumulate(
+        f_mat, x1_x, x1_y, x2_x, x2_y, thresh_sq, inliers, &mut count, &mut score,
+    );
+    (count, score)
+}
+
+/// Adds one contiguous Sampson-scoring range to an existing result.
+///
+/// Keeping `count` and `score` outside the range is significant for bounded
+/// scoring: every accepted residual is added in correspondence order, exactly
+/// as in the full scorer.
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn score_inliers_f_accumulate(
+    f_mat: &Mat3F64,
+    x1_x: &[f64],
+    x1_y: &[f64],
+    x2_x: &[f64],
+    x2_y: &[f64],
+    thresh_sq: f64,
+    inliers: &mut [bool],
+    count: &mut usize,
+    score: &mut f64,
+) {
     let n = x1_x.len();
     // F entries (row-major naming, same convention as score_inliers_h).
     let f00 = f_mat.x_axis.x;
@@ -1874,12 +2111,12 @@ fn score_inliers_f(
     let f21 = f_mat.y_axis.z;
     let f22 = f_mat.z_axis.z;
 
-    let mut count = 0usize;
-    let mut score = 0.0f64;
     #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
     let mut idx = 0usize;
 
     #[cfg(target_arch = "aarch64")]
+    // SAFETY: NEON is baseline on aarch64; all SoA slices and the mask have
+    // the same length, and the kernel bounds every vector load/store.
     let mut idx = unsafe {
         score_inliers_f_neon(
             (f00, f01, f02, f10, f11, f12, f20, f21, f22),
@@ -1889,13 +2126,17 @@ fn score_inliers_f(
             x2_y,
             thresh_sq,
             inliers,
-            &mut count,
-            &mut score,
+            count,
+            score,
         )
     };
 
     #[cfg(target_arch = "x86_64")]
-    let mut idx = if kornia_imgproc::simd::cpu_features().has_avx2 {
+    let mut idx = if kornia_imgproc::simd::cpu_features().has_avx2
+        && kornia_imgproc::simd::cpu_features().has_fma
+    {
+        // SAFETY: AVX2/FMA support is runtime checked; equally sized SoA
+        // slices and mask satisfy the kernel's bounded access requirements.
         unsafe {
             score_inliers_f_avx2(
                 (f00, f01, f02, f10, f11, f12, f20, f21, f22),
@@ -1905,8 +2146,8 @@ fn score_inliers_f(
                 x2_y,
                 thresh_sq,
                 inliers,
-                &mut count,
-                &mut score,
+                count,
+                score,
             )
         }
     } else {
@@ -1932,12 +2173,353 @@ fn score_inliers_f(
         };
         if dd <= thresh_sq {
             inliers[idx] = true;
-            count += 1;
-            score += dd;
+            *count += 1;
+            *score += dd;
         }
         idx += 1;
     }
-    (count, score)
+}
+
+/// Scores an F hypothesis in fixed-size chunks, returning `None` when the
+/// unscored correspondences cannot make it a strict RANSAC improvement.
+///
+/// Chunk boundaries are multiples of both the AVX2 and NEON vector widths.
+/// Consequently, a non-rejected result follows the same scalar accumulation
+/// order and SIMD lanes as [`score_inliers_f`].  Sampson distances admitted
+/// into `score` are finite and non-negative, so a partial score can only stay
+/// the same or grow as chunks are evaluated.
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn score_inliers_f_bounded_masked(
+    f_mat: &Mat3F64,
+    x1_x: &[f64],
+    x1_y: &[f64],
+    x2_x: &[f64],
+    x2_y: &[f64],
+    thresh_sq: f64,
+    inliers: &mut [bool],
+    best_count: usize,
+    best_score: f64,
+) -> Option<(usize, f64)> {
+    // 64 is divisible by the 4-wide AVX2 and 2-wide NEON f64 paths. It is
+    // large enough that the bound check is negligible beside scoring.
+    const CHUNK_SIZE: usize = 64;
+
+    let n = x1_x.len();
+    let mut start = 0usize;
+    let mut count = 0usize;
+    let mut score = 0.0f64;
+    while start < n {
+        let end = (start + CHUNK_SIZE).min(n);
+        score_inliers_f_accumulate(
+            f_mat,
+            &x1_x[start..end],
+            &x1_y[start..end],
+            &x2_x[start..end],
+            &x2_y[start..end],
+            thresh_sq,
+            &mut inliers[start..end],
+            &mut count,
+            &mut score,
+        );
+        let remaining = n - end;
+        if count + remaining < best_count
+            || (count + remaining == best_count && score >= best_score)
+        {
+            return None;
+        }
+        start = end;
+    }
+    Some((count, score))
+}
+
+/// Upper bound on the Sampson support of `f_mat`, or `None` once the bound
+/// proves it cannot exceed `prune_at` matches.
+///
+/// The SIMD kernels repeat the exact scorers' `e²` and `d` arithmetic and
+/// test `e² <= t'·d` with a slightly inflated `t' = t·(1 + 8ε)` instead of
+/// dividing; denominators at or below the 1e-12 guard (or NaN) are always
+/// counted and the scalar tail is scored exactly. Every match the exact
+/// scorer accepts is therefore counted. Platforms without a SIMD kernel
+/// count with the exact scalar residuals instead; thresholds too small for
+/// the rounding argument get the trivial bound `n`.
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn score_inliers_f_upper_bound(
+    f_mat: &Mat3F64,
+    x1_x: &[f64],
+    x1_y: &[f64],
+    x2_x: &[f64],
+    x2_y: &[f64],
+    thresh_sq: f64,
+    prune_at: usize,
+) -> Option<usize> {
+    let n = x1_x.len();
+    if thresh_sq.is_nan() || thresh_sq < F_UPPER_BOUND_MIN_THRESHOLD {
+        return Some(n);
+    }
+    let f = f_score_coefficients(f_mat);
+
+    #[cfg(target_arch = "aarch64")]
+    return {
+        // SAFETY: NEON is baseline on aarch64 and the kernel only performs
+        // bounded loads from equally sized SoA coordinate slices.
+        unsafe { score_inliers_f_upper_bound_neon(f, x1_x, x1_y, x2_x, x2_y, thresh_sq, prune_at) }
+    };
+
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        #[cfg(target_arch = "x86_64")]
+        if kornia_imgproc::simd::cpu_features().has_avx2
+            && kornia_imgproc::simd::cpu_features().has_fma
+        {
+            // SAFETY: AVX2/FMA support is runtime checked; all coordinate
+            // slices have the same length and the kernel bounds every load.
+            return unsafe {
+                score_inliers_f_upper_bound_avx2(f, x1_x, x1_y, x2_x, x2_y, thresh_sq, prune_at)
+            };
+        }
+        score_inliers_f_upper_bound_scalar(f, x1_x, x1_y, x2_x, x2_y, thresh_sq, prune_at)
+    }
+}
+
+/// Scalar support bound. The exact scorer is scalar too on these targets,
+/// so its own count is the bound; this keeps the cheap count-only rejection
+/// of losing roots.
+#[cfg_attr(target_arch = "aarch64", allow(dead_code))]
+#[allow(clippy::too_many_arguments)]
+fn score_inliers_f_upper_bound_scalar(
+    f: (f64, f64, f64, f64, f64, f64, f64, f64, f64),
+    x1_x: &[f64],
+    x1_y: &[f64],
+    x2_x: &[f64],
+    x2_y: &[f64],
+    thresh_sq: f64,
+    prune_at: usize,
+) -> Option<usize> {
+    let n = x1_x.len();
+    let mut count = 0;
+    let mut start = 0;
+    while start < n {
+        let end = (start + F_UPPER_BOUND_CHUNK).min(n);
+        count += score_inliers_f_tail_count(
+            f,
+            &x1_x[start..end],
+            &x1_y[start..end],
+            &x2_x[start..end],
+            &x2_y[start..end],
+            thresh_sq,
+            0,
+        );
+        if count + (n - end) <= prune_at {
+            return None;
+        }
+        start = end;
+    }
+    (count > prune_at).then_some(count)
+}
+
+/// Matches between pruning checks of [`score_inliers_f_upper_bound`].
+const F_UPPER_BOUND_CHUNK: usize = 32;
+
+/// Inflation of the threshold in [`score_inliers_f_upper_bound`]: it covers
+/// the three roundings of `e² <= t'·d` against the one of `e²/d <= t`.
+const F_UPPER_BOUND_SLACK: f64 = 1.0 + 8.0 * f64::EPSILON;
+
+/// Smallest threshold for which `t'·d` stays normal whenever `d > 1e-12`.
+const F_UPPER_BOUND_MIN_THRESHOLD: f64 = 1e-280;
+
+#[inline]
+fn f_score_coefficients(f_mat: &Mat3F64) -> (f64, f64, f64, f64, f64, f64, f64, f64, f64) {
+    (
+        f_mat.x_axis.x,
+        f_mat.y_axis.x,
+        f_mat.z_axis.x,
+        f_mat.x_axis.y,
+        f_mat.y_axis.y,
+        f_mat.z_axis.y,
+        f_mat.x_axis.z,
+        f_mat.y_axis.z,
+        f_mat.z_axis.z,
+    )
+}
+
+/// Exact scalar residuals of the tail, counted like the exact scorer.
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn score_inliers_f_tail_count(
+    f: (f64, f64, f64, f64, f64, f64, f64, f64, f64),
+    x1_x: &[f64],
+    x1_y: &[f64],
+    x2_x: &[f64],
+    x2_y: &[f64],
+    thresh_sq: f64,
+    start: usize,
+) -> usize {
+    let (f00, f01, f02, f10, f11, f12, f20, f21, f22) = f;
+    let mut count = 0;
+    for idx in start..x1_x.len() {
+        let fx1x = f00 * x1_x[idx] + f01 * x1_y[idx] + f02;
+        let fx1y = f10 * x1_x[idx] + f11 * x1_y[idx] + f12;
+        let fx1z = f20 * x1_x[idx] + f21 * x1_y[idx] + f22;
+        let ftx2x = f00 * x2_x[idx] + f10 * x2_y[idx] + f20;
+        let ftx2y = f01 * x2_x[idx] + f11 * x2_y[idx] + f21;
+        let err = fx1x * x2_x[idx] + fx1y * x2_y[idx] + fx1z;
+        let denom = fx1x * fx1x + fx1y * fx1y + ftx2x * ftx2x + ftx2y * ftx2y;
+        let dd = if denom <= 1e-12 {
+            err * err
+        } else {
+            (err * err) / denom
+        };
+        count += (dd <= thresh_sq) as usize;
+    }
+    count
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+#[allow(clippy::too_many_arguments)]
+unsafe fn score_inliers_f_upper_bound_avx2(
+    f: (f64, f64, f64, f64, f64, f64, f64, f64, f64),
+    x1_x: &[f64],
+    x1_y: &[f64],
+    x2_x: &[f64],
+    x2_y: &[f64],
+    thresh_sq: f64,
+    prune_at: usize,
+) -> Option<usize> {
+    use std::arch::x86_64::*;
+    let (f00, f01, f02, f10, f11, f12, f20, f21, f22) = f;
+    let (f00v, f01v, f02v) = (
+        _mm256_set1_pd(f00),
+        _mm256_set1_pd(f01),
+        _mm256_set1_pd(f02),
+    );
+    let (f10v, f11v, f12v) = (
+        _mm256_set1_pd(f10),
+        _mm256_set1_pd(f11),
+        _mm256_set1_pd(f12),
+    );
+    let (f20v, f21v, f22v) = (
+        _mm256_set1_pd(f20),
+        _mm256_set1_pd(f21),
+        _mm256_set1_pd(f22),
+    );
+    let bound_v = _mm256_set1_pd(thresh_sq * F_UPPER_BOUND_SLACK);
+    let eps_v = _mm256_set1_pd(1e-12);
+    let n = x1_x.len();
+    let simd_end = n & !3;
+    let lane_sum = |v: __m256i| -> usize {
+        let pair = _mm_add_epi64(_mm256_castsi256_si128(v), _mm256_extracti128_si256::<1>(v));
+        (_mm_cvtsi128_si64(pair) + _mm_extract_epi64::<1>(pair)) as usize
+    };
+    // Lane counters: a true comparison is all ones, i.e. -1 as an integer.
+    let mut possible = _mm256_setzero_si256();
+    let mut idx = 0;
+    let mut next_check = F_UPPER_BOUND_CHUNK.min(simd_end);
+    while idx < simd_end {
+        let x1 = _mm256_loadu_pd(x1_x.as_ptr().add(idx));
+        let y1 = _mm256_loadu_pd(x1_y.as_ptr().add(idx));
+        let x2 = _mm256_loadu_pd(x2_x.as_ptr().add(idx));
+        let y2 = _mm256_loadu_pd(x2_y.as_ptr().add(idx));
+        // Same operation sequence as `score_inliers_f_avx2`.
+        let fx1x = _mm256_fmadd_pd(y1, f01v, _mm256_fmadd_pd(x1, f00v, f02v));
+        let fx1y = _mm256_fmadd_pd(y1, f11v, _mm256_fmadd_pd(x1, f10v, f12v));
+        let fx1z = _mm256_fmadd_pd(y1, f21v, _mm256_fmadd_pd(x1, f20v, f22v));
+        let ftx2x = _mm256_fmadd_pd(y2, f10v, _mm256_fmadd_pd(x2, f00v, f20v));
+        let ftx2y = _mm256_fmadd_pd(y2, f11v, _mm256_fmadd_pd(x2, f01v, f21v));
+        let err = _mm256_fmadd_pd(y2, fx1y, _mm256_fmadd_pd(x2, fx1x, fx1z));
+        let denom = _mm256_fmadd_pd(
+            ftx2y,
+            ftx2y,
+            _mm256_fmadd_pd(
+                ftx2x,
+                ftx2x,
+                _mm256_fmadd_pd(fx1y, fx1y, _mm256_mul_pd(fx1x, fx1x)),
+            ),
+        );
+        let err_sq = _mm256_mul_pd(err, err);
+        let inside = _mm256_cmp_pd::<_CMP_LE_OQ>(err_sq, _mm256_mul_pd(bound_v, denom));
+        // `!(d > eps)` also catches NaN denominators.
+        let degenerate = _mm256_cmp_pd::<_CMP_NGT_UQ>(denom, eps_v);
+        possible = _mm256_sub_epi64(
+            possible,
+            _mm256_castpd_si256(_mm256_or_pd(inside, degenerate)),
+        );
+        idx += 4;
+        if idx == next_check {
+            if lane_sum(possible) + (n - idx) <= prune_at {
+                return None;
+            }
+            next_check = (idx + F_UPPER_BOUND_CHUNK).min(simd_end);
+        }
+    }
+    let count = lane_sum(possible)
+        + score_inliers_f_tail_count(f, x1_x, x1_y, x2_x, x2_y, thresh_sq, simd_end);
+    (count > prune_at).then_some(count)
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+#[allow(clippy::too_many_arguments)]
+unsafe fn score_inliers_f_upper_bound_neon(
+    f: (f64, f64, f64, f64, f64, f64, f64, f64, f64),
+    x1_x: &[f64],
+    x1_y: &[f64],
+    x2_x: &[f64],
+    x2_y: &[f64],
+    thresh_sq: f64,
+    prune_at: usize,
+) -> Option<usize> {
+    use std::arch::aarch64::*;
+    let (f00, f01, f02, f10, f11, f12, f20, f21, f22) = f;
+    let (f00v, f01v, f02v) = (vdupq_n_f64(f00), vdupq_n_f64(f01), vdupq_n_f64(f02));
+    let (f10v, f11v, f12v) = (vdupq_n_f64(f10), vdupq_n_f64(f11), vdupq_n_f64(f12));
+    let (f20v, f21v, f22v) = (vdupq_n_f64(f20), vdupq_n_f64(f21), vdupq_n_f64(f22));
+    let bound_v = vdupq_n_f64(thresh_sq * F_UPPER_BOUND_SLACK);
+    let eps_v = vdupq_n_f64(1e-12);
+    let n = x1_x.len();
+    let simd_end = n & !1;
+    // Lane counters: a true comparison is all ones, i.e. -1 as an integer.
+    let mut possible = vdupq_n_u64(0);
+    let mut idx = 0;
+    let mut next_check = F_UPPER_BOUND_CHUNK.min(simd_end);
+    while idx < simd_end {
+        let x1 = vld1q_f64(x1_x.as_ptr().add(idx));
+        let y1 = vld1q_f64(x1_y.as_ptr().add(idx));
+        let x2 = vld1q_f64(x2_x.as_ptr().add(idx));
+        let y2 = vld1q_f64(x2_y.as_ptr().add(idx));
+        // Same operation sequence as `score_inliers_f_neon`.
+        let fx1x = vfmaq_f64(vfmaq_f64(f02v, x1, f00v), y1, f01v);
+        let fx1y = vfmaq_f64(vfmaq_f64(f12v, x1, f10v), y1, f11v);
+        let fx1z = vfmaq_f64(vfmaq_f64(f22v, x1, f20v), y1, f21v);
+        let ftx2x = vfmaq_f64(vfmaq_f64(f20v, x2, f00v), y2, f10v);
+        let ftx2y = vfmaq_f64(vfmaq_f64(f21v, x2, f01v), y2, f11v);
+        let err = vfmaq_f64(vfmaq_f64(fx1z, x2, fx1x), y2, fx1y);
+        let denom = vfmaq_f64(
+            vfmaq_f64(vfmaq_f64(vmulq_f64(fx1x, fx1x), fx1y, fx1y), ftx2x, ftx2x),
+            ftx2y,
+            ftx2y,
+        );
+        let err_sq = vmulq_f64(err, err);
+        let inside = vcleq_f64(err_sq, vmulq_f64(bound_v, denom));
+        // `!(d > eps)` also catches NaN denominators.
+        let degenerate = vmvnq_u32(vreinterpretq_u32_u64(vcgtq_f64(denom, eps_v)));
+        possible = vsubq_u64(
+            possible,
+            vorrq_u64(inside, vreinterpretq_u64_u32(degenerate)),
+        );
+        idx += 2;
+        if idx == next_check {
+            if vaddvq_u64(possible) as usize + (n - idx) <= prune_at {
+                return None;
+            }
+            next_check = (idx + F_UPPER_BOUND_CHUNK).min(simd_end);
+        }
+    }
+    let count = vaddvq_u64(possible) as usize
+        + score_inliers_f_tail_count(f, x1_x, x1_y, x2_x, x2_y, thresh_sq, simd_end);
+    (count > prune_at).then_some(count)
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -2110,32 +2692,45 @@ mod tests {
 
     #[test]
     fn test_ransac_fundamental_basic() {
-        let f_true = Mat3F64::from_cols(
-            Vec3F64::new(0.0, -0.001, 0.01),
-            Vec3F64::new(0.0015, 0.0, -0.02),
-            Vec3F64::new(-0.01, 0.02, 1.0),
-        );
-        let mut x1 = Vec::new();
-        let mut x2 = Vec::new();
-        for i in 0..50 {
-            let xi = i as f64 * 1.2 - 10.0;
-            let yi = i as f64 * -0.8 + 5.0;
-            let x = Vec3F64::new(xi, yi, 1.0);
-            let l = f_true * x;
-            let xp = if l.x.abs() > 1e-12 { -l.z / l.x } else { 0.0 };
-            x1.push(Vec2F64::new(x.x, x.y));
-            x2.push(Vec2F64::new(xp, 0.0));
-        }
+        let (x1, x2, _, _, _) = synthetic_two_view(50, 0.0, 0);
 
         let params = RansacParams {
             max_iterations: 200,
             threshold: 1.0,
             min_inliers: 10,
             random_seed: Some(0),
+            confidence: None,
             refit: false,
         };
         let res = ransac_fundamental(&x1, &x2, &params).unwrap();
         assert!(res.inlier_count >= params.min_inliers);
+    }
+
+    #[test]
+    fn test_ransac_fundamental_seven_matches_and_all_roots() -> Result<(), TwoViewError> {
+        let (x1, x2, _, _, _) = synthetic_two_view(40, 0.0, 42);
+        let params = RansacParams {
+            max_iterations: 1,
+            threshold: 1e-4,
+            min_inliers: 7,
+            random_seed: Some(0),
+            confidence: None,
+            refit: true,
+        };
+        let minimal = ransac_fundamental(&x1[..7], &x2[..7], &params)?;
+        assert_eq!(minimal.inlier_count, 7);
+        assert!(matches!(
+            ransac_fundamental_8point(&x1[..7], &x2[..7], &params),
+            Err(TwoViewError::InvalidInput { required: 8 })
+        ));
+        let full = ransac_fundamental(&x1, &x2, &params)?;
+        assert_eq!(
+            full.inlier_count,
+            x1.len(),
+            "all roots of the sample must be scored"
+        );
+        assert!(full.score.is_finite());
+        Ok(())
     }
 
     /// Verify that enabling the LO-refit step either matches or improves the
@@ -2216,6 +2811,7 @@ mod tests {
             threshold: 2.0,
             min_inliers: 15,
             random_seed: Some(42),
+            confidence: None,
             refit: false,
         };
         let refit_params = RansacParams {
@@ -2323,6 +2919,7 @@ mod tests {
             threshold: 2.0,
             min_inliers: 30,
             random_seed: Some(42),
+            confidence: None,
             refit: false,
         };
         let res = ransac_essential_5pt(&x1, &x2, &k, &k, &params).unwrap();
@@ -2370,21 +2967,43 @@ mod tests {
 
     #[test]
     fn test_ransac_fundamental_invalid_input() {
-        let x1 = vec![Vec2F64::new(0.0, 0.0); 7];
-        let x2 = vec![Vec2F64::new(0.0, 0.0); 7];
+        let x1 = vec![Vec2F64::new(0.0, 0.0); 6];
+        let x2 = vec![Vec2F64::new(0.0, 0.0); 6];
         let params = RansacParams::default();
         let err = ransac_fundamental(&x1, &x2, &params).unwrap_err();
         match err {
-            TwoViewError::InvalidInput { required } => assert_eq!(required, 8),
+            TwoViewError::InvalidInput { required } => assert_eq!(required, 7),
             other => panic!("unexpected error: {other:?}"),
         }
 
         let x2 = vec![Vec2F64::new(0.0, 0.0); 8];
         let err = ransac_fundamental(&x1, &x2, &params).unwrap_err();
         match err {
-            TwoViewError::InvalidInput { required } => assert_eq!(required, 8),
+            TwoViewError::InvalidInput { required } => assert_eq!(required, 7),
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_ransac_confidence_validation_and_defaults() {
+        let mut params = RansacParams::default();
+        assert_eq!(ransac_confidence(&params, 0.9999).unwrap(), 0.9999);
+        assert_eq!(ransac_confidence(&params, 0.99).unwrap(), 0.99);
+
+        for confidence in [0.0, 1.0, f64::NAN, f64::INFINITY] {
+            params.confidence = Some(confidence);
+            assert!(matches!(
+                ransac_confidence(&params, 0.9999),
+                Err(TwoViewError::InvalidConfidence { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn test_ransac_confidence_monotonically_increases_adaptive_cap() {
+        let low = adaptive_ransac_cap(25, 100, 7, 0.99, 1_000_000, 0);
+        let high = adaptive_ransac_cap(25, 100, 7, 0.999_999, 1_000_000, 0);
+        assert!(high > low, "high-confidence cap {high} must exceed {low}");
     }
 
     #[test]
@@ -2505,6 +3124,195 @@ mod tests {
     }
 
     #[test]
+    fn test_bounded_f_scorer_matches_full_winner_and_zero_denominator() {
+        let f_mat = Mat3F64::ZERO;
+        let x1: Vec<_> = (0..131)
+            .map(|i| Vec2F64::new(i as f64 * 0.25, -(i as f64)))
+            .collect();
+        let x2: Vec<_> = (0..131)
+            .map(|i| Vec2F64::new(-(i as f64), i as f64 * 0.5))
+            .collect();
+        let (x1_x, x1_y) = split_xy(&x1);
+        let (x2_x, x2_y) = split_xy(&x2);
+
+        let mut full_mask = vec![false; x1.len()];
+        let full = score_inliers_f(&f_mat, &x1_x, &x1_y, &x2_x, &x2_y, 0.0, &mut full_mask);
+        assert_eq!(full.0, x1.len());
+        assert_eq!(full.1, 0.0);
+        // Zero denominators fall back to err² in the exact scorer; the
+        // bound must count every one of them.
+        assert_eq!(
+            score_inliers_f_upper_bound(&f_mat, &x1_x, &x1_y, &x2_x, &x2_y, 0.0, 0),
+            Some(x1.len())
+        );
+
+        // A non-zero score catches accidental reassociation at chunk borders.
+        let finite_f = Mat3F64::from_cols(
+            Vec3F64::new(0.0, -0.001, 0.02),
+            Vec3F64::new(0.0015, 0.0, -0.01),
+            Vec3F64::new(-0.03, 0.04, 1.0),
+        );
+        let mut finite_full_mask = vec![false; x1.len()];
+        let finite_full = score_inliers_f(
+            &finite_f,
+            &x1_x,
+            &x1_y,
+            &x2_x,
+            &x2_y,
+            1e20,
+            &mut finite_full_mask,
+        );
+        let finite_bound =
+            score_inliers_f_upper_bound(&finite_f, &x1_x, &x1_y, &x2_x, &x2_y, 1e20, 0).unwrap();
+        assert!(finite_bound >= finite_full.0);
+
+        let mut masked_mask = vec![false; x1.len()];
+        let masked = score_inliers_f_bounded_masked(
+            &finite_f,
+            &x1_x,
+            &x1_y,
+            &x2_x,
+            &x2_y,
+            1e20,
+            &mut masked_mask,
+            0,
+            f64::INFINITY,
+        )
+        .unwrap();
+        assert_eq!(masked.0, finite_full.0);
+        assert_eq!(masked.1.to_bits(), finite_full.1.to_bits());
+        assert_eq!(masked_mask, finite_full_mask);
+    }
+
+    #[test]
+    fn test_bounded_f_scorer_rejects_count_and_score_ties() {
+        let f_mat = Mat3F64::ZERO;
+        let x1: Vec<_> = (0..128).map(|i| Vec2F64::new(i as f64, 1.0)).collect();
+        let x2: Vec<_> = (0..128).map(|i| Vec2F64::new(2.0, i as f64)).collect();
+        let (x1_x, x1_y) = split_xy(&x1);
+        let (x2_x, x2_y) = split_xy(&x2);
+
+        let mut full_mask = vec![false; x1.len()];
+        let full = score_inliers_f(&f_mat, &x1_x, &x1_y, &x2_x, &x2_y, 0.0, &mut full_mask);
+        assert_eq!(full, (128, 0.0));
+
+        // A count tie can still win on score, so the support bound keeps it...
+        assert_eq!(
+            score_inliers_f_upper_bound(&f_mat, &x1_x, &x1_y, &x2_x, &x2_y, 0.0, full.0 - 1),
+            Some(full.0)
+        );
+        // ...and the exact scorer rejects it once the score cannot improve.
+        let mut mask = vec![false; x1.len()];
+        assert!(score_inliers_f_bounded_masked(
+            &f_mat, &x1_x, &x1_y, &x2_x, &x2_y, 0.0, &mut mask, full.0, full.1,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn test_bounded_f_scorer_rejects_when_count_cannot_catch_up() {
+        let f_mat = Mat3F64::from_cols(
+            Vec3F64::new(0.0, -0.001, 0.02),
+            Vec3F64::new(0.0015, 0.0, -0.01),
+            Vec3F64::new(-0.03, 0.04, 1.0),
+        );
+        let x1: Vec<_> = (0..130).map(|i| Vec2F64::new(i as f64, 1.0)).collect();
+        let x2: Vec<_> = (0..130).map(|i| Vec2F64::new(2.0, i as f64)).collect();
+        let (x1_x, x1_y) = split_xy(&x1);
+        let (x2_x, x2_y) = split_xy(&x2);
+
+        let mut full_mask = vec![false; x1.len()];
+        let full = score_inliers_f(&f_mat, &x1_x, &x1_y, &x2_x, &x2_y, 1e-30, &mut full_mask);
+        assert_eq!(full, (0, 0.0));
+
+        assert!(
+            score_inliers_f_upper_bound(&f_mat, &x1_x, &x1_y, &x2_x, &x2_y, 1e-30, 100).is_none()
+        );
+    }
+
+    /// The support bound must never undercount the exact scorer, including at
+    /// thresholds equal to a residual, across SIMD tails and with degenerate
+    /// or non-finite correspondences; pruning must imply a losing count.
+    #[test]
+    fn test_f_upper_bound_never_undercounts_exact_scorer() {
+        let mut state = 0x5eed_1234_u64;
+        let mut uniform = move || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            ((state >> 11) as f64) * (1.0 / ((1_u64 << 53) as f64))
+        };
+        for trial in 0..60 {
+            let n = 1 + trial * 7 % 97;
+            let f_mat = Mat3F64::from_cols(
+                Vec3F64::new(uniform() - 0.5, uniform() - 0.5, uniform() - 0.5),
+                Vec3F64::new(uniform() - 0.5, uniform() - 0.5, uniform() - 0.5),
+                Vec3F64::new(uniform() - 0.5, uniform() - 0.5, uniform() - 0.5),
+            ) * 1e-3;
+            let mut x1: Vec<_> = (0..n)
+                .map(|_| Vec2F64::new(640.0 * uniform(), 480.0 * uniform()))
+                .collect();
+            let x2: Vec<_> = (0..n)
+                .map(|_| Vec2F64::new(640.0 * uniform(), 480.0 * uniform()))
+                .collect();
+            if trial % 5 == 0 {
+                x1[n / 2] = Vec2F64::new(f64::NAN, 1.0);
+            }
+            let (x1_x, x1_y) = split_xy(&x1);
+            let (x2_x, x2_y) = split_xy(&x2);
+            let mut residuals = vec![0.0; n];
+            for (i, residual) in residuals.iter_mut().enumerate() {
+                let mut one = [false];
+                *residual = score_inliers_f(
+                    &f_mat,
+                    &x1_x[i..=i],
+                    &x1_y[i..=i],
+                    &x2_x[i..=i],
+                    &x2_y[i..=i],
+                    f64::INFINITY,
+                    &mut one,
+                )
+                .1;
+            }
+            let mut thresholds: Vec<f64> = residuals
+                .iter()
+                .copied()
+                .filter(|r| r.is_finite())
+                .collect();
+            thresholds.extend([0.0, 1e-6, 1.0, 1e6]);
+            for threshold in thresholds {
+                let mut mask = vec![false; n];
+                let (exact, _) =
+                    score_inliers_f(&f_mat, &x1_x, &x1_y, &x2_x, &x2_y, threshold, &mut mask);
+                let scalar = |prune_at| {
+                    score_inliers_f_upper_bound_scalar(
+                        f_score_coefficients(&f_mat),
+                        &x1_x,
+                        &x1_y,
+                        &x2_x,
+                        &x2_y,
+                        threshold,
+                        prune_at,
+                    )
+                };
+                let dispatched = |prune_at| {
+                    score_inliers_f_upper_bound(
+                        &f_mat, &x1_x, &x1_y, &x2_x, &x2_y, threshold, prune_at,
+                    )
+                };
+                for bound in [&scalar as &dyn Fn(usize) -> Option<usize>, &dispatched] {
+                    assert!(bound(0).unwrap_or(0) >= exact, "n={n} t={threshold}");
+                    for prune_at in [exact.saturating_sub(1), exact, exact + 1] {
+                        if bound(prune_at).is_none() {
+                            assert!(exact <= prune_at, "pruned a winner: n={n} t={threshold}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn test_ransac_homography_adaptive_stops_early_on_clean_data() {
         // All-inlier data should stop in O(10) iterations, not 2000. We can't
         // observe the iteration count directly, but we can verify it runs
@@ -2530,6 +3338,7 @@ mod tests {
             threshold: 0.1,
             min_inliers: 25,
             random_seed: Some(42),
+            confidence: None,
             refit: false,
         };
         let start = std::time::Instant::now();
@@ -2571,6 +3380,7 @@ mod tests {
             threshold: 1e-6,
             min_inliers: 12,
             random_seed: Some(0),
+            confidence: None,
             refit: false,
         };
         let res = ransac_homography(&x1, &x2, &params).unwrap();
@@ -2701,6 +3511,7 @@ mod tests {
                     threshold: 1.0,
                     min_inliers: 15,
                     random_seed: Some(42),
+                    confidence: None,
                     refit: true,
                 },
             })
@@ -2709,6 +3520,7 @@ mod tests {
                 threshold: 1.0,
                 min_inliers: 8,
                 random_seed: Some(42),
+                confidence: None,
                 refit: false,
             })
             .triangulation(TriangulationConfig {
@@ -2826,6 +3638,7 @@ mod tests {
                     threshold: 2.0,
                     min_inliers: 30,
                     random_seed: Some(42),
+                    confidence: None,
                     refit: false,
                 },
             })
@@ -2834,6 +3647,7 @@ mod tests {
                 threshold: 2.0,
                 min_inliers: 8,
                 random_seed: Some(42),
+                confidence: None,
                 refit: false,
             })
             // Force the epipolar branch even if H scores comparably.

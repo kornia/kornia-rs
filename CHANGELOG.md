@@ -13,21 +13,91 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
 
 ## [Unreleased]
 
-### Fixed
-- **kornia-io**: `StreamCapture::grab_rgb8` / `VideoReader::grab_rgb8` no longer return sheared
-  frames when GStreamer pads RGB rows, i.e. at widths where `width * 3` is not a multiple of 4
-  (854, 426, 1366, ...). The row stride and offset now come from the buffer's `VideoMeta` or the
-  caps' default layout (#1160).
+**Breaking: fundamental-matrix RANSAC now samples seven points by default.** A seven-point
+hypothesis needs one correspondence fewer than an eight-point one, so RANSAC reaches the same
+confidence with fewer draws; every real root of a sample (up to three) is scored. Estimated
+matrices and inlier masks change, even with a fixed seed. The eight-point path remains available:
 
-### Changed
-- **kornia-io**: `grab_rgb8` returns `StreamCaptureError::InvalidImageFormat` for pipelines that
-  do not produce `RGB` frames (previously `BGR`/`RGBx` frames were returned as `Ok` with wrong
-  pixels, and `GRAY8`/encoded frames failed with `BufferSizeMismatch`), and for zero-sized caps,
-  negative strides or a `VideoMeta` that does not match the caps.
-- **kornia-io**: for padded widths, `grab_rgb8` returns an owned (writable) image; tightly packed
-  frames are still borrowed zero-copy and read-only. Call `.clone()` for a writable copy.
-- **kornia-io**: a missing `framerate` in the caps no longer ends a `StreamCapture` stream
-  silently; frames are delivered and `get_fps()` reports `0.0`.
+| Entry point | Default now | Previous behaviour |
+|---|---|---|
+| `kornia_3d::pose::ransac_fundamental` | seven-point; accepts 7+ matches | `ransac_fundamental_8point` |
+| `kornia_3d::ransac::estimators::FundamentalEstimator` | seven-point (`SAMPLE_SIZE = 7`) | `Fundamental8PointEstimator` |
+| Python `kornia_rs.ransac.fundamental` | `solver="7point"` | `solver="8point"` |
+| Python `kornia_rs.k3d.find_fundamental(method=8)` | `solver="7point"` | `solver="8point"` |
+
+`TwoViewEstimator` keeps `Fundamental8ptSolver` as its default; opt in to seven-point with
+`.epipolar_solver(Fundamental7ptSolver::default())`.
+
+Seven-point RANSAC also applies the oriented epipolar constraint, as DEGENSAC does: a minimal
+solution that orients its own seven correspondences inconsistently cannot come from points in
+front of both cameras and is skipped before scoring. On 1000 St Peter's Square pairs this made
+seven-point RANSAC about 1.3× faster at a cost of about 0.01 pose mAA.
+
+Also breaking for Rust code:
+- `pose::RansacParams` has a new public field, `confidence: Option<f64>`, which overrides the
+  adaptive-stopping target. `None` keeps the previous targets (0.9999 for fundamental and
+  essential, 0.99 for homography). Struct literals that name every field must add it or end with
+  `..Default::default()`.
+- New error variants: `TwoViewError::InvalidConfidence { confidence }` for a confidence outside
+  (0, 1), and `FundamentalError::DegenerateConfiguration`, returned by `fundamental_7point` and by
+  `fundamental_8point` when exactly eight matches are rank-deficient or when a larger set is
+  repeated, collinear or otherwise underdetermined. Exhaustive `match`es need a new arm.
+- A `ransac::RansacConfig::confidence` of one or more now disables adaptive stopping, so
+  `ransac::run` draws all `max_iters` samples; it was clamped just below one before.
+
+Also breaking for Python: `kornia_rs.ransac.fundamental`, `.essential` and `.homography` raise
+`ValueError` for a confidence that is not finite and strictly between 0 and 1, as
+`kornia_rs.k3d.find_fundamental` does; one or more was clamped just below one before.
+
+Fixed:
+- `fundamental_8point` with more than eight correspondences did not reliably return the
+  least-squares solution: 9–64 matches used only eight of the constraints, and larger sets relied
+  on three fixed inverse iterations that need a large eigengap. Every set above eight now uses the
+  full design matrix and an exact symmetric eigensolver, which affects local-optimization and
+  final refits; results for those inputs change.
+- Adaptive stopping uses the exact probability of drawing an all-inlier sample without
+  replacement instead of `inlier_ratio^k`, so runs can take slightly more iterations.
+
+Added:
+- `kornia_3d::pose::fundamental_7point` minimal solver, and `Fundamental7ptSolver` for
+  `TwoViewEstimator`.
+- Opt-in fused threshold scoring for custom generic-driver components:
+  `Estimator::threshold_inliers`, `Consensus::threshold` and `ThresholdInlierResult`. The default
+  implementations keep the existing scoring path.
+
+**Sparse stereo matching in `kornia-3d`** (`kornia_3d::stereo::StereoMatcher`), the step after
+`StereoRectifier`: per-left-keypoint disparity and metric depth for a rectified pair, with a CUDA
+twin behind the `cuda` feature.
+- ORB-SLAM3's `ComputeStereoMatches`, generalised over the descriptor: binary (Hamming, e.g. ORB)
+  or `f32` (dot product, e.g. XFeat). Optional pyramid octaves with the per-octave row band and
+  ±1 octave gate; centred-SAD sub-pixel refinement; median outlier reject.
+- Sub-pixel fit defaults to `SubPixelFit::Equiangular`, which cut the mean disparity error from
+  0.065 to 0.042 px against ORB-SLAM3's parabola on a synthetic pair; `Parabola` is kept for parity.
+- The right search window is bounds-checked on both sides (ORB-SLAM3 checks one, which a detector
+  firing near the image border turns into an out-of-bounds read).
+- The median reject keeps zero-SAD matches; ORB-SLAM3's `sad >= 2.1 * median` drops every match
+  when the median is 0 (byte-identical patches). The octave gate applies whenever either side
+  carries octaves.
+- `StereoMatcher::to_cuda` → `CudaStereoMatcher::match_device`: device keypoints in, device
+  matches out, no host sync; the keypoint count may live on the device. Output is bit-identical to
+  the CPU path (tested), including the median reject.
+- 752x480, 2048 keypoints, Orin Nano MAXN: CUDA 287 µs (binary) / 410 µs (f32); CPU 3.0 / 3.8 ms on
+  6 threads, 10.5 / 13.8 ms on one. `cargo bench -p kornia-3d --bench bench_stereo_match --features cuda`.
+
+**`kornia-io` GStreamer frames are no longer sheared at widths like 854** (#1160). GStreamer pads
+each RGB row to a multiple of 4 bytes when `width * 3` is not one (854, 426, 1366, ...);
+`StreamCapture::grab_rgb8` and `VideoReader::grab_rgb8` now read the row stride and offset from
+the buffer's `VideoMeta` or the caps' default layout instead of assuming tightly packed rows.
+
+Changed:
+- `grab_rgb8` returns `StreamCaptureError::InvalidImageFormat` for pipelines that do not produce
+  `RGB` frames (`BGR`/`RGBx` frames were returned as `Ok` with wrong pixels, `GRAY8` and encoded
+  frames failed with `BufferSizeMismatch`), and for zero-sized caps, negative strides or a
+  `VideoMeta` that does not match the caps.
+- For padded widths `grab_rgb8` returns an owned, writable image; tightly packed frames are still
+  borrowed zero-copy and read-only. Call `.clone()` for a writable copy.
+- A missing `framerate` in the caps no longer ends a `StreamCapture` stream silently; frames are
+  delivered and `get_fps()` reports `0.0`.
 
 ## [0.2.0] — 2026-09-26
 

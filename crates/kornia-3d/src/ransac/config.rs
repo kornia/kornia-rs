@@ -26,6 +26,8 @@ pub struct RansacConfig {
     pub max_iters: u32,
     /// Target probability that at least one drawn sample is all-inlier.
     /// Used to adapt `max_iters` downwards once a high-inlier hypothesis lands.
+    /// A value outside (0, 1), or NaN, disables adaptive stopping, so the
+    /// driver draws all `max_iters` samples.
     pub confidence: f64,
     /// Inlier residual cutoff. Interpreted by the active [`super::Consensus`].
     pub inlier_threshold: f64,
