@@ -25,6 +25,11 @@ harness = false
 name = "bench_gstreamer"
 required-features = ["gstreamer"]
 
+[[bench]]
+harness = false
+name = "bench_gstreamer_layout"
+required-features = ["gstreamer"]
+
 [dependencies]
 # for video capture from gstreamer sources
 circular-buffer = { workspace = true, optional = true }

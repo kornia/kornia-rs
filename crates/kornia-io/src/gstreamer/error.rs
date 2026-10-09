@@ -70,12 +70,13 @@ pub enum StreamCaptureError {
     #[error("Could not lock the mutex")]
     MutexPoisonError,
 
-    /// The mapped GStreamer buffer is smaller than the expected RGB frame size.
+    /// The GStreamer buffer is smaller than the frame layout it should hold.
     #[error("buffer size mismatch: expected {expected} bytes, got {got}")]
     BufferSizeMismatch {
-        /// The number of bytes required for an RGB24 frame of the given dimensions.
+        /// The minimum number of bytes the frame layout needs: the plane offset plus every
+        /// row's pixels at the row stride (the padding after the last row is not required).
         expected: usize,
-        /// The actual number of bytes in the mapped GStreamer buffer.
+        /// The number of bytes in the GStreamer buffer.
         got: usize,
     },
 

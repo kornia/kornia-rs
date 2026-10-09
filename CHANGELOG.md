@@ -13,6 +13,22 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
 
 ## [Unreleased]
 
+### Fixed
+- **kornia-io**: `StreamCapture::grab_rgb8` / `VideoReader::grab_rgb8` no longer return sheared
+  frames when GStreamer pads RGB rows, i.e. at widths where `width * 3` is not a multiple of 4
+  (854, 426, 1366, ...). The row stride and offset now come from the buffer's `VideoMeta` or the
+  caps' default layout (#1160).
+
+### Changed
+- **kornia-io**: `grab_rgb8` returns `StreamCaptureError::InvalidImageFormat` for pipelines that
+  do not produce `RGB` frames (previously `BGR`/`RGBx` frames were returned as `Ok` with wrong
+  pixels, and `GRAY8`/encoded frames failed with `BufferSizeMismatch`), and for zero-sized caps,
+  negative strides or a `VideoMeta` that does not match the caps.
+- **kornia-io**: for padded widths, `grab_rgb8` returns an owned (writable) image; tightly packed
+  frames are still borrowed zero-copy and read-only. Call `.clone()` for a writable copy.
+- **kornia-io**: a missing `framerate` in the caps no longer ends a `StreamCapture` stream
+  silently; frames are delivered and `get_fps()` reports `0.0`.
+
 ## [0.2.0] — 2026-09-26
 
 **0.2.0 is 0.1.15 re-released under the right version.** 0.1.15 shipped breaking API changes as a
