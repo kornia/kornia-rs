@@ -84,6 +84,16 @@ twin behind the `cuda` feature.
 - 752x480, 2048 keypoints, Orin Nano MAXN: CUDA 287 µs (binary) / 410 µs (f32); CPU 3.0 / 3.8 ms on
   6 threads, 10.5 / 13.8 ms on one. `cargo bench -p kornia-3d --bench bench_stereo_match --features cuda`.
 
+**`kornia-io` `VideoWriter::close` no longer hangs, and reports pipeline errors.** It set the
+pipeline to null before end-of-stream reached the file, so the end-of-stream message it then
+waited for was never posted and `close` never returned. It now waits for end-of-stream first,
+so the file is complete. Behaviour changes:
+- `write` and `close` return `StreamCaptureError::GStreamerError` once the pipeline has failed
+  (e.g. caps the encoder cannot accept); `write` used to keep queueing frames in memory and
+  `close` returned `Ok`, leaving an empty file.
+- `start` no longer spawns a bus thread; calling it twice before `close` is harmless.
+  `StreamCaptureError::JoinThreadError` is no longer returned.
+
 ## [0.2.0] — 2026-09-26
 
 **0.2.0 is 0.1.15 re-released under the right version.** 0.1.15 shipped breaking API changes as a
