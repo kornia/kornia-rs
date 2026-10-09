@@ -17,7 +17,7 @@ runs:
   using: composite
   steps:
     - name: Cache Cargo registry
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: |
           ~/.cargo/registry/index/
@@ -29,7 +29,7 @@ runs:
           ${{ inputs.cache-prefix }}-${{ runner.os }}-${{ runner.arch }}-
     - name: Install sccache
       if: inputs.with-sccache == 'true'
-      uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+      uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
     - name: Setup sccache environment
       if: inputs.with-sccache == 'true'
       shell: bash
