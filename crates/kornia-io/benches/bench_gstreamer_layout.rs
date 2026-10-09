@@ -32,6 +32,8 @@ fn bench_grab_rgb8_layout(c: &mut Criterion) {
             b.iter_custom(|iters| {
                 let mut total = Duration::ZERO;
                 for _ in 0..iters {
+                    // Fail instead of hanging if the pipeline stops producing frames.
+                    let deadline = Instant::now() + Duration::from_secs(5);
                     loop {
                         let start = Instant::now();
                         let frame = capture.grab_rgb8().expect("Failed to grab the image");
@@ -41,6 +43,12 @@ fn bench_grab_rgb8_layout(c: &mut Criterion) {
                             black_box(frame);
                             break;
                         }
+                        assert!(
+                            Instant::now() < deadline,
+                            "no frame from the pipeline within 5 s"
+                        );
+                        // Only the grab is timed, so yielding here does not bias the result.
+                        std::thread::yield_now();
                     }
                 }
                 total
