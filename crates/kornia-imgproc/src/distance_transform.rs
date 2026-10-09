@@ -142,7 +142,7 @@ fn distance_transform_1d(f: &[f32], d: &mut [f32], v: &mut [usize], z: &mut [f32
     for q in 1..n {
         loop {
             let r = v[k];
-            let numerator = (f[q] + (q * q) as f32) - (f[r] + (r * r) as f32);
+            let numerator = (f[q] - f[r]) + (q - r) as f32 * (q + r) as f32;
             let denominator = 2.0 * (q as f32 - r as f32);
             let s = numerator / denominator;
 
@@ -252,6 +252,55 @@ mod tests {
             assert_eq!(output.height(), height, "case {width}x{height}");
             assert!(output.as_slice().is_empty(), "case {width}x{height}");
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn distance_transform_foreground_is_zero_at_large_sizes() -> Result<(), ImageError> {
+        let mut executor = DistanceTransformExecutor::new();
+
+        // Common video resolutions, plus single rows/columns longer than 4096 px.
+        let sizes = [
+            (1920, 1080),
+            (2048, 1080),
+            (3840, 2160),
+            (4096, 2160),
+            (7680, 4320),
+            (4200, 1),
+            (1, 4200),
+        ];
+
+        let mut failures = Vec::new();
+        for (width, height) in sizes {
+            // The first row and the first column are foreground, so every pixel
+            // in them must have distance 0. This exercises both the row pass and
+            // the column pass over their full length.
+            let mut image = Image::<f32, 1>::from_size_val(ImageSize { width, height }, 0.0)?;
+            let data = image.as_slice_mut();
+            data[..width].fill(1.0);
+            for y in 0..height {
+                data[y * width] = 1.0;
+            }
+
+            let output = executor.execute(&image)?;
+            let out = output.as_slice();
+
+            let bad_row: Vec<usize> = (0..width).filter(|&x| out[x] != 0.0).collect();
+            let bad_col: Vec<usize> = (0..height).filter(|&y| out[y * width] != 0.0).collect();
+            if !bad_row.is_empty() || !bad_col.is_empty() {
+                failures.push(format!(
+                    "{width}x{height}: {} pixels in row 0 and {} in column 0 have a non-zero \
+                     distance (first x = {:?}, first y = {:?})",
+                    bad_row.len(),
+                    bad_col.len(),
+                    bad_row.first(),
+                    bad_col.first(),
+                ));
+            }
+        }
+
+        assert!(failures.is_empty(), "\n{}", failures.join("\n"));
 
         Ok(())
     }
