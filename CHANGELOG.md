@@ -84,6 +84,21 @@ twin behind the `cuda` feature.
 - 752x480, 2048 keypoints, Orin Nano MAXN: CUDA 287 µs (binary) / 410 µs (f32); CPU 3.0 / 3.8 ms on
   6 threads, 10.5 / 13.8 ms on one. `cargo bench -p kornia-3d --bench bench_stereo_match --features cuda`.
 
+**`kornia-io` GStreamer frames are no longer sheared at widths like 854** (#1160). When `width * 3`
+is not a multiple of 4 (854, 426, 1366, ...), GStreamer adds 1–3 padding bytes per RGB row;
+`StreamCapture::grab_rgb8` and `VideoReader::grab_rgb8` now read the row stride and offset from
+the buffer's `VideoMeta` or the caps' default layout instead of assuming tightly packed rows.
+
+Changed:
+- `grab_rgb8` returns `StreamCaptureError::InvalidImageFormat` for pipelines that do not produce
+  `RGB` frames (`BGR`/`RGBx` frames were returned as `Ok` with wrong pixels, `GRAY8` and encoded
+  frames failed with `BufferSizeMismatch`), and for zero-sized caps, negative strides or a
+  `VideoMeta` that does not match the caps.
+- For padded widths `grab_rgb8` returns an owned, writable image; tightly packed frames are still
+  borrowed zero-copy and read-only. Call `.clone()` for a writable copy.
+- A missing `framerate` in the caps no longer ends a `StreamCapture` stream silently; frames are
+  delivered and `get_fps()` reports `0.0`.
+
 ## [0.2.0] — 2026-09-26
 
 **0.2.0 is 0.1.15 re-released under the right version.** 0.1.15 shipped breaking API changes as a
