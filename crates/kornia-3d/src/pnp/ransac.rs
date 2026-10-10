@@ -167,8 +167,8 @@ pub struct PnPRansacResult {
 
 /// Solve PnP robustly using a legacy RANSAC loop around a base PnP method (e.g., EPnP).
 ///
-/// - Minimal sample size follows the KERNEL: 3 for AP3P (an exact P3P solver), 5 for EPnP (4 when
-///   only 4 points are available). This is what makes a P3P kernel worth using here: a sample is
+/// - Minimal sample size follows the KERNEL: 3 for AP3P (an exact P3P solver), 5 for EPnP and
+///   SQPnP (4 when only 4 points are available). This is what makes a P3P kernel worth using here: a sample is
 ///   outlier-free with probability `w^k` at inlier ratio `w`, so `k = 3` rather than `5` DRAWS a
 ///   clean sample `w^-2` times as often (16x at `w = 0.25`). That is a probability ratio, not a
 ///   measured speedup — each AP3P iteration now scores up to four hypotheses instead of one, which
@@ -199,7 +199,8 @@ pub struct PnPRansacResult {
 ///   [`PnPRansacResult::refinement`] reports which of those happened, so the caller can see that
 ///   an AP3P request was answered by an EPnP fit rather than having to infer it.
 /// - Minimum correspondence count is kernel- and refine-aware: AP3P with `refine: false` needs
-///   only 3, everything else needs 4 because the EPnP refit does.
+///   only 3; everything else needs 4, because the EPnP and SQPnP kernels sample at least 4 points
+///   and the EPnP refit after an AP3P kernel needs 4.
 ///
 /// # Errors
 ///
@@ -342,7 +343,7 @@ pub fn solve_pnp_ransac(
             match solve_pnp(&w_min, &i_min, k, distortion, base.clone()) {
                 Ok(p) => hypotheses.push(p),
                 Err(_e) => {
-                    log::debug!("EPnP failed on minimal set at iteration {iter}");
+                    log::debug!("Base solver failed on minimal set at iteration {iter}");
                     continue;
                 }
             }

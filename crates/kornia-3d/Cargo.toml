@@ -27,6 +27,10 @@ name = "bench_fundamental"
 harness = false
 name = "bench_stereo_match"
 
+[[bench]]
+harness = false
+name = "bench_pnp"
+
 [dependencies]
 bincode = { workspace = true }
 cudarc = { workspace = true, optional = true }
