@@ -18,7 +18,7 @@
 *   **Registration:** Algorithms like Iterative Closest Point (ICP) for aligning point clouds.
 *   **Fundamental RANSAC:** Seven-point minimal hypotheses (every real solution that satisfies the oriented epipolar constraint on its sample, as in DEGENSAC), with eight-point inlier refinement. `pose::fundamental_7point` exposes the minimal solver; `ransac::estimators::Fundamental8PointEstimator` and `pose::ransac_fundamental_8point` retain the original sampling path for comparisons. The two-view builder also accepts `Fundamental7ptSolver`; its existing `Fundamental8ptSolver` default is preserved.
     `pose::RansacParams::confidence` accepts an explicit sampling target; `None` preserves each model family's default. Exhaustive struct literals must add `confidence: None` or use `..Default::default()`. Adaptive caps use the all-inlier probability for distinct sampling without replacement.
-*   **PnP Solvers:** Solve for camera pose given 3D-2D point correspondences.
+*   **PnP Solvers:** Solve for camera pose given 3D-2D point correspondences: EPnP, AP3P and SQPnP (`pnp::solve_sqpnp`, minimises the object-space error over all rotations), with RANSAC and optional LM refinement.
 
 ## 📦 Installation
 
