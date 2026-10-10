@@ -85,7 +85,7 @@ twin behind the `cuda` feature.
   6 threads, 10.5 / 13.8 ms on one. `cargo bench -p kornia-3d --bench bench_stereo_match --features cuda`.
 
 **`kornia-io` GStreamer frames are no longer sheared at widths like 854** (#1160). When `width * 3`
-is not a multiple of 4 (854, 426, 1366, ...), GStreamer pads each RGB row up to one;
+is not a multiple of 4 (854, 426, 1366, ...), GStreamer adds 1–3 padding bytes per RGB row;
 `StreamCapture::grab_rgb8` and `VideoReader::grab_rgb8` now read the row stride and offset from
 the buffer's `VideoMeta` or the caps' default layout instead of assuming tightly packed rows.
 
