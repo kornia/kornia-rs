@@ -60,6 +60,11 @@ libc = { version = "0.2", optional = true }
 v4l = { version = "0.14.0", optional = true }
 
 [features]
-gstreamer = ["dep:circular-buffer", "dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video"]
+gstreamer = [
+  "dep:circular-buffer",
+  "dep:gstreamer",
+  "dep:gstreamer-app",
+  "dep:gstreamer-video",
+]
 turbojpeg = ["dep:turbojpeg"]
 v4l = ["dep:libc", "dep:v4l"]
