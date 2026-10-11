@@ -1,0 +1,39 @@
+"""Type stubs for the ``kornia_rs.algebra`` submodule."""
+
+import numpy as np
+
+
+class Vec3F32:
+    def __init__(self, x: float, y: float, z: float) -> None: ...
+
+    @staticmethod
+    def from_numpy(values: np.ndarray) -> "Vec3F32": ...
+
+    @property
+    def x(self) -> float: ...
+
+    @property
+    def y(self) -> float: ...
+
+    @property
+    def z(self) -> float: ...
+
+    def as_numpy(self) -> np.ndarray: ...
+
+
+class Vec3F64:
+    def __init__(self, x: float, y: float, z: float) -> None: ...
+
+    @staticmethod
+    def from_numpy(values: np.ndarray) -> "Vec3F64": ...
+
+    @property
+    def x(self) -> float: ...
+
+    @property
+    def y(self) -> float: ...
+
+    @property
+    def z(self) -> float: ...
+
+    def as_numpy(self) -> np.ndarray: ...
