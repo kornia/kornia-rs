@@ -17,8 +17,8 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
 `PnPMethod::SQPnPDefault` through `solve_pnp` and `solve_pnp_ransac`), after Terzakis & Lourakis,
 ECCV 2020. It minimises the object-space error over all rotations, for planar and non-planar
 points, so an accurate pose needs no extra refinement step. With 1 px noise it takes 12–22 µs
-for 6–500 points, 5–330× faster than EPnP with LM refinement (plain EPnP is faster below about
-20 points but less accurate; Apple M5, `cargo bench -p kornia-3d --bench bench_pnp`). With
+for 6–500 points, about 5–300× faster than EPnP with LM refinement (plain EPnP is faster below
+about 20 points but less accurate; Apple M5, `cargo bench -p kornia-3d --bench bench_pnp`). With
 exactly 3 points it returns one of up to four exact solutions. `SQPnPParams::refine_lm` can
 polish the pose on reprojection error, which helps when points are very close to the camera.
 
