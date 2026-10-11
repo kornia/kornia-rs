@@ -58,8 +58,10 @@ in `.github/workflows/rust_lint.yml`.
    `rustup toolchain install nightly-2026-04-03 -c rust-src,rustc-dev`.
 2. LLVM 21+: `llc-21` or `llc-22` on `PATH`, or set `CUDA_OXIDE_LLC`.
 3. `cuda.h` and the libcuda stub under `$CUDA_HOME` (default `/usr/local/cuda`).
-   Only headers are needed, no GPU or driver: on Ubuntu, `cuda-driver-dev-12-6`
-   is enough.
+   Only headers are needed, no GPU or driver: on Ubuntu,
+   `cuda-cudart-dev-12-6` (cuda.h) plus `cuda-driver-dev-12-6` (the stub) is
+   enough. Point `CUDA_HOME` at the directory holding `include/cuda.h`; put the
+   stub's directory on `LIBRARY_PATH` if it is not under `$CUDA_HOME`.
 4. The codegen backend, built **at the rev pinned in `kernels-oxide/Cargo.toml`**
    (`f819f23fe035ec1c24b8ec06e738b62a9f377140`), at
    `$CARGO_HOME/cuda-oxide/librustc_codegen_cuda.so` or `$CUDA_OXIDE_BACKEND`:

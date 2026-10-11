@@ -107,12 +107,13 @@ jobs:
           wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
           sudo dpkg -i cuda-keyring_1.1-1_all.deb
           sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends llvm-21 cuda-driver-dev-12-6
+          sudo apt-get install -y -q --no-install-recommends llvm-21 cuda-driver-dev-12-6 cuda-cudart-dev-12-6
           # Take cuda.h and the libcuda link stub from the package's file list.
-          H=$(dpkg -L cuda-driver-dev-12-6 | grep '/include/cuda\.h$' | head -1)
-          S=$(dpkg -L cuda-driver-dev-12-6 | grep '/stubs/libcuda\.so$' | head -1)
+          H=$(dpkg -L cuda-cudart-dev-12-6 cuda-driver-dev-12-6 | grep '/include/cuda\.h$' | head -1)
+          S=$(dpkg -L cuda-cudart-dev-12-6 cuda-driver-dev-12-6 | grep '/stubs/libcuda\.so$' | head -1)
           echo "cuda.h: $H  stub: $S"
-          test -n "$H" && test -n "$S"
+          test -n "$H"
+          test -n "$S"
           echo "CUDA_HOME=$(dirname "$(dirname "$H")")" >> "$GITHUB_ENV"
           echo "LIBRARY_PATH=$(dirname "$S")" >> "$GITHUB_ENV"
           rustup toolchain install "$TC" --profile minimal -c rust-src,rustc-dev
