@@ -2,9 +2,9 @@
 name = "kornia_kernels_oxide"
 version = "0.1.0"
 edition = "2024"
+description = "Rust-authored CUDA kernels for kornia-imgproc, compiled to PTX by cuda-oxide"
 license = "Apache-2.0"
 publish = false
-description = "Rust-authored CUDA kernels for kornia-imgproc, compiled to PTX by cuda-oxide"
 
 # Standalone: this crate needs the pinned nightly + cuda-oxide codegen backend,
 # so the stable kornia-rs workspace must never build it. kornia-imgproc's
