@@ -1,0 +1,21 @@
+[package]
+name = "kornia_kernels_oxide"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "Rust-authored CUDA kernels for kornia-imgproc, compiled to PTX by cuda-oxide"
+
+# Standalone: this crate needs the pinned nightly + cuda-oxide codegen backend,
+# so the stable kornia-rs workspace must never build it. kornia-imgproc only
+# include_str!s the PTX that scripts/cuda-oxide/build-ptx.sh copies out.
+[workspace]
+
+# Rev must match the codegen backend (librustc_codegen_cuda.so) that compiles
+# this crate; see docs/cuda-oxide.md.
+[dependencies]
+cuda-device = { git = "https://github.com/NVlabs/cuda-oxide", rev = "f819f23fe035ec1c24b8ec06e738b62a9f377140" }
+cuda-host = { git = "https://github.com/NVlabs/cuda-oxide", rev = "f819f23fe035ec1c24b8ec06e738b62a9f377140" }
+
+[profile.release]
+opt-level = 3

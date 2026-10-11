@@ -15,6 +15,10 @@ name = "bench_cuda_color_conversions"
 required-features = ["cuda"]
 
 [[example]]
+name = "bench_cuda_oxide"
+required-features = ["cuda-oxide"]
+
+[[example]]
 name = "bench_cuda_remap"
 required-features = ["cuda"]
 
@@ -156,4 +160,7 @@ rand = { workspace = true }
 # CUDA device backend + custom CUDA kernels (via the cudarc crate).
 # Enables the `preprocess` module and the `cuda` kernels module.
 cuda = ["dep:cudarc", "dep:half", "kornia-image/cuda", "kornia-tensor/cuda"]
+# Rust-authored kernels precompiled to PTX by cuda-oxide (src/cuda/oxide); each
+# falls back to its NVRTC twin if the PTX fails to load. See docs/cuda-oxide.md.
+cuda-oxide = ["cuda"]
 opencv_bench = ["dep:opencv"]

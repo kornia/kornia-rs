@@ -129,8 +129,35 @@ static RGB_FROM_GRAY_F32: KernelCell = KernelCell::new();
 
 /// Launch RGB8 → Gray8: `gray = (77·R + 150·G + 29·B) >> 8` (bit-exact vs CPU).
 ///
-/// Word-vectorized 4 px/thread (see kernel source).
+/// Word-vectorized 4 px/thread (see kernel source). With the `cuda-oxide`
+/// feature this runs the Rust-authored twin and falls back to NVRTC if its PTX
+/// fails to load.
 pub fn launch_gray_from_rgb_u8(
+    stream: &Arc<CudaStream>,
+    src: &CudaSlice<u8>,
+    dst: &mut CudaSlice<u8>,
+    npixels: usize,
+) -> Result<(), CudaColorError> {
+    #[cfg(feature = "cuda-oxide")]
+    if let Ok(kernel) = crate::cuda::oxide::kernel(stream, crate::cuda::oxide::GRAY_FROM_RGB_U8) {
+        return launch_map(kernel, stream, src, dst, npixels, 3, 1, PxPerThread::Four);
+    }
+    nvrtc_gray_from_rgb_u8(stream, src, dst, npixels)
+}
+
+/// [`launch_gray_from_rgb_u8`] forced onto the NVRTC kernel, for oxide A/B
+/// tests and benchmarks.
+#[cfg(feature = "cuda-oxide")]
+pub fn launch_gray_from_rgb_u8_nvrtc(
+    stream: &Arc<CudaStream>,
+    src: &CudaSlice<u8>,
+    dst: &mut CudaSlice<u8>,
+    npixels: usize,
+) -> Result<(), CudaColorError> {
+    nvrtc_gray_from_rgb_u8(stream, src, dst, npixels)
+}
+
+fn nvrtc_gray_from_rgb_u8(
     stream: &Arc<CudaStream>,
     src: &CudaSlice<u8>,
     dst: &mut CudaSlice<u8>,
@@ -238,6 +265,52 @@ mod tests {
             stream.synchronize().unwrap();
 
             assert_eq!(gpu, cpu, "u8 gray must be bit-exact vs CPU (n={n})");
+        }
+    }
+
+    #[cfg(feature = "cuda-oxide")]
+    type GrayU8Launch = fn(
+        &Arc<CudaStream>,
+        &CudaSlice<u8>,
+        &mut CudaSlice<u8>,
+        usize,
+    ) -> Result<(), CudaColorError>;
+
+    /// oxide == NVRTC == CPU, byte for byte, across every tail length (n mod 4),
+    /// and neither kernel writes past `npixels` into an oversized `dst`.
+    #[cfg(feature = "cuda-oxide")]
+    #[test]
+    fn gray_from_rgb_u8_oxide_bit_exact() {
+        const PAD: usize = 9;
+        const SENTINEL: u8 = 0xAB;
+        let stream = default_stream();
+        crate::cuda::oxide::ensure_loaded(&stream)
+            .expect("oxide PTX must load here, or this test only re-checks NVRTC");
+
+        for n in [1, 3, 4, 5, 7, 8, 1023, 37 * 23, 1920 * 1080 + 3] {
+            let src = pattern_u8(n * 3);
+            let mut cpu = vec![0u8; n];
+            crate::color::gray::kernels::gray_from_rgb_u8(&src, &mut cpu, n);
+            let d_src = stream.clone_htod(&src).unwrap();
+
+            let run = |launch: GrayU8Launch| {
+                let mut d_dst = stream.clone_htod(&vec![SENTINEL; n + PAD]).unwrap();
+                launch(&stream, &d_src, &mut d_dst, n).unwrap();
+                let out: Vec<u8> = stream.clone_dtoh(&d_dst).unwrap();
+                stream.synchronize().unwrap();
+                assert!(
+                    out[n..].iter().all(|&b| b == SENTINEL),
+                    "wrote past npixels (n={n})"
+                );
+                out[..n].to_vec()
+            };
+            let oxide = run(crate::cuda::oxide::launch_gray_from_rgb_u8);
+            let nvrtc = run(launch_gray_from_rgb_u8_nvrtc);
+            let default = run(launch_gray_from_rgb_u8);
+
+            assert_eq!(nvrtc, cpu, "NVRTC vs CPU (n={n})");
+            assert_eq!(oxide, cpu, "oxide vs CPU (n={n})");
+            assert_eq!(default, oxide, "default launcher vs oxide (n={n})");
         }
     }
 

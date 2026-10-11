@@ -32,7 +32,7 @@ use kornia_imgproc::{
     },
     cuda::{
         color::{
-            gray::{launch_gray_from_rgb_f32, launch_gray_from_rgb_u8, launch_rgb_from_gray_u8},
+            gray::{launch_gray_from_rgb_f32, launch_rgb_from_gray_u8},
             hsv_hls::{launch_hls_from_rgb_f32, launch_hsv_from_rgb_f32},
             swizzle::launch_bgr_from_rgb_u8,
             yuv::{launch_ycc_from_rgb_f32, launch_ycc_from_rgb_u8, ChromaOrder},
@@ -70,6 +70,30 @@ use kornia_imgproc::{
 
 use kornia_imgproc::cuda::filter::{launch_integral_image_cuda, launch_laplacian_u8_cuda};
 use kornia_imgproc::filter::{integral_image_u8, laplacian_u8};
+
+type GrayU8Launch = fn(
+    &Arc<CudaStream>,
+    &CudaSlice<u8>,
+    &mut CudaSlice<u8>,
+    usize,
+) -> Result<(), kornia_imgproc::cuda::color::CudaColorError>;
+
+#[cfg(not(feature = "cuda-oxide"))]
+const GRAY_U8_ARMS: &[(&str, GrayU8Launch)] = &[(
+    "gray_from_rgb (u8)",
+    kornia_imgproc::cuda::color::gray::launch_gray_from_rgb_u8,
+)];
+#[cfg(feature = "cuda-oxide")]
+const GRAY_U8_ARMS: &[(&str, GrayU8Launch)] = &[
+    (
+        "gray_from_rgb (u8, NVRTC)",
+        kornia_imgproc::cuda::color::gray::launch_gray_from_rgb_u8_nvrtc,
+    ),
+    (
+        "gray_from_rgb (u8, oxide)",
+        kornia_imgproc::cuda::oxide::launch_gray_from_rgb_u8,
+    ),
+];
 
 const WARMUP: u32 = 30;
 const ITERS: u32 = 100;
@@ -1679,24 +1703,20 @@ fn main() {
             }
             t.elapsed().as_secs_f64() * 1e3 / ITERS as f64
         };
-        let seg = bench_segments(
-            &ctx,
-            &stream,
-            &src_host,
-            &mut dst_host,
-            &mut src_dev,
-            &mut dst_dev,
-            |src, dst| {
-                launch_gray_from_rgb_u8(&stream2, src, dst, n_dst).expect("gray_from_rgb_u8");
-            },
-        );
-        print_row(
-            "gray_from_rgb (u8)",
-            "n/a",
-            &format!("{sw}×{sh}"),
-            cpu_ms,
-            &seg,
-        );
+        for &(label, launch) in GRAY_U8_ARMS {
+            let seg = bench_segments(
+                &ctx,
+                &stream,
+                &src_host,
+                &mut dst_host,
+                &mut src_dev,
+                &mut dst_dev,
+                |src, dst| {
+                    launch(&stream2, src, dst, n_dst).expect("gray_from_rgb_u8");
+                },
+            );
+            print_row(label, "n/a", &format!("{sw}×{sh}"), cpu_ms, &seg);
+        }
     }
 
     // ── color: rgb_from_gray u8 ───────────────────────────────────────────────

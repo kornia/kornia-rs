@@ -89,6 +89,7 @@ jobs:
           cargo clippy --tests -p kornia-tensor --features cuda -- -D warnings
           cargo clippy --tests -p kornia-image --features cuda -- -D warnings
           cargo clippy --tests -p kornia-imgproc --features cuda -- -D warnings
+          cargo clippy --all-targets -p kornia-imgproc --features cuda,cuda-oxide -- -D warnings
           cargo clippy --tests -p kornia-3d --features cuda -- -D warnings
 
   cross-platform-check-macos:

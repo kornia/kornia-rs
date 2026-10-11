@@ -1,0 +1,5 @@
+target/
+# cargo-oxide writes these next to the manifest; the one committed PTX lives in
+# crates/kornia-imgproc/src/cuda/oxide/.
+*.ll
+*.ptx
