@@ -14,7 +14,8 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
 ## [Unreleased]
 
 **New: `cuda-oxide` feature for kornia-imgproc (off by default).** Ships the first CUDA kernel
-written in Rust and precompiled to PTX by NVlabs' cuda-oxide: `gray_from_rgb_u8`. With the feature
+written in Rust and compiled to PTX at build time by NVlabs' cuda-oxide: `gray_from_rgb_u8`
+(needs the cuda-oxide toolchain and a git checkout). With the feature
 on, `cuda::color::gray::launch_gray_from_rgb_u8` runs it; output is byte-identical to the NVRTC
 kernel and the CPU path, and the launcher falls back to NVRTC if the PTX fails to load. No
 public API changes; kornia still builds on stable. See `docs/cuda-oxide.md`.

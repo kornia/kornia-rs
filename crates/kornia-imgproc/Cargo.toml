@@ -156,11 +156,15 @@ kornia-io = { workspace = true }
 ndarray = { workspace = true, features = ["rayon"] }
 rand = { workspace = true }
 
+[build-dependencies]
+thiserror = { workspace = true }
+
 [features]
 # CUDA device backend + custom CUDA kernels (via the cudarc crate).
 # Enables the `preprocess` module and the `cuda` kernels module.
 cuda = ["dep:cudarc", "dep:half", "kornia-image/cuda", "kornia-tensor/cuda"]
-# Rust-authored kernels precompiled to PTX by cuda-oxide (src/cuda/oxide); each
-# falls back to its NVRTC twin if the PTX fails to load. See docs/cuda-oxide.md.
+# Rust-authored kernels (kernels-oxide/) compiled to PTX by build.rs through the
+# cuda-oxide backend; needs its toolchain and a git checkout (docs/cuda-oxide.md).
+# Each op falls back to its NVRTC twin if the PTX fails to load at runtime.
 cuda-oxide = ["cuda"]
 opencv_bench = ["dep:opencv"]

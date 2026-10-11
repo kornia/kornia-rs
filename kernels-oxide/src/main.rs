@@ -1,9 +1,8 @@
 //! Rust-authored CUDA kernels for kornia-imgproc.
 //!
 //! Every `#[kernel]` in this crate lands in ONE PTX module, which
-//! `scripts/cuda-oxide/build-ptx.sh` copies to
-//! `crates/kornia-imgproc/src/cuda/oxide/kernels.ptx`. PTX entry names are the
-//! plain Rust function names.
+//! kornia-imgproc's `build.rs` compiles into its `OUT_DIR`. PTX entry names are
+//! the plain Rust function names.
 
 mod color_gray;
 

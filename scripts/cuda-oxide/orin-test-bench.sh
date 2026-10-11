@@ -30,9 +30,9 @@ log="$(mktemp)"
 (cd "$ROOT" && cargo test --release -p kornia-imgproc --features "$FEATURES" --lib \
   -- oxide gray_from_rgb_u8 --test-threads=1 2>&1 | tee "$log")
 # A target with unmet features is skipped without a word; check names, not "ok".
+# The PTX gate runs in build.rs, so reaching these tests means it passed.
 for t in gray_from_rgb_u8_oxide_bit_exact gray_from_rgb_u8_bit_exact_vs_cpu \
-         ptx_gate_target_is_sm75 ptx_gate_no_fma ptx_gate_no_generic_memory_ops \
-         ptx_gate_has_every_entry corrupt_ptx_errors_instead_of_panicking; do
+         corrupt_ptx_errors_instead_of_panicking; do
   grep -q "^test .*::$t \.\.\. ok$" "$log" || die "test $t did not run and pass"
 done
 rm -f "$log"

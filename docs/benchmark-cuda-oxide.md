@@ -36,33 +36,37 @@ blocks), same `PREFER_L1` carveout as the NVRTC kernel.
 ### Correctness
 
 ```
-test cuda::color::gray::tests::gray_from_rgb_u8_oxide_bit_exact ... ok
 test cuda::color::gray::tests::gray_from_rgb_u8_bit_exact_vs_cpu ... ok
-test cuda::oxide::tests::ptx_gate_target_is_sm75 ... ok
-test cuda::oxide::tests::ptx_gate_has_every_entry ... ok
-test cuda::oxide::tests::ptx_gate_no_fma ... ok
-test cuda::oxide::tests::ptx_gate_no_generic_memory_ops ... ok
+test cuda::color::gray::tests::gray_from_rgb_u8_oxide_bit_exact ... ok
 test cuda::oxide::tests::corrupt_ptx_errors_instead_of_panicking ... ok
 ```
+
+The PTX gate (`.target sm_75`, no `fma`, no generic `ld`/`st`) runs in
+`build.rs` on every build with the feature, so a passing test run implies it
+passed. The u8->u32 pointer cast kept the global address space
+(`cvta.to.global` + `ld.global.b32`).
 
 `gray_from_rgb_u8_oxide_bit_exact` asserts oxide == CPU, NVRTC == CPU and
 default launcher == oxide for n = 1, 3, 4, 5, 7, 8, 1023, 851, 1920·1080+3 (every
 `n mod 4` tail), and that neither kernel writes past `npixels` into a
 sentinel-filled oversized `dst`. It calls `ensure_loaded` first, so it cannot
 pass by silently comparing NVRTC with itself. Mutation check: changing one Q14
-weight in the committed PTX (4899 -> 4900) fails it at n = 1023.
+weight in the PTX (4899 -> 4900) fails it at n = 1023.
 
 ### Throughput
 
 `examples/bench_cuda_oxide.rs`: owned stream, 5 cycles alternating arm order,
 each arm 5 rounds × 100 launches per cycle, events + sync per round, min round
-per cycle. GB/s counts 3 B read + 1 B written per pixel. Three separate sittings:
+per cycle. GB/s counts 3 B read + 1 B written per pixel. Sittings 1-3 ran the
+PTX from the spike-style manual build; sitting 4 ran the PTX that `build.rs`
+generated (identical kernel body) while another build loaded the box:
 
 | Size | Sitting | NVRTC min (ms) | oxide min (ms) | oxide / NVRTC | Spread (N / o) | GB/s (N / o) | GPU MHz seen |
 |---|---|---:|---:|---:|---:|---:|---|
 | 3840x2160 | 1 | 0.3472 | 0.3465 | **0.998** | 0.6% / 1.4% | 95.5 / 95.8 | 1020 |
 | 3840x2160 | 2 | 0.3476 | 0.3471 | **0.998** | 0.2% / 0.1% | 95.4 / 95.6 | 1020 |
 | 3840x2160 | 3 | 0.3479 | 0.3471 | **0.998** | 0.3% / 0.1% | 95.4 / 95.6 | 1020 |
+| 3840x2160 | 4 | 0.3558 | 0.3562 | **1.001** | 1.6% / 2.9% | 93.3 / 93.1 | 1020 |
 | 1920x1080 | 1 | 0.0913 | 0.0911 | 0.998 | 55% / 56% | 90.9 / 91.0 | 714-1020 |
 | 1920x1080 | 2 | 0.0911 | 0.0910 | 0.998 | 48% / 47% | 91.0 / 91.2 | 306-1020 |
 | 1920x1080 | 3 | 0.0918 | 0.0914 | 0.996 | 47% / 48% | 90.4 / 90.7 | 714-1020 |
@@ -71,7 +75,8 @@ per cycle. GB/s counts 3 B read + 1 B written per pixel. Three separate sittings
 | 320x240 | 3 | 0.0082 | 0.0077 | 0.939 | 95% / 102% | 37.5 / 39.9 | 306-714 |
 
 **Read the 4K rows.** The clock sat at 1020 MHz for every round and the cycle
-spread is under 1.5%: oxide is at parity (0.2% faster, inside noise). At 1080p
+spread is at most 2.9%: oxide is at parity (within 0.2% either way). Sitting 4 is
+~2.5% slower on BOTH arms (a concurrent build), so it is the ratio that holds. At 1080p
 the minima agree to 0.4% but the spread is DVFS ramping mid-run. At 320x240 the
 kernel is launch-bound and too light to ramp the governor (306 MHz in sitting 1),
 so those rows measure the clock, not the kernel; do not quote them. All of this

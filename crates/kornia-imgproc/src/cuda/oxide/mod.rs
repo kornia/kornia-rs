@@ -2,9 +2,9 @@
 //! [cuda-oxide](https://github.com/NVlabs/cuda-oxide).
 //!
 //! Enabled by the `cuda-oxide` feature. The kernel source lives in the
-//! standalone nightly crate `kernels-oxide/`; `kernels.ptx` is its committed
-//! output, regenerated only by `scripts/cuda-oxide/build-ptx.sh` (see
-//! `docs/cuda-oxide.md`). kornia itself stays on stable Rust.
+//! standalone nightly crate `kernels-oxide/`; `build.rs` compiles it to PTX in
+//! `OUT_DIR` and gates it (sm_75 target, no `fma`, no generic loads/stores).
+//! kornia itself stays on stable Rust; see `docs/cuda-oxide.md`.
 //!
 //! The PTX targets `sm_75`, so the driver JITs it for any Turing-or-newer GPU.
 //! If the module fails to load, each op's default launcher falls back to its
@@ -18,7 +18,7 @@ use kornia_tensor::CudaKernel;
 use super::color::{launch_map, CudaColorError, KernelSuiteCell, PxPerThread};
 
 /// The single cuda-oxide PTX module, holding every entry in [`ENTRIES`].
-pub(crate) static PTX: &str = include_str!("kernels.ptx");
+pub(crate) static PTX: &str = include_str!(concat!(env!("OUT_DIR"), "/kernels.ptx"));
 
 /// `.entry` names in [`PTX`]; indices below address this list.
 pub(crate) const ENTRIES: &[&str] = &["gray_from_rgb_u8"];
@@ -105,60 +105,6 @@ pub fn launch_gray_from_rgb_u8(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Opcode token (`ld.global.b32`, ...) of every line, skipping a `@%p` guard.
-    fn opcodes() -> impl Iterator<Item = &'static str> {
-        PTX.lines().filter_map(|l| {
-            let mut toks = l.split("//").next().unwrap_or("").split_whitespace();
-            let first = toks.next()?;
-            if first.starts_with('@') {
-                toks.next()
-            } else {
-                Some(first)
-            }
-        })
-    }
-
-    // PTX gate: runs on any host, no GPU needed.
-
-    #[test]
-    fn ptx_gate_target_is_sm75() {
-        assert!(
-            PTX.lines().any(|l| l.trim() == ".target sm_75"),
-            "kernels.ptx must target sm_75 so it JITs on Turing+; rebuild with build-ptx.sh"
-        );
-    }
-
-    #[test]
-    fn ptx_gate_has_every_entry() {
-        for name in ENTRIES {
-            assert!(
-                PTX.contains(&format!(".entry {name}(")),
-                "kernels.ptx is missing .entry {name}"
-            );
-        }
-    }
-
-    #[test]
-    fn ptx_gate_no_fma() {
-        // Rust never contracts implicitly; an `fma` here breaks CPU byte parity.
-        assert!(!PTX.contains("fma."), "kernels.ptx contains an fma");
-    }
-
-    #[test]
-    fn ptx_gate_no_generic_memory_ops() {
-        // Generic `ld.b32` (no state space) means address-space inference was
-        // lost, e.g. through a slice parameter.
-        const SPACES: &[&str] = &["global", "param", "shared", "local", "const"];
-        for op in opcodes().filter(|op| op.starts_with("ld.") || op.starts_with("st.")) {
-            let space = op.split('.').nth(1).unwrap_or("");
-            assert!(
-                SPACES.contains(&space),
-                "generic memory op in kernels.ptx: {op}"
-            );
-        }
-        assert!(opcodes().any(|op| op.starts_with("ld.global.")));
-    }
 
     #[test]
     fn corrupt_ptx_errors_instead_of_panicking() {
