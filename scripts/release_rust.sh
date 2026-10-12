@@ -9,6 +9,7 @@
 # crates.io index — that's a Cargo limitation, not a script bug.
 #
 # Pass --execute to actually publish. Requires CARGO_REGISTRY_TOKEN env var.
+# Pass --check to only verify every publishable crate is listed (no network).
 #
 # Crates are published deps-first. crates.io's index has a few-seconds
 # propagation lag after each publish, so we sleep between dependent steps.
@@ -17,22 +18,21 @@
 # and skips if it already matches the local workspace version. Lets us resume
 # from where a previous run failed without re-publishing.
 #
-# Crates intentionally not published from this script:
-#   - kornia            (umbrella — re-enable once we decide how to gate
-#                        optional/feature-heavy deps)
-#   - kornia-vlm        (pulls in candle, tokio, hf-hub — heavy)
-#   - kornia-apriltag   (large git submodule of test images)
-# Add them back to PUBLISH_ORDER below once those constraints are sorted.
+# Every publishable crates/* member must be in PUBLISH_ORDER or NOT_PUBLISHED
+# below; the script aborts otherwise, so a release can't silently skip one.
 
 set -euo pipefail
 
-MODE="plan"        # plan | execute
+MODE="plan"        # plan | execute | check
 SLEEP_SECS=20
 
 for arg in "$@"; do
   case "$arg" in
     --execute|--no-dry-run)
       MODE="execute"
+      ;;
+    --check)
+      MODE="check"
       ;;
     --help|-h)
       sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
@@ -53,6 +53,7 @@ done
 # Tier 2 (-> image, tensor):       kornia-io
 # Tier 3 (-> algebra/image/tensor/io): kornia-imgproc
 # Tier 4 (-> everything above):    kornia-3d
+# Tier 5 (-> 3d and below):        kornia-calib, kornia-apriltag
 PUBLISH_ORDER=(
   kornia-algebra
   kornia-bow
@@ -63,6 +64,12 @@ PUBLISH_ORDER=(
   kornia-imgproc
   kornia-3d
   kornia-calib
+  kornia-apriltag
+)
+
+# Publishable (`publish` not false) but deliberately skipped, with the reason.
+declare -A NOT_PUBLISHED=(
+  [kornia]="umbrella; depends on kornia-vlm, which is publish = false"
 )
 
 # Tier-0 leaves (no kornia-* deps) — can be `cargo publish --dry-run`'d
@@ -119,6 +126,30 @@ remote_version() {
     echo "ERROR-HTTP-$http_code"  # forces an obvious failure, won't false-match local version
   fi
 }
+
+# Fail if a publishable crates/* member is in neither list.
+check_coverage() {
+  local missing
+  missing=$(cargo metadata --format-version 1 --no-deps \
+    | python3 -c '
+import sys, json
+listed = set(sys.argv[1:])
+for p in json.load(sys.stdin)["packages"]:
+    if "/crates/" in p["manifest_path"] and p["publish"] != [] and p["name"] not in listed:
+        print(p["name"])
+' "${PUBLISH_ORDER[@]}" "${!NOT_PUBLISHED[@]}")
+  if [[ -n "$missing" ]]; then
+    echo "ERROR: publishable crates missing from PUBLISH_ORDER / NOT_PUBLISHED:" >&2
+    echo "$missing" | sed 's/^/  - /' >&2
+    exit 1
+  fi
+}
+
+check_coverage
+if [[ "$MODE" == "check" ]]; then
+  echo "==> All publishable crates are covered by PUBLISH_ORDER / NOT_PUBLISHED."
+  exit 0
+fi
 
 if [[ "$MODE" == "plan" ]]; then
   echo "==> PLAN — would publish ${#PUBLISH_ORDER[@]} crates in this order:"
