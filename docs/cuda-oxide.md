@@ -9,8 +9,8 @@ on. No PTX is committed. Tracked in
 
 | Path | Role |
 |---|---|
-| `kernels-oxide/` | Kernel source. Own `[workspace]`, pinned nightly, never built by the main workspace. |
-| `crates/kornia-imgproc/build.rs` | With `cuda-oxide`: builds `kernels-oxide/` to `$OUT_DIR/kernels.ptx` and gates it. Otherwise a no-op. |
+| `crates/kornia-imgproc/kernels-oxide/` | Kernel source. Manifest is `Cargo.toml.in` (so `cargo package` ships the directory), own `[workspace]`, pinned nightly; never built by the main workspace. |
+| `crates/kornia-imgproc/build.rs` | With `cuda-oxide`: stages `kernels-oxide/` in `OUT_DIR`, builds it to `$OUT_DIR/kernels.ptx` and gates it. Otherwise a no-op. |
 | `crates/kornia-imgproc/src/cuda/oxide/mod.rs` | Module loader (`include_str!` from `OUT_DIR`), oxide-only launchers. |
 | `scripts/cuda-oxide/orin-test-bench.sh` | Parity tests (names checked) + interleaved A/B bench on a Jetson. |
 | `docs/benchmark-cuda-oxide.md` | Parity report: every oxide kernel vs its NVRTC twin. |
@@ -19,8 +19,11 @@ on. No PTX is committed. Tracked in
 
 - Feature `cuda-oxide` (off by default, implies `cuda`). Without it the build
   script returns at once: default builds and the wheels are unchanged.
-- With it, `build.rs` runs `cargo build --release --locked` on `kernels-oxide/`
-  under the pinned nightly with the cuda-oxide codegen backend:
+- With it, `build.rs` copies `kernels-oxide/` to `$OUT_DIR/kernels-oxide-src`
+  (renaming `Cargo.toml.in` to `Cargo.toml`; only changed files are rewritten),
+  so the source dir is only ever read, as in a read-only `~/.cargo/registry`
+  checkout. It then runs `cargo build --release --locked` there under the
+  pinned nightly with the cuda-oxide codegen backend:
   - in its own target dir, `$OUT_DIR/kernels-oxide-target`, so it never waits on
     the outer build's lock;
   - with the outer cargo's environment scrubbed: `RUSTC*`, `RUSTFLAGS`,
@@ -31,7 +34,7 @@ on. No PTX is committed. Tracked in
   `cargo oxide` itself rewrites `src/main.rs` on every run, which would re-trigger
   the build script forever, and it writes output into the source tree.
 - It reruns only when one of these changes:
-  - `kernels-oxide/{src,Cargo.toml,Cargo.lock,rust-toolchain.toml}`;
+  - `kernels-oxide/{src,Cargo.toml.in,Cargo.lock,rust-toolchain.toml}`;
   - `CUDA_OXIDE_LLC`, `CUDA_OXIDE_BACKEND`, `CARGO_HOME`, `CUDA_HOME` or
     `CUDA_TOOLKIT_PATH`.
 - The PTX targets **`sm_75`** (PTX ISA 6.3), so the driver JITs it on any
@@ -45,8 +48,8 @@ on. No PTX is committed. Tracked in
   is cached, and `cuda::oxide::ensure_loaded(&stream)` returns it.
 - For A/B work, `cuda::oxide::launch_<op>` forces oxide and
   `launch_<op>_nvrtc` forces NVRTC. Both exist only under the feature.
-- The feature builds only from a git checkout: `kernels-oxide/` is outside the
-  published `kornia-imgproc` package.
+- `kernels-oxide/` ships inside the published `kornia-imgproc` package, so the
+  feature also builds from crates.io (given the toolchain below).
 
 ## Toolchain (what `build.rs` needs)
 
@@ -54,7 +57,8 @@ If anything is missing, the build fails with one message naming it. It never
 falls back to an empty PTX. The same setup runs in CI: job `cuda-feature-check`
 in `.github/workflows/rust_lint.yml`.
 
-1. `rustup` with the nightly pinned in `kernels-oxide/rust-toolchain.toml`:
+1. `rustup` with the nightly pinned in `kernels-oxide/rust-toolchain.toml`
+   (paths here are relative to `crates/kornia-imgproc/`):
    `rustup toolchain install nightly-2026-04-03 -c rust-src,rustc-dev`.
 2. LLVM 21+: `llc-21` or `llc-22` on `PATH`, or set `CUDA_OXIDE_LLC`.
 3. `cuda.h` and the libcuda stub under `$CUDA_HOME` (default `/usr/local/cuda`).
@@ -62,7 +66,7 @@ in `.github/workflows/rust_lint.yml`.
    `cuda-cudart-dev-12-6` (cuda.h) plus `cuda-driver-dev-12-6` (the stub) is
    enough. Point `CUDA_HOME` at the directory holding `include/cuda.h`; put the
    stub's directory on `LIBRARY_PATH` if it is not under `$CUDA_HOME`.
-4. The codegen backend, built **at the rev pinned in `kernels-oxide/Cargo.toml`**
+4. The codegen backend, built **at the rev pinned in `kernels-oxide/Cargo.toml.in`**
    (`f819f23fe035ec1c24b8ec06e738b62a9f377140`), at
    `$CARGO_HOME/cuda-oxide/librustc_codegen_cuda.so` or `$CUDA_OXIDE_BACKEND`:
    ```bash

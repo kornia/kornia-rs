@@ -2,8 +2,9 @@
 //! [cuda-oxide](https://github.com/NVlabs/cuda-oxide).
 //!
 //! Enabled by the `cuda-oxide` feature. The kernel source lives in the
-//! standalone nightly crate `kernels-oxide/`; `build.rs` compiles it to PTX in
-//! `OUT_DIR` and gates it (sm_75 target, no `fma`, no generic loads/stores).
+//! standalone nightly crate `kernels-oxide/` inside this package; `build.rs`
+//! compiles it to PTX in `OUT_DIR` and gates it (sm_75 target, no `fma`, no
+//! generic loads/stores).
 //! kornia itself stays on stable Rust; see `docs/cuda-oxide.md`.
 //!
 //! The PTX targets `sm_75`, so the driver JITs it for any Turing-or-newer GPU.

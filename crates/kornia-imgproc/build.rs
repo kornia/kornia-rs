@@ -1,6 +1,6 @@
-//! No-op unless the `cuda-oxide` feature is on. With it: compile
-//! `kernels-oxide/` to PTX through the cuda-oxide codegen backend, gate the
-//! PTX, and write `$OUT_DIR/kernels.ptx` for `src/cuda/oxide/mod.rs`.
+//! No-op unless the `cuda-oxide` feature is on. With it: stage `kernels-oxide/`
+//! in `OUT_DIR`, compile it to PTX through the cuda-oxide codegen backend, gate
+//! the PTX, and write `$OUT_DIR/kernels.ptx` for `src/cuda/oxide/mod.rs`.
 //! Toolchain setup: docs/cuda-oxide.md.
 
 use std::{
@@ -12,6 +12,10 @@ use std::{
 /// PTX target: JITs on any Turing-or-newer GPU.
 const ARCH: &str = "sm_75";
 const PTX_NAME: &str = "kornia_kernels_oxide.ptx";
+/// Shipped as `.in` so `cargo package` keeps the directory instead of skipping
+/// it as a nested package; renamed to `Cargo.toml` when staged.
+const MANIFEST_IN: &str = "Cargo.toml.in";
+const STAGED_FILES: &[&str] = &["Cargo.lock", "rust-toolchain.toml"];
 
 #[derive(Debug, thiserror::Error)]
 enum OxideBuildError {
@@ -69,15 +73,12 @@ fn toml_string(text: &str, key: &str) -> Option<String> {
 fn build_oxide_ptx() -> Result<(), OxideBuildError> {
     let manifest_dir = env_path("CARGO_MANIFEST_DIR")?;
     let out_dir = env_path("OUT_DIR")?;
-    let kernels = manifest_dir.join("../../kernels-oxide");
-    if !kernels.join("Cargo.toml").is_file() {
-        return Err(Toolchain(format!(
-            "{} not found: the feature builds only from a kornia-rs git checkout",
-            kernels.display()
-        )));
+    let source = manifest_dir.join("kernels-oxide");
+    if !source.join(MANIFEST_IN).is_file() {
+        return Err(Io(format!("{}/{MANIFEST_IN} is missing", source.display())));
     }
-    for f in ["src", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml"] {
-        println!("cargo:rerun-if-changed={}", kernels.join(f).display());
+    for f in ["src", MANIFEST_IN].iter().chain(STAGED_FILES) {
+        println!("cargo:rerun-if-changed={}", source.join(f).display());
     }
     for v in [
         "CUDA_OXIDE_LLC",
@@ -90,7 +91,7 @@ fn build_oxide_ptx() -> Result<(), OxideBuildError> {
     }
 
     // -- toolchain preflight: one actionable error, never an empty PTX ------
-    let toolchain = toml_string(&read(&kernels.join("rust-toolchain.toml"))?, "channel")
+    let toolchain = toml_string(&read(&source.join("rust-toolchain.toml"))?, "channel")
         .ok_or_else(|| Io("no channel in kernels-oxide/rust-toolchain.toml".into()))?;
     let sysroot =
         probe(Command::new("rustup").args(["run", &toolchain, "rustc", "--print", "sysroot"]))
@@ -116,8 +117,8 @@ fn build_oxide_ptx() -> Result<(), OxideBuildError> {
         )));
     }
     // A backend built from another rev may mis-compile the pinned cuda-device.
-    let pin = toml_string(&read(&kernels.join("Cargo.toml"))?, "rev")
-        .ok_or_else(|| Io("no cuda-oxide rev in kernels-oxide/Cargo.toml".into()))?;
+    let pin = toml_string(&read(&source.join(MANIFEST_IN))?, "rev")
+        .ok_or_else(|| Io(format!("no cuda-oxide rev in kernels-oxide/{MANIFEST_IN}")))?;
     if let Some(src) = backend
         .parent()
         .map(|d| d.join("src"))
@@ -158,7 +159,9 @@ fn build_oxide_ptx() -> Result<(), OxideBuildError> {
         )));
     }
 
-    // -- nested build ---------------------------------------------------------
+    // -- nested build, on a staged copy (the source may be a read-only registry dir)
+    let kernels = out_dir.join("kernels-oxide-src");
+    stage(&source, &kernels)?;
     let target_dir = out_dir.join("kernels-oxide-target");
     let ptx_dir = out_dir.join("kernels-oxide-ptx");
     let ptx = ptx_dir.join(PTX_NAME);
@@ -216,6 +219,55 @@ fn build_oxide_ptx() -> Result<(), OxideBuildError> {
     let dest = out_dir.join("kernels.ptx");
     if fs::read_to_string(&dest).ok().as_deref() != Some(text.as_str()) {
         fs::write(&dest, &text).map_err(|e| Io(format!("writing {}: {e}", dest.display())))?;
+    }
+    Ok(())
+}
+
+/// Mirror `src` + the manifest into `dst`, rewriting only changed files so the
+/// nested cargo's fingerprints stay fresh when nothing changed.
+fn stage(src: &Path, dst: &Path) -> Result<(), OxideBuildError> {
+    let mut wanted = vec![(src.join(MANIFEST_IN), dst.join("Cargo.toml"))];
+    for f in STAGED_FILES {
+        wanted.push((src.join(f), dst.join(f)));
+    }
+    let mut dirs = vec![PathBuf::from("src")];
+    while let Some(rel) = dirs.pop() {
+        let entries = fs::read_dir(src.join(&rel))
+            .map_err(|e| Io(format!("reading {}: {e}", src.join(&rel).display())))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| Io(e.to_string()))?;
+            let rel = rel.join(entry.file_name());
+            if entry.path().is_dir() {
+                dirs.push(rel);
+            } else {
+                wanted.push((src.join(&rel), dst.join(&rel)));
+            }
+        }
+    }
+    // A deleted kernel file must not linger in the staged crate.
+    let staged_src = dst.join("src");
+    if staged_src.is_dir() {
+        let keep: Vec<&PathBuf> = wanted.iter().map(|(_, d)| d).collect();
+        let mut dirs = vec![staged_src];
+        while let Some(dir) = dirs.pop() {
+            for entry in fs::read_dir(&dir).map_err(|e| Io(e.to_string()))? {
+                let path = entry.map_err(|e| Io(e.to_string()))?.path();
+                if path.is_dir() {
+                    dirs.push(path);
+                } else if !keep.contains(&&path) {
+                    fs::remove_file(&path).map_err(|e| Io(e.to_string()))?;
+                }
+            }
+        }
+    }
+    for (from, to) in wanted {
+        let bytes = fs::read(&from).map_err(|e| Io(format!("reading {}: {e}", from.display())))?;
+        if fs::read(&to).ok().as_deref() != Some(bytes.as_slice()) {
+            if let Some(parent) = to.parent() {
+                fs::create_dir_all(parent).map_err(|e| Io(e.to_string()))?;
+            }
+            fs::write(&to, &bytes).map_err(|e| Io(format!("writing {}: {e}", to.display())))?;
+        }
     }
     Ok(())
 }

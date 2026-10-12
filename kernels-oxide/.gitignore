@@ -1,5 +1,0 @@
-target/
-# Stray outputs of a manual `cargo oxide build`; kornia-imgproc's build.rs
-# writes its PTX to OUT_DIR instead.
-*.ll
-*.ptx

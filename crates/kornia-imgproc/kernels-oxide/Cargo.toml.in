@@ -7,8 +7,9 @@ license = "Apache-2.0"
 publish = false
 
 # Standalone: this crate needs the pinned nightly + cuda-oxide codegen backend,
-# so the stable kornia-rs workspace must never build it. kornia-imgproc's
-# build.rs builds it to PTX (cuda-oxide feature). Cargo.lock is committed: the
+# so the stable kornia-rs workspace must never build it. Named Cargo.toml.in so
+# `cargo package` ships this directory; kornia-imgproc's build.rs stages a copy
+# as Cargo.toml in OUT_DIR and builds it to PTX (cuda-oxide feature). Cargo.lock is committed: the
 # nested build runs --locked on a pinned nightly.
 [workspace]
 

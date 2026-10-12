@@ -92,14 +92,14 @@ jobs:
           cargo clippy --tests -p kornia-imgproc --features cuda -- -D warnings
           cargo clippy --tests -p kornia-3d --features cuda -- -D warnings
 
-      # `cuda-oxide`: kornia-imgproc's build.rs compiles kernels-oxide/ to PTX and
+      # `cuda-oxide`: kornia-imgproc's build.rs compiles its kernels-oxide/ to PTX and
       # gates it, so this really builds the kernels (no GPU needed). Needs LLVM
       # 21's llc, cuda.h + the libcuda stub, the pinned nightly, and the codegen
       # backend at the pinned rev (cached).
       - name: cuda-oxide toolchain
         run: |
-          TC=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' kernels-oxide/rust-toolchain.toml)
-          REV=$(sed -n 's/.*rev = "\([0-9a-f]*\)".*/\1/p' kernels-oxide/Cargo.toml | head -1)
+          TC=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' crates/kornia-imgproc/kernels-oxide/rust-toolchain.toml)
+          REV=$(sed -n 's/.*rev = "\([0-9a-f]*\)".*/\1/p' crates/kornia-imgproc/kernels-oxide/Cargo.toml.in | head -1)
           echo "OXIDE_TC=$TC" >> "$GITHUB_ENV"
           echo "OXIDE_REV=$REV" >> "$GITHUB_ENV"
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc >/dev/null

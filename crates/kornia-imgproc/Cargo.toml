@@ -8,6 +8,9 @@ description = "Image processing operations in Rust"
 homepage = { workspace = true }
 repository = { workspace = true }
 license = { workspace = true }
+# kernels-oxide/ ships in the package (its manifest is Cargo.toml.in so cargo
+# does not skip it as a nested package); never its build output.
+exclude = ["kernels-oxide/*.ll", "kernels-oxide/*.ptx", "kernels-oxide/target"]
 publish = true
 
 [[example]]
