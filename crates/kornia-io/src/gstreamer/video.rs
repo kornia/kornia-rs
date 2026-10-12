@@ -820,6 +820,129 @@ mod tests {
         Ok(())
     }
 
+    /// A test-only pass-through element that posts an error while it goes from READY to NULL,
+    /// the moment `filesink` reports that it could not close its file (a full disk or a dropped
+    /// network mount, which a test cannot create).
+    mod fail_on_stop {
+        use gstreamer::glib;
+        use gstreamer::prelude::*;
+        use gstreamer::subclass::prelude::*;
+
+        mod imp {
+            use super::*;
+
+            #[derive(Default)]
+            pub struct FailOnStop;
+
+            #[glib::object_subclass]
+            impl ObjectSubclass for FailOnStop {
+                const NAME: &'static str = "KorniaTestFailOnStop";
+                type Type = super::FailOnStop;
+                type ParentType = gstreamer::Bin;
+            }
+
+            impl ObjectImpl for FailOnStop {
+                fn constructed(&self) {
+                    self.parent_constructed();
+                    let bin = self.obj();
+                    let identity = gstreamer::ElementFactory::make("identity")
+                        .build()
+                        .expect("identity is a core element");
+                    bin.add(&identity).expect("add identity");
+                    for name in ["sink", "src"] {
+                        let target = identity.static_pad(name).expect("identity pad");
+                        let ghost = gstreamer::GhostPad::builder_with_target(&target)
+                            .expect("ghost pad")
+                            .name(name)
+                            .build();
+                        bin.add_pad(&ghost).expect("add ghost pad");
+                    }
+                }
+            }
+
+            impl GstObjectImpl for FailOnStop {}
+
+            impl ElementImpl for FailOnStop {
+                fn metadata() -> Option<&'static gstreamer::subclass::ElementMetadata> {
+                    static METADATA: std::sync::OnceLock<gstreamer::subclass::ElementMetadata> =
+                        std::sync::OnceLock::new();
+                    Some(METADATA.get_or_init(|| {
+                        gstreamer::subclass::ElementMetadata::new(
+                            "Fail on stop",
+                            "Generic",
+                            "Posts an error when going from READY to NULL (tests only)",
+                            "kornia",
+                        )
+                    }))
+                }
+
+                fn change_state(
+                    &self,
+                    transition: gstreamer::StateChange,
+                ) -> Result<gstreamer::StateChangeSuccess, gstreamer::StateChangeError>
+                {
+                    if transition == gstreamer::StateChange::ReadyToNull {
+                        gstreamer::element_imp_error!(
+                            self,
+                            gstreamer::ResourceError::Close,
+                            ("Error closing file"),
+                            ["simulated by a test"]
+                        );
+                    }
+                    self.parent_change_state(transition)
+                }
+            }
+
+            impl BinImpl for FailOnStop {}
+        }
+
+        glib::wrapper! {
+            pub struct FailOnStop(ObjectSubclass<imp::FailOnStop>)
+                @extends gstreamer::Bin, gstreamer::Element, gstreamer::Object;
+        }
+
+        /// Registers the element as `korniatestfailonstop`.
+        pub fn register() -> Result<(), Box<dyn std::error::Error>> {
+            gstreamer::init()?;
+            gstreamer::Element::register(
+                None,
+                "korniatestfailonstop",
+                gstreamer::Rank::NONE,
+                FailOnStop::static_type(),
+            )?;
+            Ok(())
+        }
+    }
+
+    /// An error posted while the pipeline goes to null (here a test element fails as `filesink`
+    /// does when it cannot close the file) must be returned by `close`. The bus used to be
+    /// flushed in that transition, so `close` returned `Ok` for an incomplete file.
+    #[test]
+    fn video_writer_close_returns_an_error_posted_while_stopping(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        fail_on_stop::register()?;
+        let tmp_dir = tempfile::tempdir()?;
+        let mut writer = VideoWriter::from_pipeline_description(
+            "appsrc name=src ! video/x-raw,format=RGB ! qtmux ! korniatestfailonstop ! \
+             filesink name=filesink",
+            &tmp_dir.path().join("test.mov"),
+            ImageFormat::Rgb8,
+            30,
+            SIZE,
+        )?;
+        writer.start()?;
+        writer.write(&frame(0)?)?;
+        let closed = finishes_within(Duration::from_secs(10), move || match writer.close() {
+            Err(StreamCaptureError::GStreamerError(err)) => Ok(err.to_string()),
+            other => Err(format!("{other:?}")),
+        });
+        match closed {
+            Some(Ok(msg)) => assert!(msg.contains("Error closing file"), "{msg}"),
+            other => panic!("close must return the error posted while stopping, got {other:?}"),
+        }
+        Ok(())
+    }
+
     /// `new` must reject sizes the MP4/H.264 pipeline can never encode, instead of failing
     /// later with a generic error and an empty file.
     #[test]
