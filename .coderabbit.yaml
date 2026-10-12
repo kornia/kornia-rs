@@ -35,16 +35,17 @@ reviews:
   path_filters:
     - "!**/Cargo.lock"
     - "!pixi.lock"
-    - "!tests/data/**"           # apriltag-imgs submodule + fixtures
+    - "!**/tests/data/**"        # apriltag-imgs submodule + per-crate fixtures
     - "!**/examples/data/**"
     - "!**/*.{png,jpg,jpeg,bmp,tiff,npy,bin,onnx,mcap,safetensors,ptx}"
 
   path_instructions:
-    - path: "crates/**/*.rs"
+    - path: "crates/**/src/**/*.rs"
       instructions: |
         Library code. Flag: unwrap()/expect()/panic!() outside #[cfg(test)];
         anyhow (thiserror only); `unsafe` without a preceding `// SAFETY:` comment;
-        a pub item missing `# Arguments`/`# Returns`/`# Errors` docs; allocation or
+        a pub item (fn, struct, enum, trait) without rustdoc; a pub fn missing
+        `# Arguments`/`# Returns`/`# Errors` sections (AGENTS.md); allocation or
         image/tensor clones in hot loops (callers pass a pre-allocated &mut dst);
         color fns not named `<output>_from_<input>` (gray_from_rgb, never rgb_to_gray).
         A bug fix with no regression test is a finding.
@@ -57,9 +58,10 @@ reviews:
         blanket impl<T: Float>).
     - path: "{crates/**/cuda/**,**/*.cu,**/*.cuh}"
       instructions: |
-        CUDA kernels and launchers. Byte-exact parity with the CPU path is the contract,
-        so flag fused-multiply-add or float reassociation that changes rounding, and any
-        tolerance-based test where an exact comparison is expected. Check grid/block math
+        CUDA kernels and launchers. Where a kernel's docs or tests claim bit-exact parity
+        with the CPU path (e.g. resize, u8 color), flag FMA or float reassociation that
+        changes rounding, and tolerance asserts replacing exact ones. Other kernels (e.g.
+        fusion) compare within a documented tolerance; check it is justified. Check grid/block math
         for overflow and partial tiles, a bounds guard in every kernel, stream/context
         synchronisation before host reads, and that the CPU-vs-CUDA test exists. CUDA is
         not in the `ci` feature, so ask for local test output on CUDA changes.
