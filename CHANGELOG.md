@@ -86,11 +86,22 @@ twin behind the `cuda` feature.
 
 **`kornia-io` `VideoWriter::close` no longer hangs, and reports pipeline errors.** It set the
 pipeline to null before end-of-stream reached the file, so the end-of-stream message it then
-waited for was never posted and `close` never returned. It now waits for end-of-stream first,
-so the file is complete. Behaviour changes:
+waited for was never posted and `close` never returned. It now waits for end-of-stream first
+(for at most 30 s), then checks what the pipeline posted while stopping, so `Ok` means the file
+was finished. A file sink stuck inside a blocking write (e.g. a pipe nobody reads) can still
+block stopping the pipeline; GStreamer cannot interrupt that. Behaviour changes:
 - `write` and `close` return `StreamCaptureError::GStreamerError` once the pipeline has failed
   (e.g. caps the encoder cannot accept); `write` used to keep queueing frames in memory and
-  `close` returned `Ok`, leaving an empty file.
+  `close` returned `Ok`, leaving an empty file. The error now includes the failing element and
+  GStreamer's debug details (e.g. `not-negotiated`).
+- `write` and `close` before `start`, and a second `close`, return
+  `StreamCaptureError::PipelineNotRunning`. An early `close` used to leave the writer unable to
+  write after `start`.
+- A failed `start` returns the pipeline's own error (e.g. `Could not open file`) instead of a bare
+  state-change error, and the writer can be started again afterwards.
+- `push_buffer` failures are `StreamCaptureError::GstreamerFlowError` (was `InvalidConfig`).
+- `VideoWriter::new` rejects sizes the H.264/MP4 pipeline cannot encode (below 16 or odd) with
+  `StreamCaptureError::InvalidConfig`.
 - `start` no longer spawns a bus thread; calling it twice before `close` is harmless.
   `StreamCaptureError::JoinThreadError` is no longer returned.
 

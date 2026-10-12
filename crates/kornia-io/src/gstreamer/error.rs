@@ -1,7 +1,8 @@
 /// An error type for the stream module.
 #[derive(thiserror::Error, Debug)]
 pub enum StreamCaptureError {
-    /// An error occurred during GStreamer initialization.
+    /// A GStreamer error: initialization, building the pipeline, or an error posted by a
+    /// pipeline element while it runs (with the element and debug details in the message).
     #[error(transparent)]
     GStreamerError(#[from] gstreamer::glib::Error),
 

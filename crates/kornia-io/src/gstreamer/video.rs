@@ -24,17 +24,27 @@ pub enum ImageFormat {
     Mono8,
 }
 
+/// How long [`VideoWriter::close`] waits for end-of-stream to reach the file sink.
+const CLOSE_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// A struct for writing video files.
 pub struct VideoWriter {
     pipeline: gstreamer::Pipeline,
     appsrc: gstreamer_app::AppSrc,
+    /// The pipeline's bus. Auto-flush is off, so messages posted while the pipeline goes to
+    /// null (such as the file sink failing to close the file) can still be read.
+    bus: gstreamer::Bus,
     fps: i32,
     format: ImageFormat,
     counter: u64,
-    /// Whether `start` has been called since the last `close`.
+    /// Whether `start` has succeeded since the last `close`.
     started: bool,
+    /// Whether end-of-stream has already been read from the bus during this run.
+    eos_received: bool,
     /// The first pipeline error seen by `write`, returned again by `close`.
     error: Option<gstreamer::glib::Error>,
+    /// How long `close` waits for end-of-stream.
+    close_timeout: Duration,
 }
 
 impl VideoWriter {
@@ -55,9 +65,10 @@ impl VideoWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`StreamCaptureError::InvalidConfig`] if the codec is unsupported or `fps` is not
-    /// positive, and [`StreamCaptureError::GStreamerError`] if GStreamer cannot be initialized
-    /// or the pipeline cannot be built (e.g. `x264enc` is not installed).
+    /// Returns [`StreamCaptureError::InvalidConfig`] if `fps` is not positive or the size cannot
+    /// be encoded (MP4 needs a width and height of at least 16, and H.264 4:2:0 needs them even),
+    /// and [`StreamCaptureError::GStreamerError`] if GStreamer cannot be initialized or the
+    /// pipeline cannot be built (e.g. `x264enc` is not installed).
     pub fn new(
         path: impl AsRef<Path>,
         codec: VideoCodec,
@@ -65,27 +76,28 @@ impl VideoWriter {
         fps: i32,
         size: ImageSize,
     ) -> Result<Self, StreamCaptureError> {
-        // TODO: Add support for other codecs
-        #[allow(unreachable_patterns)]
-        let _codec = match codec {
-            VideoCodec::H264 => "x264enc",
-            _ => {
-                return Err(StreamCaptureError::InvalidConfig(
-                    "Unsupported codec".to_string(),
-                ))
-            }
+        if size.width < 16
+            || size.height < 16
+            || !size.width.is_multiple_of(2)
+            || !size.height.is_multiple_of(2)
+        {
+            return Err(StreamCaptureError::InvalidConfig(format!(
+                "H.264 in MP4 needs an even width and height of at least 16, got {}x{}",
+                size.width, size.height
+            )));
+        }
+
+        let encoder = match codec {
+            VideoCodec::H264 => "x264enc ! video/x-h264,profile=main ! h264parse",
         };
 
         // The output path is set as a property after parsing (see `set_location_property`).
-        let pipeline_desc = "appsrc name=src ! \
-            videoconvert ! video/x-raw,format=I420 ! \
-            x264enc ! \
-            video/x-h264,profile=main ! \
-            h264parse ! \
-            mp4mux ! \
-            filesink name=filesink";
+        let pipeline_desc = format!(
+            "appsrc name=src ! videoconvert ! video/x-raw,format=I420 ! {encoder} ! \
+             mp4mux ! filesink name=filesink"
+        );
 
-        Self::from_pipeline_description(pipeline_desc, path.as_ref(), format, fps, size)
+        Self::from_pipeline_description(&pipeline_desc, path.as_ref(), format, fps, size)
     }
 
     /// Creates a writer from a pipeline description that starts with an `appsrc` named `src`
@@ -144,21 +156,38 @@ impl VideoWriter {
         appsrc.set_is_live(true);
         appsrc.set_property("block", false);
 
+        let bus = pipeline.bus().ok_or(StreamCaptureError::BusError)?;
+        // By default the bus is flushed when the pipeline goes to null, which drops an error
+        // the file sink posts in that same transition when it cannot close the file.
+        pipeline.set_auto_flush_bus(false);
+        // Log errors as soon as they are posted, even if `write` is not called again. `Pass`
+        // keeps the message queued for `write` and `close`.
+        bus.set_sync_handler(|_, msg| {
+            if let gstreamer::MessageView::Error(err) = msg.view() {
+                log::error!("{}", detailed_error(msg, err));
+            }
+            gstreamer::BusSyncReply::Pass
+        });
+
         Ok(Self {
             pipeline,
             appsrc,
+            bus,
             fps,
             format,
             counter: 0,
             started: false,
+            eos_received: false,
             error: None,
+            close_timeout: CLOSE_TIMEOUT,
         })
     }
 
     /// Start the video writer.
     ///
-    /// Sets the pipeline to playing. Calling it again before [`Self::close`] has no further
-    /// effect.
+    /// Sets the pipeline to playing. Calling it again before [`Self::close`] has no effect.
+    /// After a failed start the writer can be started again (e.g. once the output directory
+    /// exists).
     ///
     /// # Returns
     ///
@@ -166,9 +195,26 @@ impl VideoWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`StreamCaptureError::SetPipelineStateError`] if the pipeline cannot start.
+    /// Returns [`StreamCaptureError::GStreamerError`] with the pipeline's own error if it cannot
+    /// start (e.g. the output file cannot be opened), or
+    /// [`StreamCaptureError::SetPipelineStateError`] if it fails without posting one.
     pub fn start(&mut self) -> Result<(), StreamCaptureError> {
-        self.pipeline.set_state(gstreamer::State::Playing)?;
+        if self.started {
+            return Ok(());
+        }
+        self.error = None;
+        self.eos_received = false;
+
+        if let Err(state_err) = self.pipeline.set_state(gstreamer::State::Playing) {
+            if let Err(e) = self.pipeline.set_state(gstreamer::State::Null) {
+                log::warn!("failed to reset the pipeline after a failed start: {e}");
+            }
+            // Drain the bus, so no error of this attempt is left for the next run, and return
+            // the elements' own cause (e.g. "Could not open file") instead of the bare
+            // state-change error.
+            let cause = self.read_bus();
+            return Err(cause.map_or(state_err.into(), Into::into));
+        }
         self.started = true;
         Ok(())
     }
@@ -176,60 +222,95 @@ impl VideoWriter {
     /// Close the video writer.
     ///
     /// Sends end-of-stream and waits until it reaches the file sink, so the muxer can finish the
-    /// file, then sets the pipeline to null. Setting the pipeline to null first would tear it
-    /// down before end-of-stream arrives, and the wait would never end.
+    /// file, then sets the pipeline to null and checks what was posted while stopping (the file
+    /// sink reports a failure to close the file only then).
     ///
     /// GStreamer keeps bus messages until they are read, so an error raised while writing (for
     /// example caps the encoder cannot accept) is still found here and returned, instead of
-    /// leaving a silently empty file.
+    /// leaving a silently broken file.
+    ///
+    /// The wait for end-of-stream is bounded (30 s). Setting the pipeline to null can still block
+    /// if the file sink is stuck inside a blocking write (e.g. to a pipe whose reader stopped
+    /// reading); GStreamer cannot interrupt that system call, so neither can this method or
+    /// `Drop`.
     ///
     /// # Returns
     ///
-    /// `Ok(())` once end-of-stream has reached the file sink and the pipeline is stopped. If no
-    /// frame was written, the file may still not be playable.
+    /// `Ok(())` once end-of-stream has reached the file sink and the pipeline has stopped
+    /// without errors. If no frame was written, the file may still not be playable.
     ///
     /// # Errors
     ///
-    /// Returns [`StreamCaptureError::GStreamerError`] with the first pipeline error,
-    /// [`StreamCaptureError::GstreamerFlowError`] if end-of-stream cannot be sent,
-    /// [`StreamCaptureError::BusError`] if the pipeline has no bus, and
-    /// [`StreamCaptureError::SetPipelineStateError`] if the pipeline cannot be stopped. The
-    /// pipeline is set to null in every case except a missing bus.
+    /// Returns [`StreamCaptureError::PipelineNotRunning`] if the writer was not started (or is
+    /// already closed), [`StreamCaptureError::GStreamerError`] with the first pipeline error or
+    /// if end-of-stream did not reach the sink in time,
+    /// [`StreamCaptureError::GstreamerFlowError`] if end-of-stream cannot be sent, and
+    /// [`StreamCaptureError::SetPipelineStateError`] if the pipeline cannot be stopped. Once
+    /// started, the pipeline is set to null in every case.
     pub fn close(&mut self) -> Result<(), StreamCaptureError> {
-        let eos = self.appsrc.end_of_stream();
-        let waited = match (std::mem::take(&mut self.started), self.error.take()) {
-            // The pipeline already failed, so end-of-stream will not reach the sink.
-            (_, Some(err)) => Ok(Some(err)),
-            (true, None) => self.wait_for_eos(eos.is_ok()),
-            (false, None) => Ok(None),
+        if !std::mem::take(&mut self.started) {
+            return Err(StreamCaptureError::PipelineNotRunning);
+        }
+        let finished = match self.error.take().or_else(|| self.read_bus()) {
+            // The pipeline already failed, so end-of-stream would not reach the sink.
+            Some(err) => Err(err.into()),
+            None if self.eos_received => Ok(()),
+            None => self.finish_stream(),
         };
 
-        // Stop the pipeline even if waiting failed, then report the most useful error.
+        // Stop the pipeline even if finishing failed, then report the most useful error.
         let stopped = self.pipeline.set_state(gstreamer::State::Null);
-        if let Some(err) = waited? {
+        let stop_error = self.read_bus();
+        finished?;
+        if let Some(err) = stop_error {
             return Err(err.into());
         }
         stopped?;
-        eos?;
         Ok(())
     }
 
-    /// Waits for end-of-stream to reach the sink and returns the pipeline error, if any.
-    ///
-    /// When end-of-stream could not be sent nothing will arrive, so only an error that is
-    /// already on the bus is looked for.
-    fn wait_for_eos(
-        &self,
-        eos_sent: bool,
-    ) -> Result<Option<gstreamer::glib::Error>, StreamCaptureError> {
-        let bus = self.pipeline.bus().ok_or(StreamCaptureError::BusError)?;
+    /// Sends end-of-stream and waits, for at most `close_timeout`, until it reaches the file sink
+    /// or the pipeline posts an error.
+    fn finish_stream(&mut self) -> Result<(), StreamCaptureError> {
+        self.appsrc.end_of_stream()?;
+        // `u64::MAX` nanoseconds is GStreamer's "no time" and `from_nseconds` panics on it, so
+        // clamp to the largest valid time first.
+        let nanos = u64::try_from(self.close_timeout.as_nanos())
+            .unwrap_or(u64::MAX)
+            .min(gstreamer::ClockTime::MAX.nseconds());
+        let timeout = gstreamer::ClockTime::from_nseconds(nanos);
         let types = [gstreamer::MessageType::Eos, gstreamer::MessageType::Error];
-        let msg = if eos_sent {
-            bus.timed_pop_filtered(gstreamer::ClockTime::NONE, &types)
-        } else {
-            bus.pop_filtered(&types)
+        let Some(msg) = self.bus.timed_pop_filtered(timeout, &types) else {
+            return Err(gstreamer::glib::Error::new(
+                gstreamer::CoreError::Failed,
+                &format!(
+                    "end-of-stream did not reach the file sink within {:?}; the file may be \
+                     incomplete",
+                    self.close_timeout
+                ),
+            )
+            .into());
         };
-        Ok(msg.and_then(|msg| pipeline_error(&msg)))
+        match msg.view() {
+            gstreamer::MessageView::Error(err) => Err(detailed_error(&msg, err).into()),
+            _ => Ok(()),
+        }
+    }
+
+    /// Reads every message queued on the bus, remembers whether end-of-stream was among them and
+    /// returns the first error.
+    fn read_bus(&mut self) -> Option<gstreamer::glib::Error> {
+        let mut first_error = None;
+        while let Some(msg) = self.bus.pop() {
+            match msg.view() {
+                gstreamer::MessageView::Eos(_) => self.eos_received = true,
+                gstreamer::MessageView::Error(err) if first_error.is_none() => {
+                    first_error = Some(detailed_error(&msg, err));
+                }
+                _ => {}
+            }
+        }
+        first_error
     }
 
     /// Write an image to the video file.
@@ -244,13 +325,19 @@ impl VideoWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`StreamCaptureError::InvalidImageFormat`] if the image has the wrong number of
-    /// channels, [`StreamCaptureError::GStreamerError`] if the pipeline has failed (this and
-    /// every later frame is then rejected, and [`Self::close`] returns the same error),
+    /// Returns [`StreamCaptureError::PipelineNotRunning`] if the writer was not started,
+    /// [`StreamCaptureError::InvalidImageFormat`] if the image has the wrong number of channels,
+    /// [`StreamCaptureError::GStreamerError`] if the pipeline has failed (this and every later
+    /// frame is then rejected, and [`Self::close`] returns the same error),
     /// [`StreamCaptureError::GetBufferError`] if the frame buffer cannot be prepared, and
-    /// [`StreamCaptureError::InvalidConfig`] if the frame cannot be pushed into the pipeline.
+    /// [`StreamCaptureError::GstreamerFlowError`] if the pipeline no longer accepts frames
+    /// (it is flushing or has reached end-of-stream).
     // TODO: explore supporting write_async
     pub fn write<const C: usize>(&mut self, img: &Image<u8, C>) -> Result<(), StreamCaptureError> {
+        if !self.started {
+            return Err(StreamCaptureError::PipelineNotRunning);
+        }
+
         // check if the image channels are correct
         match self.format {
             ImageFormat::Mono8 => {
@@ -285,36 +372,45 @@ impl VideoWriter {
         // A failed pipeline does not make `push_buffer` fail: frames would keep queueing in
         // `appsrc` until `close`. Check the bus so the error is returned at the next frame.
         if self.error.is_none() {
-            let types = [gstreamer::MessageType::Error];
-            if let Some(msg) = self.pipeline.bus().and_then(|bus| bus.pop_filtered(&types)) {
-                self.error = pipeline_error(&msg);
-            }
+            self.error = self.read_bus();
         }
         if let Some(err) = &self.error {
             return Err(err.clone().into());
         }
 
-        if let Err(err) = self.appsrc.push_buffer(buffer) {
-            return Err(StreamCaptureError::InvalidConfig(err.to_string()));
-        }
-
+        self.appsrc.push_buffer(buffer)?;
         Ok(())
     }
 }
 
-/// Logs a bus error message and returns its error; `None` for any other message.
-fn pipeline_error(msg: &gstreamer::Message) -> Option<gstreamer::glib::Error> {
-    let gstreamer::MessageView::Error(err) = msg.view() else {
-        log::debug!("gstreamer received {:?}", msg.type_());
-        return None;
+/// The bus error with GStreamer's debug details (which name the failing element) added to the
+/// message on one line, e.g. `Internal data stream error. (gstbasesrc.c(3187): gst_base_src_loop
+/// (): /GstPipeline:pipeline0/GstAppSrc:src: streaming stopped, reason not-negotiated (-4))`. The
+/// GStreamer error domain and code are kept.
+fn detailed_error(
+    msg: &gstreamer::Message,
+    err: &gstreamer::message::Error,
+) -> gstreamer::glib::Error {
+    let base = err.error();
+    let details = match err.debug() {
+        Some(debug) => debug.replace('\n', " "),
+        None => msg
+            .src()
+            .map(|s| s.path_string().to_string())
+            .unwrap_or_default(),
     };
-    log::error!(
-        "Error from {:?}: {} ({:?})",
-        msg.src().map(|s| s.path_string()),
-        err.error(),
-        err.debug()
-    );
-    Some(err.error())
+    let text = format!("{} ({details})", base.message());
+    if let Some(code) = base.kind::<gstreamer::CoreError>() {
+        gstreamer::glib::Error::new(code, &text)
+    } else if let Some(code) = base.kind::<gstreamer::LibraryError>() {
+        gstreamer::glib::Error::new(code, &text)
+    } else if let Some(code) = base.kind::<gstreamer::ResourceError>() {
+        gstreamer::glib::Error::new(code, &text)
+    } else if let Some(code) = base.kind::<gstreamer::StreamError>() {
+        gstreamer::glib::Error::new(code, &text)
+    } else {
+        gstreamer::glib::Error::new(gstreamer::CoreError::Failed, &text)
+    }
 }
 
 impl Drop for VideoWriter {
@@ -516,8 +612,42 @@ impl VideoReader {
 
 #[cfg(test)]
 mod tests {
-    use super::{ImageFormat, VideoCodec, VideoReader, VideoWriter};
+    use super::{ImageFormat, StreamCaptureError, VideoCodec, VideoReader, VideoWriter};
+    use gstreamer::prelude::*;
     use kornia_image::{Image, ImageSize};
+    use std::time::Duration;
+
+    /// Raw RGB into QuickTime. Unlike Matroska, `qtmux` writes its index only at end-of-stream,
+    /// so a file closed before end-of-stream reaches the muxer cannot be read back, and the
+    /// frames round-trip without any colour conversion. Needs only gst-plugins-good.
+    const RAW_MOV: &str =
+        "appsrc name=src ! video/x-raw,format=RGB ! qtmux ! filesink name=filesink";
+
+    const SIZE: ImageSize = ImageSize {
+        width: 64,
+        height: 48,
+    };
+
+    /// A frame whose every byte is `value`.
+    fn frame(value: u8) -> Result<Image<u8, 3>, Box<dyn std::error::Error>> {
+        Ok(Image::new(SIZE, vec![value; SIZE.width * SIZE.height * 3])?)
+    }
+
+    /// Writes one frame per value and closes the writer, failing if `close` does not return
+    /// within 10 s.
+    fn write_and_close(
+        mut writer: VideoWriter,
+        values: &[u8],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        for &v in values {
+            writer.write(&frame(v)?)?;
+        }
+        let closed = finishes_within(Duration::from_secs(10), move || {
+            writer.close().map_err(|e| e.to_string())
+        });
+        assert_eq!(closed, Some(Ok(())), "close did not return Ok within 10 s");
+        Ok(())
+    }
 
     /// Regression: paths were quoted into the pipeline string, which rejected `\`
     /// (breaking Windows paths). The path must now reach `filesrc` verbatim.
@@ -539,83 +669,249 @@ mod tests {
     }
 
     /// Runs `f` on its own thread and returns its result, or `None` if it has not finished
-    /// after `timeout` (the thread is then left running).
+    /// after `timeout` (the thread is then left running). A panic in `f` is re-raised here, so
+    /// it is not mistaken for a hang.
     fn finishes_within<T: Send + 'static>(
-        timeout: std::time::Duration,
+        timeout: Duration,
         f: impl FnOnce() -> T + Send + 'static,
     ) -> Option<T> {
         let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
+        let handle = std::thread::spawn(move || {
             let _ = tx.send(f());
         });
-        rx.recv_timeout(timeout).ok()
+        match rx.recv_timeout(timeout) {
+            Ok(value) => Some(value),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => match handle.join() {
+                Err(panic) => std::panic::resume_unwind(panic),
+                Ok(()) => None,
+            },
+        }
     }
 
     /// `close` must return after end-of-stream has reached the file sink, so every written
     /// frame ends up in the file. It used to set the pipeline to `Null` first, so the bus thread
     /// it then joined never saw end-of-stream and `close` could hang forever.
-    ///
-    /// Uses uncompressed video in Matroska (gst-plugins-base and -good only) instead of the
-    /// H.264 pipeline of `VideoWriter::new`, so it runs without x264.
     #[test]
     fn video_writer_close_returns_and_keeps_every_frame() -> Result<(), Box<dyn std::error::Error>>
     {
-        const FRAMES: usize = 5;
-        let size = ImageSize {
-            width: 64,
-            height: 48,
-        };
         let tmp_dir = tempfile::tempdir()?;
-        let file_path = tmp_dir.path().join("test.mkv");
-
+        let file_path = tmp_dir.path().join("test.mov");
         let mut writer = VideoWriter::from_pipeline_description(
-            "appsrc name=src ! videoconvert ! video/x-raw,format=I420 ! \
-             matroskamux ! filesink name=filesink",
+            RAW_MOV,
             &file_path,
             ImageFormat::Rgb8,
             30,
-            size,
+            SIZE,
         )?;
+        // Errors posted while the pipeline goes to null (e.g. the file sink failing to close the
+        // file) are only readable if the bus is not flushed in that transition.
+        assert!(!writer.pipeline.is_auto_flush_bus());
+        // `u64::MAX` nanoseconds is GStreamer's "no time" value; it must be clamped, not panic.
+        writer.close_timeout = Duration::from_nanos(u64::MAX);
         // A second start must not change anything (it used to spawn a second bus thread that
         // could take the end-of-stream message and leave close waiting forever).
         writer.start()?;
         writer.start()?;
-        for i in 0..FRAMES {
-            let img =
-                Image::<u8, 3>::new(size, vec![(i * 40) as u8; size.width * size.height * 3])?;
-            writer.write(&img)?;
-        }
-        let closed = finishes_within(std::time::Duration::from_secs(10), move || {
-            writer.close().map_err(|e| e.to_string())
-        });
-        assert_eq!(closed, Some(Ok(())), "close did not return within 10 s");
-
-        let frames = count_frames(&file_path, FRAMES)?;
-        assert_eq!(frames, FRAMES, "frames read back from the file");
+        write_and_close(writer, &[0, 40, 80, 120, 160])?;
+        assert_eq!(frame_values(&file_path)?, [0, 40, 80, 120, 160]);
         Ok(())
     }
 
-    /// Reads `path` back and returns how many frames arrive, stopping at `expected` or after
-    /// about 5 seconds.
-    fn count_frames(
-        path: &std::path::Path,
-        expected: usize,
-    ) -> Result<usize, Box<dyn std::error::Error>> {
+    /// Reads `path` back to its end and returns the value of the first byte of every frame, so
+    /// missing, duplicated or blank frames all show up; a reader error is returned as an error. Stops 1 s after the last frame (the
+    /// reader cannot report end-of-stream) or after 10 s.
+    fn frame_values(path: &std::path::Path) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         let mut reader = VideoReader::new(path, ImageFormat::Rgb8)?;
+        let bus = reader
+            .0
+            .pipeline
+            .bus()
+            .ok_or("reader pipeline has no bus")?;
         reader.start()?;
-        let mut frames = 0;
-        for _ in 0..500 {
-            if reader.grab_rgb8()?.is_some() {
-                frames += 1;
-                if frames == expected {
-                    break;
+        let start = std::time::Instant::now();
+        let mut last_frame = start;
+        let mut values = Vec::new();
+        while last_frame.elapsed() < Duration::from_secs(1)
+            && start.elapsed() < Duration::from_secs(10)
+        {
+            // Report a reader failure (e.g. no H.264 decoder installed) instead of "0 frames".
+            if let Some(msg) = bus.pop_filtered(&[gstreamer::MessageType::Error]) {
+                if let gstreamer::MessageView::Error(err) = msg.view() {
+                    return Err(super::detailed_error(&msg, err).into());
                 }
-            } else {
-                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            match reader.grab_rgb8()? {
+                Some(img) => {
+                    values.push(img.as_slice()[0]);
+                    last_frame = std::time::Instant::now();
+                }
+                None => std::thread::sleep(Duration::from_millis(10)),
             }
         }
         reader.close()?;
-        Ok(frames)
+        Ok(values)
+    }
+
+    /// `write` and `close` before `start` must fail instead of reporting success for a file that
+    /// is never written. The early `close` also used to send end-of-stream into the stopped
+    /// `appsrc`, which then rejected every frame of the next run with `Pad is EOS`.
+    #[test]
+    fn video_writer_requires_start_and_survives_an_early_close(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp_dir = tempfile::tempdir()?;
+        let file_path = tmp_dir.path().join("test.mov");
+        let mut writer = VideoWriter::from_pipeline_description(
+            RAW_MOV,
+            &file_path,
+            ImageFormat::Rgb8,
+            30,
+            SIZE,
+        )?;
+        assert!(matches!(
+            writer.write(&frame(0)?),
+            Err(StreamCaptureError::PipelineNotRunning)
+        ));
+        assert!(matches!(
+            writer.close(),
+            Err(StreamCaptureError::PipelineNotRunning)
+        ));
+        writer.start()?;
+        for v in [10, 20, 30] {
+            writer.write(&frame(v)?)?;
+        }
+        writer.close()?;
+        // A second close used to send end-of-stream into a stopped `appsrc` again and fail with
+        // `Flushing`.
+        assert!(matches!(
+            writer.close(),
+            Err(StreamCaptureError::PipelineNotRunning)
+        ));
+        assert_eq!(frame_values(&file_path)?, [10, 20, 30]);
+        Ok(())
+    }
+
+    /// `close` must give up when end-of-stream never reaches the sink (here a `valve` drops it)
+    /// instead of waiting forever. A sink blocked inside a `write` system call is a different
+    /// case: stopping the pipeline then blocks too, and nothing can interrupt it.
+    #[test]
+    fn video_writer_close_gives_up_when_end_of_stream_never_arrives(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp_dir = tempfile::tempdir()?;
+        let mut writer = VideoWriter::from_pipeline_description(
+            "appsrc name=src ! valve drop=true ! filesink name=filesink",
+            &tmp_dir.path().join("test.raw"),
+            ImageFormat::Rgb8,
+            30,
+            SIZE,
+        )?;
+        writer.close_timeout = Duration::from_millis(300);
+        writer.start()?;
+        writer.write(&frame(0)?)?;
+        let closed = finishes_within(Duration::from_secs(10), move || match writer.close() {
+            Err(StreamCaptureError::GStreamerError(err)) => err.to_string(),
+            other => format!("unexpected: {other:?}"),
+        })
+        .ok_or("close did not return within 10 s")?;
+        assert!(
+            closed.contains("end-of-stream did not reach the file sink"),
+            "{closed}"
+        );
+        Ok(())
+    }
+
+    /// `new` must reject sizes the MP4/H.264 pipeline can never encode, instead of failing
+    /// later with a generic error and an empty file.
+    #[test]
+    fn video_writer_new_rejects_sizes_mp4_cannot_encode() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let tmp_dir = tempfile::tempdir()?;
+        let path = tmp_dir.path().join("test.mp4");
+        for (width, height) in [(15, 16), (16, 8), (17, 16), (16, 17), (0, 0)] {
+            let size = ImageSize { width, height };
+            assert!(
+                matches!(
+                    VideoWriter::new(&path, VideoCodec::H264, ImageFormat::Rgb8, 30, size),
+                    Err(StreamCaptureError::InvalidConfig(_))
+                ),
+                "{width}x{height} must be rejected"
+            );
+        }
+        Ok(())
+    }
+
+    /// A failed `start` (here the output directory does not exist yet) must return the real
+    /// cause, and must not leave its errors on the bus where they used to fail every frame of the
+    /// next, healthy run.
+    #[test]
+    fn video_writer_failed_start_does_not_poison_the_next_run(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp_dir = tempfile::tempdir()?;
+        let dir = tmp_dir.path().join("not-created-yet");
+        let file_path = dir.join("test.mov");
+        let mut writer = VideoWriter::from_pipeline_description(
+            RAW_MOV,
+            &file_path,
+            ImageFormat::Rgb8,
+            30,
+            SIZE,
+        )?;
+        match writer.start() {
+            Err(StreamCaptureError::GStreamerError(err)) => assert!(
+                err.to_string().contains("Could not open file"),
+                "start must return the file sink's error, got: {err}"
+            ),
+            other => panic!("start must fail with the pipeline error, got {other:?}"),
+        }
+        // The failed attempt must leave the pipeline stopped, ready to start again.
+        assert_eq!(writer.pipeline.current_state(), gstreamer::State::Null);
+        std::fs::create_dir(&dir)?;
+        writer.start()?;
+        write_and_close(writer, &[50, 60])?;
+        assert_eq!(frame_values(&file_path)?, [50, 60]);
+        Ok(())
+    }
+
+    /// An end-of-stream already on the bus when `write` checks it for errors must not be lost.
+    /// `write` used to discard every non-error message, and `close` then waited forever for an
+    /// end-of-stream that had already arrived.
+    #[test]
+    fn video_writer_close_returns_after_write_saw_end_of_stream(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp_dir = tempfile::tempdir()?;
+        let file_path = tmp_dir.path().join("test.mov");
+        let mut writer = VideoWriter::from_pipeline_description(
+            RAW_MOV,
+            &file_path,
+            ImageFormat::Rgb8,
+            30,
+            SIZE,
+        )?;
+        writer.start()?;
+        writer.write(&frame(70)?)?;
+        // As if the stream had ended on its own: end-of-stream reaches the sink and the bus. Wait
+        // for that message, then put it back for `write` to find.
+        writer.appsrc.end_of_stream()?;
+        let eos = writer
+            .bus
+            .timed_pop_filtered(
+                gstreamer::ClockTime::from_seconds(5),
+                &[gstreamer::MessageType::Eos],
+            )
+            .ok_or("end-of-stream did not reach the bus")?;
+        writer.bus.post(eos)?;
+        // `appsrc` is at end-of-stream, so this frame is rejected; what matters is that `write`
+        // reads the bus here and must keep the end-of-stream it finds.
+        assert!(matches!(
+            writer.write(&frame(80)?),
+            Err(StreamCaptureError::GstreamerFlowError(_))
+        ));
+        let closed = finishes_within(Duration::from_secs(10), move || {
+            writer.close().map_err(|e| e.to_string())
+        });
+        assert_eq!(closed, Some(Ok(())), "close did not return Ok within 10 s");
+        assert_eq!(frame_values(&file_path)?, [70]);
+        Ok(())
     }
 
     /// A pipeline error raised while writing (here, RGB frames forced into GRAY8 caps, so the
@@ -644,7 +940,7 @@ mod tests {
         for _ in 0..200 {
             if matches!(
                 writer.write(&frame),
-                Err(super::StreamCaptureError::GStreamerError(_))
+                Err(StreamCaptureError::GStreamerError(_))
             ) {
                 write_error = true;
                 break;
@@ -652,17 +948,15 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(write_error, "write must report the pipeline error");
-        let closed = finishes_within(std::time::Duration::from_secs(10), move || {
-            matches!(
-                writer.close(),
-                Err(super::StreamCaptureError::GStreamerError(_))
-            )
+        let closed = finishes_within(Duration::from_secs(10), move || match writer.close() {
+            Err(StreamCaptureError::GStreamerError(err)) => Ok(err.to_string()),
+            other => Err(format!("{other:?}")),
         });
-        assert_eq!(
-            closed,
-            Some(true),
-            "close must return the pipeline error within 10 s"
-        );
+        // The error carries GStreamer's debug details, not just "Internal data stream error."
+        match closed {
+            Some(Ok(msg)) => assert!(msg.contains("not-negotiated"), "{msg}"),
+            other => panic!("close must return the pipeline error within 10 s, got {other:?}"),
+        }
 
         // The pipeline fails only once the first frame flows, after the last `write`, so the
         // error is found by `close` while it waits for end-of-stream.
@@ -676,11 +970,8 @@ mod tests {
         )?;
         writer.start()?;
         writer.write(&frame)?;
-        let closed = finishes_within(std::time::Duration::from_secs(10), move || {
-            matches!(
-                writer.close(),
-                Err(super::StreamCaptureError::GStreamerError(_))
-            )
+        let closed = finishes_within(Duration::from_secs(10), move || {
+            matches!(writer.close(), Err(StreamCaptureError::GStreamerError(_)))
         });
         assert_eq!(
             closed,
@@ -690,7 +981,7 @@ mod tests {
         Ok(())
     }
 
-    #[ignore = "need gstreamer in CI"]
+    #[ignore = "needs x264enc and h264parse (gst-plugins-ugly/-bad), which CI does not install"]
     #[test]
     fn video_writer_rgb8u() -> Result<(), Box<dyn std::error::Error>> {
         let tmp_dir = tempfile::tempdir()?;
@@ -698,7 +989,7 @@ mod tests {
 
         let file_path = tmp_dir.path().join("test.mp4");
 
-        // x264 cannot encode tiny frames such as 6x4 (caps not negotiated); 16x16 works.
+        // The smallest size the pipeline accepts: mp4mux needs at least 16x16.
         let size = ImageSize {
             width: 16,
             height: 16,
@@ -713,15 +1004,15 @@ mod tests {
         writer.close()?;
 
         assert_eq!(
-            count_frames(&file_path, 1)?,
+            frame_values(&file_path)?.len(),
             1,
-            "frame read back from {file_path:?}"
+            "frames read back from {file_path:?}"
         );
 
         Ok(())
     }
 
-    #[ignore = "need gstreamer in CI"]
+    #[ignore = "needs x264enc and h264parse (gst-plugins-ugly/-bad), which CI does not install"]
     #[test]
     fn video_writer_mono8u() -> Result<(), Box<dyn std::error::Error>> {
         let tmp_dir = tempfile::tempdir()?;
@@ -729,7 +1020,7 @@ mod tests {
 
         let file_path = tmp_dir.path().join("test.mp4");
 
-        // x264 cannot encode tiny frames such as 6x4 (caps not negotiated); 16x16 works.
+        // The smallest size the pipeline accepts: mp4mux needs at least 16x16.
         let size = ImageSize {
             width: 16,
             height: 16,
@@ -744,9 +1035,9 @@ mod tests {
         writer.close()?;
 
         assert_eq!(
-            count_frames(&file_path, 1)?,
+            frame_values(&file_path)?.len(),
             1,
-            "frame read back from {file_path:?}"
+            "frames read back from {file_path:?}"
         );
 
         Ok(())
