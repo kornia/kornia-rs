@@ -137,7 +137,12 @@ fn median(mut v: Vec<f64>) -> f64 {
         return f64::NAN;
     }
     v.sort_by(f64::total_cmp);
-    v[v.len() / 2]
+    let mid = v.len() / 2;
+    if v.len().is_multiple_of(2) {
+        (v[mid - 1] + v[mid]) / 2.0
+    } else {
+        v[mid]
+    }
 }
 
 /// Median rotation error (°), median relative translation error (%) and failure rate (%).
