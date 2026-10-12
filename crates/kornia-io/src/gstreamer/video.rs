@@ -294,11 +294,22 @@ impl VideoReader {
         self.0.get_fps()
     }
 
-    /// Grabs the last captured image frame.
+    /// Grabs the oldest decoded frame as an RGB image.
+    ///
+    /// The reader must have been created with [`ImageFormat::Rgb8`]. As with
+    /// [`StreamCapture::grab_rgb8`], the image is a read-only view of the GStreamer buffer when
+    /// its rows are tightly packed and an owned copy when GStreamer padded them; call `.clone()`
+    /// to get a writable image in either case.
     ///
     /// # Returns
     ///
-    /// An Option containing the last captured Image or None if no image has been captured yet.
+    /// An Option containing the oldest decoded Image, or None if no frame is buffered yet.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VideoReaderError::StreamCaptureError`] wrapping
+    /// [`StreamCaptureError::InvalidImageFormat`] if the reader was created with another format,
+    /// or any other error of [`StreamCapture::grab_rgb8`].
     #[inline]
     pub fn grab_rgb8(&mut self) -> Result<Option<Image<u8, 3>>, VideoReaderError> {
         self.0
