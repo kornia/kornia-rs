@@ -84,12 +84,12 @@ twin behind the `cuda` feature.
 - 752x480, 2048 keypoints, Orin Nano MAXN: CUDA 287 µs (binary) / 410 µs (f32); CPU 3.0 / 3.8 ms on
   6 threads, 10.5 / 13.8 ms on one. `cargo bench -p kornia-3d --bench bench_stereo_match --features cuda`.
 
-**`kornia-io` `VideoWriter::close` no longer hangs, and reports pipeline errors.** It set the
-pipeline to null before end-of-stream reached the file, so the end-of-stream message it then
-waited for was never posted and `close` never returned. It now waits for end-of-stream first
-(for at most 30 s), then checks what the pipeline posted while stopping, so `Ok` means the file
-was finished. A file sink stuck inside a blocking write (e.g. a pipe nobody reads) can still
-block stopping the pipeline; GStreamer cannot interrupt that. Behaviour changes:
+**`kornia-io` `VideoWriter::close` no longer hangs waiting for end-of-stream, and reports pipeline
+errors.** It set the pipeline to null before end-of-stream reached the file, so the end-of-stream
+message it then waited for was never posted and `close` never returned. It now waits for
+end-of-stream first (for at most 30 s), then checks what the pipeline posted while stopping, so
+`Ok` means the file was finished. A file sink stuck inside a blocking write (e.g. a pipe nobody
+reads) can still block stopping the pipeline; GStreamer cannot interrupt that. Behaviour changes:
 - `write` and `close` return `StreamCaptureError::GStreamerError` once the pipeline has failed
   (e.g. caps the encoder cannot accept); `write` used to keep queueing frames in memory and
   `close` returned `Ok`, leaving an empty file. The error now includes the failing element and
