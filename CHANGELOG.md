@@ -22,6 +22,8 @@ the pinned rev and LLVM 21 `llc`; `scripts/cuda-oxide/install-toolchain.sh` inst
 GPU RGB8 -> Gray8 now needs an sm_75+ (Turing or newer) GPU; Maxwell/Pascal devices such as
 Jetson Nano/TX2 lose it. kornia itself still builds on stable. CUDA color launchers now
 treat zero pixels as a no-op and reject pixel counts whose element count passes `u32::MAX`.
+The `cuda-fusion`, `cuda-camera-sift` and `cuda-camera-preprocess` examples now need
+`--features cuda`.
 See `docs/cuda-oxide.md`.
 
 **Breaking: fundamental-matrix RANSAC now samples seven points by default.** A seven-point

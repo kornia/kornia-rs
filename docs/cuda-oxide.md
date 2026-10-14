@@ -43,6 +43,9 @@ and keep working under the same feature. Roadmap:
   Turing-or-newer GPU. Maxwell/Pascal (Jetson Nano/TX2) cannot run ported ops.
 - A missing toolchain fails the build with one message naming the missing
   piece; it never falls back to an empty PTX.
+- Nothing in a plain workspace build enables `cuda`: the CUDA examples
+  (`cuda-fusion`, `cuda-camera-sift`, `cuda-camera-preprocess`) have their own
+  `cuda` feature and build only with `--features cuda`.
 
 ### PTX gate (`gate()` in `build.rs`)
 

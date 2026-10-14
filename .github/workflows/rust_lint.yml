@@ -106,6 +106,7 @@ jobs:
           cargo clippy --tests -p kornia-image --features cuda -- -D warnings
           cargo clippy --all-targets -p kornia-imgproc --features cuda -- -D warnings
           cargo clippy --tests -p kornia-3d --features cuda -- -D warnings
+          cargo clippy -p cuda-fusion -p cuda-camera-sift -p cuda-camera-preprocess --features cuda -- -D warnings
 
       - name: docs.rs build (stub PTX, no toolchain)
         run: DOCS_RS=1 cargo doc -p kornia-imgproc --features cuda --no-deps

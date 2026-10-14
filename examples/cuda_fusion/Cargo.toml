@@ -15,4 +15,14 @@ cudarc = { version = "0.19", default-features = false, features = [
   "nvrtc",
   "std",
 ] }
-kornia-imgproc = { path = "../../crates/kornia-imgproc", features = ["cuda"] }
+kornia-imgproc = { path = "../../crates/kornia-imgproc" }
+
+# kornia-imgproc's `cuda` builds Rust CUDA kernels and needs the cuda-oxide
+# toolchain (docs/cuda-oxide.md), so workspace-wide builds skip this example.
+[features]
+cuda = ["kornia-imgproc/cuda"]
+
+[[bin]]
+name = "cuda-fusion"
+path = "src/main.rs"
+required-features = ["cuda"]
