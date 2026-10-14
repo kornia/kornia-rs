@@ -13,12 +13,16 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
 
 ## [Unreleased]
 
-**New: `cuda-oxide` feature for kornia-imgproc (off by default).** Ships the first CUDA kernel
-written in Rust and compiled to PTX at build time by NVlabs' cuda-oxide: `gray_from_rgb_u8`
-(needs the cuda-oxide toolchain; works from crates.io). With the feature
-on, `cuda::color::gray::launch_gray_from_rgb_u8` runs it; output is byte-identical to the NVRTC
-kernel and the CPU path, and the launcher falls back to NVRTC if the PTX fails to load. No
-public API changes; kornia still builds on stable. See `docs/cuda-oxide.md`.
+**Breaking: kornia-imgproc's `cuda` feature now builds CUDA kernels written in Rust.** The
+first, `gray_from_rgb_u8`, is compiled to PTX at build time by NVlabs' cuda-oxide and replaces
+the NVRTC kernel behind `cuda::color::gray::launch_gray_from_rgb_u8` (same signature, output
+byte-identical to the CPU path). Building with `cuda` (kornia-imgproc, kornia-3d, kornia,
+kornia-py) now needs the cuda-oxide toolchain: `nightly-2026-04-03`, the codegen backend at
+the pinned rev and LLVM 21 `llc`; `scripts/cuda-oxide/install-toolchain.sh` installs them.
+GPU RGB8 -> Gray8 now needs an sm_75+ (Turing or newer) GPU; Maxwell/Pascal devices such as
+Jetson Nano/TX2 lose it. kornia itself still builds on stable. CUDA color launchers now
+treat zero pixels as a no-op and reject pixel counts whose element count passes `u32::MAX`.
+See `docs/cuda-oxide.md`.
 
 **Breaking: fundamental-matrix RANSAC now samples seven points by default.** A seven-point
 hypothesis needs one correspondence fewer than an eight-point one, so RANSAC reaches the same

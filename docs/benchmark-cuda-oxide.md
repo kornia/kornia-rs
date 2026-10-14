@@ -1,128 +1,43 @@
-# cuda-oxide vs NVRTC: parity report
+# cuda-oxide kernels: parity and throughput
 
-Every kernel shipped from `kernels-oxide/` gets a section here: byte-exactness
-evidence and an A/B against the NVRTC kernel it replaces. Method and checklist:
-[`docs/cuda-oxide.md`](cuda-oxide.md). Roadmap: #1135, Phase 2.
+One row per kernel (and arch), plus a short section. Method:
+[`docs/cuda-oxide.md`](cuda-oxide.md). Roadmap: #1135.
 
-| Kernel | Byte-exact vs CPU and NVRTC | oxide / NVRTC (4K, clean clocks) | Status |
-|---|---|---|---|
-| `gray_from_rgb_u8` | yes (`assert_eq!`, 9 sizes) | **0.998** | shipped behind `cuda-oxide` |
-| bilinear resize f32 C3 | yes (2x down/up + 4 odd sizes) | within ±1.7% on 5 cases | spike only, not upstreamed |
+| Kernel | Arch | Byte-exact vs CPU | GPU 4K (ms) | CPU 4K (ms) | vs main's NVRTC (4K) |
+|---|---|---|---:|---:|---:|
+| `gray_from_rgb_u8` | sm_87 (Orin), PTX sm_75 | yes | 0.347 | 1.33-1.45 | 0.999 |
 
 ## System
 
 | | |
 |---|---|
-| Date | 2026-10-11 |
-| Machine | NVIDIA Jetson Orin Nano Engineering Reference Developer Kit Super |
-| GPU | ga10b, sm_87 |
-| L4T | R36.4.3 |
-| CUDA / driver | 12.6.68 / 540.4.0 |
+| Date | 2026-10-14 |
+| Machine | Jetson Orin Nano Engineering Reference Developer Kit Super (ga10b, sm_87) |
+| L4T / CUDA / driver | R36.4.3 / 12.6.68 / 540.4.0 |
 | Power mode | MAXN_SUPER (nvpmodel 2) |
-| GPU clocks | **not locked** (DVFS 306-1020 MHz; `jetson_clocks` needs sudo, unavailable). The bench records the clock after every round. |
-| rustc (kornia) | 1.98.0 |
-| rustc (kernel crate) | 1.96.0-nightly (2026-04-02), pinned `nightly-2026-04-03` |
-| LLVM `llc` | 21.1.8 |
-| cuda-oxide | `f819f23fe035ec1c24b8ec06e738b62a9f377140` |
-| PTX | `.target sm_75`, `.version 6.3`, JIT-compiled by the driver |
+| GPU clocks | **not locked** (DVFS 306-1020 MHz; no sudo for `jetson_clocks`) |
+| rustc | 1.98.0 (kornia), nightly-2026-04-03 (kernels-oxide) |
+| cuda-oxide / llc | `f819f23` / LLVM 21.1.8 |
 
 ## `gray_from_rgb_u8`
 
-Port of `GRAY_FROM_RGB_U8_SRC` (`cuda/color/gray.rs`): OpenCV Q14 integer
-weights, 4 px/thread via three u32 loads and one u32 store, byte tail for the
-last partial quad. Same parameters, same `launch_map` geometry (256-thread 1-D
-blocks), same `PREFER_L1` carveout as the NVRTC kernel.
+OpenCV Q14 (`(4899 R + 9617 G + 1868 B + 8192) >> 14`), 4 px/thread: three u32
+loads, one u32 store, byte tail. Replaces main's NVRTC kernel of the same name.
 
-### Correctness
-
-```
-test cuda::color::gray::tests::gray_from_rgb_u8_bit_exact_vs_cpu ... ok
-test cuda::color::gray::tests::gray_from_rgb_u8_oxide_bit_exact ... ok
-test cuda::oxide::tests::corrupt_ptx_errors_instead_of_panicking ... ok
-```
-
-The PTX gate (`.target sm_75`, no `fma`, no generic `ld`/`st`) runs in
-`build.rs` on every build with the feature, so a passing test run implies it
-passed. The u8->u32 pointer cast kept the global address space
-(`cvta.to.global` + `ld.global.b32`).
-
-`gray_from_rgb_u8_oxide_bit_exact` asserts oxide == CPU, NVRTC == CPU and
-default launcher == oxide for n = 1, 3, 4, 5, 7, 8, 1023, 851, 1920·1080+3 (every
-`n mod 4` tail), and that neither kernel writes past `npixels` into a
-sentinel-filled oversized `dst`. It calls `ensure_loaded` first, so it cannot
-pass by silently comparing NVRTC with itself. Mutation check: changing one Q14
-weight in the PTX (4899 -> 4900) fails it at n = 1023.
-
-### Throughput
-
-`examples/bench_cuda_oxide.rs`: owned stream, 5 cycles alternating arm order,
-each arm 5 rounds × 100 launches per cycle, events + sync per round, min round
-per cycle. GB/s counts 3 B read + 1 B written per pixel. Sittings 1-3 ran the
-PTX from the spike-style manual build; sitting 4 ran the PTX that `build.rs`
-generated (identical kernel body) while another build loaded the box:
-
-| Size | Sitting | NVRTC min (ms) | oxide min (ms) | oxide / NVRTC | Spread (N / o) | GB/s (N / o) | GPU MHz seen |
-|---|---|---:|---:|---:|---:|---:|---|
-| 3840x2160 | 1 | 0.3472 | 0.3465 | **0.998** | 0.6% / 1.4% | 95.5 / 95.8 | 1020 |
-| 3840x2160 | 2 | 0.3476 | 0.3471 | **0.998** | 0.2% / 0.1% | 95.4 / 95.6 | 1020 |
-| 3840x2160 | 3 | 0.3479 | 0.3471 | **0.998** | 0.3% / 0.1% | 95.4 / 95.6 | 1020 |
-| 3840x2160 | 4 | 0.3558 | 0.3562 | **1.001** | 1.6% / 2.9% | 93.3 / 93.1 | 1020 |
-| 1920x1080 | 1 | 0.0913 | 0.0911 | 0.998 | 55% / 56% | 90.9 / 91.0 | 714-1020 |
-| 1920x1080 | 2 | 0.0911 | 0.0910 | 0.998 | 48% / 47% | 91.0 / 91.2 | 306-1020 |
-| 1920x1080 | 3 | 0.0918 | 0.0914 | 0.996 | 47% / 48% | 90.4 / 90.7 | 714-1020 |
-| 320x240 | 1 | 0.0155 | 0.0154 | 0.994 | 11% / 8% | 19.8 / 19.9 | 306 |
-| 320x240 | 2 | 0.0081 | 0.0076 | 0.940 | 96% / 103% | 37.9 / 40.3 | 306-714 |
-| 320x240 | 3 | 0.0082 | 0.0077 | 0.939 | 95% / 102% | 37.5 / 39.9 | 306-714 |
-
-**Read the 4K rows.** The clock sat at 1020 MHz for every round and the cycle
-spread is at most 2.9%: oxide is at parity (within 0.2% either way). Sitting 4 is
-~2.5% slower on BOTH arms (a concurrent build), so it is the ratio that holds. At 1080p
-the minima agree to 0.4% but the spread is DVFS ramping mid-run. At 320x240 the
-kernel is launch-bound and too light to ramp the governor (306 MHz in sitting 1),
-so those rows measure the clock, not the kernel; do not quote them. All of this
-should be re-run with `sudo jetson_clocks` before a final number is cited.
-
-### Instruction mix
-
-From the PTX (nvcc `--fmad=false -arch=compute_87` stands in for NVRTC's
-identical options); registers from `ptxas -v --gpu-name sm_87 -O3`.
-
-| | NVRTC | cuda-oxide |
-|---|---:|---:|
-| instructions (approx) | 220 | 105 |
-| `ld.global.nc` (`__ldg`) | 18 | 0 |
-| `ld.global` | 0 | 6 |
-| `fma` | 0 | 0 |
-| registers | 27 | 18 |
-
-The NVRTC count is inflated by nvcc unrolling the byte-tail loop 4x; the hot
-4-px path is three word loads and one word store in both. The oxide kernel has
-no read-only-cache loads (this cuda-oxide cannot express `__ldg`) and still
-matches, consistent with the resize finding that `__ldg` is a no-op on sm_87.
-
-### Target and fallback
-
-The PTX targets `sm_75`; the kernel body is byte-identical to an `sm_87` build
-(only `.version`/`.target` differ), and the Orin JITs it with the numbers above.
-If the driver rejects the module, the launcher uses the NVRTC kernel.
-
-## Bilinear resize (spike, 2026-09-10)
-
-Branch `spike/cuda-oxide-resize` @ 88541a7, report
-`docs/benchmark-cuda-oxide-resize.md` there. Same board, MAXN_SUPER,
-`.target sm_87`. Different harness from the one above (wall clock, 200
-iterations after 50 warmup, queue-all-then-sync), so do not compare its numbers
-with the gray table.
-
-| case (src->dst) | NVRTC `__ldg` | NVRTC no `__ldg` | oxide raw ptr | oxide slices |
-|---|---:|---:|---:|---:|
-| 1024x1024 -> 512x512 | 0.175 | 0.167 | 0.166 | 0.167 |
-| 512x512 -> 1024x1024 | 0.197 | 0.198 | 0.199 | 0.221 |
-| 1920x1080 -> 960x540 | 0.323 | 0.323 | 0.323 | 0.325 |
-| 1920x1080 -> 3840x2160 | 1.526 | 1.530 | 1.536 | 1.720 |
-| 3840x2160 -> 1920x1080 | 1.278 | 1.276 | 1.300 | 1.278 |
-
-(ms/iter.) Byte-exact over 2x down, 2x up and four odd sizes. Two findings that
-became porting rules: raw pointers carry no `noalias` (interleaved stores cost
-2x on upscale until loads were batched before stores), and slices are slower
-than raw pointers (generic loads, bounds branches; 12-13% on upscale).
+- **Parity:** `gray_from_rgb_u8_bit_exact` (n = 1..8, 1023, 851, 640x480,
+  1920x1080+3 with a sentinel past `npixels`; images 1x1, 1x7, 7x1, 1x4099,
+  4099x1, 33x17, 255x3, 1025x1, 1919x1081, 4K) and
+  `gray_from_rgb_u8_degenerate_npixels`. Changing one weight (4899 -> 4900)
+  fails it at n = 1023.
+- **Throughput** (`bench_cuda_oxide`, 3 sittings; GPU kernel time, CPU = 6
+  threads, NEON): 4K GPU 0.3467-0.3474 ms (95.6 GB/s, 1020 MHz, spread <=4.5%)
+  vs CPU 1.45-1.71 ms; 1080p GPU 0.091 ms vs CPU 0.55-0.59 ms. 320x240 is
+  launch-bound and the governor sits at 306 MHz for some sittings: do not quote.
+- **vs main's NVRTC kernel** (`orin-test-bench.sh --base origin/main
+  --cycles 4`, binaries alternated): 4K min 0.3464 vs 0.3469 ms (0.999),
+  median of the 4 cycle minima 0.3468 vs 0.3476 ms; spread <=1%. 1080p mins
+  agree (0.0913 vs 0.0921 ms) but the clock swung 306-1020 MHz there.
+- **Variants tried, not kept** (same sittings, byte-exact): 1 px/thread is
+  2.19x slower at 4K (0.761 ms) and 2.1x at 1080p; 8 px/thread (three u64 or
+  six u32 loads, all loads first) is 0.99x at 4K and 0.99-1.00x at 1080p,
+  under the 10% bar. 4 px/thread already streams at ~96 GB/s.
