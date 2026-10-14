@@ -12,7 +12,7 @@ use thiserror::Error;
 
 const MIN_CORRESPONDENCES: usize = 4; // Minimum 2D-3D pairs required by EPnP (and by any refit)
 const AP3P_SAMPLE_SIZE: usize = 3; // AP3P is an exact 3-point solver: it rejects any other count
-const EPNP_MIN_SAMPLE_SIZE: usize = 5; // EPnP and SQPnP sample size (4 if only 4 points exist)
+const PNP_MIN_SAMPLE_SIZE: usize = 5; // EPnP and SQPnP sample size (4 if only 4 points exist)
 
 /// Upper bound on the number of real roots an exact P3P solver can return.
 const AP3P_MAX_ROOTS: usize = 4;
@@ -270,7 +270,7 @@ pub fn solve_pnp_ransac(
     } else if n == MIN_CORRESPONDENCES {
         MIN_CORRESPONDENCES
     } else {
-        EPNP_MIN_SAMPLE_SIZE
+        PNP_MIN_SAMPLE_SIZE
     };
 
     // Precompute intrinsics vectors
