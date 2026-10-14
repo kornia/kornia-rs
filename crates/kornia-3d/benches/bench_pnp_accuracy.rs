@@ -3,12 +3,15 @@
 //! Prints Markdown tables of the median rotation error, the median relative translation error
 //! and the failure rate (rotation error above 5° or no pose returned) for EPnP, EPnP + LM and
 //! SQPnP: across correspondence counts, across pixel-noise levels, and in harder configurations
-//! (planar points, a small object far away, close range, the 4-point minimum). Each cell is 200
-//! random scenes with a fixed seed, so the output is reproducible.
+//! (planar points, a small object far away, close range, the 4-point minimum). A last table runs
+//! `solve_pnp_ransac` with each kernel on scenes with outliers. Each cell is 200 random scenes with
+//! a fixed seed, so the output is reproducible.
 //!
 //! Run with `cargo bench -p kornia-3d --bench bench_pnp_accuracy`.
 
-use kornia_3d::pnp::{solve_pnp, EPnPParams, LMRefineParams, PnPMethod};
+use kornia_3d::pnp::{
+    solve_pnp, solve_pnp_ransac, EPnPParams, LMRefineParams, PnPMethod, PnPResult, RansacParams,
+};
 use kornia_algebra::{Mat3AF32, Mat3F64, Vec2F32, Vec3AF32, Vec3F64, SO3F64};
 use rand::{rngs::StdRng, RngExt, SeedableRng};
 
@@ -113,8 +116,14 @@ fn median(mut v: Vec<f64>) -> f64 {
     }
 }
 
-/// Median rotation error (°), median relative translation error (%) and failure rate (%).
-fn evaluate(method: &PnPMethod, kind: &SceneKind, seed: u64) -> (f64, f64, f64) {
+/// Median rotation error (°), median relative translation error (%) and failure rate (%) of
+/// `solve` over `TRIALS` scenes of `kind`, each with `outliers` random correspondences added.
+fn evaluate(
+    kind: &SceneKind,
+    outliers: usize,
+    seed: u64,
+    solve: impl Fn(&[Vec3AF32], &[Vec2F32], &Mat3AF32) -> Option<PnPResult>,
+) -> (f64, f64, f64) {
     let k = Mat3AF32::from_cols_array(&[
         FOCAL as f32,
         0.0,
@@ -131,7 +140,19 @@ fn evaluate(method: &PnPMethod, kind: &SceneKind, seed: u64) -> (f64, f64, f64) 
     let (mut rot, mut trans, mut failures) = (Vec::new(), Vec::new(), 0);
     for _ in 0..TRIALS {
         let scene = make_scene(&mut rng, kind);
-        let Ok(pose) = solve_pnp(&scene.world, &scene.image, &k, None, method.clone()) else {
+        let (mut world, mut image) = (scene.world.clone(), scene.image.clone());
+        for _ in 0..outliers {
+            world.push(Vec3AF32::new(
+                rng.random_range(-1.0..1.0),
+                rng.random_range(-1.0..1.0),
+                rng.random_range(-1.0..1.0),
+            ));
+            image.push(Vec2F32::new(
+                rng.random_range(0.0..2.0 * CENTER.0 as f32),
+                rng.random_range(0.0..2.0 * CENTER.1 as f32),
+            ));
+        }
+        let Some(pose) = solve(&world, &image, &k) else {
             failures += 1;
             continue;
         };
@@ -186,7 +207,47 @@ fn table(title: &str, column: &str, rows: Vec<(String, SceneKind)>) {
     for (i, (label, kind)) in rows.iter().enumerate() {
         print!("| {label} |");
         for (_, method) in &methods {
-            let (r, t, f) = evaluate(method, kind, 1000 + i as u64);
+            let (r, t, f) = evaluate(kind, 0, 1000 + i as u64, |w, img, k| {
+                solve_pnp(w, img, k, None, method.clone()).ok()
+            });
+            print!(" {r:.3} | {t:.3} | {f:.1} |");
+        }
+        println!();
+    }
+}
+
+/// The same statistics for `solve_pnp_ransac` with each kernel (3 px threshold, fixed seed, other
+/// parameters default), on scenes with `outliers` random correspondences added.
+fn ransac_table(title: &str, rows: Vec<(String, SceneKind, usize)>) {
+    let kernels = [
+        ("EPnP", PnPMethod::EPnPDefault),
+        ("AP3P", PnPMethod::AP3PDefault),
+        ("SQPnP", PnPMethod::SQPnPDefault),
+    ];
+    let params = RansacParams {
+        reproj_threshold_px: 3.0,
+        random_seed: Some(1),
+        ..Default::default()
+    };
+    println!("\n### {title}\n");
+    print!("| case |");
+    for (name, _) in &kernels {
+        print!(" {name} rot° | {name} trans % | {name} fail % |");
+    }
+    println!();
+    print!("|---|");
+    for _ in &kernels {
+        print!("---|---|---|");
+    }
+    println!();
+    for (i, (label, kind, outliers)) in rows.iter().enumerate() {
+        print!("| {label} |");
+        for (_, kernel) in &kernels {
+            let (r, t, f) = evaluate(kind, *outliers, 2000 + i as u64, |w, img, k| {
+                solve_pnp_ransac(w, img, k, None, kernel.clone(), &params)
+                    .ok()
+                    .map(|result| result.pose)
+            });
             print!(" {r:.3} | {t:.3} | {f:.1} |");
         }
         println!();
@@ -283,6 +344,23 @@ fn main() {
                     planar: false,
                 },
             ),
+        ],
+    );
+
+    let inliers = |planar| SceneKind {
+        n: 50,
+        noise_px: 1.0,
+        size: 1.0,
+        depth: 6.0,
+        planar,
+    };
+    ransac_table(
+        "Inside solve_pnp_ransac (50 inliers with 1 px noise, plus random outliers)",
+        vec![
+            ("no outliers".into(), inliers(false), 0),
+            ("25% outliers".into(), inliers(false), 17),
+            ("50% outliers".into(), inliers(false), 50),
+            ("planar, 25% outliers".into(), inliers(true), 17),
         ],
     );
 }

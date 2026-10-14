@@ -22,9 +22,10 @@ points. Its gain is robustness: with 1 px noise it failed (rotation error above 
 `cargo bench -p kornia-3d --bench bench_pnp_accuracy`). One solve takes about 12–24 µs for 6–500
 non-planar points and about 40–50 µs for planar ones (Apple M5,
 `cargo bench -p kornia-3d --bench bench_pnp`; full tables and machine in
-`crates/kornia-3d/benchmarks.md`). As a `solve_pnp_ransac` kernel it is about 10×
-slower than AP3P: a 5-point sample needs more draws than a 3-point one, and every draw runs
-SQP. With exactly 3 points it returns one of up to four exact solutions.
+`crates/kornia-3d/benchmarks.md`). As a `solve_pnp_ransac` kernel it never failed in
+`bench_pnp_accuracy` (up to 50% outliers) but is about 10× slower than AP3P: a 5-point sample
+needs more draws than a 3-point one, and every draw runs SQP. With exactly 3 points it returns
+one of up to four exact solutions.
 `SQPnPParams::refine_lm` can polish the pose on reprojection error, which helps when points are
 very close to the camera.
 

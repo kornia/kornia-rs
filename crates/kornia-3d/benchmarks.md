@@ -10,7 +10,7 @@ after a change; do not overwrite old ones.
 # Speed: EPnP, EPnP + LM and SQPnP, plus solve_pnp_ransac with each kernel
 cargo bench -p kornia-3d --bench bench_pnp
 
-# Accuracy and failure rates (prints the Markdown tables below)
+# Accuracy and failure rates, also inside solve_pnp_ransac (prints the Markdown tables below)
 cargo bench -p kornia-3d --bench bench_pnp_accuracy
 ```
 
@@ -21,8 +21,8 @@ cargo bench -p kornia-3d --bench bench_pnp_accuracy
 | Scenes (`bench_pnp`) | random points in a 2 m cube, or a 2 m square for `planar`, seen from 6 m; 1 px Gaussian noise; fixed seed |
 | Batch | each `pnp` iteration solves 20 scenes, each `pnp_ransac` iteration 5 (100 inliers + 100 outliers); times below are per single solve |
 | Failing cases | every scene is solved once before timing; a case that fails is reported as skipped, never timed |
-| Timing | criterion defaults (3 s warm-up, 5 s measurement, 100 samples); the median estimate is reported |
-| Accuracy (`bench_pnp_accuracy`) | 200 random scenes per row, fixed seeds; failure = rotation error above 5° or no pose |
+| Timing | criterion defaults (3 s warm-up, 5 s measurement, 100 samples); the time shown is criterion's point estimate (the middle of the interval it prints), divided by the batch size |
+| Accuracy (`bench_pnp_accuracy`) | 200 random scenes per row, fixed seeds; failure = rotation error above 5° or no pose. The RANSAC rows add random outlier correspondences and use a 3 px threshold |
 
 **Note:** plain EPnP still has #1181 (wrong pose on noise-free data), which is why it fails in
 most accuracy rows and why the EPnP RANSAC kernel fails on one bench scene. Expect EPnP and
@@ -60,7 +60,7 @@ EPnP + LM numbers to change when that is fixed.
 | AP3P | 1.27 ms |
 | SQPnP | 12.52 ms |
 
-### Accuracy (`bench_pnp_accuracy`, same commit)
+### Accuracy (`bench_pnp_accuracy`, same solver code)
 
 Median rotation error (°), median relative translation error (%) and failure rate (%).
 
@@ -94,3 +94,12 @@ Median rotation error (°), median relative translation error (%) and failure ra
 | small object far (0.5 m cube at 30 m), n=20 | 34.747 | 10.236 | 91.5 | 8.840 | 8.322 | 81.5 | 5.147 | 7.121 | 52.0 |
 | close range (2 m cube at 2.5 m), n=20 | 52.409 | 14.725 | 67.0 | 0.093 | 0.070 | 0.5 | 0.109 | 0.073 | 0.0 |
 | minimum, n=4 | 1.009 | 0.806 | 30.0 | 0.409 | 0.255 | 6.0 | 0.395 | 0.224 | 0.0 |
+
+#### Inside solve_pnp_ransac (50 inliers with 1 px noise, plus random outliers)
+
+| case | EPnP rot° | EPnP trans % | EPnP fail % | AP3P rot° | AP3P trans % | AP3P fail % | SQPnP rot° | SQPnP trans % | SQPnP fail % |
+|---|---|---|---|---|---|---|---|---|---|
+| no outliers | 0.587 | 0.401 | 0.0 | 0.205 | 0.106 | 0.0 | 0.169 | 0.104 | 0.0 |
+| 25% outliers | 0.587 | 0.408 | 0.0 | 0.183 | 0.110 | 0.0 | 0.160 | 0.097 | 0.0 |
+| 50% outliers | 1.379 | 1.161 | 59.0 | 0.180 | 0.104 | 0.0 | 0.214 | 0.144 | 0.0 |
+| planar, 25% outliers | 30.507 | 5.959 | 100.0 | 0.425 | 0.196 | 0.5 | 0.266 | 0.148 | 0.0 |
