@@ -55,4 +55,3 @@ pub unsafe fn gray_from_rgb_u8(src: *const u8, dst: *mut u8, npixels: u32) {
         }
     }
 }
-
