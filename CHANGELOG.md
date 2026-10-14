@@ -16,11 +16,26 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
 **SQPnP pose solver in `kornia-3d`** (`kornia_3d::pnp::solve_sqpnp`, or `PnPMethod::SQPnP` /
 `PnPMethod::SQPnPDefault` through `solve_pnp` and `solve_pnp_ransac`), after Terzakis & Lourakis,
 ECCV 2020. It minimises the object-space error over all rotations, for planar and non-planar
-points, so an accurate pose needs no extra refinement step. With 1 px noise it takes 12–22 µs
-for 6–500 points, about 5–300× faster than EPnP with LM refinement (plain EPnP is faster below
-about 20 points but less accurate; Apple M5, `cargo bench -p kornia-3d --bench bench_pnp`). With
-exactly 3 points it returns one of up to four exact solutions. `SQPnPParams::refine_lm` can
-polish the pose on reprojection error, which helps when points are very close to the camera.
+points. Its gain is robustness: with 1 px noise it failed (rotation error above 5°) on none of
+200 planar scenes and on at most 0.5% of 4-point ones, where EPnP with LM refinement failed on
+24.5–48% and 6–13% (without and with the EPnP fix for #1181;
+`cargo bench -p kornia-3d --bench bench_pnp_accuracy`). One solve takes about 12–24 µs for 6–500
+non-planar points and 41–49 µs for planar ones (Apple M5,
+`cargo bench -p kornia-3d --bench bench_pnp`). As a `solve_pnp_ransac` kernel it is about 10×
+slower than AP3P: a 5-point sample needs more draws than a 3-point one, and every draw runs
+SQP. With exactly 3 points it returns one of up to four exact solutions.
+`SQPnPParams::refine_lm` can polish the pose on reprojection error, which helps when points are
+very close to the camera.
+
+**`kornia-algebra`: `SO3F64::from_matrix_nearest`**, the rotation nearest to any 3x3 matrix
+(`U·diag(1, 1, det(U·Vᵀ))·Vᵀ`), and `From` conversions between `Mat3F64` and nalgebra's
+`Matrix3<f64>`. SQPnP, the orthogonal iteration of `estimate_planar_pose` and ICP's rigid fit
+use it. Their results are unchanged in 2000 random planar scenes and 30 ICP runs (largest
+difference 1.4e-9); they differ only when `U·Vᵀ` is a reflection, where the planar pose used to
+negate a column of `U·Vᵀ`, which is a rotation but not the nearest one. ICP also got much
+faster: its rigid fit built heap-allocated vectors for every point to form the covariance. With
+2000 points one `icp_vanilla` run went from 326 ms to 3.6 ms, with the same iterations and
+result.
 
 Breaking for Rust code: `PnPMethod` has two new variants, so exhaustive `match`es need new arms.
 

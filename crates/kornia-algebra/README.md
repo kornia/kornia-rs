@@ -12,7 +12,7 @@
 
 ## 🔑 Key Features
 
-*   **Lie Groups:** Full implementations of **SO(2)**, **SE(2)**, **SO(3)**, and **SE(3)**.
+*   **Lie Groups:** Full implementations of **SO(2)**, **SE(2)**, **SO(3)**, and **SE(3)**. `SO3F64::from_matrix_nearest` projects any 3x3 matrix onto the nearest rotation.
 *   **Manifold Operations:** Exp/Log maps, adjoints, and tangent space operations.
 *   **Optimization Ready:** Analytical Jacobians for all group operations.
 *   **Linear Algebra:** Typed vectors and matrices (`Vec3F32`, `Mat4F32`) with SIMD acceleration (via `glam`).

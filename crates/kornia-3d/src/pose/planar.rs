@@ -61,8 +61,7 @@
 //!
 use crate::camera::PinholeCamera;
 use crate::pose::{homography_4pt2d, Pose3d};
-use kornia_algebra::linalg::svd::svd3_f64;
-use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64};
+use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64, SO3F64};
 
 /// A recovered planar pose with its reprojection error.
 #[derive(Debug, Clone)]
@@ -103,9 +102,10 @@ pub enum PlanarPoseError {
     Homography(#[from] crate::pose::HomographyError),
 
     /// The orthogonal iteration's linear system `(I - avg_F)` is singular, which happens when the
-    /// four image rays are (near) identical. Distinct from [`Self::Homography`]: the homography
-    /// fitted, the refinement is what degenerated.
-    #[error("orthogonal-iteration system is singular (degenerate image rays)")]
+    /// four image rays are (near) identical, or its rotation update cannot be computed (non-finite
+    /// values). Distinct from [`Self::Homography`]: the homography fitted, the refinement is what
+    /// degenerated.
+    #[error("orthogonal iteration is degenerate (identical image rays or non-finite values)")]
     SingularIteration,
 
     /// The four object points collapse to a point in their own plane, so there is no frame to
@@ -253,14 +253,12 @@ fn orthogonal_iteration(
             m3 += Mat3F64::from_cols(dq * p_res[i].x, dq * p_res[i].y, dq * p_res[i].z);
         }
 
-        // SVD of M3 via kornia-algebra's 3×3 solver; R = U·Vᵀ with a reflection fix.
-        let svd = svd3_f64(&m3);
-        let mut r_new = *svd.u() * svd.v().transpose();
-        // Fix reflection (det = −1) by negating the third column, matching the C reference.
-        if r_new.determinant() < 0.0 {
-            r_new.z_axis = -r_new.z_axis;
-        }
-        rotation = r_new;
+        // Kabsch / Procrustes: the new rotation is the one nearest to M3. (The C reference
+        // negates the third column of U·Vᵀ when it is a reflection, which is a rotation but not
+        // the nearest one.)
+        rotation = SO3F64::from_matrix_nearest(&m3)
+            .ok_or(PlanarPoseError::SingularIteration)?
+            .matrix();
 
         // Error: Σᵢ (Δuᵢ² + Δvᵢ²) — sum of squared pixel reprojection errors
         error = 0.0;
