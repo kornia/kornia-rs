@@ -19,7 +19,7 @@ required-features = ["cuda"]
 
 [[example]]
 name = "bench_cuda_oxide"
-required-features = ["cuda-oxide"]
+required-features = ["cuda"]
 
 [[example]]
 name = "bench_cuda_remap"
@@ -163,11 +163,9 @@ rand = { workspace = true }
 thiserror = { workspace = true }
 
 [features]
-# CUDA device backend + custom CUDA kernels (via the cudarc crate).
-# Enables the `preprocess` module and the `cuda` kernels module.
+# CUDA device backend + custom CUDA kernels (via the cudarc crate). Enables the
+# `preprocess` and `cuda` modules. Kernels in kernels-oxide/ are compiled from
+# Rust to PTX by build.rs with cuda-oxide, which needs its pinned nightly
+# toolchain (docs/cuda-oxide.md); the rest are NVRTC-compiled at runtime.
 cuda = ["dep:cudarc", "dep:half", "kornia-image/cuda", "kornia-tensor/cuda"]
-# Rust-authored kernels (kernels-oxide/) compiled to PTX by build.rs through the
-# cuda-oxide backend; needs its toolchain and a git checkout (docs/cuda-oxide.md).
-# Each op falls back to its NVRTC twin if the PTX fails to load at runtime.
-cuda-oxide = ["cuda"]
 opencv_bench = ["dep:opencv"]

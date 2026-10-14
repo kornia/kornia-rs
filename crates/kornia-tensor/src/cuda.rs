@@ -755,6 +755,10 @@ impl CudaKernel {
     /// * `ptx`      — PTX assembly text.
     /// * `fn_names` — names of the `.entry` functions to load.
     ///
+    /// # Returns
+    ///
+    /// One kernel per name, in the order of `fn_names`.
+    ///
     /// # Errors
     ///
     /// Returns [`CudaError::Driver`] if the driver rejects the PTX (e.g. its

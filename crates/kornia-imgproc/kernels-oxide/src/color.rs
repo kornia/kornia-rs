@@ -1,11 +1,10 @@
-//! RGB8 -> Gray8, byte-exact twin of `GRAY_FROM_RGB_U8_SRC` in
-//! `crates/kornia-imgproc/src/cuda/color/gray.rs`.
+//! Color-conversion kernels; each is byte-exact with its CPU path in
+//! `crates/kornia-imgproc/src/color/`.
 
 use cuda_device::{kernel, thread};
 
-// OpenCV Q14 BT.601 weights; mirror `GRAY_*_Q14` in
-// `crates/kornia-imgproc/src/cuda/color/mod.rs` and the CPU path in
-// `crates/kornia-imgproc/src/color/gray/kernels.rs`.
+// OpenCV Q14 BT.601 weights; mirror `RW_Q14`/`GW_Q14`/`BW_Q14`/`Q14_GRAY_HALF`
+// in `crates/kornia-imgproc/src/color/gray/kernels.rs`.
 const WR: u32 = 4899;
 const WG: u32 = 9617;
 const WB: u32 = 1868;
@@ -16,14 +15,14 @@ fn gray_q14(r: u32, g: u32, b: u32) -> u32 {
     (WR * r + WG * g + WB * b + HALF) >> 14
 }
 
-/// 4 px/thread: three u32 loads (12 RGB bytes), one u32 store (4 grays); the
-/// final partial quad falls back to bytes.
+/// RGB8 -> Gray8, 4 px/thread: three u32 loads (12 RGB bytes), one u32 store
+/// (4 grays); the final partial quad falls back to bytes.
 ///
 /// # Safety
 ///
 /// `src` holds `3 * npixels` bytes and `dst` `npixels`, both 4-byte aligned
-/// (cudarc allocations are 256-byte aligned). The kornia launcher checks the
-/// lengths.
+/// (cudarc allocations are 256-byte aligned), and `3 * npixels <= u32::MAX`.
+/// `launch_map` checks the lengths and the range.
 #[kernel]
 pub unsafe fn gray_from_rgb_u8(src: *const u8, dst: *mut u8, npixels: u32) {
     let q = thread::blockIdx_x() * thread::blockDim_x() + thread::threadIdx_x();
@@ -56,3 +55,4 @@ pub unsafe fn gray_from_rgb_u8(src: *const u8, dst: *mut u8, npixels: u32) {
         }
     }
 }
+

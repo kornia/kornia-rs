@@ -32,9 +32,8 @@ pub mod remap;
 /// Native CUDA color-space conversion kernels.
 pub mod color;
 
-/// Rust-authored kernels precompiled to PTX by cuda-oxide.
-#[cfg(feature = "cuda-oxide")]
-pub mod oxide;
+/// Loader for the Rust-authored kernels that build.rs compiles to PTX.
+pub(crate) mod oxide;
 
 /// Native CUDA SIFT scale-space, detector, descriptor and matcher.
 pub mod sift;

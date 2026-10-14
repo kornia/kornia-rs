@@ -1,10 +1,11 @@
 //! Rust-authored CUDA kernels for kornia-imgproc.
 //!
-//! Every `#[kernel]` in this crate lands in ONE PTX module, which
-//! kornia-imgproc's `build.rs` compiles into its `OUT_DIR`. PTX entry names are
-//! the plain Rust function names.
+//! One module per kernel family (`color`, `resize`, ...). Every `#[kernel]`
+//! lands in ONE PTX module that kornia-imgproc's `build.rs` compiles into its
+//! `OUT_DIR`; each entry is named after the Rust function, which keeps the name
+//! of the NVRTC kernel it replaces.
 
-mod color_gray;
+mod color;
 
 /// PTX-only crate: `main` exists so the codegen backend has a binary to compile.
 fn main() {
