@@ -6,6 +6,11 @@ license = "Apache-2.0"
 edition = "2021"
 publish = false
 
+[[bin]]
+name = "cuda-camera-preprocess"
+path = "src/main.rs"
+required-features = ["cuda"]
+
 [dependencies]
 argh = { workspace = true }
 cudarc = { version = "0.19", default-features = false, features = [
@@ -25,8 +30,3 @@ kornia-tensor = { path = "../../crates/kornia-tensor", features = ["cuda"] }
 # toolchain (docs/cuda-oxide.md), so workspace-wide builds skip this example.
 [features]
 cuda = ["kornia-imgproc/cuda"]
-
-[[bin]]
-name = "cuda-camera-preprocess"
-path = "src/main.rs"
-required-features = ["cuda"]
