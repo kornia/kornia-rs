@@ -22,8 +22,8 @@ pub enum UmeyamaError {
     /// Source, destination and weight arrays must have the same length
     #[error("Source, destination and weight arrays must have the same length")]
     MismatchedWeightsLength,
-    /// Weights must be non-empty, finite, and have a positive sum
-    #[error("Weights must be non-empty, finite, and have a positive sum")]
+    /// Weights must be finite, non-negative, and have a positive sum
+    #[error("Weights must be finite, non-negative, and have a positive sum")]
     InvalidWeights,
 }
 
@@ -140,6 +140,9 @@ pub type UmeyamaResultF64 = Result<UmeyamaOutputF64, UmeyamaError>;
 /// It produces byte-identical output to previous releases; the weighted variant
 /// agrees with it to within floating-point rounding for uniform weights.
 ///
+/// Point coordinates are assumed finite; non-finite coordinates are not
+/// validated and propagate to the result.
+///
 /// # Arguments
 ///
 /// * `src` - Source points. Must have the same length as `dst`.
@@ -193,12 +196,15 @@ pub fn umeyama_f64(src: &[Vec3F64], dst: &[Vec3F64], with_scale: bool) -> Umeyam
 /// matter. Uniform weights reproduce the result of [`umeyama_f64`] with the same
 /// `with_scale` flag, and a point with weight `0` is ignored by the fit.
 ///
+/// Point coordinates are assumed finite; non-finite coordinates are not
+/// validated and propagate to the result.
+///
 /// # Arguments
 ///
 /// * `src` - Source points. Must have the same length as `dst` and `weights`.
 /// * `dst` - Destination points. Must have the same length as `src` and `weights`.
-/// * `weights` - Per-point weights, one entry per point. Must be non-empty,
-///   finite, and sum to a positive value.
+/// * `weights` - Per-point weights, one entry per point. Must be finite,
+///   non-negative, and have a positive sum.
 /// * `with_scale` - If `true`, estimates the scale `s`; otherwise `s` is fixed
 ///   to `1.0` (rigid alignment only).
 ///
@@ -214,8 +220,8 @@ pub fn umeyama_f64(src: &[Vec3F64], dst: &[Vec3F64], with_scale: bool) -> Umeyam
 /// length.
 /// Returns [`UmeyamaError::MismatchedWeightsLength`] if `weights` does not have
 /// exactly one entry per point.
-/// Returns [`UmeyamaError::InvalidWeights`] if `weights` is empty, contains a
-/// non-finite value, or sums to a non-positive value.
+/// Returns [`UmeyamaError::InvalidWeights`] if `weights` contains a non-finite
+/// or negative value, or has a non-positive sum.
 /// Returns [`UmeyamaError::SvdU`] or [`UmeyamaError::SvdVT`] if the SVD fails.
 ///
 /// # Example
@@ -318,36 +324,47 @@ fn unweighted_moments(src: &[Vec3F64], dst: &[Vec3F64]) -> Moments {
     }
 }
 
-/// Weighted moments with per-point weights. Validates the weights, then
-/// replaces the unit weights by `w_i` and normalizes every accumulator by the
-/// weight sum `Σ w_i`.
+/// Weighted moments with per-point weights. Validates the weights, then scales
+/// them by their maximum before accumulating; the scale cancels in every ratio,
+/// so the result is independent of the weight magnitude.
 fn weighted_moments(
     src: &[Vec3F64],
     dst: &[Vec3F64],
     weights: &[f64],
 ) -> Result<Moments, UmeyamaError> {
-    // Validate the weights and accumulate their total in a single pass. This
-    // runs before the length check so that an empty or otherwise unusable weight
-    // set is reported as `InvalidWeights` rather than a length mismatch.
-    let mut sum_w = 0.0f64;
+    // Validate the weights and find the maximum in a single pass. This runs
+    // before the length check so that an empty or otherwise unusable weight set
+    // is reported as `InvalidWeights` rather than a length mismatch. The
+    // closed-form Umeyama minimizer is only valid for `w_i >= 0`.
+    let mut max_w = 0.0f64;
     for &wi in weights {
-        if !wi.is_finite() {
+        if !wi.is_finite() || wi < 0.0 {
             return Err(UmeyamaError::InvalidWeights);
         }
-        sum_w += wi;
+        max_w = max_w.max(wi);
     }
-    if sum_w <= 0.0 {
+    // Empty and all-zero weights both leave `max_w == 0`.
+    if max_w <= 0.0 {
         return Err(UmeyamaError::InvalidWeights);
     }
     if weights.len() != src.len() {
         return Err(UmeyamaError::MismatchedWeightsLength);
     }
 
+    // Normalize by the maximum so every `w_i' <= 1`: the weight sum stays in
+    // `[1, n]` and every `w_i' * p_i` product is bounded by `|p_i|`, so neither
+    // can overflow for extreme-but-finite weights. `max_w` cancels in each ratio
+    // below, so the normalized result equals the unnormalized one. Divide
+    // directly (rather than by a precomputed reciprocal) so the maximum weight
+    // maps to exactly `1.0` and no subnormal reciprocal rounds the result.
+
     // Weighted centroids μ = Σ w_i p_i / Σ w_i
     let mut mu_s = [0.0f64; 3];
     let mut mu_d = [0.0f64; 3];
+    let mut sum_w = 0.0f64;
     for i in 0..src.len() {
-        let wi = weights[i];
+        let wi = weights[i] / max_w;
+        sum_w += wi;
         mu_s[0] += wi * src[i].x;
         mu_s[1] += wi * src[i].y;
         mu_s[2] += wi * src[i].z;
@@ -367,7 +384,7 @@ fn weighted_moments(
     let mut h = [[0.0f64; 3]; 3];
     let mut var_src = 0.0f64;
     for i in 0..src.len() {
-        let wi = weights[i];
+        let wi = weights[i] / max_w;
         let sc = [src[i].x - mu_s[0], src[i].y - mu_s[1], src[i].z - mu_s[2]];
         let dc = [dst[i].x - mu_d[0], dst[i].y - mu_d[1], dst[i].z - mu_d[2]];
         for (r, &dc_r) in dc.iter().enumerate() {
@@ -750,23 +767,58 @@ mod tests {
             Vec3F64::new(0.0, 1.0, 0.0),
         ];
 
+        // empty weights
         let err = weighted_moments(&src, &src, &[]).unwrap_err();
         assert!(matches!(err, UmeyamaError::InvalidWeights), "got {err:?}");
 
+        // non-finite weights
         let err = weighted_moments(&src, &src, &[1.0, f64::NAN, 1.0]).unwrap_err();
         assert!(matches!(err, UmeyamaError::InvalidWeights), "got {err:?}");
 
+        // all-zero weights
         let err = weighted_moments(&src, &src, &[0.0, 0.0, 0.0]).unwrap_err();
         assert!(matches!(err, UmeyamaError::InvalidWeights), "got {err:?}");
 
+        // negative sum
         let err = weighted_moments(&src, &src, &[1.0, -5.0, 1.0]).unwrap_err();
         assert!(matches!(err, UmeyamaError::InvalidWeights), "got {err:?}");
 
+        // mixed-sign weights whose sum is positive
+        let err = weighted_moments(&src, &src, &[2.0, -1.0, 1.0]).unwrap_err();
+        assert!(matches!(err, UmeyamaError::InvalidWeights), "got {err:?}");
+
+        // a single negative weight
+        let err = weighted_moments(&src, &src, &[-1.0, 1.0, 1.0]).unwrap_err();
+        assert!(matches!(err, UmeyamaError::InvalidWeights), "got {err:?}");
+
+        // wrong length (otherwise valid weights)
         let err = weighted_moments(&src, &src, &[1.0]).unwrap_err();
         assert!(
             matches!(err, UmeyamaError::MismatchedWeightsLength),
             "got {err:?}"
         );
+    }
+
+    #[test]
+    fn test_weighted_moments_extreme_weights_are_scale_invariant() -> Result<(), UmeyamaError> {
+        let src = [
+            Vec3F64::new(0.2, -0.4, 1.1),
+            Vec3F64::new(1.3, 0.7, -0.5),
+            Vec3F64::new(-0.8, 2.1, 0.3),
+        ];
+        let dst = [
+            Vec3F64::new(0.5, 0.1, 1.0),
+            Vec3F64::new(1.1, 0.9, -0.2),
+            Vec3F64::new(-0.3, 2.4, 0.6),
+        ];
+        // These raw weights sum to +inf, but only their ratios matter.
+        let huge = [f64::MAX, f64::MAX, f64::MAX / 2.0];
+        let unit = [1.0, 1.0, 0.5];
+
+        let a = weighted_moments(&src, &dst, &huge)?;
+        let b = weighted_moments(&src, &dst, &unit)?;
+        assert_moments_close(&a, &b, 1e-12);
+        Ok(())
     }
 
     #[test]
@@ -885,6 +937,65 @@ mod tests {
     }
 
     #[test]
+    fn test_umeyama_f64_weighted_collinear_input() -> Result<(), UmeyamaError> {
+        // Points along the x-axis: the covariance has rank 1.
+        let src = [
+            Vec3F64::new(0.0, 0.0, 0.0),
+            Vec3F64::new(1.0, 0.0, 0.0),
+            Vec3F64::new(2.0, 0.0, 0.0),
+            Vec3F64::new(3.0, 0.0, 0.0),
+        ];
+        let r_true = Mat3F64::from_cols_array(&[0.0, 1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+        let t_true = Vec3F64::new(0.5, -0.3, 2.0);
+        let s_true = 2.0;
+        let dst: Vec<Vec3F64> = src
+            .iter()
+            .map(|p| (r_true * *p) * s_true + t_true)
+            .collect();
+        let weights = [1.0, 2.0, 0.5, 1.5];
+
+        let (r, t, s) = umeyama_f64_weighted(&src, &dst, &weights, true)?;
+
+        // Rank-deficient: (R, t, s) is not unique, but the recovered transform
+        // must still reproduce every destination point exactly.
+        assert!((s - s_true).abs() < 1e-9, "scale: got {s}");
+        for (i, p) in src.iter().enumerate() {
+            let mapped = (r * *p) * s + t;
+            assert!(
+                (mapped.x - dst[i].x).abs() < 1e-9
+                    && (mapped.y - dst[i].y).abs() < 1e-9
+                    && (mapped.z - dst[i].z).abs() < 1e-9,
+                "point {i} not reproduced"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_umeyama_f64_weighted_identical_points() -> Result<(), UmeyamaError> {
+        // All source points coincide: zero variance, rank-0 covariance.
+        let p = Vec3F64::new(1.0, 2.0, 3.0);
+        let src = [p, p, p];
+        let t_true = Vec3F64::new(0.5, -0.3, 2.0);
+        let dst: Vec<Vec3F64> = src.iter().map(|q| *q + t_true).collect();
+        let weights = [1.0, 2.0, 3.0];
+
+        let (r, t, s) = umeyama_f64_weighted(&src, &dst, &weights, true)?;
+
+        assert!(
+            (s - 1.0).abs() < 1e-12,
+            "scale must fall back to 1.0, got {s}"
+        );
+        // Zero variance leaves the rotation underdetermined; the translation
+        // must still map the common point onto its destination.
+        let mapped = (r * p) * s + t;
+        assert!((mapped.x - dst[0].x).abs() < 1e-9, "x");
+        assert!((mapped.y - dst[0].y).abs() < 1e-9, "y");
+        assert!((mapped.z - dst[0].z).abs() < 1e-9, "z");
+        Ok(())
+    }
+
+    #[test]
     fn test_umeyama_f64_weighted_errors() {
         let src = [
             Vec3F64::new(0.0, 0.0, 0.0),
@@ -921,6 +1032,10 @@ mod tests {
         let err = umeyama_f64_weighted(&src, &dst, &[0.0, 0.0, 0.0], true).unwrap_err();
         assert!(matches!(err, UmeyamaError::InvalidWeights), "got {err:?}");
         let err = umeyama_f64_weighted(&src, &dst, &[1.0, -5.0, 1.0], true).unwrap_err();
+        assert!(matches!(err, UmeyamaError::InvalidWeights), "got {err:?}");
+
+        // a negative weight even when the sum stays positive
+        let err = umeyama_f64_weighted(&src, &dst, &[2.0, -1.0, 1.0], true).unwrap_err();
         assert!(matches!(err, UmeyamaError::InvalidWeights), "got {err:?}");
     }
 
