@@ -385,6 +385,11 @@ fn weighted_moments(
     let mut var_src = 0.0f64;
     for i in 0..src.len() {
         let wi = weights[i] / max_w;
+        // A zero-weight point must be ignored; skipping it here also avoids the
+        // `0.0 * inf = NaN` its centered-coordinate overflow would otherwise cause.
+        if wi == 0.0 {
+            continue;
+        }
         let sc = [src[i].x - mu_s[0], src[i].y - mu_s[1], src[i].z - mu_s[2]];
         let dc = [dst[i].x - mu_d[0], dst[i].y - mu_d[1], dst[i].z - mu_d[2]];
         for (r, &dc_r) in dc.iter().enumerate() {
@@ -818,6 +823,27 @@ mod tests {
         let a = weighted_moments(&src, &dst, &huge)?;
         let b = weighted_moments(&src, &dst, &unit)?;
         assert_moments_close(&a, &b, 1e-12);
+        Ok(())
+    }
+
+    #[test]
+    fn test_weighted_moments_zero_weight_extreme_point_ignored() -> Result<(), UmeyamaError> {
+        // Two points at +f64::MAX/2 put the centroid at +f64::MAX/2 (their sum is
+        // still finite). A third, zero-weight point at -f64::MAX then overflows to
+        // -inf when centered, so it must be skipped before its `0.0 * inf = NaN`
+        // can poison the sums.
+        let big = f64::MAX / 2.0;
+        let src = [
+            Vec3F64::new(big, 0.0, 0.0),
+            Vec3F64::new(big, 1.0, 0.0),
+            Vec3F64::new(-f64::MAX, 0.0, 0.0),
+        ];
+        let dst = src;
+        let weights = [1.0, 1.0, 0.0];
+
+        let base = weighted_moments(&src[..2], &dst[..2], &[1.0, 1.0])?;
+        let with_extreme = weighted_moments(&src, &dst, &weights)?;
+        assert_moments_close(&base, &with_extreme, 1e-12);
         Ok(())
     }
 
