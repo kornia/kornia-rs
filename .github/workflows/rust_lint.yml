@@ -66,12 +66,16 @@ jobs:
     name: Check - CUDA features
     # Compile + clippy coverage for the CUDA-gated code on a GPU-less runner.
     # kornia's cudarc is built with `fallback-dynamic-loading`: libcuda.so is
-    # dlopen'd at RUNTIME only, so nothing here needs a GPU; only the cuda-oxide
-    # step needs cuda.h (headers + driver stub, no toolkit, no driver).
+    # dlopen'd at RUNTIME only, so nothing here needs a GPU. `cuda` builds
+    # kornia-imgproc's Rust kernels to PTX (build.rs + cuda-oxide), so every
+    # step that enables it needs the cuda-oxide toolchain (cached).
     # Kernel-execution tests run on real hardware (Jetson) outside CI.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: No committed PTX/cubin
+        run: test -z "$(git ls-files '*.ptx' '*.cubin')"
 
       # Pinned to match the toolchain pixi provides for the `Clippy` job above
       # (`rust = ">=1.76"` currently resolves to 1.96). Tracking `stable` meant a
@@ -82,63 +86,29 @@ jobs:
         with:
           components: clippy
 
+      - name: Cache cuda-oxide toolchain
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/kornia-cuda-oxide
+          key: cuda-oxide-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('crates/kornia-imgproc/kernels-oxide/rust-toolchain.toml', 'crates/kornia-imgproc/kernels-oxide/Cargo.toml.in', 'scripts/cuda-oxide/install-toolchain.sh') }}
+
+      - name: Install cuda-oxide toolchain
+        # Same recipe as the wheel builds: no system llc/cuda.h.
+        run: OXIDE_USE_SYSTEM=0 scripts/cuda-oxide/install-toolchain.sh ~/.cache/kornia-cuda-oxide
+
       - name: Clippy CUDA-gated crates (deny warnings)
         # `--tests` also compiles + lints the `#[cfg(test)]` cuda code. The tests
         # need a GPU to RUN (Jetson, outside CI), but compiling them here catches
-        # API/signature rot in the device paths on a GPU-less runner.
+        # API/signature rot in the device paths on a GPU-less runner. The
+        # kornia-imgproc step builds and gates the PTX.
         run: |
           cargo clippy --tests -p kornia-tensor --features cuda -- -D warnings
           cargo clippy --tests -p kornia-image --features cuda -- -D warnings
-          cargo clippy --tests -p kornia-imgproc --features cuda -- -D warnings
+          cargo clippy --all-targets -p kornia-imgproc --features cuda -- -D warnings
           cargo clippy --tests -p kornia-3d --features cuda -- -D warnings
 
-      # `cuda-oxide`: kornia-imgproc's build.rs compiles its kernels-oxide/ to PTX and
-      # gates it, so this really builds the kernels (no GPU needed). Needs LLVM
-      # 21's llc, cuda.h + the libcuda stub, the pinned nightly, and the codegen
-      # backend at the pinned rev (cached).
-      - name: cuda-oxide toolchain
-        run: |
-          TC=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' crates/kornia-imgproc/kernels-oxide/rust-toolchain.toml)
-          REV=$(sed -n 's/.*rev = "\([0-9a-f]*\)".*/\1/p' crates/kornia-imgproc/kernels-oxide/Cargo.toml.in | head -1)
-          echo "OXIDE_TC=$TC" >> "$GITHUB_ENV"
-          echo "OXIDE_REV=$REV" >> "$GITHUB_ENV"
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc >/dev/null
-          echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" | sudo tee /etc/apt/sources.list.d/llvm-21.list
-          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
-          sudo dpkg -i cuda-keyring_1.1-1_all.deb
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends llvm-21 cuda-driver-dev-12-6 cuda-cudart-dev-12-6
-          # Take cuda.h and the libcuda link stub from the package's file list.
-          H=$(dpkg -L cuda-cudart-dev-12-6 cuda-driver-dev-12-6 | grep '/include/cuda\.h$' | head -1)
-          S=$(dpkg -L cuda-cudart-dev-12-6 cuda-driver-dev-12-6 | grep '/stubs/libcuda\.so$' | head -1)
-          echo "cuda.h: $H  stub: $S"
-          test -n "$H"
-          test -n "$S"
-          echo "CUDA_HOME=$(dirname "$(dirname "$H")")" >> "$GITHUB_ENV"
-          echo "LIBRARY_PATH=$(dirname "$S")" >> "$GITHUB_ENV"
-          rustup toolchain install "$TC" --profile minimal -c rust-src,rustc-dev
-
-      - name: Cache cuda-oxide backend
-        id: oxide-backend
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cargo/cuda-oxide/librustc_codegen_cuda.so
-          key: cuda-oxide-backend-${{ runner.os }}-${{ env.OXIDE_TC }}-${{ env.OXIDE_REV }}
-
-      - name: Build cuda-oxide backend
-        if: steps.oxide-backend.outputs.cache-hit != 'true'
-        run: |
-          git init -q /tmp/cuda-oxide && cd /tmp/cuda-oxide
-          git fetch -q --depth 1 https://github.com/NVlabs/cuda-oxide "$OXIDE_REV"
-          git checkout -q FETCH_HEAD
-          cd crates/rustc-codegen-cuda
-          SYSROOT=$(rustup run "$OXIDE_TC" rustc --print sysroot)
-          LIBRARY_PATH="$SYSROOT/lib" LD_LIBRARY_PATH="$SYSROOT/lib" rustup run "$OXIDE_TC" cargo build
-          mkdir -p ~/.cargo/cuda-oxide
-          cp target/debug/librustc_codegen_cuda.so ~/.cargo/cuda-oxide/
-
-      - name: Clippy kornia-imgproc with cuda-oxide (builds + gates the PTX)
-        run: cargo clippy --all-targets -p kornia-imgproc --features cuda,cuda-oxide -- -D warnings
+      - name: docs.rs build (stub PTX, no toolchain)
+        run: DOCS_RS=1 cargo doc -p kornia-imgproc --features cuda --no-deps
 
   cross-platform-check-macos:
     name: Check - macOS
