@@ -1,44 +1,89 @@
 #!/usr/bin/env bash
-# Jetson Orin: run the cuda-oxide parity tests, then the interleaved A/B bench.
+# Jetson: run the cuda-oxide parity tests, then the bench (oxide vs CPU).
 #
-#   scripts/cuda-oxide/orin-test-bench.sh           # tests + bench
+#   scripts/cuda-oxide/orin-test-bench.sh                    # tests + bench
 #   scripts/cuda-oxide/orin-test-bench.sh --no-bench
+#   scripts/cuda-oxide/orin-test-bench.sh --base origin/main # + A/B vs <ref>
+#
+# --base builds the same bench example at <ref> (e.g. main's NVRTC kernel) in
+# its own worktree and target dir, then alternates the two binaries per cycle.
 set -euo pipefail
 
 ROOT="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}"
 export PATH="/usr/local/cuda/bin:$PATH"
-FEATURES=cuda,cuda-oxide
+TARGET="${CARGO_TARGET_DIR:-$ROOT/target}"
 DEVFREQ=/sys/devices/platform/bus@0/17000000.gpu/devfreq/17000000.gpu
-bench=1
-[[ "${1:-}" == "--no-bench" ]] && bench=0
+EXAMPLE=crates/kornia-imgproc/examples/bench_cuda_oxide.rs
+bench=1 base="" cycles=3
 
 die() { echo "orin-test-bench: $*" >&2; exit 1; }
+while (($#)); do
+  case "$1" in
+    --no-bench) bench=0 ;;
+    --base) base="${2:?--base needs a ref}"; shift ;;
+    --cycles) cycles="${2:?}"; shift ;;
+    *) die "unknown argument $1" ;;
+  esac
+  shift
+done
 
 echo "== system"
 nvpmodel -q 2>/dev/null | head -2 || true
 if [[ -r "$DEVFREQ/cur_freq" ]]; then
-  cur="$(cat "$DEVFREQ/cur_freq")" min="$(cat "$DEVFREQ/min_freq")" max="$(cat "$DEVFREQ/max_freq")"
+  min="$(cat "$DEVFREQ/min_freq")" max="$(cat "$DEVFREQ/max_freq")"
   lock="UNLOCKED (DVFS)"; [[ "$min" == "$max" ]] && lock="locked"
-  echo "GPU clock: cur=$cur min=$min max=$max -> $lock"
+  echo "GPU clock: cur=$(cat "$DEVFREQ/cur_freq") min=$min max=$max -> $lock"
 fi
 nvcc --version 2>/dev/null | tail -1 || true
 head -1 /proc/driver/nvidia/version 2>/dev/null || true
+git -C "$ROOT" log -1 --format='HEAD %h %s'
 
 echo "== tests"
+cd "$ROOT"
+cargo test --release -p kornia-imgproc --features cuda --lib --no-run
+# Entry names come from the PTX the build just generated, never a typed list.
+ptx="$(find "$TARGET"/release/build -path '*/kornia-imgproc-*/out/kernels.ptx' -printf '%T@ %p\n' |
+  sort -n | tail -1 | cut -d' ' -f2-)"
+[[ -s "$ptx" ]] || die "no generated kernels.ptx under $TARGET (stub build?)"
+mapfile -t entries < <(sed -n 's/.*\.entry \([A-Za-z0-9_]*\).*/\1/p' "$ptx")
+((${#entries[@]})) || die "no .entry in $ptx"
+echo "entries: ${entries[*]}"
 log="$(mktemp)"
-(cd "$ROOT" && cargo test --release -p kornia-imgproc --features "$FEATURES" --lib \
-  -- oxide gray_from_rgb_u8 --test-threads=1 2>&1 | tee "$log")
-# A target with unmet features is skipped without a word; check names, not "ok".
-# The PTX gate runs in build.rs, so reaching these tests means it passed.
-for t in gray_from_rgb_u8_oxide_bit_exact gray_from_rgb_u8_bit_exact_vs_cpu \
-         corrupt_ptx_errors_instead_of_panicking; do
-  grep -q "^test .*::$t \.\.\. ok$" "$log" || die "test $t did not run and pass"
+cargo test --release -p kornia-imgproc --features cuda --lib -- oxide "${entries[@]}" \
+  --test-threads=1 2>&1 | tee "$log"
+# cargo skips targets with unmet features silently: check names, not "ok".
+grep -q "^test cuda::oxide::tests::all_entries_load \.\.\. ok$" "$log" || die "all_entries_load did not pass"
+for e in "${entries[@]}"; do
+  grep -Eq "^test .*::${e}[a-z0-9_]*bit_exact \.\.\. ok$" "$log" || die "no passing ${e}*bit_exact test"
 done
+grep -Eq "test result: ok\. [1-9][0-9]* passed; 0 failed" "$log" || die "tests failed or none ran"
 rm -f "$log"
-echo "orin-test-bench: all named parity tests ran and passed"
+echo "orin-test-bench: parity tests passed for ${#entries[@]} entries"
 
-if (( bench )); then
-  echo "== bench"
-  (cd "$ROOT" && cargo run --release -p kornia-imgproc --example bench_cuda_oxide --features "$FEATURES")
+((bench)) || exit 0
+echo "== bench"
+cargo build --release -p kornia-imgproc --example bench_cuda_oxide --features cuda
+head_bin="$TARGET/release/examples/bench_cuda_oxide"
+if [[ -z "$base" ]]; then
+  "$head_bin"
+  exit 0
 fi
+
+wt="$(mktemp -d "$TARGET-base-src.XXXX")"
+trap 'git -C "$ROOT" worktree remove --force "$wt" 2>/dev/null || true' EXIT
+git -C "$ROOT" worktree add -q --detach "$wt" "$base"
+cp "$ROOT/$EXAMPLE" "$wt/$EXAMPLE" # the bench calls only public launchers
+(cd "$wt" && CARGO_TARGET_DIR="$TARGET-base" \
+  cargo build --release -p kornia-imgproc --example bench_cuda_oxide --features cuda)
+base_bin="$TARGET-base/release/examples/bench_cuda_oxide"
+for ((c = 0; c < cycles; c++)); do
+  order=(base head)
+  ((c % 2)) && order=(head base)
+  for arm in "${order[@]}"; do
+    bin="$head_bin" ref=HEAD
+    [[ "$arm" == base ]] && bin="$base_bin" ref="$base"
+    echo "-- cycle $c: $arm ($ref)"
+    "$bin" | sed -n "s/^| \([a-z]\)/| $arm | \1/p"
+  done
+done
