@@ -514,6 +514,10 @@ impl VideoReader {
     /// [`StreamCapture::grab_gray8`], tightly packed rows are borrowed read-only and padded
     /// rows are copied. Call `.clone()` for a writable image.
     ///
+    /// # Arguments
+    ///
+    /// * `self` - The mutable video reader.
+    ///
     /// # Returns
     ///
     /// The oldest decoded image, or `None` if no frame is buffered yet.
