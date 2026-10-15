@@ -150,6 +150,32 @@ impl StreamCapture {
     /// [`StreamCaptureError::GetBufferError`] if it cannot be mapped, and
     /// [`StreamCaptureError::MutexPoisonError`] if the frame queue lock is poisoned.
     pub fn grab_rgb8(&mut self) -> Result<Option<Image<u8, 3>>, StreamCaptureError> {
+        self.grab_image::<3>(gstreamer_video::VideoFormat::Rgb, "grab_rgb8")
+    }
+
+    /// Grabs the oldest captured frame as a grayscale image.
+    ///
+    /// Tightly packed rows are borrowed read-only from the GStreamer buffer. Padded rows are
+    /// copied into an owned image. Call `.clone()` for a writable image in either case.
+    ///
+    /// # Returns
+    ///
+    /// The oldest captured image, or `None` if no frame is buffered yet.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StreamCaptureError::InvalidImageFormat`] if the frame is not `GRAY8` or its
+    /// layout is invalid. Other caps, mapping, buffer size, and lock errors are returned as by
+    /// [`Self::grab_rgb8`].
+    pub fn grab_gray8(&mut self) -> Result<Option<Image<u8, 1>>, StreamCaptureError> {
+        self.grab_image::<1>(gstreamer_video::VideoFormat::Gray8, "grab_gray8")
+    }
+
+    fn grab_image<const C: usize>(
+        &mut self,
+        expected_format: gstreamer_video::VideoFormat,
+        method: &str,
+    ) -> Result<Option<Image<u8, C>>, StreamCaptureError> {
         // Pop in its own statement so the lock is released before the frame is mapped or
         // repacked: the appsink streaming thread needs it to push the next sample.
         let frame_buffer = self
@@ -163,9 +189,9 @@ impl StreamCapture {
 
         let info = gstreamer_video::VideoInfo::from_caps(&caps)
             .map_err(|e| StreamCaptureError::GetCapsError(e.to_string()))?;
-        if info.format() != gstreamer_video::VideoFormat::Rgb {
+        if info.format() != expected_format {
             return Err(StreamCaptureError::InvalidImageFormat(format!(
-                "grab_rgb8 needs RGB frames, but the pipeline produces {} frames",
+                "{method} needs {expected_format} frames, but the pipeline produces {} frames",
                 info.format()
             )));
         }
