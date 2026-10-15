@@ -1,3 +1,11 @@
+//! GStreamer video capture and file reading.
+//!
+//! [`StreamCapture::grab_rgb8`](crate::gstreamer::StreamCapture::grab_rgb8) reads RGB frames,
+//! while [`StreamCapture::grab_gray8`](crate::gstreamer::StreamCapture::grab_gray8) reads
+//! `GRAY8` frames. For video files, [`VideoReader::grab_rgb8`](crate::gstreamer::video::VideoReader::grab_rgb8)
+//! and [`VideoReader::grab_gray8`](crate::gstreamer::video::VideoReader::grab_gray8) provide the
+//! corresponding read paths; configure the latter with [`ImageFormat::Mono8`](crate::gstreamer::video::ImageFormat::Mono8).
+
 /// A module for capturing video streams from v4l2 cameras.
 pub mod camera;
 
