@@ -23,7 +23,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .oxide-toolchain
-          key: cuda-oxide-manylinux2014-x86_64-${{ hashFiles('crates/kornia-imgproc/kernels-oxide/rust-toolchain.toml', 'crates/kornia-imgproc/kernels-oxide/Cargo.toml.in', 'scripts/cuda-oxide/install-toolchain.sh'') }}
+          key: cuda-oxide-manylinux2014-x86_64-${{ hashFiles('crates/kornia-imgproc/kernels-oxide/rust-toolchain.toml', 'crates/kornia-imgproc/kernels-oxide/Cargo.toml.in', 'scripts/cuda-oxide/install-toolchain.sh', 'scripts/cuda-oxide/llvm-*.txt') }}
       - if: steps.cache.outputs.cache-hit != 'true'
         run: |
           # The linker override neutralizes the repo's `.cargo/config.toml`, as
@@ -63,7 +63,7 @@ jobs:
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .oxide-toolchain
-          key: cuda-oxide-manylinux2014-x86_64-${{ hashFiles('crates/kornia-imgproc/kernels-oxide/rust-toolchain.toml', 'crates/kornia-imgproc/kernels-oxide/Cargo.toml.in', 'scripts/cuda-oxide/install-toolchain.sh'') }}
+          key: cuda-oxide-manylinux2014-x86_64-${{ hashFiles('crates/kornia-imgproc/kernels-oxide/rust-toolchain.toml', 'crates/kornia-imgproc/kernels-oxide/Cargo.toml.in', 'scripts/cuda-oxide/install-toolchain.sh', 'scripts/cuda-oxide/llvm-*.txt') }}
           fail-on-cache-miss: true
       - uses: messense/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:

@@ -1,0 +1,23 @@
+# conda-forge LLVM 21.1.8: llc, libclang, clang resource headers (linux-64).
+# Regenerate: see the LLVM section of install-toolchain.sh.
+@EXPLICIT
+https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda#1dd3fffd892081df9726d7eb7e0dea6198962ba775bd88842135a4ddb4deb3c9
+https://conda.anaconda.org/conda-forge/linux-64/clang-21-21.1.8-default_h6209e06_7.conda#0649a9048387f19a9cc4c643286204b291e8126ce9030233bb1ee42cb164985e
+https://conda.anaconda.org/conda-forge/linux-64/compiler-rt21-21.1.8-h7148c6a_2.conda#bf5aa7a7d5757767684554fb7d05ecec7c24ffa8cb1418a151da74fc4808160b
+https://conda.anaconda.org/conda-forge/noarch/compiler-rt21_linux-64-21.1.8-h0e38de2_2.conda#0ab3df2645e4437265dfd8ccf9d8308c191fece502a651e47337db291478b429
+https://conda.anaconda.org/conda-forge/linux-64/icu-78.3-py310h44b86e0_2.conda#9f07834f0c546ab14d885ce0366285f61f44e326c0edd1fc63b8294e113ae432
+https://conda.anaconda.org/conda-forge/linux-64/libclang-21.1.8-default_hbe8b877_7.conda#1c247475921ee952e5be1358e41330fbbc214a6439fd5cfb36b3d8316301a4b4
+https://conda.anaconda.org/conda-forge/linux-64/libclang-cpp21.1-21.1.8-default_h6209e06_7.conda#0363cccf3aea5d660f0b5b3b404b1e6bad981866e18599d417c21663c232df57
+https://conda.anaconda.org/conda-forge/linux-64/libclang13-21.1.8-default_h792aff9_7.conda#9abf89ca62e742f05571ee54f3db068dac8d8bf0e2e6bae51e5c770ec5176459
+https://conda.anaconda.org/conda-forge/linux-64/libgcc-16.2.0-ha9f2e26_7.conda#e031634c3a928f9594eba868bc46ef5230d6571a364a0c63215b06c4563bfcea
+https://conda.anaconda.org/conda-forge/linux-64/libgomp-16.2.0-he0feb66_7.conda#92a0bb350c7be6a4eedcb4e111c60aefd176018e6b1c009a6e025dbe9bbcd758
+https://conda.anaconda.org/conda-forge/linux-64/libiconv-1.18-h0cb94f2_3.conda#f943117edb9cd4d9c61cc972eee5a34291dc55ea7a6e9e38da104995841cbcb6
+https://conda.anaconda.org/conda-forge/linux-64/libllvm21-21.1.8-h474f4eb_1.conda#b007641e1da9de002af0518b89b07d4c59e513a6f465c9da86f24685ef86cc8b
+https://conda.anaconda.org/conda-forge/linux-64/liblzma-5.8.3-hb03c661_1.conda#9787df8c22a59c9a70d3e5a10db9ad663485e75e9ccc3f09bd092cb7b95e0dab
+https://conda.anaconda.org/conda-forge/linux-64/libstdcxx-16.2.0-h934c35e_7.conda#fa7018298629fc429971fffd6ecba3d27a7b02e4e890d6a93ea01ffebe8cb745
+https://conda.anaconda.org/conda-forge/linux-64/libxml2-2.15.4-h7df9aa5_1.conda#8c32be9e8720bc413d2b4267517459d7d71fad4a5f398a2aa8319b6d7b8a00e6
+https://conda.anaconda.org/conda-forge/linux-64/libxml2-16-2.15.4-hf3af7cc_1.conda#d1906463070c21f3215cd5de93164f31c44d5bac6ae9b5d8f5adf42b1e304039
+https://conda.anaconda.org/conda-forge/linux-64/libzlib-1.3.2-h25fd6f3_3.conda#eb8a0db0aa570124f7d2a93d7c7f596e3390df5e047818d873baad32985fc736
+https://conda.anaconda.org/conda-forge/linux-64/llvm-tools-21.1.8-h7148c6a_1.conda#07cb664b40951f5bafa7cbad40b9d3e445b22a0ddb3c41f22ebc89f6f90b4f21
+https://conda.anaconda.org/conda-forge/linux-64/llvm-tools-21-21.1.8-h7399f5f_1.conda#25fd88a6e65b8c786061e626b0c7c030694cd68e806533a62217188ddb3da441
+https://conda.anaconda.org/conda-forge/linux-64/zstd-1.5.7-hb78ec9c_7.conda#47d682b9f6d6ec9eb1a6e6c3e75ea6273e899e78fb7fc59f81d39745009fbc60

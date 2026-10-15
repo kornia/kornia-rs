@@ -90,7 +90,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/kornia-cuda-oxide
-          key: cuda-oxide-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('crates/kornia-imgproc/kernels-oxide/rust-toolchain.toml', 'crates/kornia-imgproc/kernels-oxide/Cargo.toml.in', 'scripts/cuda-oxide/install-toolchain.sh') }}
+          key: cuda-oxide-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('crates/kornia-imgproc/kernels-oxide/rust-toolchain.toml', 'crates/kornia-imgproc/kernels-oxide/Cargo.toml.in', 'scripts/cuda-oxide/install-toolchain.sh', 'scripts/cuda-oxide/llvm-*.txt') }}
 
       - name: Install cuda-oxide toolchain
         # Same recipe as the wheel builds: no system llc/cuda.h.
