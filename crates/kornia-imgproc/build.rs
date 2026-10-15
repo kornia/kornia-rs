@@ -10,16 +10,15 @@ use std::{
     process::Command,
 };
 
-/// PTX target: JITs on any Turing-or-newer GPU.
-const ARCH: &str = "sm_75";
+#[path = "ptx_gate.rs"]
+mod ptx_gate;
+use ptx_gate::{gate, ARCH};
+
 const PTX_NAME: &str = "kornia_kernels_oxide.ptx";
 /// Shipped as `.in` so `cargo package` keeps the directory instead of skipping
 /// it as a nested package; renamed to `Cargo.toml` when staged.
 const MANIFEST_IN: &str = "Cargo.toml.in";
 const STAGED_FILES: &[&str] = &["Cargo.lock", "rust-toolchain.toml"];
-/// Entries allowed to emit `fma`: only kernels whose CPU twin uses an explicit
-/// `mul_add`/`fmaf`. Everything else must be contraction-free for byte parity.
-const FMA_ALLOWED: &[&str] = &[];
 /// `1` (or docs.rs) builds with an empty PTX; every kernel lookup then errors.
 const STUB: &str = "KORNIA_OXIDE_STUB";
 
@@ -403,73 +402,5 @@ fn scrub_cargo_env(cmd: &mut Command) {
         if cargo_owned || DROP.contains(&k) {
             cmd.env_remove(k);
         }
-    }
-}
-
-/// Gate the module and each entry.
-///
-/// Module: `.target` is `ARCH`, no `.extern` (no libdevice or other link-time
-/// calls), and the `.entry` set equals the scanned `#[kernel]` set. Per entry: every `ld`/`st` names a state space
-/// (generic access means address-space inference was lost), and no `fma` or
-/// float `mad` unless listed in `FMA_ALLOWED` (CPU byte parity).
-fn gate(ptx: &str, scanned: &[String]) -> Result<(), Vec<String>> {
-    let mut errs = Vec::new();
-    if !ptx.lines().any(|l| l.trim() == format!(".target {ARCH}")) {
-        errs.push(format!("gate: module: .target is not {ARCH}"));
-    }
-    for l in ptx
-        .lines()
-        .filter(|l| l.trim_start().starts_with(".extern"))
-    {
-        errs.push(format!("gate: module: external symbol `{}`", l.trim()));
-    }
-    let mut parts = ptx.split(".entry ");
-    parts.next();
-    let mut names = Vec::new();
-    for body in parts {
-        let name: String = body
-            .chars()
-            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-            .collect();
-        if name.is_empty() || name.starts_with(|c: char| c.is_ascii_digit()) {
-            errs.push(format!("gate: entry name `{name}` is not an identifier"));
-            continue;
-        }
-        const SPACES: &[&str] = &["global", "param", "shared", "local", "const"];
-        for line in body.lines() {
-            let mut toks = line.split("//").next().unwrap_or("").split_whitespace();
-            let Some(op) = (match toks.next() {
-                Some(t) if t.starts_with('@') => toks.next(),
-                t => t,
-            }) else {
-                continue;
-            };
-            if (op.starts_with("ld.") || op.starts_with("st."))
-                && !SPACES.contains(&op.split('.').nth(1).unwrap_or(""))
-            {
-                errs.push(format!("gate: {name}: generic memory op `{op}`"));
-            }
-            let float_mad = op.starts_with("mad.") && (op.contains(".f32") || op.contains(".f64"));
-            if (op.starts_with("fma.") || float_mad) && !FMA_ALLOWED.contains(&name.as_str()) {
-                errs.push(format!(
-                    "gate: {name}: contracted `{op}` (not in FMA_ALLOWED)"
-                ));
-            }
-            if op.starts_with("call") && line.contains("__nv_") {
-                errs.push(format!("gate: {name}: libdevice call `{}`", line.trim()));
-            }
-        }
-        names.push(name);
-    }
-    names.sort();
-    if names != scanned {
-        errs.push(format!(
-            "gate: module: PTX entries {names:?} != #[kernel] items {scanned:?}"
-        ));
-    }
-    if errs.is_empty() {
-        Ok(())
-    } else {
-        Err(errs)
     }
 }
