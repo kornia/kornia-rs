@@ -115,25 +115,20 @@ jobs:
           # No --sdist: not self-contained (bindgen/vendored deps); wheels build
           # directly like the macOS/Windows jobs.
           args: --release --out dist -i python${{ matrix.python-version }} -m kornia-py/Cargo.toml --features cuda
-      - name: Verify SIMD paths are present in the built wheel
-        env:
-          MATRIX_TARGET: ${{ matrix.target }}
+      # Runs on the outer x86_64 runner, so aarch64 wheels need cross binutils.
+      - name: Install cross binutils for aarch64 disassembly
+        if: matrix.target == 'aarch64'
+        run: sudo apt-get update && sudo apt-get install -y binutils-aarch64-linux-gnu
+      - name: Verify the SIMD kernels and cuda-oxide PTX in the built wheel
         run: |
           set -e
           WHEEL=$(ls dist/*-manylinux*.whl 2>/dev/null | head -n1)
           [ -n "$WHEEL" ] || { echo "no manylinux wheel found"; exit 1; }
-          mkdir -p /tmp/wheel-check && unzip -q -o "$WHEEL" -d /tmp/wheel-check
+          bash kornia-py/scripts/verify_simd_kernels.sh "$WHEEL"
+          # Real cuda-oxide PTX, not the KORNIA_OXIDE_STUB empty string.
+          mkdir -p /tmp/wheel-check && unzip -q -o "$WHEEL" '*.so' -d /tmp/wheel-check
           SO=$(find /tmp/wheel-check -name 'kornia_rs*.so' | head -n1)
           [ -n "$SO" ] || { echo "no .so found in wheel"; exit 1; }
-          if [ "$MATRIX_TARGET" = "x86_64" ]; then
-            objdump -d --no-show-raw-insn "$SO" | grep -E 'vpand[^l]|vpcmpeq|vpaddb|vpsubusb' | head -n3 || \
-              { echo "::error::no AVX2 instructions found in $SO"; exit 1; }
-          else
-            aarch64-linux-gnu-objdump -d --no-show-raw-insn "$SO" 2>/dev/null | grep -E '\bcnt v|\bvld3|\baddv ' | head -n3 || \
-              { echo "::error::no NEON instructions found in $SO"; exit 1; }
-          fi
-          echo "SIMD presence confirmed in $WHEEL for target $MATRIX_TARGET"
-          # Real cuda-oxide PTX, not the KORNIA_OXIDE_STUB empty string.
           grep -aq '\.entry gray_from_rgb_u8' "$SO" || \
             { echo "::error::cuda-oxide PTX missing from $SO"; exit 1; }
       - name: Upload wheels
