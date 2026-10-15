@@ -29,7 +29,7 @@ enum OxideBuildError {
          at build time. It needs the nightly pinned in kernels-oxide/rust-toolchain.toml, \
          LLVM 21 `llc`, cuda.h and the codegen backend at the rev pinned in \
          kernels-oxide/Cargo.toml.in. From a kornia-rs checkout, \
-         `scripts/cuda-oxide/install-toolchain.sh` installs all of it; manual steps are in \
+         `scripts/cuda-oxide/install-toolchain.sh` installs all of it; see \
          docs/cuda-oxide.md."
     )]
     Toolchain(String),
@@ -225,24 +225,35 @@ fn compile_ptx(source: &Path, out_dir: &Path) -> Result<(PathBuf, String), Oxide
     // A backend built from another rev may mis-compile the pinned cuda-device.
     let pin = toml_string(&read(&source.join(MANIFEST_IN))?, "rev")
         .ok_or_else(|| Io(format!("no cuda-oxide rev in kernels-oxide/{MANIFEST_IN}")))?;
-    if let Some(src) = backend
-        .parent()
-        .map(|d| d.join("src"))
-        .filter(|s| s.join(".git").exists())
-    {
-        let head = probe(
-            Command::new("git")
-                .arg("-C")
-                .arg(&src)
-                .args(["rev-parse", "HEAD"]),
-        );
-        if head.as_deref().is_some_and(|h| h != pin) {
-            return Err(Toolchain(format!(
-                "backend source {} is at {}, kernels-oxide pins {pin}; rebuild the backend at the pin",
-                src.display(),
-                head.unwrap_or_default()
-            )));
-        }
+    // Built by install-toolchain.sh: `.backend` stamp ("<rev> <toolchain>");
+    // built by hand: a `src/` git checkout. Either matching the pin is enough.
+    let dir = backend.parent().unwrap_or(Path::new("."));
+    let stamp_path = dir.join(".backend");
+    println!("cargo:rerun-if-changed={}", stamp_path.display());
+    let stamp = fs::read_to_string(&stamp_path)
+        .ok()
+        .and_then(|s| s.split_whitespace().next().map(str::to_string));
+    let src = dir.join("src");
+    let head = src
+        .join(".git")
+        .exists()
+        .then(|| {
+            probe(
+                Command::new("git")
+                    .arg("-C")
+                    .arg(&src)
+                    .args(["rev-parse", "HEAD"]),
+            )
+        })
+        .flatten();
+    let seen: Vec<&str> = stamp.iter().chain(&head).map(String::as_str).collect();
+    if !seen.is_empty() && !seen.contains(&pin.as_str()) {
+        return Err(Toolchain(format!(
+            "backend {} was built at {}, kernels-oxide pins {pin}; re-run \
+             scripts/cuda-oxide/install-toolchain.sh",
+            backend.display(),
+            seen.join(" / ")
+        )));
     }
 
     let llc_ok = env::var_os("CUDA_OXIDE_LLC").is_some()
