@@ -92,9 +92,10 @@ jobs:
           retention-days: ${{ inputs.retention-days }}
 
   macos:
-    # Python 3.8-3.10 moved off macos-13: that pool is effectively
-    # unschedulable in 2026; macos-14 serves 3.8+ and cross-builds x86_64.
-    runs-on: macos-14
+    # macos-14 is unsupported from 2026-11-02 (actions/runner-images#13518).
+    # setup-python's darwin-arm64 builds (3.8.10+) are not tied to the image,
+    # and the arm64 runner cross-builds x86_64.
+    runs-on: macos-15
     strategy:
       matrix:
         python-version: ${{ fromJSON(inputs.subset == 'minimal' && '["3.12"]' || '["3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.13t", "3.14", "3.14t"]') }}
