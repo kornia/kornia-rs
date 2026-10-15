@@ -371,9 +371,20 @@ fn stage(src: &Path, dst: &Path) -> Result<(), OxideBuildError> {
 }
 
 /// Strip what the outer cargo exports to build scripts, so the nested cargo
-/// resolves its own toolchain, flags, target dir and jobserver.
+/// resolves its own toolchain, flags, target dir and jobserver. Its config is
+/// still read from the directories above `OUT_DIR`, like the outer cargo's.
 fn scrub_cargo_env(cmd: &mut Command) {
     const KEEP: &[&str] = &["CARGO_HOME", "CARGO_BUILD_JOBS"];
+    // The nested build links host binaries; an outer linker override for the
+    // host (wheel CI: `cc` over the repo's `.cargo/config.toml`) must reach it.
+    let host_linker = env::var("HOST")
+        .map(|h| {
+            format!(
+                "CARGO_TARGET_{}_LINKER",
+                h.to_uppercase().replace(['-', '.'], "_")
+            )
+        })
+        .unwrap_or_default();
     const KEEP_PREFIX: &[&str] = &["CARGO_NET_", "CARGO_HTTP_", "CARGO_REGISTRIES_"];
     const DROP: &[&str] = &[
         "RUSTC",
@@ -398,6 +409,7 @@ fn scrub_cargo_env(cmd: &mut Command) {
         let Some(k) = key.to_str() else { continue };
         let cargo_owned = k.starts_with("CARGO_")
             && !KEEP.contains(&k)
+            && k != host_linker
             && !KEEP_PREFIX.iter().any(|p| k.starts_with(p));
         if cargo_owned || DROP.contains(&k) {
             cmd.env_remove(k);

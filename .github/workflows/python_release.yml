@@ -23,10 +23,13 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .oxide-toolchain
-          key: cuda-oxide-manylinux2014-x86_64-${{ hashFiles('crates/kornia-imgproc/kernels-oxide/rust-toolchain.toml', 'crates/kornia-imgproc/kernels-oxide/Cargo.toml.in', 'scripts/cuda-oxide/install-toolchain.sh') }}
+          key: cuda-oxide-manylinux2014-x86_64-${{ hashFiles('crates/kornia-imgproc/kernels-oxide/rust-toolchain.toml', 'crates/kornia-imgproc/kernels-oxide/Cargo.toml.in', 'scripts/cuda-oxide/install-toolchain.sh'') }}
       - if: steps.cache.outputs.cache-hit != 'true'
         run: |
-          docker run --rm -v "$PWD:/io" -w /io quay.io/pypa/manylinux2014_x86_64 \
+          # The linker override neutralizes the repo's `.cargo/config.toml`, as
+          # in the wheel job below (the backend builds under /io).
+          docker run --rm -v "$PWD:/io" -w /io -e CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=cc \
+            quay.io/pypa/manylinux2014_x86_64 \
             bash -c 'OXIDE_USE_SYSTEM=0 CARGO_BUILD_JOBS=4 scripts/cuda-oxide/install-toolchain.sh /io/.oxide-toolchain'
           sudo chown -R "$(id -u):$(id -g)" .oxide-toolchain
 
@@ -60,7 +63,7 @@ jobs:
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .oxide-toolchain
-          key: cuda-oxide-manylinux2014-x86_64-${{ hashFiles('crates/kornia-imgproc/kernels-oxide/rust-toolchain.toml', 'crates/kornia-imgproc/kernels-oxide/Cargo.toml.in', 'scripts/cuda-oxide/install-toolchain.sh') }}
+          key: cuda-oxide-manylinux2014-x86_64-${{ hashFiles('crates/kornia-imgproc/kernels-oxide/rust-toolchain.toml', 'crates/kornia-imgproc/kernels-oxide/Cargo.toml.in', 'scripts/cuda-oxide/install-toolchain.sh'') }}
           fail-on-cache-miss: true
       - uses: messense/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
