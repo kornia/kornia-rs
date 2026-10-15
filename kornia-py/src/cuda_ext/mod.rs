@@ -67,6 +67,11 @@ pub(crate) fn default_stream_for(ordinal: i32) -> PyResult<Arc<CudaStream>> {
             "invalid CUDA device ordinal {ordinal}"
         )));
     }
+    if !driver_loadable() {
+        return Err(PyRuntimeError::new_err(
+            "CUDA driver library (libcuda) not found",
+        ));
+    }
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let mut map = cache.lock().expect("stream cache poisoned");
     map.entry(ordinal)
@@ -77,6 +82,17 @@ pub(crate) fn default_stream_for(ordinal: i32) -> PyResult<Arc<CudaStream>> {
         })
         .clone()
         .map_err(PyRuntimeError::new_err)
+}
+
+/// Whether libcuda can be loaded. cudarc's dynamic loading panics, rather than
+/// erroring, when it is absent (any GPU-less machine running the cuda wheel).
+#[cfg(feature = "cuda")]
+fn driver_loadable() -> bool {
+    use std::sync::OnceLock;
+    static OK: OnceLock<bool> = OnceLock::new();
+    *OK.get_or_init(|| {
+        std::panic::catch_unwind(cudarc::driver::result::init).is_ok_and(|r| r.is_ok())
+    })
 }
 
 /// Default-stream handle for device 0.
