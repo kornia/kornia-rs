@@ -67,11 +67,7 @@ pub(crate) fn default_stream_for(ordinal: i32) -> PyResult<Arc<CudaStream>> {
             "invalid CUDA device ordinal {ordinal}"
         )));
     }
-    if !driver_loadable() {
-        return Err(PyRuntimeError::new_err(
-            "CUDA driver library (libcuda) not found",
-        ));
-    }
+    driver_init().map_err(PyRuntimeError::new_err)?;
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let mut map = cache.lock().expect("stream cache poisoned");
     map.entry(ordinal)
@@ -84,15 +80,21 @@ pub(crate) fn default_stream_for(ordinal: i32) -> PyResult<Arc<CudaStream>> {
         .map_err(PyRuntimeError::new_err)
 }
 
-/// Whether libcuda can be loaded. cudarc's dynamic loading panics, rather than
-/// erroring, when it is absent (any GPU-less machine running the cuda wheel).
+/// Load libcuda and run `cuInit` once. cudarc's dynamic loading panics, rather
+/// than erroring, when libcuda is absent (any GPU-less machine running the cuda
+/// wheel), so a panic means "not found" and an `Err` is a real init failure.
 #[cfg(feature = "cuda")]
-fn driver_loadable() -> bool {
+fn driver_init() -> Result<(), String> {
     use std::sync::OnceLock;
-    static OK: OnceLock<bool> = OnceLock::new();
-    *OK.get_or_init(|| {
-        std::panic::catch_unwind(cudarc::driver::result::init).is_ok_and(|r| r.is_ok())
-    })
+    static RES: OnceLock<Result<(), String>> = OnceLock::new();
+    RES.get_or_init(
+        || match std::panic::catch_unwind(cudarc::driver::result::init) {
+            Err(_) => Err("CUDA driver library (libcuda) not found".to_string()),
+            Ok(Err(e)) => Err(format!("CUDA driver initialization failed: {e}")),
+            Ok(Ok(())) => Ok(()),
+        },
+    )
+    .clone()
 }
 
 /// Default-stream handle for device 0.
