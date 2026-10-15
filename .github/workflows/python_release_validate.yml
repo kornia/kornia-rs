@@ -1,0 +1,126 @@
+name: Python Release Validation
+
+# Dry run of `Python Release`: same build definition (python_wheels.yml), a
+# minimal matrix, a smoke test of each wheel -- and no publish job at all.
+on:
+  pull_request:
+    paths:
+      - .cargo/config.toml
+      - .github/workflows/python_release.yml
+      - .github/workflows/python_release_validate.yml
+      - .github/workflows/python_wheels.yml
+      - kornia-py/**
+      - scripts/cuda-oxide/**
+      - crates/kornia-imgproc/build.rs
+      - crates/kornia-imgproc/kernels-oxide/**
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to build (empty = the selected branch)"
+        type: string
+        default: ""
+      subset:
+        description: "minimal = py3.12 per platform; full = every release wheel"
+        type: choice
+        options: [minimal, full]
+        default: minimal
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  wheels:
+    uses: ./.github/workflows/python_wheels.yml
+    with:
+      subset: ${{ inputs.subset || 'minimal' }}
+      ref: ${{ inputs.ref || '' }}
+      retention-days: 3
+
+  smoke:
+    name: smoke (${{ matrix.artifact }})
+    needs: wheels
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: linux-x86_64-3.12-wheels
+            tag: 'cp312-.*manylinux.*_x86_64\.whl$'
+            cuda: "1"
+          - os: ubuntu-24.04-arm
+            artifact: linux-aarch64-3.12-wheels
+            tag: 'cp312-.*manylinux.*_aarch64\.whl$'
+            cuda: "1"
+          - os: macos-14
+            artifact: macos-aarch64-3.12-wheels
+            tag: 'cp312-.*macosx_.*_arm64\.whl$'
+            cuda: "0"
+          - os: windows-latest
+            artifact: windows-x64-3.12-wheels
+            tag: 'cp312-.*win_amd64\.whl$'
+            cuda: "0"
+          # windows-arm64 installs and imports its wheel in the build job.
+    steps:
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ matrix.artifact }}
+          path: wheelhouse
+      - name: Check wheel tags and metadata
+        shell: bash
+        env:
+          TAG_RE: ${{ matrix.tag }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          wheels=(wheelhouse/*.whl)
+          [ "${#wheels[@]}" -eq 1 ] || { echo "::error::expected 1 wheel, got: ${wheels[*]}"; exit 1; }
+          whl=${wheels[0]}
+          echo "$whl"
+          [[ $(basename "$whl") =~ $TAG_RE ]] || { echo "::error::$whl does not match $TAG_RE"; exit 1; }
+          python -m pip install -q twine
+          python -m twine check "$whl"
+          if [ "$RUNNER_OS" = Linux ]; then
+            python -m pip install -q auditwheel
+            auditwheel show "$whl"
+          fi
+      - name: Install in a clean venv and import
+        shell: bash
+        env:
+          EXPECT_CUDA: ${{ matrix.cuda }}
+        run: |
+          set -euo pipefail
+          # No checkout here, so nothing in the cwd can shadow the installed package.
+          python -m venv .venv
+          if [ "$RUNNER_OS" = Windows ]; then py=.venv/Scripts/python.exe; else py=.venv/bin/python; fi
+          "$py" -m pip install -q numpy
+          "$py" -m pip install --no-index --no-deps wheelhouse/*.whl
+          "$py" - <<'EOF'
+          import os
+          from importlib.metadata import version
+
+          import numpy as np
+          import kornia_rs as K
+
+          rgb = np.zeros((4, 6, 3), np.uint8)
+          rgb[..., 0] = 255
+          gray = np.asarray(K.imgproc.gray_from_rgb(rgb))
+          assert gray.shape[:2] == (4, 6) and 70 <= int(gray.max()) <= 82, (gray.shape, gray.max())
+          flat = np.full((8, 8, 3), 100, np.uint8)
+          blur = np.asarray(K.imgproc.gaussian_blur(flat, (3, 3), (1.0, 1.0)))
+          assert (blur == 100).all()
+
+          cuda = getattr(K, "cuda", None)
+          if os.environ["EXPECT_CUDA"] == "1":
+              # --features cuda wheel: must import and answer on a GPU-less runner.
+              assert cuda is not None, "kornia_rs.cuda missing from a cuda wheel"
+              print("cuda.is_available():", cuda.is_available())
+          print("kornia_rs", version("kornia_rs"), "OK")
+          EOF
