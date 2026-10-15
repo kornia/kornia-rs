@@ -113,8 +113,14 @@ else
     "$PREFIX/llvm/bin/llc" --version >/dev/null || die "the locked llc does not run on this host"
     echo "$LLVM_STAMP" >"$PREFIX/llvm/.version"
   fi
+  # conda's libclang resolves its resource dir relative to the cwd, so bindgen
+  # misses stddef.h unless a system clang happens to supply it: pin it.
+  RES=""
+  for d in "$PREFIX"/llvm/lib/clang/[0-9]*; do RES="${d##*/}"; done
+  [[ -f "$PREFIX/llvm/lib/clang/$RES/include/stddef.h" ]] || die "no clang resource headers under $PREFIX/llvm/lib/clang"
   LLVM_ENV="export CUDA_OXIDE_LLC=\"\$P/llvm/bin/llc\"
-export LIBCLANG_PATH=\"\$P/llvm/lib\""
+export LIBCLANG_PATH=\"\$P/llvm/lib\"
+export BINDGEN_EXTRA_CLANG_ARGS=\"-resource-dir=\$P/llvm/lib/clang/$RES\${BINDGEN_EXTRA_CLANG_ARGS:+ \$BINDGEN_EXTRA_CLANG_ARGS}\""
 fi
 
 # -- codegen backend at the pin --------------------------------------------------
@@ -153,6 +159,6 @@ $LLVM_ENV
 EOF
 if [[ -n "${GITHUB_ENV:-}" && -w "${GITHUB_ENV:-/nonexistent}" ]]; then
   # shellcheck disable=SC1091
-  (. "$PREFIX/env.sh" && env | grep -E '^(CUDA_OXIDE_BACKEND|CUDA_OXIDE_LLC|CUDA_HOME|LIBRARY_PATH|LIBCLANG_PATH)=') >>"$GITHUB_ENV"
+  (. "$PREFIX/env.sh" && env | grep -E '^(CUDA_OXIDE_BACKEND|CUDA_OXIDE_LLC|CUDA_HOME|LIBRARY_PATH|LIBCLANG_PATH|BINDGEN_EXTRA_CLANG_ARGS)=') >>"$GITHUB_ENV"
 fi
 log "done; run: . $PREFIX/env.sh"
