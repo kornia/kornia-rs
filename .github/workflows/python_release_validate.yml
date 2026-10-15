@@ -47,6 +47,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # The py3.12 wheel per platform, in both subsets: `full` builds the
+        # whole release matrix but does not install or test the other wheels.
         include:
           - os: ubuntu-latest
             artifact: linux-x86_64-3.12-wheels
@@ -121,6 +123,9 @@ jobs:
           if os.environ["EXPECT_CUDA"] == "1":
               # --features cuda wheel: must import and answer on a GPU-less runner.
               assert cuda is not None, "kornia_rs.cuda missing from a cuda wheel"
+              # Graph is registered only with `--features cuda`; is_available()
+              # alone is False on a GPU-less runner either way.
+              assert hasattr(cuda, "Graph"), "cuda wheel built without --features cuda"
               print("cuda.is_available():", cuda.is_available())
           print("kornia_rs", version("kornia_rs"), "OK")
           EOF
