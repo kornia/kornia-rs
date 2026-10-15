@@ -158,6 +158,10 @@ impl StreamCapture {
     /// Tightly packed rows are borrowed read-only from the GStreamer buffer. Padded rows are
     /// copied into an owned image. Call `.clone()` for a writable image in either case.
     ///
+    /// # Arguments
+    ///
+    /// * `self` - The mutable stream capture.
+    ///
     /// # Returns
     ///
     /// The oldest captured image, or `None` if no frame is buffered yet.
