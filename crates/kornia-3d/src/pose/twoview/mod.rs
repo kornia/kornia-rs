@@ -632,23 +632,22 @@ pub struct TwoViewResult {
 impl TwoViewResult {
     /// Median parallax angle in degrees between inlier bearing vectors.
     ///
-    /// Converts each inlier point pair to normalized bearing vectors using the
-    /// camera intrinsics, then computes the angle between them. Returns the
+    /// Unprojects each inlier point pair to bearings through `camera`, then
+    /// computes the angle between them. Returns the
     /// median of these angles, or 0.0 if there are no valid inliers.
-    pub fn median_parallax_deg(
+    pub fn median_parallax_deg<C: crate::camera::CameraModel + ?Sized>(
         &self,
         x1: &[Vec2F64],
         x2: &[Vec2F64],
-        camera: &crate::camera::PinholeCamera,
+        camera: &C,
     ) -> f64 {
-        let (fx, fy, cx, cy) = camera.intrinsics();
         let mut angles: Vec<f64> = self
             .inlier_indices
             .iter()
             .filter(|&&i| i < x1.len() && i < x2.len())
             .map(|&i| {
-                let b1 = Vec3F64::new((x1[i].x - cx) / fx, (x1[i].y - cy) / fy, 1.0).normalize();
-                let b2 = Vec3F64::new((x2[i].x - cx) / fx, (x2[i].y - cy) / fy, 1.0).normalize();
+                let b1 = camera.unproject(&x1[i]);
+                let b2 = camera.unproject(&x2[i]);
                 b1.dot(b2).clamp(-1.0, 1.0).acos().to_degrees()
             })
             .collect();

@@ -1,4 +1,4 @@
-use crate::camera::PinholeCamera;
+use crate::camera::CameraModel;
 use crate::pose::Pose3d;
 use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64};
 
@@ -197,24 +197,25 @@ pub struct TriangulatedPoint {
     pub pair_index: usize,
 }
 
-/// Triangulate 3D points from undistorted point correspondences across two views.
+/// Triangulate 3D points from pixel correspondences across two views.
 ///
-/// For each pair of undistorted 2D observations, computes a 3D point via midpoint
-/// triangulation and filters by depth, parallax, midpoint gap, and reprojection
-/// error. Accepted points are returned in world coordinates.
+/// For each pair of observations, computes a 3D point via midpoint triangulation
+/// of the rays `camera` unprojects and filters by depth, parallax, midpoint gap,
+/// and reprojection error. Accepted points are returned in world coordinates.
 ///
 /// # Arguments
 ///
-/// * `pts1` / `pts2` — undistorted 2D points in views 1 and 2 (same length)
+/// * `pts1` / `pts2` — pixels in views 1 and 2 (same length), in the image
+///   `camera` describes: distorted when the model has distortion
 /// * `pose1` / `pose2` — world-to-camera poses for each view
-/// * `camera` — pinhole camera (used for reprojection error checks)
-/// * `config` — triangulation quality thresholds
-pub fn triangulate_matched_points(
+/// * `camera` — camera model of both views
+/// * `config` — triangulation quality thresholds; reprojection error in pixels
+pub fn triangulate_matched_points<C: CameraModel + ?Sized>(
     pts1: &[Vec2F64],
     pts2: &[Vec2F64],
     pose1: &Pose3d,
     pose2: &Pose3d,
-    camera: &PinholeCamera,
+    camera: &C,
     config: &TriangulationConfig,
 ) -> Result<Vec<TriangulatedPoint>, TriangulationError> {
     if pts1.len() != pts2.len() {
@@ -236,18 +237,8 @@ pub fn triangulate_matched_points(
     let mut result = Vec::new();
 
     for (i, (p1, p2)) in pts1.iter().zip(pts2.iter()).enumerate() {
-        let ray1 = Vec3F64::new(
-            (p1.x - camera.cx) / camera.fx,
-            (p1.y - camera.cy) / camera.fy,
-            1.0,
-        )
-        .normalize();
-        let ray2 = Vec3F64::new(
-            (p2.x - camera.cx) / camera.fx,
-            (p2.y - camera.cy) / camera.fy,
-            1.0,
-        )
-        .normalize();
+        let ray1 = camera.unproject(p1);
+        let ray2 = camera.unproject(p2);
 
         let Some((p_cam1, gap)) = triangulate_midpoint_known_pose(&ray1, &ray2, &r_rel, &t_rel)
         else {
@@ -279,17 +270,12 @@ pub fn triangulate_matched_points(
             continue;
         }
 
-        // Reprojection error checks.
-        let Some(err1) = camera.reprojection_error_sq_cam(&p_cam1, p1.x, p1.y) else {
-            continue;
+        let reprojects = |p_cam: &Vec3F64, observed: &Vec2F64| {
+            camera
+                .project(p_cam)
+                .is_some_and(|pixel| (pixel - *observed).dot(pixel - *observed) <= reproj_th2)
         };
-        if err1 > reproj_th2 {
-            continue;
-        }
-        let Some(err2) = camera.reprojection_error_sq_cam(&p_cam2, p2.x, p2.y) else {
-            continue;
-        };
-        if err2 > reproj_th2 {
+        if !reprojects(&p_cam1, p1) || !reprojects(&p_cam2, p2) {
             continue;
         }
 
@@ -306,6 +292,7 @@ pub fn triangulate_matched_points(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::camera::{FisheyeCamera, PinholeCamera};
 
     #[test]
     fn test_triangulate_midpoint_known_pose_simple() {
@@ -391,6 +378,44 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].pair_index, 0);
         assert!((result[0].position - Vec3F64::new(0.0, 0.0, 5.0)).length() < 0.05);
+    }
+
+    #[test]
+    fn test_triangulate_matched_points_fisheye_wide_angle() {
+        let camera = FisheyeCamera {
+            fx: 461.64,
+            fy: 459.72,
+            cx: 732.95,
+            cy: 720.54,
+            k1: 0.0344,
+            k2: -0.0216,
+            k3: 0.0031,
+            k4: -0.0005,
+        };
+        let pose1 = Pose3d::new(Mat3F64::IDENTITY, Vec3F64::ZERO);
+        let pose2 = Pose3d::new(Mat3F64::IDENTITY, Vec3F64::new(-0.5, 0.0, 0.0));
+
+        // About 76° and 85° off the optical axis, beyond any pinhole image.
+        let points = [Vec3F64::new(4.0, 1.0, 1.0), Vec3F64::new(-3.0, -2.0, 0.3)];
+        let pts1: Vec<_> = points.iter().map(|p| camera.project(p).unwrap()).collect();
+        let pts2: Vec<_> = points
+            .iter()
+            .map(|p| camera.project(&pose2.transform_point(p)).unwrap())
+            .collect();
+
+        let result = triangulate_matched_points(
+            &pts1,
+            &pts2,
+            &pose1,
+            &pose2,
+            &camera,
+            &TriangulationConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(result.len(), points.len());
+        for tp in &result {
+            assert!((tp.position - points[tp.pair_index]).length() < 1e-6);
+        }
     }
 
     #[test]
