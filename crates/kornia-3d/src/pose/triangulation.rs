@@ -248,14 +248,9 @@ pub fn triangulate_matched_points<C: CameraModel + ?Sized>(
             continue;
         }
 
-        // Depth checks in both cameras.
-        if p_cam1.z <= 1e-6 {
-            continue;
-        }
+        // The midpoint solve already put the point ahead along both rays; a
+        // pinhole's `project` rejects it when it is not in front of the image plane.
         let p_cam2 = r_rel * p_cam1 + t_rel;
-        if p_cam2.z <= 1e-6 {
-            continue;
-        }
 
         // Parallax check.
         let c2 = -(r_rel.transpose() * t_rel);
@@ -395,8 +390,12 @@ mod tests {
         let pose1 = Pose3d::new(Mat3F64::IDENTITY, Vec3F64::ZERO);
         let pose2 = Pose3d::new(Mat3F64::IDENTITY, Vec3F64::new(-0.5, 0.0, 0.0));
 
-        // About 76° and 85° off the optical axis, beyond any pinhole image.
-        let points = [Vec3F64::new(4.0, 1.0, 1.0), Vec3F64::new(-3.0, -2.0, 0.3)];
+        // About 76°, 85° and 99° off the optical axis, beyond any pinhole image.
+        let points = [
+            Vec3F64::new(4.0, 1.0, 1.0),
+            Vec3F64::new(-3.0, -2.0, 0.3),
+            Vec3F64::new(-3.0, 1.0, -0.5),
+        ];
         let pts1: Vec<_> = points.iter().map(|p| camera.project(p).unwrap()).collect();
         let pts2: Vec<_> = points
             .iter()
