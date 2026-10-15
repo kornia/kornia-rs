@@ -28,11 +28,13 @@ and keep working under the same feature. Roadmap:
      read-only registry checkout) and runs `cargo build --release --locked`
      there under the pinned nightly and the codegen backend, in its own target
      dir, with the outer cargo's environment scrubbed (`RUSTC*`, `RUSTFLAGS`,
-     the jobserver, every `CARGO_*` except `CARGO_HOME`, `CARGO_BUILD_JOBS` and
-     network settings), jobs from `CARGO_BUILD_JOBS` or the outer `NUM_JOBS`;
+     the jobserver, every `CARGO_*` except `CARGO_HOME`, `CARGO_BUILD_JOBS`,
+     network settings and the host's `CARGO_TARGET_<HOST>_LINKER`), jobs from
+     `CARGO_BUILD_JOBS` or the outer `NUM_JOBS`. Like the outer cargo, it reads
+     the `.cargo/config.toml` files above `OUT_DIR`;
   3. gates the PTX (below) and writes `kernels.ptx`.
 - It reruns when `kernels-oxide/{src,Cargo.toml.in,Cargo.lock,rust-toolchain.toml}`,
-  the backend `.so`, or one of `CUDA_OXIDE_LLC`, `CUDA_OXIDE_BACKEND`,
+  the backend `.so` or its `.backend` stamp, or one of `CUDA_OXIDE_LLC`, `CUDA_OXIDE_BACKEND`,
   `CARGO_HOME`, `HOME`, `CUDA_HOME`, `CUDA_TOOLKIT_PATH`, `DOCS_RS`,
   `KORNIA_OXIDE_STUB` changes. Cold nested build on an Orin at `-j2`: ~190 s;
   after a kernel edit: ~4 s.
@@ -47,33 +49,39 @@ and keep working under the same feature. Roadmap:
   (`cuda-fusion`, `cuda-camera-sift`, `cuda-camera-preprocess`) have their own
   `cuda` feature and build only with `--features cuda`.
 
-### PTX gate (`gate()` in `build.rs`)
+### PTX gate (`ptx_gate.rs`, run by `build.rs`)
 
 - module: `.target sm_75`; no `.extern` symbols; the `.entry` set equals the
   scanned `#[kernel]` set;
-- per entry: every `ld`/`st` names a state space (a generic access means
-  address-space inference was lost); no `fma`/float `mad` unless the entry is
-  in `FMA_ALLOWED` (empty); no libdevice (`__nv_*`) calls.
+- per `.entry` and per non-inlined `.func`: every `ld`/`st` names a state
+  space (a generic access means address-space inference was lost); no
+  `fma`/float `mad` unless it is an entry in `FMA_ALLOWED` (empty); no
+  libdevice (`__nv_*`) calls. A helper that trips this should be
+  `#[inline(always)]`.
 
-Errors read `gate: <entry>: <reason>`.
+Errors read `gate: <function>: <reason>`. `tests/oxide_ptx_gate.rs` covers it
+in the plain (non-CUDA) test suite.
 
 ## Toolchain
 
 `scripts/cuda-oxide/install-toolchain.sh [PREFIX]` installs everything into
 `PREFIX` (default `~/.cargo/cuda-oxide`) and writes `PREFIX/env.sh`; source it
 before cargo. Pieces already in `PREFIX` at the right version are reused, so CI
-caches `PREFIX`. What it installs:
+caches `PREFIX`. Every download except rustup and the nightly is pinned and
+sha256-checked. What it installs:
 
 1. the nightly pinned in `kernels-oxide/rust-toolchain.toml`
    (`nightly-2026-04-03`, with `rust-src`, `rustc-dev`);
 2. `cuda.h` and the libcuda link stub (NVIDIA's `cuda_cudart` redist archive),
    unless `$CUDA_HOME/include/cuda.h` exists. No GPU or driver is needed;
-3. LLVM 21 `llc` + libclang (for bindgen of `cuda.h`) from conda-forge, unless
-   `llc-21`/`llc-22` is on `PATH`. conda-forge builds need glibc 2.17; LLVM's
+3. LLVM 21 `llc` + libclang (for bindgen of `cuda.h`) from conda-forge, locked
+   in `scripts/cuda-oxide/llvm-<arch>.txt`, unless `llc-21`/`llc-22` is on
+   `PATH`. conda-forge builds need glibc 2.17; LLVM's
    own release tarballs need 2.34 and do not run in manylinux containers;
 4. the codegen backend `librustc_codegen_cuda.so`, built at the rev pinned in
-   `kernels-oxide/Cargo.toml.in` (`f819f23`). `build.rs` refuses a backend
-   whose `src/` checkout is at another rev.
+   `kernels-oxide/Cargo.toml.in` (`f819f23`; the script pins the archive's
+   sha256 too). `build.rs` refuses a backend whose `.backend` stamp or `src/`
+   git checkout names another rev; the script never deletes such a checkout.
 
 `OXIDE_USE_SYSTEM=0` ignores a system `cuda.h`/`llc` (CI uses it so every job
 runs the same recipe). cuda-oxide `main` needs CUDA 13 / R580+, which JetPack 6
