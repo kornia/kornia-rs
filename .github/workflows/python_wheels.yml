@@ -128,7 +128,9 @@ jobs:
     strategy:
       matrix:
         python-version: ${{ fromJSON(inputs.subset == 'minimal' && '["3.12"]' || '["3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.13t", "3.14", "3.14t"]') }}
-        target: ${{ fromJSON(inputs.subset == 'minimal' && '["x64"]' || '["x64", "x86"]') }}
+        # x64 only: the old x86 rows never selected an x86 interpreter or a
+        # win32 target, so they rebuilt the win_amd64 wheel (PyPI has no win32).
+        target: [x64]
     env:
       CMAKE_GENERATOR: Ninja
     steps:
@@ -140,8 +142,6 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: ${{ matrix.python-version }}
-          # x86 python needs to be available for the win32 wheel
-          architecture: ${{ ( matrix.os == 'windows-latest' && matrix.target == 'i686' ) && 'x86' || null }}
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
       - run: |
           pip install cmake ninja
