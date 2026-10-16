@@ -206,10 +206,16 @@ pub struct TriangulatedPoint {
 /// # Arguments
 ///
 /// * `pts1` / `pts2` — pixels in views 1 and 2 (same length), in the image
-///   `camera` describes: distorted when the model has distortion
+///   `camera` describes: raw pixels for a camera with distortion. Points that
+///   were already undistorted need a camera with the same intrinsics and zero
+///   distortion, or they are undistorted twice.
 /// * `pose1` / `pose2` — world-to-camera poses for each view
 /// * `camera` — camera model of both views
 /// * `config` — triangulation quality thresholds; reprojection error in pixels
+///
+/// # Errors
+///
+/// [`TriangulationError::LengthMismatch`] when `pts1` and `pts2` differ in length.
 pub fn triangulate_matched_points<C: CameraModel + ?Sized>(
     pts1: &[Vec2F64],
     pts2: &[Vec2F64],
