@@ -2,8 +2,10 @@ name: Python Release Validation
 
 # Dry run of `Python Release`: same build definition (python_wheels.yml), a
 # minimal matrix, a smoke test of each wheel -- and no publish job at all.
+# Label a PR `ci:wheels-full` to build the full release matrix instead.
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
     paths:
       - .cargo/config.toml
       - .github/workflows/python_release.yml
@@ -34,9 +36,11 @@ concurrency:
 
 jobs:
   wheels:
+    # Other labels must not re-run the build.
+    if: github.event.action != 'labeled' || github.event.label.name == 'ci:wheels-full'
     uses: ./.github/workflows/python_wheels.yml
     with:
-      subset: ${{ inputs.subset || 'minimal' }}
+      subset: ${{ inputs.subset || (contains(github.event.pull_request.labels.*.name, 'ci:wheels-full') && 'full') || 'minimal' }}
       ref: ${{ inputs.ref || '' }}
       retention-days: 3
 
