@@ -22,8 +22,12 @@ Before publishing wheels, confirm the GPU story:
 - The validation smoke test (below) checks the linux wheels import with no CUDA
   present and that `kornia_rs.cuda.is_available()` returns False there.
 - Runtime requirements to put in the release notes: NVIDIA driver (`libcuda.so`)
-  **and** `nvrtc` (kernels are JIT-compiled), matching arch (x86_64 / aarch64 /
-  Jetson Tegra). Without nvrtc the GPU path can't compile kernels.
+  **and** `nvrtc` (most kernels are JIT-compiled; the cuda-oxide ones, e.g.
+  `gray_from_rgb_u8`, ship as PTX and need an sm_75+ GPU), matching arch
+  (x86_64 / aarch64 / Jetson Tegra). Without nvrtc the NVRTC kernels can't
+  compile.
+- Building the wheels with `--features cuda` needs the cuda-oxide toolchain
+  (`scripts/cuda-oxide/install-toolchain.sh`); the wheel workflow builds it.
 - Verify on a GPU box before announcing: `bench_cuda_warp_affine --features
   gpu-cuda` (Rust) and `import kornia_rs; kornia_rs.cuda...` (Python).
 

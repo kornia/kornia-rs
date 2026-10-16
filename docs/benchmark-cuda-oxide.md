@@ -16,8 +16,8 @@ One row per kernel (and arch), plus a short section. Method:
 | L4T / CUDA / driver | R36.4.3 / 12.6.68 / 540.4.0 |
 | Power mode | MAXN_SUPER (nvpmodel 2) |
 | GPU clocks | **not locked** (DVFS 306-1020 MHz; no sudo for `jetson_clocks`) |
-| rustc | 1.98.0 (kornia), nightly-2026-04-03 (kernels-oxide) |
-| cuda-oxide / llc | `f819f23` / LLVM 21.1.8 |
+| rustc | 1.98.0 (kornia), nightly-2026-10-11 (kernels-oxide; numbers below were taken on nightly-2026-04-03) |
+| cuda-oxide / llc | NVIDIA/cuda-rust `6d47ae4` / nightly llvm-tools LLVM 23.1.3 (numbers below: NVlabs `f819f23` / LLVM 21.1.8) |
 
 ## `gray_from_rgb_u8`
 
@@ -37,6 +37,10 @@ loads, one u32 store, byte tail. Replaces main's NVRTC kernel of the same name.
   --cycles 4`, binaries alternated): 4K min 0.3464 vs 0.3469 ms (0.999),
   median of the 4 cycle minima 0.3468 vs 0.3476 ms; spread <=1%. 1080p mins
   agree (0.0913 vs 0.0921 ms) but the clock swung 306-1020 MHz there.
+- **After the bump to `6d47ae4`** (device-only crate, `CUDA_OXIDE_NO_FMA=1`,
+  2026-10-16, clocks unlocked): parity tests pass; same loads/stores (three
+  u32 + byte tail), slightly shorter index math (PTX ISA 6.3, sm_75); 4K GPU min 0.3462 ms / median 0.3467 ms (95.8
+  GB/s, spread 0.2%), 1080p 0.133 ms at a 306-1020 MHz clock: unchanged.
 - **Variants tried, not kept** (same sittings, byte-exact): 1 px/thread is
   2.19x slower at 4K (0.761 ms) and 2.1x at 1080p; 8 px/thread (three u64 or
   six u32 loads, all loads first) is 0.99x at 4K and 0.99-1.00x at 1080p,

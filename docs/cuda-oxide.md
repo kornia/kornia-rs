@@ -2,7 +2,9 @@
 
 kornia-imgproc's `cuda` feature compiles the CUDA kernels in
 `crates/kornia-imgproc/kernels-oxide/` from Rust to PTX at build time with
-NVlabs' [cuda-oxide](https://github.com/NVlabs/cuda-oxide). No PTX is committed.
+NVIDIA's [cuda-oxide](https://github.com/NVIDIA/cuda-rust) (the `cuda-oxide/`
+tree of NVIDIA/cuda-rust). No PTX is committed, and building it needs no CUDA
+toolkit, GPU or driver.
 kornia itself stays on stable Rust: the kernels live in a standalone crate with
 its own pinned nightly. Kernels not yet ported stay NVRTC-compiled at runtime
 and keep working under the same feature. Roadmap:
@@ -35,7 +37,7 @@ and keep working under the same feature. Roadmap:
   3. gates the PTX (below) and writes `kernels.ptx`.
 - It reruns when `kernels-oxide/{src,Cargo.toml.in,Cargo.lock,rust-toolchain.toml}`,
   the backend `.so` or its `.backend` stamp, or one of `CUDA_OXIDE_LLC`, `CUDA_OXIDE_BACKEND`,
-  `CARGO_HOME`, `HOME`, `CUDA_HOME`, `CUDA_TOOLKIT_PATH`, `DOCS_RS`,
+  `CARGO_HOME`, `HOME`, `DOCS_RS`,
   `KORNIA_OXIDE_STUB` changes. Cold nested build on an Orin at `-j2`: ~190 s;
   after a kernel edit: ~4 s.
 - **Stub:** under docs.rs (`DOCS_RS`) or with `KORNIA_OXIDE_STUB=1` the PTX is
@@ -71,22 +73,26 @@ caches `PREFIX`. Every download except rustup and the nightly is pinned and
 sha256-checked. What it installs:
 
 1. the nightly pinned in `kernels-oxide/rust-toolchain.toml`
-   (`nightly-2026-04-03`, with `rust-src`, `rustc-dev`);
-2. `cuda.h` and the libcuda link stub (NVIDIA's `cuda_cudart` redist archive),
-   unless `$CUDA_HOME/include/cuda.h` exists. No GPU or driver is needed;
-3. LLVM 21 `llc` + libclang (for bindgen of `cuda.h`) from conda-forge, locked
-   in `scripts/cuda-oxide/llvm-<arch>.txt`, unless `llc-21`/`llc-22` is on
-   `PATH`. conda-forge builds need glibc 2.17; LLVM's
-   own release tarballs need 2.34 and do not run in manylinux containers;
-4. the codegen backend `librustc_codegen_cuda.so`, built at the rev pinned in
-   `kernels-oxide/Cargo.toml.in` (`f819f23`; the script pins the archive's
-   sha256 too). `build.rs` refuses a backend whose `.backend` stamp or `src/`
-   git checkout names another rev; the script never deletes such a checkout.
+   (`nightly-2026-10-11`, with `rust-src`, `rustc-dev`, `llvm-tools`). The
+   backend runs the nightly's own `llc`/`opt` (LLVM 23), so no system LLVM;
+   `CUDA_OXIDE_LLC` or `llc-23`/`-22`/`-21` on `PATH` also work;
+2. the codegen backend `librustc_codegen_cuda.so`, built at the rev pinned in
+   `kernels-oxide/Cargo.toml.in` (NVIDIA/cuda-rust `6d47ae4`; the script pins
+   the archive's sha256 too). `build.rs` refuses a backend whose `.backend`
+   stamp or `src/` git checkout names another rev; the script never deletes
+   such a checkout.
 
-`OXIDE_USE_SYSTEM=0` ignores a system `cuda.h`/`llc` (CI uses it so every job
-runs the same recipe). cuda-oxide `main` needs CUDA 13 / R580+, which JetPack 6
-lacks; the pinned snapshot works on CUDA 12.6 and never contracts FP. Bump the
-pin only together with a re-run of the parity tests and the bench.
+The kernel crate is **device-only**: it depends on `cuda-device` and on
+`cuda-macros` with `default-features = false`, so `#[kernel]` emits no host
+launch helpers and cuda-host / cuda-core / cuda-bindings (bindgen of `cuda.h`)
+drop out of its lock (8 packages). That is why neither `cuda.h` nor libclang is
+needed. Bump the pin only together with a re-run of the parity tests and the
+bench.
+
+**`CUDA_OXIDE_NO_FMA=1`.** This cuda-oxide contracts `fmul`+`fadd` into `fma`
+by default (like `nvcc --fmad=true`); the CPU twins round each op, so
+`build.rs` always sets it on the nested build (an outer value cannot change
+it) and the gate still rejects any `fma`.
 
 ## Adding a kernel / migrating an NVRTC family
 
@@ -98,11 +104,12 @@ A second kernel PR (e.g. bicubic resize) does exactly this; nothing else:
    parameters in the same order, so the existing launch code drives it.
    - raw pointers, not slices (slices lose the address space and add a bounds
      branch: 12-13% on resize upscale);
-   - **all loads before the first store**: raw pointers carry no `noalias`, so
-     interleaved loads/stores serialize (2x on resize upscale);
+   - **all loads before the first store**: cuda-oxide emits `noalias` only for
+     slice parameters, so raw-pointer loads/stores still serialize when
+     interleaved (2x on resize upscale);
    - mirror each constant with a comment naming the CPU constant it copies;
-   - backend gaps: no `Ord::min` (use `if`), `f32::min`/`max` become compares,
-     no `__ldg` (a no-op on sm_87 anyway).
+   - backend gaps: `Ord::min` and `f32::min`/`max` work; `to_int_unchecked`
+     does not compile (use `as`); no `__ldg` (a no-op on sm_87 anyway).
 2. **Launcher.** In the family's public launcher replace the NVRTC kernel fetch
    with `oxide::kernel(stream, oxide::entry::<NAME>)?` (add
    `From<OxideError>` for the family error if it lacks one) and **delete the NVRTC source** for that op. Validation and

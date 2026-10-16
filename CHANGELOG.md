@@ -14,11 +14,12 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
 ## [Unreleased]
 
 **Breaking: kornia-imgproc's `cuda` feature now builds CUDA kernels written in Rust.** The
-first, `gray_from_rgb_u8`, is compiled to PTX at build time by NVlabs' cuda-oxide and replaces
+first, `gray_from_rgb_u8`, is compiled to PTX at build time by NVIDIA's cuda-oxide and replaces
 the NVRTC kernel behind `cuda::color::gray::launch_gray_from_rgb_u8` (same signature, output
 byte-identical to the CPU path). Building with `cuda` (kornia-imgproc, kornia-3d, kornia,
-kornia-py) now needs the cuda-oxide toolchain: `nightly-2026-04-03`, the codegen backend at
-the pinned rev and LLVM 21 `llc`; `scripts/cuda-oxide/install-toolchain.sh` installs them.
+kornia-py) now needs the cuda-oxide toolchain: `nightly-2026-10-11` with `llvm-tools` and the
+codegen backend at the pinned rev (no CUDA toolkit); `scripts/cuda-oxide/install-toolchain.sh`
+installs them.
 GPU RGB8 -> Gray8 now needs an sm_75+ (Turing or newer) GPU; Maxwell/Pascal devices such as
 Jetson Nano/TX2 lose it. kornia itself still builds on stable. CUDA color launchers now
 treat zero pixels as a no-op and reject pixel counts whose element count passes `u32::MAX`.
