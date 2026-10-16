@@ -1,5 +1,6 @@
 use crate::linalg;
 use kiddo::immutable::float::kdtree::ImmutableKdTree;
+use kornia_algebra::{Mat3F64, Vec3F64, SO3F64};
 
 /// Compute the transformation between two point clouds.
 pub(crate) fn fit_transformation(
@@ -13,51 +14,25 @@ pub(crate) fn fit_transformation(
     // compute centroids
     let (src_centroid, dst_centroid) = compute_centroids(points_in_src, points_in_dst);
 
-    // compute covariance matrix
-    let mut hh = faer::Mat::<f64>::zeros(3, 3);
+    let cs = Vec3F64::new(src_centroid[0], src_centroid[1], src_centroid[2]);
+    let cd = Vec3F64::new(dst_centroid[0], dst_centroid[1], dst_centroid[2]);
+
+    // Kabsch: with the cross-covariance H = Σ (p_dst − c_dst)(p_src − c_src)ᵀ, the best rotation
+    // is the one nearest to H (also when the SVD's U·Vᵀ is a reflection).
+    let mut hh = Mat3F64::ZERO;
     for (p_in_src, p_in_dst) in points_in_src.iter().zip(points_in_dst.iter()) {
-        let p_src = faer::col![p_in_src[0], p_in_src[1], p_in_src[2]] - &src_centroid;
-        let p_dst = faer::col![p_in_dst[0], p_in_dst[1], p_in_dst[2]] - &dst_centroid;
-        hh += p_src * p_dst.transpose();
+        let p_src = Vec3F64::from(*p_in_src) - cs;
+        let p_dst = Vec3F64::from(*p_in_dst) - cd;
+        hh += Mat3F64::from_cols(p_dst * p_src.x, p_dst * p_src.y, p_dst * p_src.z);
     }
-
-    // solve the linear system H * x = 0 to find the rotation
-    let svd = hh.svd().ok()?;
-    let (u_t, v) = (svd.U().transpose(), svd.V());
-
-    // compute rotation matrix R = V * U^T
-    let mut rr = v * u_t;
-
-    // fix the determinant of R in case it is negative as it's a reflection matrix
-    if rr.determinant() < 0.0 {
-        log::warn!("WARNING: det(R) < 0.0, fixing it...");
-        let v_neg = {
-            let mut v_neg = v.to_owned();
-            v_neg.col_mut(2).copy_from(-v.col(2));
-            v_neg
-        };
-        // TODO: improve performance by using matmul33
-        faer::linalg::matmul::matmul(
-            &mut rr,
-            faer::Accum::Replace,
-            &v_neg,
-            u_t,
-            1.0_f64,
-            faer::Par::Seq,
-        );
-    }
+    let rr = SO3F64::from_matrix_nearest(&hh)?.matrix();
 
     // compute translation vector t = C_dst - R * C_src
-    let t = dst_centroid - &rr * src_centroid;
+    let t = cd - rr * cs;
 
-    // copy results back to output
-    #[allow(clippy::needless_range_loop)]
-    for i in 0..3 {
-        for j in 0..3 {
-            dst_r_src[i][j] = rr[(i, j)];
-        }
-        dst_t_src[i] = t[i];
-    }
+    // copy results back to output: `dst_r_src` is row-major, and Rᵀ's columns are R's rows
+    *dst_r_src = rr.transpose().to_cols_array_2d();
+    *dst_t_src = t.into();
     Some(())
 }
 

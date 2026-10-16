@@ -12,7 +12,7 @@ use thiserror::Error;
 
 const MIN_CORRESPONDENCES: usize = 4; // Minimum 2D-3D pairs required by EPnP (and by any refit)
 const AP3P_SAMPLE_SIZE: usize = 3; // AP3P is an exact 3-point solver: it rejects any other count
-const EPNP_MIN_SAMPLE_SIZE: usize = 5; // Minimal sample size for EPnP (unless only 4 points available)
+const PNP_MIN_SAMPLE_SIZE: usize = 5; // EPnP and SQPnP sample size (4 if only 4 points exist)
 
 /// Upper bound on the number of real roots an exact P3P solver can return.
 const AP3P_MAX_ROOTS: usize = 4;
@@ -167,12 +167,13 @@ pub struct PnPRansacResult {
 
 /// Solve PnP robustly using a legacy RANSAC loop around a base PnP method (e.g., EPnP).
 ///
-/// - Minimal sample size follows the KERNEL: 3 for AP3P (an exact P3P solver), 5 for EPnP (4 when
-///   only 4 points are available). This is what makes a P3P kernel worth using here: a sample is
-///   outlier-free with probability `w^k` at inlier ratio `w`, so `k = 3` rather than `5` DRAWS a
-///   clean sample `w^-2` times as often (16x at `w = 0.25`). That is a probability ratio, not a
-///   measured speedup — each AP3P iteration now scores up to four hypotheses instead of one, which
-///   the cheaper hypothesis generation has to pay for.
+/// - Minimal sample size follows the KERNEL: 3 for AP3P (an exact P3P solver), 5 for EPnP and
+///   SQPnP (4 when only 4 points are available). The smaller AP3P sample is what makes a P3P
+///   kernel worth using here: a sample is outlier-free with probability `w^k` at inlier ratio
+///   `w`, so `k = 3` rather than `5` DRAWS a clean sample `w^-2` times as often (16x at
+///   `w = 0.25`). That is a probability ratio, not a measured speedup — each AP3P iteration now
+///   scores up to four hypotheses instead of one, which the cheaper hypothesis generation has to
+///   pay for.
 ///
 ///   `w^k` is itself the with-replacement approximation; this loop samples WITHOUT replacement, so
 ///   the exact figure is the hypergeometric product and `w^k` overstates it, most at small `n`.
@@ -199,7 +200,8 @@ pub struct PnPRansacResult {
 ///   [`PnPRansacResult::refinement`] reports which of those happened, so the caller can see that
 ///   an AP3P request was answered by an EPnP fit rather than having to infer it.
 /// - Minimum correspondence count is kernel- and refine-aware: AP3P with `refine: false` needs
-///   only 3, everything else needs 4 because the EPnP refit does.
+///   only 3; everything else needs 4, because the EPnP and SQPnP kernels sample at least 4 points
+///   and the EPnP refit after an AP3P kernel needs 4.
 ///
 /// # Errors
 ///
@@ -211,11 +213,11 @@ pub struct PnPRansacResult {
 /// correspondences before sampling and then work in a pure pinhole downstream; this crate has no
 /// such step wired in here, so undistort the image points up front and pass `None`.
 ///
-/// Note the EPnP path is not model-consistent either, and this error does not fix that: scoring
-/// (`classify_points` / `project_sq_error`) is pure pinhole and ignores `distortion` entirely,
-/// while the EPnP solve and its LM refinement do apply it. So `EPnP + Some(distortion)` selects a
-/// consensus set on pinhole residuals and refits it under a distorted model. Undistorting up front
-/// is the fix for both.
+/// Note the EPnP and SQPnP paths are not model-consistent either, and this error does not fix
+/// that: scoring (`classify_points` / `project_sq_error`) is pure pinhole and ignores `distortion`
+/// entirely, while the EPnP and SQPnP solves (and LM refinement) do apply it. So
+/// `EPnP + Some(distortion)` (or SQPnP) selects a consensus set on pinhole residuals and refits it
+/// under a distorted model. Undistorting up front is the fix for all of them.
 pub fn solve_pnp_ransac(
     world: &[Vec3AF32],
     image: &[Vec2F32],
@@ -259,16 +261,16 @@ pub fn solve_pnp_ransac(
     }
 
     // Minimal set size is a property of the KERNEL: AP3P is an exact 3-point solver (it rejects
-    // any other count), while EPnP samples 5 (unless only 4 points exist). Using the kernel's
-    // true minimal size is not merely a fix — it is the point of a P3P kernel inside RANSAC: at
-    // inlier ratio w a sample is outlier-free with probability w^k, so k=3 vs k=5 draws a clean
-    // sample w^-2 times as often (16x at w=0.25).
+    // any other count), while EPnP and SQPnP sample 5 (unless only 4 points exist). Using the
+    // kernel's true minimal size is not merely a fix — it is the point of a P3P kernel inside
+    // RANSAC: at inlier ratio w a sample is outlier-free with probability w^k, so k=3 vs k=5 draws
+    // a clean sample w^-2 times as often (16x at w=0.25).
     let sample_size: usize = if is_ap3p {
         AP3P_SAMPLE_SIZE
     } else if n == MIN_CORRESPONDENCES {
         MIN_CORRESPONDENCES
     } else {
-        EPNP_MIN_SAMPLE_SIZE
+        PNP_MIN_SAMPLE_SIZE
     };
 
     // Precompute intrinsics vectors
@@ -289,7 +291,7 @@ pub fn solve_pnp_ransac(
     let mut best_pose: Option<PnPResult> = None;
     let mut w_min: Vec<Vec3AF32> = Vec::with_capacity(sample_size);
     let mut i_min: Vec<Vec2F32> = Vec::with_capacity(sample_size);
-    // Hypotheses produced by one minimal sample: up to 4 for AP3P, exactly 1 for EPnP.
+    // Hypotheses produced by one minimal sample: up to 4 for AP3P, exactly 1 for EPnP and SQPnP.
     let mut hypotheses: Vec<PnPResult> = Vec::with_capacity(AP3P_MAX_ROOTS);
     // SPRT scratch: a permutation over the input points, refreshed every
     // hypothesis so the order of point evaluation is randomised.
@@ -342,7 +344,7 @@ pub fn solve_pnp_ransac(
             match solve_pnp(&w_min, &i_min, k, distortion, base.clone()) {
                 Ok(p) => hypotheses.push(p),
                 Err(_e) => {
-                    log::debug!("EPnP failed on minimal set at iteration {iter}");
+                    log::debug!("Base solver failed on minimal set at iteration {iter}");
                     continue;
                 }
             }

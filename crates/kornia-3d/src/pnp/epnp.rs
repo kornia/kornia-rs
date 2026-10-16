@@ -246,7 +246,7 @@ fn pose_from_betas(
 }
 
 /// Root-mean-square reprojection error in pixels.
-fn rmse_px(
+pub(crate) fn rmse_px(
     points_world: &[Vec3AF32],
     points_image: &[Vec2F32],
     r: &Mat3AF32,

@@ -12,6 +12,9 @@ pub mod refine;
 /// AP3P solver implementation.
 pub mod ap3p;
 
+/// SQPnP solver implementation.
+pub mod sqpnp;
+
 mod ops;
 
 pub use ap3p::{AP3PParams, AP3P};
@@ -20,6 +23,7 @@ use kornia_algebra::{Mat3AF32, Vec2F32, Vec3AF32};
 use kornia_imgproc::calibration::distortion::PolynomialDistortion;
 pub use ransac::{solve_pnp_ransac, PnPRansacError, PnPRansacResult, RansacParams};
 pub use refine::{refine_pose_lm, LMRefineParams};
+pub use sqpnp::{solve_sqpnp, SQPnP, SQPnPParams};
 use thiserror::Error;
 
 /// Error types for PnP solvers.
@@ -127,6 +131,11 @@ pub enum PnPMethod {
     AP3P(AP3PParams),
     /// Algebraic Perspective-3-Point solver with the module's default parameters.
     AP3PDefault,
+    /// SQPnP (global minimum of the object-space error, `N ≥ 3`; see [`sqpnp`] for its limits)
+    /// with a user-supplied parameter object.
+    SQPnP(SQPnPParams),
+    /// SQPnP with the module's default parameters.
+    SQPnPDefault,
 }
 
 /// Dispatch function that routes to the chosen PnP solver.
@@ -142,5 +151,9 @@ pub fn solve_pnp(
         PnPMethod::EPnPDefault => EPnP::solve(world, image, k, distortion, &EPnPParams::default()),
         PnPMethod::AP3P(params) => AP3P::solve(world, image, k, distortion, &params),
         PnPMethod::AP3PDefault => AP3P::solve(world, image, k, distortion, &AP3PParams::default()),
+        PnPMethod::SQPnP(params) => SQPnP::solve(world, image, k, distortion, &params),
+        PnPMethod::SQPnPDefault => {
+            SQPnP::solve(world, image, k, distortion, &SQPnPParams::default())
+        }
     }
 }

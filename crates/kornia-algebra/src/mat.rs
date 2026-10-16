@@ -366,6 +366,23 @@ define_matrix_type!(
     [x_axis, y_axis, z_axis, w_axis]
 );
 
+// Conversions between `Mat3F64` and nalgebra's `Matrix3<f64>`. Both store their columns one after
+// another, so the column-major arrays map one to one and no element is placed by hand.
+impl From<nalgebra::Matrix3<f64>> for Mat3F64 {
+    #[inline]
+    fn from(m: nalgebra::Matrix3<f64>) -> Self {
+        // `m[i]` is nalgebra's column-major linear index.
+        Self::from_cols_array(&std::array::from_fn(|i| m[i]))
+    }
+}
+
+impl From<Mat3F64> for nalgebra::Matrix3<f64> {
+    #[inline]
+    fn from(m: Mat3F64) -> Self {
+        nalgebra::Matrix3::from_column_slice(&m.to_cols_array())
+    }
+}
+
 // Dynamic-sized matrices from nalgebra (for optimization and large-scale operations)
 /// Dynamic-sized matrix with f32 elements.
 pub type DMatF32 = nalgebra::DMatrix<f32>;
@@ -376,6 +393,21 @@ pub type DMatF64 = nalgebra::DMatrix<f64>;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every element must keep its row and column through both conversions; a transposed copy
+    /// is the bug these conversions exist to prevent.
+    #[test]
+    fn test_mat3f64_nalgebra_conversions_keep_rows_and_columns() {
+        // Not symmetric, so a transposed copy changes the matrix.
+        let na = nalgebra::Matrix3::new(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 10.0);
+        let m = Mat3F64::from(na);
+        for r in 0..3 {
+            for c in 0..3 {
+                assert_eq!(m.col(c)[r], na[(r, c)], "row {r}, column {c}");
+            }
+        }
+        assert_eq!(nalgebra::Matrix3::<f64>::from(m), na);
+    }
 
     // Mat2 tests
     #[test]
