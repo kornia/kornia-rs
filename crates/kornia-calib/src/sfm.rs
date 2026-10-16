@@ -587,6 +587,7 @@ fn reconstruct_inner(
                 // same command on EuRoC MH01. A transient PnP failure marks a camera
                 // unregisterable, so that randomness changes the map, not merely its timing.
                 random_seed: Some(0x00C0_FFEE ^ c as u64),
+                sprt: config.sprt,
                 ..Default::default()
             },
         );
