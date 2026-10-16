@@ -13,6 +13,16 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
 
 ## [Unreleased]
 
+**Weighted Umeyama alignment (`kornia-algebra`).** `umeyama_f64` now accepts
+per-point weights: pass `None` for the previous unweighted behaviour, or
+`Some(&weights)` to minimize `Σ wᵢ ‖dstᵢ − (s·R·srcᵢ + t)‖²` for robust
+similarity fitting. Weights are normalized internally, so only their relative
+values matter, and a weight of `0` ignores that point. **Breaking:**
+`umeyama_f64`'s signature changed from `(src, dst, with_scale)` to
+`(src, dst, weights, with_scale)`. `UmeyamaError` has new variants
+`MismatchedWeightsLength` and `InvalidWeights`; exhaustive `match`es need new
+arms.
+
 **Breaking: fundamental-matrix RANSAC now samples seven points by default.** A seven-point
 hypothesis needs one correspondence fewer than an eight-point one, so RANSAC reaches the same
 confidence with fewer draws; every real root of a sample (up to three) is scored. Estimated
