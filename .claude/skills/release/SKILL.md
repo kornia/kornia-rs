@@ -22,8 +22,12 @@ Before publishing wheels, confirm the GPU story:
 - The validation smoke test (below) checks the linux wheels import with no CUDA
   present and that `kornia_rs.cuda.is_available()` returns False there.
 - Runtime requirements to put in the release notes: NVIDIA driver (`libcuda.so`)
-  **and** `nvrtc` (kernels are JIT-compiled), matching arch (x86_64 / aarch64 /
-  Jetson Tegra). Without nvrtc the GPU path can't compile kernels.
+  **and** `nvrtc` (most kernels are JIT-compiled; the cuda-oxide ones, e.g.
+  `gray_from_rgb_u8`, ship as PTX and need an sm_75+ GPU), matching arch
+  (x86_64 / aarch64 / Jetson Tegra). Without nvrtc the NVRTC kernels can't
+  compile.
+- Building the wheels with `--features cuda` needs the cuda-oxide toolchain
+  (`scripts/cuda-oxide/install-toolchain.sh`); the wheel workflow builds it.
 - Verify on a GPU box before announcing: `bench_cuda_warp_affine --features
   gpu-cuda` (Rust) and `import kornia_rs; kornia_rs.cuda...` (Python).
 
@@ -33,6 +37,8 @@ Before publishing wheels, confirm the GPU story:
   crates inherit via `version.workspace = true`).
 - Publish script: `scripts/release_rust.sh` — topological, idempotent, skips
   already-published versions. Excludes `kornia`, `kornia-vlm`, `kornia-apriltag`.
+  `kornia-oxide-kernels` (the cuda-oxide PTX crate) publishes before
+  `kornia-imgproc`; its verify build uses stub PTX, so no nightly is needed.
 - CI publish: `.github/workflows/rust_release.yml` (`workflow_dispatch`, guarded
   by typing `publish`) and `.github/workflows/python_release.yml` (wheels).
 - Wheel build matrix lives in `.github/workflows/python_wheels.yml`, shared by
@@ -60,7 +66,7 @@ Create one todo per step.
      This is what keeps the changelog navigable across releases.
    - Dates: ask the human or read from the environment; never invent one.
 4. **Bump version** in root `Cargo.toml` — BOTH places: `workspace.package.version`
-   AND every kornia-* pin in `[workspace.dependencies]` (11 lines; Cargo cannot
+   AND every kornia-* pin in `[workspace.dependencies]` (13 lines; Cargo cannot
    inherit those, and locally `path` wins so a stale pin builds fine and only
    ships a wrong requirement at publish — this bit the rc.5 cut).
    `sed -i 's/version = "<old>"/version = "<new>"/g' Cargo.toml` covers both;

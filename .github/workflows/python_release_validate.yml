@@ -13,8 +13,7 @@ on:
       - .github/workflows/python_wheels.yml
       - kornia-py/**
       - scripts/cuda-oxide/**
-      - crates/kornia-imgproc/build.rs
-      - crates/kornia-imgproc/kernels-oxide/**
+      - crates/kornia-oxide-kernels/**
   workflow_dispatch:
     inputs:
       ref:

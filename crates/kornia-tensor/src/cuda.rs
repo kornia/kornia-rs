@@ -745,6 +745,43 @@ impl CudaKernel {
             .collect()
     }
 
+    /// Load precompiled PTX **once** and return one [`CudaKernel`] per entry in
+    /// `fn_names`, in order. The driver JITs the PTX for `ctx`'s device, so PTX
+    /// targeting an older `sm_XY` runs on newer GPUs.
+    ///
+    /// # Arguments
+    ///
+    /// * `ctx`      — CUDA context to load the module on.
+    /// * `ptx`      — PTX assembly text.
+    /// * `fn_names` — names of the `.entry` functions to load.
+    ///
+    /// # Returns
+    ///
+    /// One kernel per name, in the order of `fn_names`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CudaError::Driver`] if the driver rejects the PTX (e.g. its
+    /// `.version` is newer than the driver supports) or an entry is missing.
+    pub fn load_ptx_many(
+        ctx: &Arc<CudaContext>,
+        ptx: &str,
+        fn_names: &[&str],
+    ) -> Result<Vec<Self>, CudaError> {
+        let module = ctx
+            .load_module(cudarc::nvrtc::Ptx::from_src(ptx))
+            .map_err(|e| CudaError::Driver(e.to_string()))?;
+        fn_names
+            .iter()
+            .map(|name| {
+                module
+                    .load_function(name)
+                    .map(|func| CudaKernel { func })
+                    .map_err(|e| CudaError::Driver(e.to_string()))
+            })
+            .collect()
+    }
+
     /// nvrtc-compile `src` and load the module on `ctx`'s device, with the target
     /// arch (`compute_XY`) auto-detected from the device's compute capability.
     fn load_module(ctx: &Arc<CudaContext>, src: &str) -> Result<Arc<CudaModule>, CudaError> {

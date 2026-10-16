@@ -237,7 +237,8 @@ pub(crate) enum PxPerThread {
 
 /// Shared elementwise launch tail: length checks, then
 /// `kernel(src, dst, npixels)` on a 1-D grid sized by `px_per_thread`.
-/// `src_mul`/`dst_mul` are elements-per-pixel of each buffer.
+/// `src_mul`/`dst_mul` are elements-per-pixel of each buffer. Zero pixels is a
+/// no-op; element counts past `u32::MAX` are rejected (kernels index in u32).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn launch_map<T>(
     kernel: &CudaKernel,
@@ -252,8 +253,19 @@ pub(crate) fn launch_map<T>(
 where
     T: cudarc::driver::DeviceRepr,
 {
+    let elems = npixels
+        .checked_mul(src_mul.max(dst_mul))
+        .filter(|&e| e <= u32::MAX as usize)
+        .ok_or_else(|| {
+            CudaColorError::Cuda(format!(
+                "{npixels} pixels exceed the 32-bit kernel index range"
+            ))
+        })?;
     check_len("src", src.len(), npixels * src_mul)?;
     check_len("dst", dst.len(), npixels * dst_mul)?;
+    if elems == 0 {
+        return Ok(());
+    }
     let n = npixels as u32;
     let threads = match px_per_thread {
         PxPerThread::One => n,

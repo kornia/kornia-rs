@@ -1,0 +1,25 @@
+[package]
+name = "kornia_kernels_oxide"
+version = "0.1.0"
+edition = "2024"
+description = "Rust-authored CUDA kernels for kornia, compiled to PTX by cuda-oxide"
+license = "Apache-2.0"
+publish = false
+
+# Standalone: this crate needs the pinned nightly + cuda-oxide codegen backend,
+# so the stable kornia-rs workspace must never build it. Named Cargo.toml.in so
+# `cargo package` ships this directory; kornia-oxide-kernels' build.rs stages a
+# copy as Cargo.toml in OUT_DIR and builds it to PTX (`ptx` feature). Cargo.lock
+# is committed: the nested build runs --locked on a pinned nightly.
+[workspace]
+
+# Rev must match the codegen backend (librustc_codegen_cuda.so) that compiles
+# this crate; see docs/cuda-oxide.md.
+[dependencies]
+cuda-device = { git = "https://github.com/NVIDIA/cuda-rust", rev = "6d47ae49cb256a07948fb499c20c3eb9b2a96268" }
+# Device-only: no `host` feature, so `#[kernel]` emits no cuda_host launch
+# helpers and cuda-host/cuda-core/cuda-bindings (cuda.h, bindgen) drop out.
+cuda-macros = { git = "https://github.com/NVIDIA/cuda-rust", rev = "6d47ae49cb256a07948fb499c20c3eb9b2a96268", default-features = false }
+
+[profile.release]
+opt-level = 3

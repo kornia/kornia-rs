@@ -12,3 +12,7 @@ build/
 .omc/
 tests/data/euroc_mh01_gt/
 target
+
+# cuda-oxide PTX is generated into OUT_DIR by kornia-oxide-kernels/build.rs, never committed
+*.ptx
+.oxide-toolchain/
