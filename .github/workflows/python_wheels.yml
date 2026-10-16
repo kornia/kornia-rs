@@ -24,9 +24,10 @@ permissions:
 
 jobs:
   # `--features cuda` compiles kornia-imgproc's Rust CUDA kernels with cuda-oxide
-  # (nightly + codegen backend + LLVM 21). Build that toolchain once, in a
-  # manylinux2014 container so it runs in every wheel container (the aarch64
-  # wheels cross-compile on an x86_64 host, so one x86_64 toolchain serves both).
+  # (nightly with llvm-tools + codegen backend; no CUDA toolkit). Build the
+  # backend once, in a manylinux2014 container so it loads in every wheel
+  # container (the aarch64 wheels cross-compile on an x86_64 host, so one x86_64
+  # toolchain serves both).
   cuda-oxide-toolchain:
     runs-on: ubuntu-latest
     steps:
@@ -39,14 +40,14 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .oxide-toolchain
-          key: cuda-oxide-manylinux2014-x86_64-${{ hashFiles('crates/kornia-imgproc/kernels-oxide/rust-toolchain.toml', 'crates/kornia-imgproc/kernels-oxide/Cargo.toml.in', 'scripts/cuda-oxide/install-toolchain.sh', 'scripts/cuda-oxide/llvm-*.txt') }}
+          key: cuda-oxide-manylinux2014-x86_64-${{ hashFiles('crates/kornia-imgproc/kernels-oxide/rust-toolchain.toml', 'crates/kornia-imgproc/kernels-oxide/Cargo.toml.in', 'scripts/cuda-oxide/install-toolchain.sh') }}
       - if: steps.cache.outputs.cache-hit != 'true'
         run: |
           # The linker override neutralizes the repo's `.cargo/config.toml`, as
           # in the wheel job below (the backend builds under /io).
           docker run --rm -v "$PWD:/io" -w /io -e CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=cc \
             quay.io/pypa/manylinux2014_x86_64 \
-            bash -c 'OXIDE_USE_SYSTEM=0 CARGO_BUILD_JOBS=4 scripts/cuda-oxide/install-toolchain.sh /io/.oxide-toolchain'
+            bash -c 'CARGO_BUILD_JOBS=4 scripts/cuda-oxide/install-toolchain.sh /io/.oxide-toolchain'
           sudo chown -R "$(id -u):$(id -g)" .oxide-toolchain
       # Hand-off by artifact: a cache save can fail (rate limit, reservation
       # race) and leave every wheel job with a miss. tar keeps symlinks + modes.
@@ -106,8 +107,8 @@ jobs:
           before-script-linux: |
             if command -v dnf &> /dev/null; then dnf install cmake3 -y; elif command -v yum &> /dev/null; then yum install cmake3 -y; elif command -v apt-get &> /dev/null; then apt-get update && apt-get install cmake -y; else echo "None of dnf, yum, or apt found."; fi
             if command -v cmake3 &> /dev/null; then export CMAKE=cmake3; fi
-            # Reuses the cached backend/LLVM/cuda.h; installs only the nightly here.
-            OXIDE_USE_SYSTEM=0 scripts/cuda-oxide/install-toolchain.sh "$PWD/.oxide-toolchain"
+            # Reuses the cached backend; installs only the nightly here.
+            scripts/cuda-oxide/install-toolchain.sh "$PWD/.oxide-toolchain"
             . "$PWD/.oxide-toolchain/env.sh"
           # --features cuda: ship GPU-capable linux wheels. cudarc uses
           # `fallback-dynamic-loading`, so the wheel builds in the CUDA-less
