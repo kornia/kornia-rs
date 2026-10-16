@@ -256,11 +256,17 @@ fn compile_ptx(source: &Path, out_dir: &Path) -> Result<(PathBuf, String), Oxide
         )));
     }
 
-    let llc_ok = env::var_os("CUDA_OXIDE_LLC").is_some()
-        || ["llc-22", "llc-21"]
-            .iter()
-            .any(|llc| probe(Command::new(llc).arg("--version")).is_some());
-    if !llc_ok {
+    if let Some(llc) = env::var_os("CUDA_OXIDE_LLC") {
+        if probe(Command::new(&llc).arg("--version")).is_none() {
+            return Err(Toolchain(format!(
+                "CUDA_OXIDE_LLC={} does not run `--version`; point it at an LLVM 21+ llc",
+                Path::new(&llc).display()
+            )));
+        }
+    } else if !["llc-22", "llc-21"]
+        .iter()
+        .any(|llc| probe(Command::new(llc).arg("--version")).is_some())
+    {
         return Err(Toolchain(
             "llc-21 or llc-22 (LLVM 21+) not on PATH; install LLVM 21 or set CUDA_OXIDE_LLC".into(),
         ));
