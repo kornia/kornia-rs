@@ -5,10 +5,10 @@ authors = { workspace = true }
 edition = { workspace = true }
 rust-version = { workspace = true }
 description = "kornia's CUDA kernels written in Rust, compiled to PTX by cuda-oxide"
-categories = { workspace = true }
 homepage = { workspace = true }
 repository = { workspace = true }
 license = { workspace = true }
+categories = { workspace = true }
 # device/ ships in the package (its manifest is Cargo.toml.in so cargo does not
 # skip it as a nested package); never its build output.
 exclude = ["device/*.ll", "device/*.ptx", "device/target"]
