@@ -1,5 +1,6 @@
 //! Pinhole camera model with Brown-Conrady distortion.
 
+use super::CameraModel;
 use crate::pose::Pose3d;
 use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64};
 use kornia_image::ImageSize;
@@ -86,27 +87,66 @@ impl PinholeCamera {
         Vec2F64::new((up.x - self.cx) / self.fx, (up.y - self.cy) / self.fy)
     }
 
-    /// Undistorts a pixel using iterative Brown-Conrady inversion.
+    /// Undistorts a pixel by inverting Brown-Conrady distortion with Newton iteration.
     ///
     /// Returns the undistorted pixel `(u, v)` in the ideal pinhole image plane.
-    /// Convergence is typically reached in 5 iterations for typical lens distortions.
     pub fn undistort(&self, col: f64, row: f64) -> Vec2F64 {
-        let xd = (col - self.cx) / self.fx;
-        let yd = (row - self.cy) / self.fy;
-        let mut x = xd;
-        let mut y = yd;
-        for _ in 0..5 {
-            let r2 = x * x + y * y;
-            let rad = 1.0 + self.k1 * r2 + self.k2 * r2 * r2;
-            let dx = 2.0 * self.p1 * x * y + self.p2 * (r2 + 2.0 * x * x);
-            let dy = self.p1 * (r2 + 2.0 * y * y) + 2.0 * self.p2 * x * y;
-            x = (xd - dx) / rad;
-            y = (yd - dy) / rad;
-        }
-        Vec2F64::new(self.fx * x + self.cx, self.fy * y + self.cy)
+        let n = self.undistort_normalized((col - self.cx) / self.fx, (row - self.cy) / self.fy);
+        Vec2F64::new(self.fx * n.x + self.cx, self.fy * n.y + self.cy)
     }
 
-    /// Projects a camera-frame 3D point to pixel coordinates.
+    /// Inverts [`PinholeCamera::distort_normalized`] by Newton iteration.
+    ///
+    /// Without distortion the first residual is exactly zero, so the input is
+    /// returned unchanged.
+    fn undistort_normalized(&self, xd: f64, yd: f64) -> Vec2F64 {
+        let target = Vec2F64::new(xd, yd);
+        let mut p = target;
+        for _ in 0..UNDISTORT_MAX_ITER {
+            let r = self.distort_normalized(p.x, p.y) - target;
+            if r.dot(r) < UNDISTORT_TOL_SQ {
+                break;
+            }
+            let [[a, b], [c, d]] = self.distortion_jacobian(p.x, p.y);
+            let det = a * d - b * c;
+            if det.abs() < UNDISTORT_MIN_DET {
+                break;
+            }
+            p -= Vec2F64::new(d * r.x - b * r.y, a * r.y - c * r.x) / det;
+        }
+        p
+    }
+
+    /// Applies Brown-Conrady distortion to a point on the `z = 1` plane.
+    fn distort_normalized(&self, x: f64, y: f64) -> Vec2F64 {
+        let r2 = x * x + y * y;
+        let rad = 1.0 + self.k1 * r2 + self.k2 * r2 * r2;
+        Vec2F64::new(
+            x * rad + 2.0 * self.p1 * x * y + self.p2 * (r2 + 2.0 * x * x),
+            y * rad + self.p1 * (r2 + 2.0 * y * y) + 2.0 * self.p2 * x * y,
+        )
+    }
+
+    /// Rows of `∂ distort_normalized / ∂(x, y)`.
+    fn distortion_jacobian(&self, x: f64, y: f64) -> [[f64; 2]; 2] {
+        let r2 = x * x + y * y;
+        let rad = 1.0 + self.k1 * r2 + self.k2 * r2 * r2;
+        let drad_dr2 = self.k1 + 2.0 * self.k2 * r2;
+        let cross = 2.0 * drad_dr2 * x * y + 2.0 * self.p1 * x + 2.0 * self.p2 * y;
+        [
+            [
+                rad + 2.0 * drad_dr2 * x * x + 2.0 * self.p1 * y + 6.0 * self.p2 * x,
+                cross,
+            ],
+            [
+                cross,
+                rad + 2.0 * drad_dr2 * y * y + 6.0 * self.p1 * y + 2.0 * self.p2 * x,
+            ],
+        ]
+    }
+
+    /// Projects a camera-frame 3D point through the ideal pinhole, ignoring
+    /// distortion; [`CameraModel::project`] applies it.
     ///
     /// Returns `None` when `p_cam.z <= min_depth`.
     pub fn project_to_pixel(&self, p_cam: &Vec3F64, min_depth: f64) -> Option<Vec2F64> {
@@ -204,6 +244,53 @@ impl PinholeCamera {
             pts2.push(self.undistort(p2[0] as f64, p2[1] as f64));
         }
         (pts1, pts2)
+    }
+}
+
+/// Points closer than this to the `z = 0` plane are not projected.
+const MIN_DEPTH: f64 = 1e-8;
+
+/// Newton iteration cap for [`PinholeCamera::undistort_normalized`].
+const UNDISTORT_MAX_ITER: usize = 20;
+/// Squared normalized-plane residual at which undistortion has converged.
+const UNDISTORT_TOL_SQ: f64 = 1e-24;
+/// Below this Jacobian determinant the distortion is not invertible.
+const UNDISTORT_MIN_DET: f64 = 1e-12;
+
+impl CameraModel for PinholeCamera {
+    fn project(&self, p_cam: &Vec3F64) -> Option<Vec2F64> {
+        if p_cam.z <= MIN_DEPTH {
+            return None;
+        }
+        let d = self.distort_normalized(p_cam.x / p_cam.z, p_cam.y / p_cam.z);
+        Some(Vec2F64::new(
+            self.fx * d.x + self.cx,
+            self.fy * d.y + self.cy,
+        ))
+    }
+
+    fn project_with_jacobian(&self, p_cam: &Vec3F64) -> Option<(Vec2F64, [Vec3F64; 2])> {
+        if p_cam.z <= MIN_DEPTH {
+            return None;
+        }
+        let inv_z = 1.0 / p_cam.z;
+        let (x, y) = (p_cam.x * inv_z, p_cam.y * inv_z);
+        let d = self.distort_normalized(x, y);
+        let [[dxd_dx, dxd_dy], [dyd_dx, dyd_dy]] = self.distortion_jacobian(x, y);
+        // ∂(x, y)/∂p_cam = [1/z, 0, -x/z; 0, 1/z, -y/z].
+        let row = |a: f64, b: f64, f: f64| {
+            Vec3F64::new(f * a * inv_z, f * b * inv_z, -f * (a * x + b * y) * inv_z)
+        };
+        Some((
+            Vec2F64::new(self.fx * d.x + self.cx, self.fy * d.y + self.cy),
+            [row(dxd_dx, dxd_dy, self.fx), row(dyd_dx, dyd_dy, self.fy)],
+        ))
+    }
+
+    fn unproject(&self, pixel: &Vec2F64) -> Vec3F64 {
+        let n =
+            self.undistort_normalized((pixel.x - self.cx) / self.fx, (pixel.y - self.cy) / self.fy);
+        Vec3F64::new(n.x, n.y, 1.0).normalize()
     }
 }
 
