@@ -1,6 +1,6 @@
 //! Loader for the CUDA kernels written in Rust under `kernels-oxide/` and
 //! compiled to PTX by `build.rs` with
-//! [cuda-oxide](https://github.com/NVlabs/cuda-oxide); see `docs/cuda-oxide.md`.
+//! [cuda-oxide](https://github.com/NVIDIA/cuda-rust); see `docs/cuda-oxide.md`.
 //!
 //! This is a kernel source, not an API: each op keeps its public launcher and
 //! fetches its kernel with [`kernel`]. All entries live in one module, loaded

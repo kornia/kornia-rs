@@ -26,9 +26,9 @@ const STUB: &str = "KORNIA_OXIDE_STUB";
 enum OxideBuildError {
     #[error(
         "{0}\n\nThe `cuda` feature compiles kornia's Rust CUDA kernels to PTX with cuda-oxide \
-         at build time. It needs the nightly pinned in kernels-oxide/rust-toolchain.toml, \
-         LLVM 21 `llc`, cuda.h and the codegen backend at the rev pinned in \
-         kernels-oxide/Cargo.toml.in. From a kornia-rs checkout, \
+         at build time. It needs the nightly pinned in kernels-oxide/rust-toolchain.toml \
+         (with llvm-tools, for `llc`) and the codegen backend at the rev pinned in \
+         kernels-oxide/Cargo.toml.in; no CUDA toolkit. From a kornia-rs checkout, \
          `scripts/cuda-oxide/install-toolchain.sh` installs all of it; see \
          docs/cuda-oxide.md."
     )]
@@ -101,8 +101,6 @@ fn build_oxide_ptx() -> Result<(), OxideBuildError> {
         "CUDA_OXIDE_BACKEND",
         "CARGO_HOME",
         "HOME",
-        "CUDA_HOME",
-        "CUDA_TOOLKIT_PATH",
         "DOCS_RS",
         STUB,
     ] {
@@ -263,23 +261,20 @@ fn compile_ptx(source: &Path, out_dir: &Path) -> Result<(PathBuf, String), Oxide
                 Path::new(&llc).display()
             )));
         }
-    } else if !["llc-22", "llc-21"]
-        .iter()
-        .any(|llc| probe(Command::new(llc).arg("--version")).is_some())
-    {
-        return Err(Toolchain(
-            "llc-21 or llc-22 (LLVM 21+) not on PATH; install LLVM 21 or set CUDA_OXIDE_LLC".into(),
-        ));
-    }
-
-    let cuda_root = env::var_os("CUDA_TOOLKIT_PATH")
-        .or_else(|| env::var_os("CUDA_HOME"))
-        .map_or_else(|| PathBuf::from("/usr/local/cuda"), PathBuf::from);
-    if !cuda_root.join("include/cuda.h").is_file() {
-        return Err(Toolchain(format!(
-            "{}/include/cuda.h not found (needed by cuda-oxide's bindgen); set CUDA_HOME",
-            cuda_root.display()
-        )));
+    } else {
+        // The backend prefers the nightly's llvm-tools llc, then llc-23/22/21.
+        let host = env::var("HOST").unwrap_or_default();
+        let sysroot_llc = Path::new(&sysroot).join(format!("lib/rustlib/{host}/bin/llc"));
+        if !sysroot_llc.is_file()
+            && !["llc-23", "llc-22", "llc-21"]
+                .iter()
+                .any(|llc| probe(Command::new(llc).arg("--version")).is_some())
+        {
+            return Err(Toolchain(format!(
+                "no llc: install the llvm-tools component (`rustup component add llvm-tools \
+                 --toolchain {toolchain}`), put llc-21+ on PATH, or set CUDA_OXIDE_LLC"
+            )));
+        }
     }
 
     // -- nested build, on a staged copy (the source may be a read-only registry dir)
@@ -299,7 +294,7 @@ fn compile_ptx(source: &Path, out_dir: &Path) -> Result<(PathBuf, String), Oxide
     // rewrites src/main.rs on every run, which would re-trigger this script forever.
     let rustflags = format!(
         "-Z codegen-backend={} -C opt-level=3 -C debug-assertions=off \
-         -Z mir-enable-passes=-JumpThreading -Csymbol-mangling-version=v0",
+         -Z mir-enable-passes=-JumpThreading -Zalways-encode-mir -Csymbol-mangling-version=v0",
         backend.display()
     );
 
@@ -313,6 +308,9 @@ fn compile_ptx(source: &Path, out_dir: &Path) -> Result<(PathBuf, String), Oxide
             .env("CARGO_TARGET_DIR", &target_dir)
             .env("RUSTFLAGS", &rustflags)
             .env("CUDA_OXIDE_TARGET", ARCH)
+            // cuda-oxide contracts fmul+fadd by default (nvcc --fmad=true); CPU
+            // parity needs it off. Always set, so the outer env cannot flip it.
+            .env("CUDA_OXIDE_NO_FMA", "1")
             .env("CUDA_OXIDE_PTX_DIR", &ptx_dir)
             .env("LD_LIBRARY_PATH", &ld_path)
             .output()

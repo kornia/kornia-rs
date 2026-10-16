@@ -16,8 +16,10 @@ publish = false
 # Rev must match the codegen backend (librustc_codegen_cuda.so) that compiles
 # this crate; see docs/cuda-oxide.md.
 [dependencies]
-cuda-device = { git = "https://github.com/NVlabs/cuda-oxide", rev = "f819f23fe035ec1c24b8ec06e738b62a9f377140" }
-cuda-host = { git = "https://github.com/NVlabs/cuda-oxide", rev = "f819f23fe035ec1c24b8ec06e738b62a9f377140" }
+cuda-device = { git = "https://github.com/NVIDIA/cuda-rust", rev = "6d47ae49cb256a07948fb499c20c3eb9b2a96268" }
+# Device-only: no `host` feature, so `#[kernel]` emits no cuda_host launch
+# helpers and cuda-host/cuda-core/cuda-bindings (cuda.h, bindgen) drop out.
+cuda-macros = { git = "https://github.com/NVIDIA/cuda-rust", rev = "6d47ae49cb256a07948fb499c20c3eb9b2a96268", default-features = false }
 
 [profile.release]
 opt-level = 3
