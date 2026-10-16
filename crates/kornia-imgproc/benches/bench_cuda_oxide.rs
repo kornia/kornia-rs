@@ -9,8 +9,12 @@
 //! cycle minima, their spread, and the GPU clock seen after each round.
 //!
 //! ```text
-//! cargo run --release -p kornia-imgproc --example bench_cuda_oxide --features cuda
+//! cargo bench -p kornia-imgproc --bench bench_cuda_oxide --features cuda
 //! ```
+//!
+//! `harness = false` like the other CUDA benches: criterion's sampling cannot
+//! express the alternated, event-timed min-of-rounds protocol. Arguments
+//! (cargo passes `--bench`) are ignored.
 
 use std::{sync::Arc, time::Instant};
 

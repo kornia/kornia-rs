@@ -18,10 +18,6 @@ name = "bench_cuda_color_conversions"
 required-features = ["cuda"]
 
 [[example]]
-name = "bench_cuda_oxide"
-required-features = ["cuda"]
-
-[[example]]
 name = "bench_cuda_remap"
 required-features = ["cuda"]
 
@@ -48,6 +44,11 @@ required-features = ["cuda"]
 [[bench]]
 harness = false
 name = "bench_cuda_imgproc"
+required-features = ["cuda"]
+
+[[bench]]
+harness = false
+name = "bench_cuda_oxide"
 required-features = ["cuda"]
 
 [[bench]]

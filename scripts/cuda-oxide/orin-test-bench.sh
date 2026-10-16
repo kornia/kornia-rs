@@ -5,19 +5,28 @@
 #   scripts/cuda-oxide/orin-test-bench.sh --no-bench
 #   scripts/cuda-oxide/orin-test-bench.sh --base origin/main # + A/B vs <ref>
 #
-# --base builds the same bench example at <ref> (e.g. main's NVRTC kernel) in
-# its own worktree and target dir, then alternates the two binaries per cycle.
+# --base builds the same bench (benches/bench_cuda_oxide.rs) at <ref> (e.g.
+# main's NVRTC kernel) in its own worktree and target dir, then alternates the
+# two binaries per cycle.
 set -euo pipefail
 
 ROOT="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}"
 export PATH="/usr/local/cuda/bin:$PATH"
-TARGET="${CARGO_TARGET_DIR:-$ROOT/target}"
+# Absolute: cargo resolves a relative CARGO_TARGET_DIR against its cwd, and the
+# --base build runs from another worktree.
+TARGET="$(cd "$ROOT" && realpath -m "${CARGO_TARGET_DIR:-target}")"
+export CARGO_TARGET_DIR="$TARGET"
 DEVFREQ=/sys/devices/platform/bus@0/17000000.gpu/devfreq/17000000.gpu
-EXAMPLE=crates/kornia-imgproc/examples/bench_cuda_oxide.rs
+BENCH=crates/kornia-imgproc/benches/bench_cuda_oxide.rs
 bench=1 base="" cycles=3
 
 die() { echo "orin-test-bench: $*" >&2; exit 1; }
+# Builds the bench in the cwd's checkout; prints its executable.
+build_bench() {
+  cargo bench --no-run --message-format=json -p kornia-imgproc --bench bench_cuda_oxide --features cuda |
+    sed -n 's/.*"executable":"\([^"]*bench_cuda_oxide[^"]*\)".*/\1/p' | tail -1
+}
 while (($#)); do
   case "$1" in
     --no-bench) bench=0 ;;
@@ -63,8 +72,8 @@ echo "orin-test-bench: parity tests passed for ${#entries[@]} entries"
 
 ((bench)) || exit 0
 echo "== bench"
-cargo build --release -p kornia-imgproc --example bench_cuda_oxide --features cuda
-head_bin="$TARGET/release/examples/bench_cuda_oxide"
+head_bin="$(build_bench)"
+[[ -x "$head_bin" ]] || die "bench build produced no executable"
 if [[ -z "$base" ]]; then
   "$head_bin"
   exit 0
@@ -73,10 +82,12 @@ fi
 wt="$(mktemp -d "$TARGET-base-src.XXXX")"
 trap 'git -C "$ROOT" worktree remove --force "$wt" 2>/dev/null || true' EXIT
 git -C "$ROOT" worktree add -q --detach "$wt" "$base"
-cp "$ROOT/$EXAMPLE" "$wt/$EXAMPLE" # the bench calls only public launchers
-(cd "$wt" && CARGO_TARGET_DIR="$TARGET-base" \
-  cargo build --release -p kornia-imgproc --example bench_cuda_oxide --features cuda)
-base_bin="$TARGET-base/release/examples/bench_cuda_oxide"
+cp "$ROOT/$BENCH" "$wt/$BENCH" # the bench calls only public launchers
+manifest="$wt/crates/kornia-imgproc/Cargo.toml"
+grep -A2 '^\[\[bench\]\]' "$manifest" | grep -q '^name = "bench_cuda_oxide"$' ||
+  printf '\n[[bench]]\nharness = false\nname = "bench_cuda_oxide"\nrequired-features = ["cuda"]\n' >>"$manifest"
+base_bin="$(cd "$wt" && CARGO_TARGET_DIR="$TARGET-base" build_bench)"
+[[ -x "$base_bin" ]] || die "bench build at $base produced no executable"
 for ((c = 0; c < cycles; c++)); do
   order=(base head)
   ((c % 2)) && order=(head base)

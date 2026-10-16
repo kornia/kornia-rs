@@ -14,7 +14,7 @@ and keep working under the same feature. Roadmap:
 | `build.rs` | Scans `kernels-oxide/src` for `#[kernel]` items, builds the PTX, gates it, writes `$OUT_DIR/kernels.ptx` + `$OUT_DIR/oxide_entries.rs`. |
 | `src/cuda/oxide/mod.rs` | Loader only (crate-private): one module, `kernel(stream, entry::<NAME>)`. |
 | `src/cuda/<family>/` | The family's existing public launchers; only their kernel fetch changes. |
-| `examples/bench_cuda_oxide.rs` | Every oxide kernel vs its CPU path; one `CASES` row per op and size. |
+| `benches/bench_cuda_oxide.rs` | Every oxide kernel vs its CPU path; one `CASES` row per op and size. |
 | `scripts/cuda-oxide/install-toolchain.sh` | Installs the toolchain below (local, CI and wheels share it). |
 | `scripts/cuda-oxide/orin-test-bench.sh` | Jetson: parity tests (names derived from the PTX) + bench; `--base <ref>` A/B. |
 
@@ -113,7 +113,7 @@ A second kernel PR (e.g. bicubic resize) does exactly this; nothing else:
    size, a sentinel-filled oversized `dst`, and the degenerate inputs (zero
    size, overflowing size -> `Err`). `orin-test-bench.sh` fails if an entry has
    no passing `<name>*bit_exact` test, and `all_entries_load` must pass.
-4. **Bench.** One `CASES` row per size in `examples/bench_cuda_oxide.rs`.
+4. **Bench.** One `CASES` row per size in `benches/bench_cuda_oxide.rs`.
 5. **Numbers.** One row and a short section in `docs/benchmark-cuda-oxide.md`,
    including `orin-test-bench.sh --base origin/main` (main's NVRTC kernel vs
    the branch). Merge bar: at 4K on an Orin with clocks locked, no regression
@@ -134,12 +134,14 @@ When the last NVRTC family is ported: delete `CudaKernel::compile*`,
 
 ## Benchmark protocol
 
-`examples/bench_cuda_oxide.rs` (run by `orin-test-bench.sh`): owned stream, GPU
+`benches/bench_cuda_oxide.rs` (`cargo bench -p kornia-imgproc --bench
+bench_cuda_oxide --features cuda`, or `orin-test-bench.sh`; `harness = false`,
+like the other CUDA benches): owned stream, GPU
 output checked against the CPU output, warmup, then 5 cycles alternating arm
 order; the GPU arm is 5 rounds x 100 launches between CUDA events (kernel time,
 no transfers), the CPU arm the same count on the wall clock; each cycle keeps
 its fastest round. Reported: min, median and spread of the cycle minima, GB/s,
-and the GPU clock seen after each round. `--base <ref>` builds the same example
+and the GPU clock seen after each round. `--base <ref>` builds the same bench
 at `<ref>` in a separate worktree and target dir and alternates the binaries.
 Record power mode, CUDA/driver versions and whether clocks were locked
 (`sudo jetson_clocks`); with unlocked clocks say so.
