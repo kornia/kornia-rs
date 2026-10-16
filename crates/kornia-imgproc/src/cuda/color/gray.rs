@@ -113,6 +113,10 @@ pub fn launch_gray_from_rgb_u8(
     dst: &mut CudaSlice<u8>,
     npixels: usize,
 ) -> Result<(), CudaColorError> {
+    // Before the module load, so zero pixels is a no-op even with stub PTX.
+    if npixels == 0 {
+        return Ok(());
+    }
     let kernel = oxide::kernel(stream, oxide::entry::GRAY_FROM_RGB_U8)?;
     launch_map(kernel, stream, src, dst, npixels, 3, 1, PxPerThread::Four)
 }
