@@ -37,6 +37,8 @@ Before publishing wheels, confirm the GPU story:
   crates inherit via `version.workspace = true`).
 - Publish script: `scripts/release_rust.sh` — topological, idempotent, skips
   already-published versions. Excludes `kornia`, `kornia-vlm`, `kornia-apriltag`.
+  `kornia-oxide-kernels` (the cuda-oxide PTX crate) publishes before
+  `kornia-imgproc`; its verify build uses stub PTX, so no nightly is needed.
 - CI publish: `.github/workflows/rust_release.yml` (`workflow_dispatch`, guarded
   by typing `publish`) and `.github/workflows/python_release.yml` (wheels).
 - Wheel build matrix lives in `.github/workflows/python_wheels.yml`, shared by
@@ -64,7 +66,7 @@ Create one todo per step.
      This is what keeps the changelog navigable across releases.
    - Dates: ask the human or read from the environment; never invent one.
 4. **Bump version** in root `Cargo.toml` — BOTH places: `workspace.package.version`
-   AND every kornia-* pin in `[workspace.dependencies]` (11 lines; Cargo cannot
+   AND every kornia-* pin in `[workspace.dependencies]` (13 lines; Cargo cannot
    inherit those, and locally `path` wins so a stale pin builds fine and only
    ships a wrong requirement at publish — this bit the rc.5 cut).
    `sed -i 's/version = "<old>"/version = "<new>"/g' Cargo.toml` covers both;

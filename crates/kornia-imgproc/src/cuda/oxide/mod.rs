@@ -1,5 +1,5 @@
-//! Loader for the CUDA kernels written in Rust under `kernels-oxide/` and
-//! compiled to PTX by `build.rs` with
+//! Loader for the CUDA kernels written in Rust in the `kornia-oxide-kernels`
+//! crate and compiled to PTX by its `build.rs` with
 //! [cuda-oxide](https://github.com/NVIDIA/cuda-rust); see `docs/cuda-oxide.md`.
 //!
 //! This is a kernel source, not an API: each op keeps its public launcher and
@@ -12,13 +12,10 @@ use std::sync::{Arc, OnceLock};
 use cudarc::driver::CudaStream;
 use kornia_tensor::CudaKernel;
 
+pub(crate) use kornia_oxide_kernels::entry;
+use kornia_oxide_kernels::{ENTRIES, IS_STUB, PTX};
+
 use super::color::CudaColorError;
-
-// `ENTRIES` and `entry::<NAME>` index consts, generated from kernels-oxide/src.
-include!(concat!(env!("OUT_DIR"), "/oxide_entries.rs"));
-
-/// The PTX module holding every entry in [`ENTRIES`].
-static PTX: &str = include_str!(concat!(env!("OUT_DIR"), "/kernels.ptx"));
 
 static MODULE: OnceLock<Result<Vec<CudaKernel>, OxideError>> = OnceLock::new();
 
@@ -39,13 +36,13 @@ impl From<OxideError> for CudaColorError {
     }
 }
 
-/// The kernel at `index` (an `entry::*` const), loading the module on first
+/// The kernel named `name` (an `entry::*` const), loading the module on first
 /// use. A load failure is cached and returned on every call.
 pub(crate) fn kernel(
     stream: &Arc<CudaStream>,
-    index: usize,
+    name: &str,
 ) -> Result<&'static CudaKernel, OxideError> {
-    if PTX.is_empty() {
+    if IS_STUB {
         return Err(OxideError::Stub);
     }
     let suite = MODULE
@@ -60,9 +57,11 @@ pub(crate) fn kernel(
         })
         .as_ref()
         .map_err(Clone::clone)?;
-    suite
-        .get(index)
-        .ok_or_else(|| OxideError::Load(format!("no entry at index {index}")))
+    ENTRIES
+        .iter()
+        .position(|e| *e == name)
+        .and_then(|i| suite.get(i))
+        .ok_or_else(|| OxideError::Load(format!("no entry `{name}`")))
 }
 
 #[cfg(test)]
@@ -73,8 +72,8 @@ mod tests {
     fn all_entries_load() {
         let stream = crate::cuda::color::test_utils::default_stream();
         assert!(!ENTRIES.is_empty());
-        for (i, name) in ENTRIES.iter().enumerate() {
-            kernel(&stream, i).unwrap_or_else(|e| panic!("{name}: {e}"));
+        for name in ENTRIES {
+            kernel(&stream, name).unwrap_or_else(|e| panic!("{name}: {e}"));
         }
     }
 }

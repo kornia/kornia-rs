@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Install what kornia-imgproc's `cuda` feature needs to compile its Rust CUDA
-# kernels (kernels-oxide/) with cuda-oxide, into PREFIX:
-#   - the nightly pinned in kernels-oxide/rust-toolchain.toml (via rustup);
+# Install what kornia-imgproc's `cuda` feature needs to compile kornia's Rust
+# CUDA kernels (crates/kornia-oxide-kernels/device/) with cuda-oxide, into PREFIX:
+#   - the nightly pinned in device/rust-toolchain.toml (via rustup);
 #     with llvm-tools: the backend runs that llc/opt, so no system LLVM, CUDA
 #     toolkit or libclang (the device-only kernel crate has no cuda-bindings);
-#   - the codegen backend built at the rev pinned in kernels-oxide/Cargo.toml.in.
+#   - the codegen backend built at the rev pinned in device/Cargo.toml.in.
 # Pieces already in PREFIX at the right version are reused (cache PREFIX in CI).
 # Every download is pinned and sha256-checked, except rustup and the nightly.
 #
@@ -15,7 +15,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-KERNELS="$ROOT/crates/kornia-imgproc/kernels-oxide"
+KERNELS="$ROOT/crates/kornia-oxide-kernels/device"
 TC="$(sed -n 's/^channel *= *"\(.*\)"/\1/p' "$KERNELS/rust-toolchain.toml")"
 REV="$(sed -n 's/.*rev = "\([0-9a-f]*\)".*/\1/p' "$KERNELS/Cargo.toml.in" | head -1)"
 # sha256 of github.com/NVIDIA/cuda-rust/archive/$REV.tar.gz; bump with the rev.

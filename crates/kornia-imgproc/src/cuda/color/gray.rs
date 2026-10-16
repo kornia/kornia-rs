@@ -2,7 +2,8 @@
 //!
 //! u8 mirrors the CPU Q14 fixed-point math bit-for-bit
 //! (`color/gray/kernels.rs`); f32 uses the same BT.601 weights. RGB8 → Gray8
-//! is a cuda-oxide kernel (`kernels-oxide/src/color.rs`); the rest are NVRTC.
+//! is a cuda-oxide kernel (`kornia-oxide-kernels/device/src/color.rs`); the
+//! rest are NVRTC.
 
 use std::sync::Arc;
 
@@ -89,7 +90,7 @@ static RGB_FROM_GRAY_F32: KernelCell = KernelCell::new();
 /// (OpenCV Q14, bit-exact vs CPU).
 ///
 /// Word-vectorized 4 px/thread; the kernel is written in Rust
-/// (`kernels-oxide/src/color.rs`) and needs an sm_75+ GPU.
+/// (`kornia-oxide-kernels/device/src/color.rs`) and needs an sm_75+ GPU.
 ///
 /// # Arguments
 ///

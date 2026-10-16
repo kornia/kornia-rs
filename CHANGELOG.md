@@ -24,7 +24,9 @@ GPU RGB8 -> Gray8 now needs an sm_75+ (Turing or newer) GPU; Maxwell/Pascal devi
 Jetson Nano/TX2 lose it. kornia itself still builds on stable. CUDA color launchers now
 treat zero pixels as a no-op and reject pixel counts whose element count passes `u32::MAX`.
 The `cuda-fusion`, `cuda-camera-sift` and `cuda-camera-preprocess` examples now need
-`--features cuda`.
+`--features cuda`. The kernels live in a new crate, **`kornia-oxide-kernels`** (PTX + entry
+names, no cudarc); kornia-imgproc's `cuda` feature pulls it in with its `ptx` feature, and
+without `ptx` it builds stub PTX on stable.
 See `docs/cuda-oxide.md`.
 
 **Breaking: fundamental-matrix RANSAC now samples seven points by default.** A seven-point

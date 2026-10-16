@@ -16,7 +16,7 @@ One row per kernel (and arch), plus a short section. Method:
 | L4T / CUDA / driver | R36.4.3 / 12.6.68 / 540.4.0 |
 | Power mode | MAXN_SUPER (nvpmodel 2) |
 | GPU clocks | **not locked** (DVFS 306-1020 MHz; no sudo for `jetson_clocks`) |
-| rustc | 1.98.0 (kornia), nightly-2026-10-11 (kernels-oxide; numbers below were taken on nightly-2026-04-03) |
+| rustc | 1.98.0 (kornia), nightly-2026-10-11 (kornia-oxide-kernels; numbers below were taken on nightly-2026-04-03) |
 | cuda-oxide / llc | NVIDIA/cuda-rust `6d47ae4` / nightly llvm-tools LLVM 23.1.3 (numbers below: NVlabs `f819f23` / LLVM 21.1.8) |
 
 ## `gray_from_rgb_u8`

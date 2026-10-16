@@ -52,7 +52,7 @@ echo "== tests"
 cd "$ROOT"
 cargo test --release -p kornia-imgproc --features cuda --lib --no-run
 # Entry names come from the PTX the build just generated, never a typed list.
-ptx="$(find "$TARGET"/release/build -path '*/kornia-imgproc-*/out/kernels.ptx' -printf '%T@ %p\n' |
+ptx="$(find "$TARGET"/release/build -path '*/kornia-oxide-kernels-*/out/kernels.ptx' -printf '%T@ %p\n' |
   sort -n | tail -1 | cut -d' ' -f2-)"
 [[ -s "$ptx" ]] || die "no generated kernels.ptx under $TARGET (stub build?)"
 mapfile -t entries < <(sed -n 's/.*\.entry \([A-Za-z0-9_]*\).*/\1/p' "$ptx")

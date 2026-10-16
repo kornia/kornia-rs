@@ -23,7 +23,7 @@ permissions:
   contents: read
 
 jobs:
-  # `--features cuda` compiles kornia-imgproc's Rust CUDA kernels with cuda-oxide
+  # `--features cuda` compiles kornia-oxide-kernels' Rust CUDA kernels with cuda-oxide
   # (nightly with llvm-tools + codegen backend; no CUDA toolkit). Build the
   # backend once, in a manylinux2014 container so it loads in every wheel
   # container (the aarch64 wheels cross-compile on an x86_64 host, so one x86_64
@@ -40,7 +40,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .oxide-toolchain
-          key: cuda-oxide-manylinux2014-x86_64-${{ hashFiles('crates/kornia-imgproc/kernels-oxide/rust-toolchain.toml', 'crates/kornia-imgproc/kernels-oxide/Cargo.toml.in', 'scripts/cuda-oxide/install-toolchain.sh') }}
+          key: cuda-oxide-manylinux2014-x86_64-${{ hashFiles('crates/kornia-oxide-kernels/device/rust-toolchain.toml', 'crates/kornia-oxide-kernels/device/Cargo.toml.in', 'scripts/cuda-oxide/install-toolchain.sh') }}
       - if: steps.cache.outputs.cache-hit != 'true'
         run: |
           # The linker override neutralizes the repo's `.cargo/config.toml`, as

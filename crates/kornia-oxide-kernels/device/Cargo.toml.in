@@ -2,15 +2,15 @@
 name = "kornia_kernels_oxide"
 version = "0.1.0"
 edition = "2024"
-description = "Rust-authored CUDA kernels for kornia-imgproc, compiled to PTX by cuda-oxide"
+description = "Rust-authored CUDA kernels for kornia, compiled to PTX by cuda-oxide"
 license = "Apache-2.0"
 publish = false
 
 # Standalone: this crate needs the pinned nightly + cuda-oxide codegen backend,
 # so the stable kornia-rs workspace must never build it. Named Cargo.toml.in so
-# `cargo package` ships this directory; kornia-imgproc's build.rs stages a copy
-# as Cargo.toml in OUT_DIR and builds it to PTX (`cuda` feature). Cargo.lock is committed: the
-# nested build runs --locked on a pinned nightly.
+# `cargo package` ships this directory; kornia-oxide-kernels' build.rs stages a
+# copy as Cargo.toml in OUT_DIR and builds it to PTX (`ptx` feature). Cargo.lock
+# is committed: the nested build runs --locked on a pinned nightly.
 [workspace]
 
 # Rev must match the codegen backend (librustc_codegen_cuda.so) that compiles
