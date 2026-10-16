@@ -2,6 +2,7 @@
 pub(crate) mod backing;
 pub(crate) mod numpy_view;
 // Feature modules (alphabetical)
+mod algebra;
 mod apriltag;
 mod augmentations;
 mod ba;
@@ -355,6 +356,11 @@ pub(crate) fn add_imagenet_consts(module: &Bound<'_, PyModule>) -> PyResult<()> 
 pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let py = m.py();
     m.add("__version__", get_version())?;
+
+    let algebra_mod = PyModule::new(py, "algebra")?;
+    algebra_mod.add_class::<algebra::PyVec3F32>()?;
+    algebra_mod.add_class::<algebra::PyVec3F64>()?;
+    m.add_submodule(&algebra_mod)?;
 
     // Deprecated root-level functions
     m.add_function(wrap_pyfunction!(rgb_from_gray_deprecated, m)?)?;

@@ -97,6 +97,42 @@ twin behind the `cuda` feature.
 - 752x480, 2048 keypoints, Orin Nano MAXN: CUDA 287 µs (binary) / 410 µs (f32); CPU 3.0 / 3.8 ms on
   6 threads, 10.5 / 13.8 ms on one. `cargo bench -p kornia-3d --bench bench_stereo_match --features cuda`.
 
+**`kornia-io` `VideoWriter::close` no longer hangs waiting for end-of-stream, and reports pipeline
+errors.** It set the pipeline to null before end-of-stream reached the file, so the end-of-stream
+message it then waited for was never posted and `close` never returned. It now waits for
+end-of-stream first (for at most 30 s), then checks what the pipeline posted while stopping, so
+`Ok` means the file was finished. A file sink stuck inside a blocking write (e.g. a pipe nobody
+reads) can still block stopping the pipeline; GStreamer cannot interrupt that. Behaviour changes:
+- `write` and `close` return `StreamCaptureError::GStreamerError` once the pipeline has failed
+  (e.g. caps the encoder cannot accept); `write` used to keep queueing frames in memory and
+  `close` returned `Ok`, leaving an empty file. The error now includes the failing element and
+  GStreamer's debug details (e.g. `not-negotiated`).
+- `write` and `close` before `start`, and a second `close`, return
+  `StreamCaptureError::PipelineNotRunning`. An early `close` used to leave the writer unable to
+  write after `start`.
+- A failed `start` returns the pipeline's own error (e.g. `Could not open file`) instead of a bare
+  state-change error, and the writer can be started again afterwards.
+- `push_buffer` failures are `StreamCaptureError::GstreamerFlowError` (was `InvalidConfig`).
+- `VideoWriter::new` rejects sizes the H.264/MP4 pipeline cannot encode (below 16 or odd) with
+  `StreamCaptureError::InvalidConfig`.
+- `start` no longer spawns a bus thread; calling it twice before `close` is harmless.
+  `StreamCaptureError::JoinThreadError` is no longer returned.
+
+**`kornia-io` GStreamer frames are no longer sheared at widths like 854** (#1160). When `width * 3`
+is not a multiple of 4 (854, 426, 1366, ...), GStreamer adds 1–3 padding bytes per RGB row;
+`StreamCapture::grab_rgb8` and `VideoReader::grab_rgb8` now read the row stride and offset from
+the buffer's `VideoMeta` or the caps' default layout instead of assuming tightly packed rows.
+
+Changed:
+- `grab_rgb8` returns `StreamCaptureError::InvalidImageFormat` for pipelines that do not produce
+  `RGB` frames (`BGR`/`RGBx` frames were returned as `Ok` with wrong pixels, `GRAY8` and encoded
+  frames failed with `BufferSizeMismatch`), and for zero-sized caps, negative strides or a
+  `VideoMeta` that does not match the caps.
+- For padded widths `grab_rgb8` returns an owned, writable image; tightly packed frames are still
+  borrowed zero-copy and read-only. Call `.clone()` for a writable copy.
+- A missing `framerate` in the caps no longer ends a `StreamCapture` stream silently; frames are
+  delivered and `get_fps()` reports `0.0`.
+
 ## [0.2.0] — 2026-09-26
 
 **0.2.0 is 0.1.15 re-released under the right version.** 0.1.15 shipped breaking API changes as a

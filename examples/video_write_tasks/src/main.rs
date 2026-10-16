@@ -92,7 +92,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rx = Arc::new(Mutex::new(rx));
 
     // Worker to read frames from the camera and send them to the video writer
-    let write_task = tokio::spawn({
+    let mut write_task = tokio::spawn({
         let video_writer = video_writer.clone();
         let rx = rx.clone();
         async move {
@@ -126,6 +126,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Worker to grab frames from the camera and send them to the video writer
     let capture_task = tokio::spawn({
         let webcam = webcam.clone();
+        let cancel_token = cancel_token.clone();
         async move {
             while !cancel_token.load(Ordering::SeqCst) {
                 // read the image from the camera
@@ -141,15 +142,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     tokio::select! {
-        _ = write_task => {
-            video_writer.lock().await.close()?;
-        }
+        _ = &mut write_task => (),
         _ = capture_task => {
             webcam.lock().await.close()?;
         }
         _ = visualization_task => (),
         _ = signal::ctrl_c() => (),
     }
+
+    // Finish the file on every exit path, including Ctrl-C, so a failed close is reported here
+    // (and the process exits with an error) instead of only being logged by `Drop`. Stop the
+    // capture first and let the writer drain the frames still in the channel: its loop ends once
+    // the capture task drops the sender.
+    cancel_token.store(true, Ordering::SeqCst);
+    if !write_task.is_finished() {
+        if let Ok(Err(e)) = write_task.await {
+            eprintln!("Error writing frames: {e}");
+        }
+    }
+    video_writer.lock().await.close()?;
 
     Ok(())
 }

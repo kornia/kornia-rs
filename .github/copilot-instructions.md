@@ -68,7 +68,7 @@ Follow the coding standards and best practices defined in [CONTRIBUTING.md](../C
 
 ## Key Guidelines
 
-- **Code style**: Follow Rust conventions, use rustfmt for formatting, and clippy for linting. Edition 2021, MSRV 1.76.
+- **Code style**: Follow Rust conventions, use rustfmt for formatting, and clippy for linting. Edition 2021, MSRV 1.89.
 - **Type system**: Leverage Rust's type system for safety. Use clear, descriptive types. Avoid unnecessary type annotations where inference is clear.
 - **Documentation**: Follow rustdoc guidelines (`///` for public items, `//!` for crate-level docs) and match the existing codebase style. See [CONTRIBUTING.md](../CONTRIBUTING.md#coding-standards) for details.
 - **Testing**: Write unit tests (in `#[cfg(test)]` modules) and integration tests. Keep tests deterministic and focused.

@@ -191,7 +191,7 @@ We're all volunteers. These policies help us focus on high-impact work.
 
 - **Edition and MSRV:**
   - Rust edition 2021
-  - Minimum supported Rust version (MSRV): 1.76 (as declared in the workspace `Cargo.toml`)
+  - Minimum supported Rust version (MSRV): 1.89 (as declared in the workspace `Cargo.toml`)
 
 - **Error handling:**
   - Prefer `Result<T, E>` with descriptive error types (e.g., via `thiserror`)
