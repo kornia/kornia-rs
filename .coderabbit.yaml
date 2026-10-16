@@ -1,0 +1,126 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit is a second reviewer: it comments, it never approves.
+# Org UI settings fill anything not set below.
+inheritance: true
+language: en-US
+early_access: false
+
+reviews:
+  # true makes CodeRabbit submit APPROVED once its threads resolve, and the
+  # app's write access lets that satisfy main's required approval. Off, it
+  # only comments; required conversation resolution keeps its threads blocking.
+  request_changes_workflow: false
+  allow_author_approval: false   # backstop in case the workflow is ever re-enabled
+
+  profile: assertive             # second reviewer: catch more, humans filter
+  high_level_summary: true
+  high_level_summary_in_walkthrough: true  # don't rewrite contributors' PR bodies
+  collapse_walkthrough: true
+  review_status: true
+  poem: false
+  in_progress_fortune: false
+  sequence_diagrams: false       # mostly noise for kernel/math diffs
+  suggested_reviewers: false
+  auto_assign_reviewers: false
+  auto_apply_labels: false
+
+  auto_review:
+    enabled: true
+    drafts: false
+    auto_incremental_review: true
+    base_branches: []            # default branch only
+    ignore_title_keywords: ["WIP", "[skip review]"]
+    ignore_usernames: ["dependabot[bot]"]
+
+  path_filters:
+    - "!**/Cargo.lock"
+    - "!pixi.lock"
+    - "!**/tests/data/**"        # apriltag-imgs submodule + per-crate fixtures
+    - "!**/examples/data/**"
+    - "!**/*.{png,jpg,jpeg,bmp,tiff,npy,bin,onnx,mcap,safetensors,ptx}"
+
+  path_instructions:
+    - path: "crates/**/src/**/*.rs"
+      instructions: |
+        Library code. Flag: unwrap()/expect()/panic!() outside #[cfg(test)];
+        anyhow (thiserror only); `unsafe` without a preceding `// SAFETY:` comment;
+        a pub item (fn, struct, enum, trait) without rustdoc; a pub fn missing
+        `# Arguments`/`# Returns`/`# Errors` sections (AGENTS.md); allocation or
+        image/tensor clones in hot loops (callers pass a pre-allocated &mut dst);
+        color fns not named `<output>_from_<input>` (gray_from_rgb, never rgb_to_gray).
+        A bug fix with no regression test is a finding.
+    - path: "crates/kornia-imgproc/src/**/kernels.rs"
+      instructions: |
+        SIMD kernels (see crates/kornia-imgproc/SIMD.md). Check that every NEON/AVX2
+        path has a scalar fallback and a correctness-vs-scalar test, that runtime
+        feature detection gates each intrinsic, that tail elements are handled, and that
+        dtype dispatch goes through a sealed trait with explicit per-type impls (no
+        blanket impl<T: Float>).
+    - path: "{crates/**/cuda/**,**/*.cu,**/*.cuh}"
+      instructions: |
+        CUDA kernels and launchers. Where a kernel's docs or tests claim bit-exact parity
+        with the CPU path (e.g. resize, u8 color), flag FMA or float reassociation that
+        changes rounding, and tolerance asserts replacing exact ones. Other kernels (e.g.
+        fusion) compare within a documented tolerance; check it is justified. Check grid/block math
+        for overflow and partial tiles, a bounds guard in every kernel, stream/context
+        synchronisation before host reads, and that the CPU-vs-CUDA test exists. CUDA is
+        not in the `ci` feature, so ask for local test output on CUDA changes.
+    - path: "crates/kornia-3d/**"
+      instructions: |
+        Geometry. State the camera/coordinate convention and units in docs; check
+        degenerate inputs (collinear points, zero baseline, empty sets) return an Err,
+        not NaN; RANSAC/solvers must be deterministic for a given seed.
+    - path: "kornia-py/src/**/*.rs"
+      instructions: |
+        PyO3 bindings. Rust errors map to Python exceptions, never panics. Release the
+        GIL around heavy work. Check numpy dtype/shape/contiguity before zero-copy views.
+        Keep kornia-py/python/kornia_rs/*.pyi stubs in sync with signature changes.
+    - path: "kornia-py/**/*.py"
+      instructions: "Python tests and stubs: pytest style, deterministic; stubs match the Rust signatures."
+    - path: "kornia-cpp/**"
+      instructions: "C++ bindings: no exceptions across the FFI boundary; ownership of every returned buffer is documented."
+    - path: "**/benches/**"
+      instructions: "Benchmarks: report best-of-N, black_box inputs, no allocation inside the timed loop."
+    - path: ".github/workflows/**"
+      instructions: "Pin third-party actions to a SHA or major tag; least-privilege `permissions:`; no secrets in pull_request_target jobs."
+
+  pre_merge_checks:
+    docstrings:
+      mode: "off"
+    custom_checks:
+      - name: "Docstring coverage (non-test code)"
+        mode: "warning"          # "error" would only block via the approve workflow, which is off
+        instructions: |
+          Count the functions and methods that this pull request adds or modifies, excluding test code.
+          Test code is: Rust functions marked #[test] or another test attribute, any item inside a
+          #[cfg(test)] module, any file under a tests/ directory, and Python files named test_*.py,
+          *_test.py or conftest.py.
+          A counted function is documented if it has a doc comment (/// or //! in Rust) or a
+          docstring (Python).
+          Pass if no functions are counted or at least 80% of the counted functions are documented.
+          Otherwise fail and list the undocumented counted functions.
+
+  tools:
+    clippy: { enabled: true }
+    ruff: { enabled: true }
+    actionlint: { enabled: true }
+    shellcheck: { enabled: true }
+    yamllint: { enabled: true }
+    gitleaks: { enabled: true }
+    osvScanner: { enabled: true }
+    markdownlint: { enabled: false }   # noisy on docs prose; enable if wanted
+    github-checks: { enabled: true, timeout_ms: 300000 }  # read CI clippy/test failures
+
+chat:
+  auto_reply: true
+
+knowledge_base:
+  learnings: { scope: local }     # public repo: don't learn from or leak other repos
+  code_guidelines:
+    enabled: true
+    # AGENTS.md and .github/copilot-instructions.md are picked up by default.
+    filePatterns:
+      - "CONTRIBUTING.md"
+      - "AI_POLICY.md"
+      - "best_practices.md"
+      - "crates/kornia-imgproc/SIMD.md"

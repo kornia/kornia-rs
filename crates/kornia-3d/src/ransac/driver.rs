@@ -11,11 +11,12 @@
 //! Fischler-Bolles stopping rule:
 //!
 //! ```text
-//! m ≥ log(1 - p) / log(1 - w^k)
+//! m ≥ log(1 - p) / log(1 - q)
 //! ```
 //!
-//! where `w` is the observed inlier ratio of the current best model,
-//! `k` = `SAMPLE_SIZE`, and `p` = `RansacConfig::confidence`. Each time a
+//! where `q` is the probability of drawing an all-inlier distinct sample from
+//! the observed inlier count, `k` = `SAMPLE_SIZE`, and `p` =
+//! `RansacConfig::confidence`. Each time a
 //! better hypothesis lands we tighten `max_iters` downward, never upward.
 //!
 //! When [`RansacConfig::sprt`] is set, the driver additionally applies
@@ -34,7 +35,10 @@
 //! the *observed* inlier ratio of the best model, never the prior, so a
 //! pessimistic prior cannot cause good hypotheses to be rejected.
 
-use crate::ransac::{Consensus, Estimator, RansacConfig, RansacResult, Sampler};
+use crate::ransac::{
+    Consensus, ConsensusOutcome, Estimator, RansacConfig, RansacResult, Sampler,
+    ThresholdInlierResult,
+};
 use rand::{seq::SliceRandom, Rng, RngExt};
 use rayon::prelude::*;
 
@@ -194,9 +198,13 @@ where
                         std::mem::swap(&mut best_inliers, &mut current_inliers);
                         accepted_since_lo += 1;
                         if outcome.inlier_count > 0 {
-                            let w = outcome.inlier_count as f64 / n as f64;
-                            let new_max =
-                                adaptive_max_iters(w, E::SAMPLE_SIZE, cfg.confidence, max_iters);
+                            let new_max = adaptive_max_iters(
+                                outcome.inlier_count,
+                                n,
+                                E::SAMPLE_SIZE,
+                                cfg.confidence,
+                                max_iters as usize,
+                            ) as u32;
                             if new_max < max_iters {
                                 max_iters = new_max;
                             }
@@ -281,9 +289,13 @@ where
 
                     // Adaptive cap update — only ever tightens.
                     if cons_outcome.inlier_count > 0 {
-                        let w = cons_outcome.inlier_count as f64 / n as f64;
-                        let new_max =
-                            adaptive_max_iters(w, E::SAMPLE_SIZE, cfg.confidence, max_iters);
+                        let new_max = adaptive_max_iters(
+                            cons_outcome.inlier_count,
+                            n,
+                            E::SAMPLE_SIZE,
+                            cfg.confidence,
+                            max_iters as usize,
+                        ) as u32;
                         if new_max < max_iters {
                             max_iters = new_max;
                         }
@@ -292,9 +304,39 @@ where
                 continue;
             }
 
-            // Plain RANSAC path (no SPRT).
-            estimator.residual_batch(model, samples, &mut residuals);
-            let outcome = consensus.consensus(&residuals, &mut current_inliers);
+            // Plain RANSAC path (no SPRT). Seven-point fundamental fitting
+            // can yield several roots, most of which lose quickly. When both
+            // sides opt in to strict threshold scoring, let the estimator
+            // process SIMD-sized chunks and stop once the remaining points
+            // cannot beat the incumbent. Custom consensus remains on the
+            // generic residual-vector path.
+            let outcome = if best_model.is_some() {
+                match consensus.threshold().and_then(|threshold| {
+                    estimator.threshold_inliers(
+                        model,
+                        samples,
+                        threshold,
+                        best_inlier_count,
+                        &mut residuals,
+                        &mut current_inliers,
+                    )
+                }) {
+                    Some(ThresholdInlierResult::Complete(inlier_count)) => ConsensusOutcome {
+                        score: inlier_count as f64,
+                        inlier_count,
+                    },
+                    Some(ThresholdInlierResult::Pruned) => continue,
+                    None => {
+                        estimator.residual_batch(model, samples, &mut residuals);
+                        consensus.consensus(&residuals, &mut current_inliers)
+                    }
+                }
+            } else {
+                // The first candidate must be fully scored: a zero-inlier
+                // model still beats the initial -∞ score.
+                estimator.residual_batch(model, samples, &mut residuals);
+                consensus.consensus(&residuals, &mut current_inliers)
+            };
             if outcome.score > best_score {
                 best_score = outcome.score;
                 best_inlier_count = outcome.inlier_count;
@@ -304,8 +346,13 @@ where
 
                 // Adaptive cap update — only ever tightens.
                 if outcome.inlier_count > 0 {
-                    let w = outcome.inlier_count as f64 / n as f64;
-                    let new_max = adaptive_max_iters(w, E::SAMPLE_SIZE, cfg.confidence, max_iters);
+                    let new_max = adaptive_max_iters(
+                        outcome.inlier_count,
+                        n,
+                        E::SAMPLE_SIZE,
+                        cfg.confidence,
+                        max_iters as usize,
+                    ) as u32;
                     if new_max < max_iters {
                         max_iters = new_max;
                     }
@@ -341,9 +388,13 @@ where
                         std::mem::swap(&mut best_inliers, &mut current_inliers);
                         // LO acceptance also tightens the adaptive cap.
                         if lo_outcome.inlier_count > 0 {
-                            let w = lo_outcome.inlier_count as f64 / n as f64;
-                            let new_max =
-                                adaptive_max_iters(w, E::SAMPLE_SIZE, cfg.confidence, max_iters);
+                            let new_max = adaptive_max_iters(
+                                lo_outcome.inlier_count,
+                                n,
+                                E::SAMPLE_SIZE,
+                                cfg.confidence,
+                                max_iters as usize,
+                            ) as u32;
                             if new_max < max_iters {
                                 max_iters = new_max;
                             }
@@ -504,8 +555,13 @@ where
                 best_model = Some(model);
                 best_inliers = inliers;
                 if inlier_count > 0 {
-                    let w = inlier_count as f64 / n as f64;
-                    let new_max = adaptive_max_iters(w, E::SAMPLE_SIZE, cfg.confidence, max_iters);
+                    let new_max = adaptive_max_iters(
+                        inlier_count,
+                        n,
+                        E::SAMPLE_SIZE,
+                        cfg.confidence,
+                        max_iters as usize,
+                    ) as u32;
                     if new_max < max_iters {
                         max_iters = new_max;
                     }
@@ -524,29 +580,43 @@ where
     }
 }
 
-/// Recompute the adaptive iteration cap.
-///
-/// Returns the minimum of `current` and the analytic estimate. Never
-/// increases the cap and never returns 0.
+/// Recompute the adaptive iteration cap for distinct sampling without
+/// replacement. Returns the minimum of `current` and the analytic estimate.
+/// Never increases the cap and never returns zero.
 #[inline]
-fn adaptive_max_iters(inlier_ratio: f64, sample_size: usize, confidence: f64, current: u32) -> u32 {
-    if inlier_ratio <= 0.0 {
+pub(crate) fn adaptive_max_iters(
+    inlier_count: usize,
+    population: usize,
+    sample_size: usize,
+    confidence: f64,
+    current: usize,
+) -> usize {
+    if inlier_count < sample_size
+        || sample_size > population
+        || confidence <= 0.0
+        || confidence >= 1.0
+    {
         return current;
     }
-    let p_all_inlier = inlier_ratio.powi(sample_size as i32);
-    if p_all_inlier >= 1.0 {
+    if inlier_count == population {
         return 1;
     }
-    let conf = confidence.clamp(0.0, 1.0 - 1e-12);
-    let denom = (1.0 - p_all_inlier).ln();
-    if denom >= 0.0 || !denom.is_finite() {
+    let mut log_all_inlier = 0.0;
+    for j in 0..sample_size {
+        log_all_inlier += ((inlier_count - j) as f64).ln() - ((population - j) as f64).ln();
+    }
+    if !log_all_inlier.is_finite() || log_all_inlier >= 0.0 {
         return current;
     }
-    let raw = (1.0 - conf).ln() / denom;
+    let log_fail_per_draw = (-log_all_inlier.exp()).ln_1p();
+    if !log_fail_per_draw.is_finite() || log_fail_per_draw >= 0.0 {
+        return current;
+    }
+    let raw = (-confidence).ln_1p() / log_fail_per_draw;
     if !raw.is_finite() || raw <= 0.0 {
         return current;
     }
-    let ceiled = raw.ceil() as u32;
+    let ceiled = raw.ceil() as usize;
     ceiled.min(current).max(1)
 }
 
@@ -556,8 +626,51 @@ mod tests {
     use crate::ransac::{
         estimators::FundamentalEstimator, Match2d2d, SPRTConfig, ThresholdConsensus, UniformSampler,
     };
-    use kornia_algebra::{Vec2F64, Vec3F64};
+    use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64};
     use rand::{rngs::StdRng, SeedableRng};
+
+    /// Delegates every operation to the seven-point estimator except the
+    /// optional fused threshold hook. It pins the optimized driver path to
+    /// the original residual-vector behavior for identical random samples.
+    struct UnfusedFundamental;
+
+    impl Estimator for UnfusedFundamental {
+        type Model = Mat3F64;
+        type Sample = Match2d2d;
+        const SAMPLE_SIZE: usize = FundamentalEstimator::SAMPLE_SIZE;
+
+        fn fit(&self, samples: &[Self::Sample], out: &mut Vec<Self::Model>) {
+            FundamentalEstimator.fit(samples, out);
+        }
+
+        fn residual(&self, model: &Self::Model, sample: &Self::Sample) -> f64 {
+            FundamentalEstimator.residual(model, sample)
+        }
+
+        fn residual_batch(&self, model: &Self::Model, samples: &[Self::Sample], out: &mut [f64]) {
+            FundamentalEstimator.residual_batch(model, samples, out);
+        }
+
+        fn refit(&self, inliers: &[Self::Sample], out: &mut Vec<Self::Model>) {
+            FundamentalEstimator.refit(inliers, out);
+        }
+    }
+
+    /// Deliberately opaque consensus that has threshold semantics but does
+    /// not expose the opt-in hook. This protects custom consensus users from
+    /// the threshold fast path changing their control flow.
+    struct OpaqueThreshold {
+        threshold: f64,
+    }
+
+    impl Consensus for OpaqueThreshold {
+        fn consensus(&self, residuals: &[f64], inliers_out: &mut Vec<bool>) -> ConsensusOutcome {
+            ThresholdConsensus {
+                threshold: self.threshold,
+            }
+            .consensus(residuals, inliers_out)
+        }
+    }
 
     /// Below-minimal input → result with no model, zero iters, doesn't panic.
     #[test]
@@ -613,6 +726,79 @@ mod tests {
             result.num_iters,
             cfg.max_iters,
         );
+    }
+
+    /// Chunked threshold scoring must be observationally identical to the
+    /// original full residual-vector path: same sampled prefix, adaptive
+    /// iteration cap, winner, and mask.
+    #[test]
+    fn fused_threshold_scoring_matches_unfused_seven_point_path() {
+        let pair = synthetic_with_outliers(90, 210, 0xF7F7);
+        let consensus = ThresholdConsensus { threshold: 4.0 };
+        let cfg = RansacConfig {
+            max_iters: 1000,
+            confidence: 0.999,
+            inlier_threshold: 4.0,
+            ..Default::default()
+        };
+
+        let mut optimized_sampler = UniformSampler::new(StdRng::seed_from_u64(0x1234));
+        let optimized = run(
+            &FundamentalEstimator,
+            &consensus,
+            &mut optimized_sampler,
+            &pair.matches,
+            &cfg,
+        );
+        let mut unfused_sampler = UniformSampler::new(StdRng::seed_from_u64(0x1234));
+        let unfused = run(
+            &UnfusedFundamental,
+            &consensus,
+            &mut unfused_sampler,
+            &pair.matches,
+            &cfg,
+        );
+
+        assert_eq!(optimized.num_iters, unfused.num_iters);
+        assert_eq!(optimized.score, unfused.score);
+        assert_eq!(optimized.inliers, unfused.inliers);
+        assert_eq!(optimized.model, unfused.model);
+    }
+
+    /// A consensus implementation that does not explicitly expose a hard
+    /// threshold must retain the generic scoring path, even if its output
+    /// happens to equal `ThresholdConsensus`.
+    #[test]
+    fn opaque_consensus_bypasses_fused_threshold_scoring() {
+        let pair = synthetic_with_outliers(70, 130, 0x0A0E);
+        let opaque = OpaqueThreshold { threshold: 4.0 };
+        let cfg = RansacConfig {
+            max_iters: 500,
+            confidence: 0.999,
+            inlier_threshold: 4.0,
+            ..Default::default()
+        };
+        let mut opaque_sampler = UniformSampler::new(StdRng::seed_from_u64(44));
+        let opaque_result = run(
+            &FundamentalEstimator,
+            &opaque,
+            &mut opaque_sampler,
+            &pair.matches,
+            &cfg,
+        );
+        let mut old_sampler = UniformSampler::new(StdRng::seed_from_u64(44));
+        let old_result = run(
+            &UnfusedFundamental,
+            &opaque,
+            &mut old_sampler,
+            &pair.matches,
+            &cfg,
+        );
+
+        assert_eq!(opaque_result.num_iters, old_result.num_iters);
+        assert_eq!(opaque_result.score, old_result.score);
+        assert_eq!(opaque_result.inliers, old_result.inliers);
+        assert_eq!(opaque_result.model, old_result.model);
     }
 
     /// `run_parallel` must produce a result at least as good as `run` on
@@ -931,6 +1117,28 @@ mod tests {
             off.score,
             on.score
         );
+    }
+
+    #[test]
+    fn test_adaptive_cap_uses_without_replacement_probability() {
+        // q = C(8, 8) / C(10, 8) = 1/45, so 0.999999 confidence needs
+        // ceil(log(1-p) / log(1-q)) = 615 draws. The w^k approximation
+        // incorrectly gives only 76 draws here.
+        let eight = adaptive_max_iters(8, 10, 8, 0.999_999, 10_000);
+        assert_eq!(eight, 615);
+
+        // Smaller minimal samples have a higher all-inlier probability for
+        // the same inlier population, hence require no more draws.
+        let seven = adaptive_max_iters(8, 10, 7, 0.999_999, 10_000);
+        assert!(seven < eight, "seven-point cap {seven} must beat {eight}");
+    }
+
+    #[test]
+    fn test_adaptive_cap_preserves_edge_cases_and_existing_cap() {
+        assert_eq!(adaptive_max_iters(7, 10, 8, 0.999, 500), 500);
+        assert_eq!(adaptive_max_iters(10, 10, 8, 0.999, 500), 1);
+        assert_eq!(adaptive_max_iters(8, 10, 8, 1.0, 500), 500);
+        assert_eq!(adaptive_max_iters(8, 10, 8, 0.999_999, 100), 100);
     }
 
     struct Pair {

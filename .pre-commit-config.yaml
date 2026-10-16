@@ -25,3 +25,9 @@ repos:
       language: system
       files: ^Cargo\.toml$
       pass_filenames: false
+    - id: check-release-coverage
+      name: every publishable crate is in scripts/release_rust.sh
+      entry: bash scripts/release_rust.sh --check
+      language: system
+      files: ^(Cargo\.toml|crates/[^/]+/Cargo\.toml|scripts/release_rust\.sh)$
+      pass_filenames: false

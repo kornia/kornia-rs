@@ -97,7 +97,7 @@ kornia-cpp/         ← C++ bindings
 
 ### General
 
-- Rust edition **2021**, MSRV **1.82**
+- Rust edition **2021**, MSRV **1.89**
 - Run `rustfmt` and `clippy` before every commit — **warnings are denied**
 - Prefer **borrowing over cloning**, especially for images and tensors
 - No `unwrap()` or `expect()` in library code — always propagate errors with `?`

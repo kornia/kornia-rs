@@ -1510,6 +1510,7 @@ fn try_bootstrap_pair(
         min_inliers: 8,
         random_seed: Some(0),
         refit: true,
+        ..Default::default()
     };
     let ess = ransac_essential_5pt(
         &x1u,
@@ -1638,6 +1639,7 @@ fn homography_vs_fundamental_ratio(x1: &[Vec2F64], x2: &[Vec2F64], seed: u64) ->
         min_inliers: 8,
         random_seed: Some(seed),
         refit: true,
+        ..Default::default()
     };
 
     let h = ransac_homography(x1, x2, &rp).ok()?;

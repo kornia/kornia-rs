@@ -13,6 +13,10 @@ pub use affine::*;
 mod homography;
 pub use homography::*;
 
+mod fundamental_7pt;
+pub use fundamental_7pt::fundamental_7point;
+pub(crate) use fundamental_7pt::fundamental_7point_oriented_into;
+
 mod fundamental;
 pub use fundamental::*;
 
