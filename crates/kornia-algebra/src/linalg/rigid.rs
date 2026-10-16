@@ -131,80 +131,25 @@ pub type UmeyamaOutputF64 = (Mat3F64, Vec3F64, f64);
 /// Result type alias for Umeyama (f64).
 pub type UmeyamaResultF64 = Result<UmeyamaOutputF64, UmeyamaError>;
 
-/// Umeyama alignment with optional scale estimation (f64 precision).
+/// Umeyama alignment with optional per-point weights and scale estimation (f64).
 ///
 /// Solves for the rotation `R`, translation `t`, and optional scale `s` that
-/// minimize the sum of squared residuals `Σ ‖dst_i − (s·R·src_i + t)‖²`.
-///
-/// This is the unweighted case of [`umeyama_f64_weighted`] (every weight equal).
-/// It produces byte-identical output to previous releases; the weighted variant
-/// agrees with it to within floating-point rounding for uniform weights.
+/// minimize the sum of weighted residuals `Σ wᵢ ‖dstᵢ − (s·R·srcᵢ + t)‖²`. With
+/// `weights == None` every point is weighted equally, reproducing the unweighted
+/// Umeyama/Kabsch solution byte-for-byte.
 ///
 /// Point coordinates are assumed finite; non-finite coordinates are not
 /// validated and propagate to the result.
 ///
 /// # Arguments
 ///
-/// * `src` - Source points. Must have the same length as `dst`.
+/// * `src` - Source points. Must have the same length as `dst` (and `weights`,
+///   when provided).
 /// * `dst` - Destination points. Must have the same length as `src`.
-/// * `with_scale` - If `true`, estimates the scale `s`; otherwise `s` is fixed
-///   to `1.0` (rigid alignment only).
-///
-/// # Returns
-///
-/// `Ok((R, t, s))` on success, where `R` is a proper rotation matrix
-/// (`det(R) = 1`), `t` is the translation vector, and `s` is the estimated scale
-/// (`1.0` when `with_scale` is `false`).
-///
-/// # Errors
-///
-/// Returns [`UmeyamaError::MismatchedInputLengths`] if `src` and `dst` differ in
-/// length.
-/// Returns [`UmeyamaError::SvdU`] or [`UmeyamaError::SvdVT`] if the SVD fails.
-///
-/// # Example
-///
-/// ```rust
-/// use kornia_algebra::linalg::rigid::umeyama_f64;
-/// use kornia_algebra::Vec3F64;
-///
-/// let src = [
-///     Vec3F64::new(0.0, 0.0, 0.0),
-///     Vec3F64::new(1.0, 0.0, 0.0),
-///     Vec3F64::new(0.0, 1.0, 0.0),
-///     Vec3F64::new(0.0, 0.0, 1.0),
-/// ];
-/// // Pure translation by (1, 2, 3).
-/// let dst: Vec<Vec3F64> = src.iter().map(|p| *p + Vec3F64::new(1.0, 2.0, 3.0)).collect();
-///
-/// let (_r_est, t_est, _s) = umeyama_f64(&src, &dst, false)?;
-/// assert!((t_est.x - 1.0).abs() < 1e-12);
-/// assert!((t_est.y - 2.0).abs() < 1e-12);
-/// assert!((t_est.z - 3.0).abs() < 1e-12);
-/// # Ok::<(), kornia_algebra::linalg::rigid::UmeyamaError>(())
-/// ```
-pub fn umeyama_f64(src: &[Vec3F64], dst: &[Vec3F64], with_scale: bool) -> UmeyamaResultF64 {
-    umeyama_f64_core(src, dst, None, with_scale)
-}
-
-/// Weighted Umeyama alignment with optional scale estimation (f64 precision).
-///
-/// Solves for the rotation `R`, translation `t`, and optional scale `s` that
-/// minimize the weighted sum of squared residuals
-/// `Σ w_i ‖dst_i − (s·R·src_i + t)‖²`. Weights need not be normalized; they are
-/// normalized internally by their sum `Σ w_i`, so only their relative values
-/// matter. Uniform weights reproduce the result of [`umeyama_f64`] with the same
-/// `with_scale` flag, and a point with weight `0` is ignored by the fit.
-///
-/// Point coordinates are assumed finite; non-finite coordinates are not
-/// validated and propagate to the result.
-///
-/// # Arguments
-///
-/// * `src` - Source points. Must have the same length as `dst` and `weights`.
-/// * `dst` - Destination points. Must have the same length as `src` and `weights`.
-/// * `weights` - Per-point weights, one entry per point. Must be finite,
-///   non-negative, and have a positive sum.
+/// * `weights` - Optional per-point weights, one entry per point. `None` is the
+///   unweighted case. When `Some`, weights must be finite, non-negative, and have
+///   a positive sum; they are normalized internally (only their relative values
+///   matter), and a point with weight `0` is ignored.
 /// * `with_scale` - If `true`, estimates the scale `s`; otherwise `s` is fixed
 ///   to `1.0` (rigid alignment only).
 ///
@@ -227,7 +172,7 @@ pub fn umeyama_f64(src: &[Vec3F64], dst: &[Vec3F64], with_scale: bool) -> Umeyam
 /// # Example
 ///
 /// ```rust
-/// use kornia_algebra::linalg::rigid::umeyama_f64_weighted;
+/// use kornia_algebra::linalg::rigid::umeyama_f64;
 /// use kornia_algebra::Vec3F64;
 ///
 /// let src = [
@@ -238,21 +183,92 @@ pub fn umeyama_f64(src: &[Vec3F64], dst: &[Vec3F64], with_scale: bool) -> Umeyam
 /// ];
 /// // Pure translation by (1, 2, 3).
 /// let dst: Vec<Vec3F64> = src.iter().map(|p| *p + Vec3F64::new(1.0, 2.0, 3.0)).collect();
-/// let weights = [1.0, 1.0, 1.0, 1.0];
 ///
-/// let (_r_est, t_est, _s) = umeyama_f64_weighted(&src, &dst, &weights, false)?;
-/// assert!((t_est.x - 1.0).abs() < 1e-12);
-/// assert!((t_est.y - 2.0).abs() < 1e-12);
-/// assert!((t_est.z - 3.0).abs() < 1e-12);
+/// // Unweighted.
+/// let (_r, t, _s) = umeyama_f64(&src, &dst, None, false)?;
+/// assert!((t.x - 1.0).abs() < 1e-12);
+///
+/// // Weighted (weights only rescale the residuals).
+/// let weights = [1.0, 2.0, 3.0, 4.0];
+/// let (_r, t, _s) = umeyama_f64(&src, &dst, Some(&weights), false)?;
+/// assert!((t.x - 1.0).abs() < 1e-12);
 /// # Ok::<(), kornia_algebra::linalg::rigid::UmeyamaError>(())
 /// ```
-pub fn umeyama_f64_weighted(
+pub fn umeyama_f64(
     src: &[Vec3F64],
     dst: &[Vec3F64],
-    weights: &[f64],
+    weights: Option<&[f64]>,
     with_scale: bool,
 ) -> UmeyamaResultF64 {
-    umeyama_f64_core(src, dst, Some(weights), with_scale)
+    if src.len() != dst.len() {
+        return Err(UmeyamaError::MismatchedInputLengths);
+    }
+
+    // Do NOT unify these two paths: the `None` arm is byte-identical to the
+    // historical `umeyama_f64` accumulation, and folding in a `w_i = 1.0`
+    // multiply or a `sum_w` divisor would shift its output in the last ULP.
+    let Moments {
+        mu_s,
+        mu_d,
+        h,
+        var_src,
+    } = match weights {
+        None => unweighted_moments(src, dst),
+        Some(w) => weighted_moments(src, dst, w)?,
+    };
+
+    // SVD of H via nalgebra (avoids the known svd3_f64 Jacobi bug)
+    let h_na = Matrix3::<f64>::from_row_slice(&[
+        h[0][0], h[0][1], h[0][2], h[1][0], h[1][1], h[1][2], h[2][0], h[2][1], h[2][2],
+    ]);
+    let svd = SVD::new(h_na, true, true);
+    let Some(u) = svd.u else {
+        return Err(UmeyamaError::SvdU);
+    };
+    let Some(v_t) = svd.v_t else {
+        return Err(UmeyamaError::SvdVT);
+    };
+
+    // Reflection correction: S = diag(1, 1, det(U)·det(V^T))
+    let d = u.determinant() * v_t.determinant();
+    let s_sign = if d < 0.0 { -1.0 } else { 1.0 };
+    let s_diag = Matrix3::<f64>::from_diagonal(&nalgebra::Vector3::new(1.0, 1.0, s_sign));
+
+    // R = U · S · V^T
+    let r_na = u * s_diag * v_t;
+
+    // Scale
+    let scale = if with_scale && var_src > 1e-15 {
+        // s = tr(S · Σ) / σ²_src
+        let sigma = &svd.singular_values;
+        (sigma[0] + sigma[1] + s_sign * sigma[2]) / var_src
+    } else {
+        1.0
+    };
+
+    // Translation: t = μ_d − s·R·μ_s
+    let mu_s_na = nalgebra::Vector3::new(mu_s[0], mu_s[1], mu_s[2]);
+    let mu_d_na = nalgebra::Vector3::new(mu_d[0], mu_d[1], mu_d[2]);
+    let t_na = mu_d_na - scale * r_na * mu_s_na;
+
+    // Convert to glam types (row-major → column-major for from_cols_array)
+    let r_flat = [
+        r_na[(0, 0)],
+        r_na[(1, 0)],
+        r_na[(2, 0)],
+        r_na[(0, 1)],
+        r_na[(1, 1)],
+        r_na[(2, 1)],
+        r_na[(0, 2)],
+        r_na[(1, 2)],
+        r_na[(2, 2)],
+    ];
+
+    Ok((
+        Mat3F64::from_cols_array(&r_flat),
+        Vec3F64::new(t_na[0], t_na[1], t_na[2]),
+        scale,
+    ))
 }
 
 /// Accumulated first- and second-order statistics shared by the weighted and
@@ -414,87 +430,6 @@ fn weighted_moments(
     })
 }
 
-/// Shared core for [`umeyama_f64`] and [`umeyama_f64_weighted`].
-///
-/// Both paths are allocation-free (stack arrays + borrowed slices) and share
-/// the nalgebra SVD tail below.
-fn umeyama_f64_core(
-    src: &[Vec3F64],
-    dst: &[Vec3F64],
-    weights: Option<&[f64]>,
-    with_scale: bool,
-) -> UmeyamaResultF64 {
-    if src.len() != dst.len() {
-        return Err(UmeyamaError::MismatchedInputLengths);
-    }
-
-    // Do NOT unify these two paths: the `None` arm is byte-identical to the
-    // historical `umeyama_f64` accumulation, and folding in a `w_i = 1.0`
-    // multiply or a `sum_w` divisor would shift its output in the last ULP.
-    let Moments {
-        mu_s,
-        mu_d,
-        h,
-        var_src,
-    } = match weights {
-        None => unweighted_moments(src, dst),
-        Some(w) => weighted_moments(src, dst, w)?,
-    };
-
-    // SVD of H via nalgebra (avoids the known svd3_f64 Jacobi bug)
-    let h_na = Matrix3::<f64>::from_row_slice(&[
-        h[0][0], h[0][1], h[0][2], h[1][0], h[1][1], h[1][2], h[2][0], h[2][1], h[2][2],
-    ]);
-    let svd = SVD::new(h_na, true, true);
-    let Some(u) = svd.u else {
-        return Err(UmeyamaError::SvdU);
-    };
-    let Some(v_t) = svd.v_t else {
-        return Err(UmeyamaError::SvdVT);
-    };
-
-    // Reflection correction: S = diag(1, 1, det(U)·det(V^T))
-    let d = u.determinant() * v_t.determinant();
-    let s_sign = if d < 0.0 { -1.0 } else { 1.0 };
-    let s_diag = Matrix3::<f64>::from_diagonal(&nalgebra::Vector3::new(1.0, 1.0, s_sign));
-
-    // R = U · S · V^T
-    let r_na = u * s_diag * v_t;
-
-    // Scale
-    let scale = if with_scale && var_src > 1e-15 {
-        // s = tr(S · Σ) / σ²_src
-        let sigma = &svd.singular_values;
-        (sigma[0] + sigma[1] + s_sign * sigma[2]) / var_src
-    } else {
-        1.0
-    };
-
-    // Translation: t = μ_d − s·R·μ_s
-    let mu_s_na = nalgebra::Vector3::new(mu_s[0], mu_s[1], mu_s[2]);
-    let mu_d_na = nalgebra::Vector3::new(mu_d[0], mu_d[1], mu_d[2]);
-    let t_na = mu_d_na - scale * r_na * mu_s_na;
-
-    // Convert to glam types (row-major → column-major for from_cols_array)
-    let r_flat = [
-        r_na[(0, 0)],
-        r_na[(1, 0)],
-        r_na[(2, 0)],
-        r_na[(0, 1)],
-        r_na[(1, 1)],
-        r_na[(2, 1)],
-        r_na[(0, 2)],
-        r_na[(1, 2)],
-        r_na[(2, 2)],
-    ];
-
-    Ok((
-        Mat3F64::from_cols_array(&r_flat),
-        Vec3F64::new(t_na[0], t_na[1], t_na[2]),
-        scale,
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -540,7 +475,7 @@ mod tests {
         let t_true = Vec3F64::new(0.5, -0.3, 2.0);
         let dst: Vec<Vec3F64> = src.iter().map(|p| r_true * *p + t_true).collect();
 
-        let (r_est, t_est, s_est) = umeyama_f64(&src, &dst, false)?;
+        let (r_est, t_est, s_est) = umeyama_f64(&src, &dst, None, false)?;
         assert!((s_est - 1.0).abs() < 1e-12);
         for i in 0..9 {
             let r_true_arr: [f64; 9] = r_true.into();
@@ -568,7 +503,7 @@ mod tests {
         let scale_true = 2.5;
         let dst: Vec<Vec3F64> = src.iter().map(|p| *p * scale_true).collect();
 
-        let (_r_est, t_est, s_est) = umeyama_f64(&src, &dst, true)?;
+        let (_r_est, t_est, s_est) = umeyama_f64(&src, &dst, None, true)?;
         assert!(
             (s_est - scale_true).abs() < 1e-10,
             "scale: got {s_est}, expected {scale_true}"
@@ -848,7 +783,7 @@ mod tests {
     }
 
     #[test]
-    fn test_umeyama_f64_weighted_recovers_exact_transform() -> Result<(), UmeyamaError> {
+    fn test_umeyama_f64_recovers_exact_transform() -> Result<(), UmeyamaError> {
         let src = [
             Vec3F64::new(0.0, 0.0, 0.0),
             Vec3F64::new(1.0, 0.0, 0.0),
@@ -865,13 +800,13 @@ mod tests {
             .collect();
         let weights = [0.5, 3.0, 1.0, 2.0, 4.0];
 
-        let got = umeyama_f64_weighted(&src, &dst, &weights, true)?;
+        let got = umeyama_f64(&src, &dst, Some(&weights), true)?;
         assert_matches_true(&got, &r_true, &t_true, s_true, 1e-9);
         Ok(())
     }
 
     #[test]
-    fn test_umeyama_f64_weighted_uniform_equals_unweighted() -> Result<(), UmeyamaError> {
+    fn test_umeyama_f64_uniform_equals_unweighted() -> Result<(), UmeyamaError> {
         let src = [
             Vec3F64::new(0.2, -0.4, 1.1),
             Vec3F64::new(1.3, 0.7, -0.5),
@@ -883,16 +818,16 @@ mod tests {
         let t_true = Vec3F64::new(0.5, -0.3, 2.0);
         let dst: Vec<Vec3F64> = src.iter().map(|p| r_true * *p + t_true).collect();
 
-        let unweighted = umeyama_f64(&src, &dst, true)?;
+        let unweighted = umeyama_f64(&src, &dst, None, true)?;
         let weights = vec![1.0; src.len()];
-        let weighted = umeyama_f64_weighted(&src, &dst, &weights, true)?;
+        let weighted = umeyama_f64(&src, &dst, Some(&weights), true)?;
 
         assert_outputs_close(&unweighted, &weighted, 1e-12);
         Ok(())
     }
 
     #[test]
-    fn test_umeyama_f64_weighted_normalization_invariant() -> Result<(), UmeyamaError> {
+    fn test_umeyama_f64_normalization_invariant() -> Result<(), UmeyamaError> {
         let src = [
             Vec3F64::new(0.2, -0.4, 1.1),
             Vec3F64::new(1.3, 0.7, -0.5),
@@ -907,14 +842,14 @@ mod tests {
         let weights = [0.5, 3.0, 1.0, 2.0, 4.0];
         let scaled_weights: Vec<f64> = weights.iter().map(|w| w * 7.5).collect();
 
-        let a = umeyama_f64_weighted(&src, &dst, &weights, true)?;
-        let b = umeyama_f64_weighted(&src, &dst, &scaled_weights, true)?;
+        let a = umeyama_f64(&src, &dst, Some(&weights), true)?;
+        let b = umeyama_f64(&src, &dst, Some(&scaled_weights), true)?;
         assert_outputs_close(&a, &b, 1e-12);
         Ok(())
     }
 
     #[test]
-    fn test_umeyama_f64_weighted_zero_weight_point_ignored() -> Result<(), UmeyamaError> {
+    fn test_umeyama_f64_zero_weight_point_ignored() -> Result<(), UmeyamaError> {
         let src = [
             Vec3F64::new(0.0, 0.0, 0.0),
             Vec3F64::new(1.0, 0.0, 0.0),
@@ -930,13 +865,13 @@ mod tests {
         dst[4] = Vec3F64::new(1e6, -1e6, 1e6);
         let weights = [1.0, 2.0, 0.5, 1.5, 0.0];
 
-        let got = umeyama_f64_weighted(&src, &dst, &weights, false)?;
+        let got = umeyama_f64(&src, &dst, Some(&weights), false)?;
         assert_matches_true(&got, &r_true, &t_true, 1.0, 1e-9);
         Ok(())
     }
 
     #[test]
-    fn test_umeyama_f64_weighted_coplanar_input() -> Result<(), UmeyamaError> {
+    fn test_umeyama_f64_coplanar_input() -> Result<(), UmeyamaError> {
         // Eight tag-like corners, all on the z = 0 plane (rank-deficient H).
         let src = [
             Vec3F64::new(0.0, 0.0, 0.0),
@@ -957,13 +892,13 @@ mod tests {
             .collect();
         let weights = [1.0, 2.0, 1.5, 0.7, 1.1, 3.0, 0.9, 1.3];
 
-        let got = umeyama_f64_weighted(&src, &dst, &weights, true)?;
+        let got = umeyama_f64(&src, &dst, Some(&weights), true)?;
         assert_matches_true(&got, &r_true, &t_true, s_true, 1e-9);
         Ok(())
     }
 
     #[test]
-    fn test_umeyama_f64_weighted_collinear_input() -> Result<(), UmeyamaError> {
+    fn test_umeyama_f64_collinear_input() -> Result<(), UmeyamaError> {
         // Points along the x-axis: the covariance has rank 1.
         let src = [
             Vec3F64::new(0.0, 0.0, 0.0),
@@ -980,7 +915,7 @@ mod tests {
             .collect();
         let weights = [1.0, 2.0, 0.5, 1.5];
 
-        let (r, t, s) = umeyama_f64_weighted(&src, &dst, &weights, true)?;
+        let (r, t, s) = umeyama_f64(&src, &dst, Some(&weights), true)?;
 
         // Rank-deficient: (R, t, s) is not unique, but the recovered transform
         // must still reproduce every destination point exactly.
@@ -998,7 +933,7 @@ mod tests {
     }
 
     #[test]
-    fn test_umeyama_f64_weighted_identical_points() -> Result<(), UmeyamaError> {
+    fn test_umeyama_f64_identical_points() -> Result<(), UmeyamaError> {
         // All source points coincide: zero variance, rank-0 covariance.
         let p = Vec3F64::new(1.0, 2.0, 3.0);
         let src = [p, p, p];
@@ -1006,7 +941,7 @@ mod tests {
         let dst: Vec<Vec3F64> = src.iter().map(|q| *q + t_true).collect();
         let weights = [1.0, 2.0, 3.0];
 
-        let (r, t, s) = umeyama_f64_weighted(&src, &dst, &weights, true)?;
+        let (r, t, s) = umeyama_f64(&src, &dst, Some(&weights), true)?;
 
         assert!(
             (s - 1.0).abs() < 1e-12,
@@ -1022,7 +957,7 @@ mod tests {
     }
 
     #[test]
-    fn test_umeyama_f64_weighted_errors() {
+    fn test_umeyama_f64_errors() {
         let src = [
             Vec3F64::new(0.0, 0.0, 0.0),
             Vec3F64::new(1.0, 0.0, 0.0),
@@ -1031,42 +966,42 @@ mod tests {
         let dst: Vec<Vec3F64> = src.to_vec();
 
         // src/dst length mismatch takes precedence over weight validation.
-        let err = umeyama_f64_weighted(&src, &dst[..2], &[1.0, 1.0], true).unwrap_err();
+        let err = umeyama_f64(&src, &dst[..2], Some(&[1.0, 1.0]), true).unwrap_err();
         assert!(
             matches!(err, UmeyamaError::MismatchedInputLengths),
             "got {err:?}"
         );
 
         // weights length mismatch
-        let err = umeyama_f64_weighted(&src, &dst, &[1.0], true).unwrap_err();
+        let err = umeyama_f64(&src, &dst, Some(&[1.0]), true).unwrap_err();
         assert!(
             matches!(err, UmeyamaError::MismatchedWeightsLength),
             "got {err:?}"
         );
 
         // empty weights
-        let err = umeyama_f64_weighted(&src, &dst, &[], true).unwrap_err();
+        let err = umeyama_f64(&src, &dst, Some(&[]), true).unwrap_err();
         assert!(matches!(err, UmeyamaError::InvalidWeights), "got {err:?}");
 
         // non-finite weights
-        let err = umeyama_f64_weighted(&src, &dst, &[1.0, f64::NAN, 1.0], true).unwrap_err();
+        let err = umeyama_f64(&src, &dst, Some(&[1.0, f64::NAN, 1.0]), true).unwrap_err();
         assert!(matches!(err, UmeyamaError::InvalidWeights), "got {err:?}");
-        let err = umeyama_f64_weighted(&src, &dst, &[1.0, f64::INFINITY, 1.0], true).unwrap_err();
+        let err = umeyama_f64(&src, &dst, Some(&[1.0, f64::INFINITY, 1.0]), true).unwrap_err();
         assert!(matches!(err, UmeyamaError::InvalidWeights), "got {err:?}");
 
         // non-positive weight sums
-        let err = umeyama_f64_weighted(&src, &dst, &[0.0, 0.0, 0.0], true).unwrap_err();
+        let err = umeyama_f64(&src, &dst, Some(&[0.0, 0.0, 0.0]), true).unwrap_err();
         assert!(matches!(err, UmeyamaError::InvalidWeights), "got {err:?}");
-        let err = umeyama_f64_weighted(&src, &dst, &[1.0, -5.0, 1.0], true).unwrap_err();
+        let err = umeyama_f64(&src, &dst, Some(&[1.0, -5.0, 1.0]), true).unwrap_err();
         assert!(matches!(err, UmeyamaError::InvalidWeights), "got {err:?}");
 
         // a negative weight even when the sum stays positive
-        let err = umeyama_f64_weighted(&src, &dst, &[2.0, -1.0, 1.0], true).unwrap_err();
+        let err = umeyama_f64(&src, &dst, Some(&[2.0, -1.0, 1.0]), true).unwrap_err();
         assert!(matches!(err, UmeyamaError::InvalidWeights), "got {err:?}");
     }
 
     #[test]
-    fn test_umeyama_f64_weighted_no_scale_returns_unit() -> Result<(), UmeyamaError> {
+    fn test_umeyama_f64_no_scale_returns_unit() -> Result<(), UmeyamaError> {
         let src = [
             Vec3F64::new(0.2, -0.4, 1.1),
             Vec3F64::new(1.3, 0.7, -0.5),
@@ -1077,7 +1012,7 @@ mod tests {
         let dst: Vec<Vec3F64> = src.iter().map(|p| *p * 3.0).collect();
         let weights = [1.0, 2.0, 0.5, 1.5];
 
-        let (_r, _t, s) = umeyama_f64_weighted(&src, &dst, &weights, false)?;
+        let (_r, _t, s) = umeyama_f64(&src, &dst, Some(&weights), false)?;
         assert!((s - 1.0).abs() < 1e-15, "scale should be 1.0, got {s}");
         Ok(())
     }

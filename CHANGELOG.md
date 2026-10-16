@@ -13,6 +13,15 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
 
 ## [Unreleased]
 
+**Weighted Umeyama alignment (`kornia-algebra`).** `umeyama_f64` now accepts
+per-point weights: pass `None` for the previous unweighted behaviour, or
+`Some(&weights)` to minimize `Σ wᵢ ‖dstᵢ − (s·R·srcᵢ + t)‖²` for robust
+similarity fitting. Weights are normalized internally, so only their relative
+values matter, and a weight of `0` ignores that point. **Breaking:**
+`umeyama_f64`'s signature changed from `(src, dst, with_scale)` to
+`(src, dst, weights, with_scale)`, and `umeyama_f64_weighted` was folded into
+it.
+
 ## [0.2.0] — 2026-09-26
 
 **0.2.0 is 0.1.15 re-released under the right version.** 0.1.15 shipped breaking API changes as a
