@@ -19,8 +19,9 @@ per-point weights: pass `None` for the previous unweighted behaviour, or
 similarity fitting. Weights are normalized internally, so only their relative
 values matter, and a weight of `0` ignores that point. **Breaking:**
 `umeyama_f64`'s signature changed from `(src, dst, with_scale)` to
-`(src, dst, weights, with_scale)`, and `umeyama_f64_weighted` was folded into
-it.
+`(src, dst, weights, with_scale)`. `UmeyamaError` has new variants
+`MismatchedWeightsLength` and `InvalidWeights`; exhaustive `match`es need new
+arms.
 
 **Breaking: fundamental-matrix RANSAC now samples seven points by default.** A seven-point
 hypothesis needs one correspondence fewer than an eight-point one, so RANSAC reaches the same
