@@ -53,7 +53,7 @@ jobs:
 
       - uses: ./.github/actions/setup-rust-cache
 
-      - uses: prefix-dev/setup-pixi@a09b6247153796b190642a2b53fac4241043cf6f # v0.10.0
+      - uses: prefix-dev/setup-pixi@9dabb60412d3d2d967a8d682f7ce01317af40514 # v0.11.0
         with:
           pixi-version: v0.73.0
           cache: true
