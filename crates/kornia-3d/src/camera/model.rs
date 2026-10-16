@@ -9,14 +9,38 @@ use kornia_algebra::{Vec2F64, Vec3F64};
 pub trait CameraModel {
     /// Projects a camera-frame point to a pixel, applying the model's distortion.
     ///
-    /// `None` when the model cannot image the point.
+    /// # Arguments
+    ///
+    /// * `p_cam` - Point in the camera frame.
+    ///
+    /// # Returns
+    ///
+    /// The pixel, or `None` when the model cannot image the point: for a
+    /// pinhole, `z <= 1e-8`; for a fisheye, a point on the optical axis at or
+    /// behind the camera.
     fn project(&self, p_cam: &Vec3F64) -> Option<Vec2F64>;
 
-    /// Like [`CameraModel::project`], also returning the rows of the 2×3
-    /// Jacobian `∂(u, v) / ∂p_cam`.
+    /// Like [`CameraModel::project`], also returning the 2×3 Jacobian.
+    ///
+    /// # Arguments
+    ///
+    /// * `p_cam` - Point in the camera frame.
+    ///
+    /// # Returns
+    ///
+    /// The pixel and the Jacobian rows `[∂u/∂p_cam, ∂v/∂p_cam]`, in pixels per
+    /// camera-frame unit; `None` exactly when [`CameraModel::project`] is.
     fn project_with_jacobian(&self, p_cam: &Vec3F64) -> Option<(Vec2F64, [Vec3F64; 2])>;
 
-    /// Unit bearing, in the camera frame, of the ray imaged at `pixel`.
+    /// Unprojects a pixel to the ray it images.
+    ///
+    /// # Arguments
+    ///
+    /// * `pixel` - Pixel of the raw image.
+    ///
+    /// # Returns
+    ///
+    /// The unit bearing of the ray, in the camera frame.
     fn unproject(&self, pixel: &Vec2F64) -> Vec3F64;
 }
 
@@ -159,7 +183,20 @@ mod tests {
             Vec3F64::new(0.2, -0.15, 1.5),
             Vec3F64::new(-0.3, 0.2, 1.0),
         ] {
-            assert_round_trips(&radtan(), p, 1e-6);
+            assert_round_trips(&radtan(), p, 1e-9);
+        }
+    }
+
+    #[test]
+    fn pinhole_unproject_round_trips_image_corners() {
+        let camera = radtan();
+        for (u, v) in [(0.0, 0.0), (751.0, 0.0), (0.0, 479.0), (751.0, 479.0)] {
+            let pixel = Vec2F64::new(u, v);
+            let back = camera.project(&camera.unproject(&pixel)).unwrap();
+            assert!(
+                (back - pixel).length() < 1e-6,
+                "{pixel:?} came back as {back:?}"
+            );
         }
     }
 
