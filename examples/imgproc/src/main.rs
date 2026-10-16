@@ -39,9 +39,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("distance: {:?}", distance.size());
 
+    let has_foreground = mask.as_slice().iter().any(|&m| m > 0.0);
+
     // scale the distances to [0, 1] for display
-    let max = distance.as_slice().iter().cloned().fold(1.0f32, f32::max);
-    let distance_vis: Vec<f32> = distance.as_slice().iter().map(|d| d / max).collect();
+    let distance_vis: Vec<f32> = if has_foreground {
+        let max = distance.as_slice().iter().cloned().fold(1.0f32, f32::max);
+        distance.as_slice().iter().map(|d| d / max).collect()
+    } else {
+        println!("the mask has no foreground pixels, distances are undefined");
+        vec![0.0; distance.as_slice().len()]
+    };
 
     // create a Rerun recording stream
     let rec = rerun::RecordingStreamBuilder::new("Kornia App").spawn()?;
