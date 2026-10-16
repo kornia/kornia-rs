@@ -5,7 +5,7 @@
 #   - cuda.h + the libcuda link stub (NVIDIA redist), unless $CUDA_HOME has them;
 #   - LLVM 21 `llc` + libclang from conda-forge, locked in llvm-<arch>.txt
 #     (glibc 2.17, so it also runs in manylinux containers), unless llc-21/22
-#     is on PATH;
+#     is on PATH and a system libclang is found;
 #   - the codegen backend built at the rev pinned in kernels-oxide/Cargo.toml.in.
 # Pieces already in PREFIX at the right version are reused (cache PREFIX in CI).
 # Every download is pinned and sha256-checked, except rustup and the nightly.
@@ -92,8 +92,22 @@ fi
 
 # -- LLVM 21: llc (PTX codegen) + libclang (bindgen of cuda.h) -------------------
 LLVM_ENV=""
-if [[ "$USE_SYSTEM" == 1 ]] && { [[ -n "${CUDA_OXIDE_LLC:-}" ]] || command -v llc-22 >/dev/null || command -v llc-21 >/dev/null; }; then
-  log "llc: system"
+# A system llc says nothing about libclang: look where clang-sys looks.
+system_libclang() {
+  local d
+  for d in ${LIBCLANG_PATH:+"$LIBCLANG_PATH"} "$(llvm-config --libdir 2>/dev/null)" \
+    /usr/lib/llvm-*/lib /usr/lib/"$(uname -m)"-linux-gnu /usr/lib64 /usr/lib /usr/local/lib; do
+    [[ -n "$d" ]] || continue
+    if compgen -G "$d/libclang.so*" >/dev/null || compgen -G "$d/libclang-[0-9]*.so*" >/dev/null; then
+      echo "$d"
+      return 0
+    fi
+  done
+  return 1
+}
+if [[ "$USE_SYSTEM" == 1 ]] && { [[ -n "${CUDA_OXIDE_LLC:-}" ]] || command -v llc-22 >/dev/null || command -v llc-21 >/dev/null; } &&
+  libclang_dir="$(system_libclang)"; then
+  log "llc + libclang: system ($libclang_dir)"
 else
   if [[ ! -x "$PREFIX/llvm/bin/llc" || "$(cat "$PREFIX/llvm/.version" 2>/dev/null)" != "$LLVM_STAMP" ]]; then
     # LLVM's own release tarballs need glibc 2.34; conda-forge builds need 2.17.
