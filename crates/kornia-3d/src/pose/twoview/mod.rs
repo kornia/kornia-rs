@@ -182,9 +182,10 @@ impl Default for RansacParams {
 pub struct RansacResult<M> {
     /// Estimated model.
     pub model: M,
-    /// Per-point inlier mask.
+    /// Per-point inlier mask. After a [`ransac_homography`] refit this is the
+    /// mask of the four-point winner, not of the refit `model`.
     pub inliers: Vec<bool>,
-    /// Total inlier count.
+    /// Total inlier count, of the same model as [`Self::inliers`].
     pub inlier_count: usize,
     /// Sum of inlier errors (lower is better).
     pub score: f64,

@@ -1,12 +1,13 @@
 //! Post-sampling refinement of a fundamental-matrix winner: LO+ threshold
 //! annealing and DEGENSAC dominant-plane recovery.
 
-use super::kernels::{score_inliers_f, score_inliers_h};
-use super::ransac::sample_is_degenerate;
+use super::kernels::score_inliers_h;
+use super::ransac::{sample_is_degenerate, FundamentalProblem};
 use crate::pose::fundamental::fundamental_8point;
 use crate::pose::homography_4pt2d;
+use crate::ransac::engine::{CountThenResidual, Scorer, StageContext, Termination, Ties};
 use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64};
-use rand::rngs::StdRng;
+use rand::Rng;
 
 /// OpenCV USAC-style LO+ inner refit (Lebeda 2012 +
 /// `cv::usac::InnerIterativeLocalOptimizationImpl`). Polishes a fundamental-
@@ -22,84 +23,43 @@ use rand::rngs::StdRng;
 /// outer iters; 3 is the empirical sweet spot for our pipeline (extra iters
 /// past 3 plateau on accuracy but still pay the 8-pt cost).
 ///
-/// Returns `(model, inliers, count, score)` — never worse than the input
-/// under (count > prev) || (count == prev && score < prev_score).
-#[allow(clippy::too_many_arguments)]
-pub(super) fn lo_plus_fundamental(
-    x1: &[Vec2F64],
-    x2: &[Vec2F64],
-    x1_x: &[f64],
-    x1_y: &[f64],
-    x2_x: &[f64],
-    x2_y: &[f64],
-    base_threshold: f64,
-    base_thresh_sq: f64,
-    in_model: Mat3F64,
-    in_inliers: Vec<bool>,
-    in_count: usize,
-    in_score: f64,
-) -> (Mat3F64, Vec<bool>, usize, f64) {
+/// Every refit is a derived candidate: scored exhaustively at the base
+/// threshold and offered to the incumbent under [`Ties::Strict`], so the
+/// result is never worse than the input.
+pub(super) fn lo_plus_fundamental<'p, const SAMPLE_SIZE: usize, Sc, T, R>(
+    stage: &mut StageContext<'_, FundamentalProblem<'p, SAMPLE_SIZE>, Sc, T, R>,
+) where
+    Sc: Scorer<FundamentalProblem<'p, SAMPLE_SIZE>, Objective = CountThenResidual>,
+    T: Termination,
+{
     const LO_MULTIPLIERS: [f64; 6] = [4.0, 3.4, 2.8, 2.2, 1.6, 1.0];
     const LO_OUTER_ITERS: usize = 3;
-    let n = x1.len();
-    let mut model = in_model;
-    let mut best_inliers = in_inliers;
-    let mut best_count = in_count;
-    let mut best_score = in_score;
-    if best_count < 8 {
-        return (model, best_inliers, best_count, best_score);
+    let Some(mut model) = stage.best.model else {
+        return;
+    };
+    if stage.best.score.support < 8 {
+        return;
     }
-    let mut fit_mask = best_inliers.clone();
-    let mut scratch_inliers = vec![false; n];
-    let mut base_inliers = vec![false; n];
+    let problem = stage.problem;
+    let points = &problem.points;
+    let base_threshold = problem.threshold;
+    let n = points.len();
+    let mut fit_mask = vec![false; n];
     let mut inl_x1: Vec<Vec2F64> = Vec::with_capacity(n);
     let mut inl_x2: Vec<Vec2F64> = Vec::with_capacity(n);
     for outer in 0..LO_OUTER_ITERS {
-        let prev_count = best_count;
-        let prev_score = best_score;
+        let prev = stage.best.score.objective;
         for &mult in &LO_MULTIPLIERS {
-            let virt_t = base_threshold * mult;
-            let virt_t_sq = virt_t * virt_t;
-
-            // Recompute fit_mask from the *current best* model at this
+            // Recompute the fit mask from the *current best* model at this
             // multiplier so each step picks up correspondences matching the
-            // polished F, not a previous step's F. (At mult=1.0 we keep the
-            // base inlier mask.) Goes through the NEON scorer — same fast
-            // path as RANSAC's hot loop.
-            let virt_count = if mult > 1.0 {
-                for s in scratch_inliers.iter_mut() {
-                    *s = false;
-                }
-                let (vc, _) = score_inliers_f(
-                    &model,
-                    x1_x,
-                    x1_y,
-                    x2_x,
-                    x2_y,
-                    virt_t_sq,
-                    &mut scratch_inliers,
-                );
-                fit_mask.copy_from_slice(&scratch_inliers);
-                vc
-            } else {
-                // mult=1.0: re-score on the running best at the base threshold
-                // — the inlier set has drifted as `model` evolved through
-                // earlier multipliers, so use the up-to-date support, not the
-                // stale cached `best_inliers` mask.
-                for s in fit_mask.iter_mut() {
-                    *s = false;
-                }
-                let (vc, _) = score_inliers_f(
-                    &model,
-                    x1_x,
-                    x1_y,
-                    x2_x,
-                    x2_y,
-                    base_thresh_sq,
-                    &mut fit_mask,
-                );
-                vc
-            };
+            // polished F, not a previous step's F. The last multiplier, 1.0,
+            // re-scores the running best at the base threshold: the inlier
+            // set has drifted as `model` evolved, so the cached incumbent
+            // mask would be stale. (`threshold * 1.0` squares to exactly the
+            // base threshold squared.)
+            let virt_t = base_threshold * mult;
+            fit_mask.fill(false);
+            let (virt_count, _) = points.sampson(&model, virt_t * virt_t, &mut fit_mask);
             if virt_count < 8 {
                 break;
             }
@@ -108,44 +68,31 @@ pub(super) fn lo_plus_fundamental(
             inl_x2.clear();
             for (i, &keep) in fit_mask.iter().enumerate() {
                 if keep {
-                    inl_x1.push(x1[i]);
-                    inl_x2.push(x2[i]);
+                    inl_x1.push(points.x1[i]);
+                    inl_x2.push(points.x2[i]);
                 }
             }
-            let f_refit = match fundamental_8point(&inl_x1, &inl_x2) {
-                Ok(f) => f,
-                Err(_) => break,
+            let Ok(f_refit) = fundamental_8point(&inl_x1, &inl_x2) else {
+                break;
             };
 
             // Strict-improve at base threshold — never let a polished F drift
             // onto a dominant-plane local optimum that scores well on count
             // but produces a wrong (R, t) downstream.
-            for s in base_inliers.iter_mut() {
-                *s = false;
-            }
-            let (count_b, score_b) = score_inliers_f(
-                &f_refit,
-                x1_x,
-                x1_y,
-                x2_x,
-                x2_y,
-                base_thresh_sq,
-                &mut base_inliers,
-            );
-            if count_b > best_count || (count_b == best_count && score_b < best_score) {
+            if stage.consider_derived(&f_refit, Ties::Strict) {
                 model = f_refit;
-                std::mem::swap(&mut best_inliers, &mut base_inliers);
-                best_count = count_b;
-                best_score = score_b;
             }
         }
         // Convergence: if this outer pass produced no improvement, further
         // passes will only repeat the same fixed-point. Save the work.
-        if outer + 1 < LO_OUTER_ITERS && best_count == prev_count && best_score >= prev_score {
+        let current = stage.best.score.objective;
+        if outer + 1 < LO_OUTER_ITERS
+            && current.count == prev.count
+            && current.residual >= prev.residual
+        {
             break;
         }
     }
-    (model, best_inliers, best_count, best_score)
 }
 
 /// DEGENSAC (Chum 2004) post-RANSAC degeneracy recovery for fundamental
@@ -168,23 +115,22 @@ pub(super) fn lo_plus_fundamental(
 /// **Cost when non-degenerate.** Runs `H_TRIALS=15` minimal H samples + the
 /// degeneracy gate. On general non-planar scenes the H-support never reaches
 /// the 75% threshold and the routine early-exits.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn degensac_recover_fundamental(
-    x1_x: &[f64],
-    x1_y: &[f64],
-    x2_x: &[f64],
-    x2_y: &[f64],
-    base_thresh_sq: f64,
-    in_model: Mat3F64,
-    in_inliers: Vec<bool>,
-    in_count: usize,
-    in_score: f64,
-    rng: &mut StdRng,
-) -> (Mat3F64, Vec<bool>, usize, f64) {
+///
+/// Each lifted `F_new` is a derived candidate: scored exhaustively at the
+/// base threshold and offered to the incumbent under [`Ties::Strict`]. The
+/// run's RNG drives the homography samples.
+pub(super) fn degensac_recover_fundamental<'p, const SAMPLE_SIZE: usize, Sc, T, R>(
+    stage: &mut StageContext<'_, FundamentalProblem<'p, SAMPLE_SIZE>, Sc, T, R>,
+) where
+    Sc: Scorer<FundamentalProblem<'p, SAMPLE_SIZE>, Objective = CountThenResidual>,
+    T: Termination,
+    R: Rng,
+{
     // Below ~12 inliers the plane-vs-non-plane signal is too noisy to act on
     // and the lift is unstable.
+    let in_count = stage.best.score.support;
     if in_count < 12 {
-        return (in_model, in_inliers, in_count, in_score);
+        return;
     }
 
     // SoA companion over the F-inlier subset for the NEON H scorer.
@@ -192,12 +138,15 @@ pub(super) fn degensac_recover_fundamental(
     let mut inl_x1_y: Vec<f64> = Vec::with_capacity(in_count);
     let mut inl_x2_x: Vec<f64> = Vec::with_capacity(in_count);
     let mut inl_x2_y: Vec<f64> = Vec::with_capacity(in_count);
-    for (i, &b) in in_inliers.iter().enumerate() {
+    let problem = stage.problem;
+    let base_thresh_sq = problem.thresh_sq;
+    let points = &problem.points;
+    for (i, &b) in stage.best.inliers.iter().enumerate() {
         if b {
-            inl_x1_x.push(x1_x[i]);
-            inl_x1_y.push(x1_y[i]);
-            inl_x2_x.push(x2_x[i]);
-            inl_x2_y.push(x2_y[i]);
+            inl_x1_x.push(points.x1[i].x);
+            inl_x1_y.push(points.x1[i].y);
+            inl_x2_x.push(points.x2[i].x);
+            inl_x2_y.push(points.x2[i].y);
         }
     }
 
@@ -209,7 +158,7 @@ pub(super) fn degensac_recover_fundamental(
     let mut h_inl = vec![false; in_count];
     let mut h_inl_best = vec![false; in_count];
     for _ in 0..H_TRIALS {
-        let s = rand::seq::index::sample(rng, in_count, 4);
+        let s = rand::seq::index::sample(&mut *stage.rng, in_count, 4);
         let s1 = [
             [inl_x1_x[s.index(0)], inl_x1_y[s.index(0)]],
             [inl_x1_x[s.index(1)], inl_x1_y[s.index(1)]],
@@ -257,7 +206,7 @@ pub(super) fn degensac_recover_fundamental(
     // the F is generic enough that the lift can only hurt.
     let h = match best_h {
         Some(h) if best_h_count * 4 >= in_count * 3 => h,
-        _ => return (in_model, in_inliers, in_count, in_score),
+        _ => return,
     };
 
     // Off-plane inliers = F-inliers that H fails to explain. These carry the
@@ -269,18 +218,16 @@ pub(super) fn degensac_recover_fundamental(
         }
     }
     if off.len() < 2 {
-        return (in_model, in_inliers, in_count, in_score);
+        return;
     }
 
     // Try off-plane pairs; keep the F_new with the highest base-threshold inlier
     // count (strict-improve gate, same shape as LO+). Cap trials so DEGENSAC
     // stays sub-millisecond on heavily-planar scenes.
-    let mut best = (in_model, in_inliers, in_count, in_score);
     const PAIR_TRIALS: usize = 30;
     let pair_count = off.len() * (off.len() - 1) / 2;
     let trial_cap = PAIR_TRIALS.min(pair_count);
     let mut tried = 0usize;
-    let mut new_inl = vec![false; x1_x.len()];
     'outer: for ai in 0..off.len() {
         for bi in (ai + 1)..off.len() {
             if tried >= trial_cap {
@@ -311,17 +258,9 @@ pub(super) fn degensac_recover_fundamental(
                 Vec3F64::new(e_prime.y, -e_prime.x, 0.0),
             );
             let f_new = ex * h;
-            for s in new_inl.iter_mut() {
-                *s = false;
-            }
-            let (cnt, scr) =
-                score_inliers_f(&f_new, x1_x, x1_y, x2_x, x2_y, base_thresh_sq, &mut new_inl);
-            if cnt > best.2 || (cnt == best.2 && scr < best.3) {
-                best = (f_new, new_inl.clone(), cnt, scr);
-            }
+            stage.consider_derived(&f_new, Ties::Strict);
         }
     }
-    best
 }
 
 /// 3-vector cross product. Inline-friendly hand roll — Vec3F64 doesn't

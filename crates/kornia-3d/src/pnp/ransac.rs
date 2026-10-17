@@ -4,18 +4,19 @@ use super::ap3p::solve_ap3p_multi;
 use super::ops::{intrinsics_as_vectors, project_sq_error};
 use super::{solve_pnp, PnPMethod};
 use super::{EPnPParams, LMRefineParams, PnPError, PnPResult};
-use crate::ransac::sprt::{SPRTConfig, DEFAULT_BETA, DEFAULT_CHANCE_PROB};
+use crate::ransac::engine::{
+    self, Components, Incumbent, InlierCount, NoVerifier, PointResidual, Problem, Schedule, Score,
+    Scorer, SprtVerifier, StageContext, Termination, Ties, UniformDraw, Workspace,
+};
+use crate::ransac::sprt::SPRTConfig;
 use kornia_algebra::{Mat3AF32, Vec2F32, Vec3AF32};
 use kornia_imgproc::calibration::distortion::PolynomialDistortion;
-use rand::{rngs::StdRng, seq::SliceRandom, RngExt, SeedableRng};
+use rand::{rngs::StdRng, SeedableRng};
 use thiserror::Error;
 
 const MIN_CORRESPONDENCES: usize = 4; // Minimum 2D-3D pairs required by EPnP (and by any refit)
 const AP3P_SAMPLE_SIZE: usize = 3; // AP3P is an exact 3-point solver: it rejects any other count
 const EPNP_MIN_SAMPLE_SIZE: usize = 5; // Minimal sample size for EPnP (unless only 4 points available)
-
-/// Upper bound on the number of real roots an exact P3P solver can return.
-const AP3P_MAX_ROOTS: usize = 4;
 
 const DEFAULT_MAX_ITERATIONS: usize = 100;
 const DEFAULT_REPROJ_THRESHOLD_PX: f32 = 8.0;
@@ -76,26 +77,33 @@ pub enum PnPRansacError {
 fn keep_better_of(
     refit: Result<PnPResult, PnPError>,
     refit_inliers: usize,
-    minimal: Option<PnPResult>,
-    minimal_inliers: usize,
+    best: &mut Incumbent<PnPResult, InlierCount>,
     method: PnPMethod,
-) -> (Option<PnPResult>, Refinement) {
+) -> Refinement {
     match refit {
-        Ok(p) if minimal.is_none() || refit_inliers >= minimal_inliers => {
-            (Some(p), Refinement::Applied(method))
-        }
-        Ok(_) => {
-            log::debug!(
-                "RANSAC refit scored {refit_inliers} inliers against the minimal-sample pose's \
-                 {minimal_inliers}; keeping the latter"
-            );
-            (minimal, Refinement::RejectedWorse)
+        Ok(pose) => {
+            let score = Score {
+                objective: InlierCount(refit_inliers),
+                support: refit_inliers,
+            };
+            // The legacy refit keeps the minimal pose's inlier set (#1171
+            // phase A preserves that stale mask).
+            if best.consider_keeping_mask(&pose, score, Ties::AcceptTies) {
+                Refinement::Applied(method)
+            } else {
+                log::debug!(
+                    "RANSAC refit scored {refit_inliers} inliers against the minimal-sample pose's \
+                     {}; keeping the latter",
+                    best.score.support
+                );
+                Refinement::RejectedWorse
+            }
         }
         Err(e) => {
             log::debug!(
                 "RANSAC refit on the consensus set failed ({e}); keeping the best minimal-sample pose"
             );
-            (minimal, Refinement::Failed)
+            Refinement::Failed
         }
     }
 }
@@ -158,7 +166,9 @@ pub enum Refinement {
 pub struct PnPRansacResult {
     /// Best pose found by RANSAC.
     pub pose: PnPResult,
-    /// Indices of inlier correspondences.
+    /// Indices of inlier correspondences, in increasing order. These are the
+    /// inliers of the best minimal-sample pose: an applied refit (see
+    /// [`Self::refinement`]) changes [`Self::pose`] but not this set.
     pub inliers: Vec<usize>,
     /// Which solver produced [`Self::pose`] -- see [`Refinement`]. With an AP3P kernel and
     /// `refine: true` this is `Applied(EPnP(..))`, not the AP3P you passed in.
@@ -184,8 +194,12 @@ pub struct PnPRansacResult {
 ///   Scoring one root would leave the true probability at `w^k / roots` while the loop kept
 ///   planning against `w^k`, and stop early. EPnP returns one solution and keeps its
 ///   single-hypothesis path.
-/// - Scoring uses Euclidean pixel reprojection error.
-/// - Iterations adapt from current inlier ratio and desired confidence.
+/// - Scoring counts strict inliers, Euclidean pixel reprojection error `< reproj_threshold_px`;
+///   points behind the camera are outliers. A pose replaces the best one only with more inliers.
+/// - Iterations adapt from current inlier ratio and desired confidence: after every draw that
+///   finds a better pose the cap becomes `log(1-p)/log(1-w^k)` (in `f32`), and at a very high
+///   inlier ratio (≥ 95%, where that bound degenerates) sampling stops after the current draw.
+/// - With `params.sprt`, Wald's SPRT may reject a hypothesis before every point is scored.
 /// - With `params.refine`, the final non-minimal refit over all inliers uses **EPnP even when the
 ///   sampling kernel was AP3P**, because a minimal solver cannot consume more than its exact
 ///   correspondence count. This matches OpenCV's `solvePnPRansac`, which refits a P3P/AP3P
@@ -197,7 +211,8 @@ pub struct PnPRansacResult {
 ///   RANSAC already selected, matching COLMAP's LORANSAC and this crate's own `ransac::driver`.
 ///   A refit that errors, or that scores fewer inliers, leaves the minimal-sample pose in place.
 ///   [`PnPRansacResult::refinement`] reports which of those happened, so the caller can see that
-///   an AP3P request was answered by an EPnP fit rather than having to infer it.
+///   an AP3P request was answered by an EPnP fit rather than having to infer it. The returned
+///   [`PnPRansacResult::inliers`] are the minimal-sample pose's either way.
 /// - Minimum correspondence count is kernel- and refine-aware: AP3P with `refine: false` needs
 ///   only 3, everything else needs 4 because the EPnP refit does.
 ///
@@ -283,285 +298,84 @@ pub fn solve_pnp_ransac(
         }
     };
 
-    // Working buffers
-    let mut indices: Vec<usize> = (0..n).collect();
-    let mut best_inliers: Vec<usize> = Vec::new();
-    let mut best_pose: Option<PnPResult> = None;
-    let mut w_min: Vec<Vec3AF32> = Vec::with_capacity(sample_size);
-    let mut i_min: Vec<Vec2F32> = Vec::with_capacity(sample_size);
-    // Hypotheses produced by one minimal sample: up to 4 for AP3P, exactly 1 for EPnP.
-    let mut hypotheses: Vec<PnPResult> = Vec::with_capacity(AP3P_MAX_ROOTS);
-    // SPRT scratch: a permutation over the input points, refreshed every
-    // hypothesis so the order of point evaluation is randomised.
-    let mut sprt_perm: Vec<usize> = (0..n).collect();
-    // Per-iteration scratch buffer for squared reprojection errors so the
-    // SPRT precheck does not have to recompute them.
-    let mut sq_err: Vec<f32> = vec![0.0; n];
-
-    let mut iter: usize = 0;
-    let mut required_iters = params.max_iterations;
-
-    while iter < required_iters && iter < params.max_iterations {
-        iter += 1;
-
-        // Debug: prevent infinite loops
-        if iter > params.max_iterations {
-            log::warn!("RANSAC: Emergency break after {iter} iterations");
-            break;
+    let mut problem = PnpProblem {
+        world,
+        image,
+        k,
+        distortion,
+        base: &base,
+        is_ap3p,
+        sample_size,
+        intr_x,
+        intr_y,
+        w_min: Vec::with_capacity(sample_size),
+        i_min: Vec::with_capacity(sample_size),
+        draws: 0,
+        candidates: Vec::new(),
+    };
+    let scorer = ReprojectionScorer {
+        threshold_px: params.reproj_threshold_px,
+    };
+    let termination = PnpCap {
+        required: params.max_iterations,
+        max_iterations: params.max_iterations,
+        confidence: params.confidence,
+        population: n,
+        sample_size,
+    };
+    let schedule = PnpRefit {
+        refine: params.refine,
+        min_support: min_correspondences,
+        refinement: Refinement::Skipped,
+    };
+    let mut best = Incumbent::new(vec![false; n]);
+    let refinement = match params.sprt.filter(SPRTConfig::is_valid) {
+        Some(sprt) => {
+            // SPRT tests `sq < t²` in f32 while scoring tests `sqrt(sq) < t`;
+            // the two can disagree at the boundary, so scoring never reuses
+            // the SPRT residuals.
+            let threshold_sq = params.reproj_threshold_px * params.reproj_threshold_px;
+            // The legacy loop counted draws from one.
+            let verifier = SprtVerifier::new(sprt, threshold_sq as f64, n, sample_size, 0);
+            let mut ws = Workspace::new(vec![false; n], vec![0.0; n]);
+            let mut parts = Components {
+                sampler: UniformDraw,
+                verifier,
+                scorer,
+                schedule,
+                termination,
+            };
+            engine::run(&mut problem, &mut parts, &mut best, &mut ws, &mut rng);
+            parts.schedule.refinement
         }
-
-        // Sample k unique indices without replacement. `partial_shuffle`
-        // reorders the first k positions in place in O(k), rather than the
-        // O(n) full-vector shuffle that `slice::shuffle` would do — at
-        // n = 600 the difference is the difference between ~5 ns/iter and
-        // ~600 ns/iter on the sampling step alone, which dominates when
-        // the inner loop converges in < 100 iterations.
-        let sample = partial_shuffle_sample(&mut indices, sample_size, &mut rng);
-
-        // Build minimal subsets
-        w_min.clear();
-        i_min.clear();
-        for &idx in sample.iter() {
-            w_min.push(world[idx]);
-            i_min.push(image[idx]);
+        None => {
+            let mut ws = Workspace::new(vec![false; n], Vec::new());
+            let mut parts = Components {
+                sampler: UniformDraw,
+                verifier: NoVerifier,
+                scorer,
+                schedule,
+                termination,
+            };
+            engine::run(&mut problem, &mut parts, &mut best, &mut ws, &mut rng);
+            parts.schedule.refinement
         }
-
-        // Generate the hypotheses for this minimal sample. AP3P is a polynomial solver returning
-        // up to 4 real roots; scoring only the first cheirality-passing one throws away most
-        // clean samples, so every root is kept and scored below.
-        hypotheses.clear();
-        if is_ap3p {
-            match solve_ap3p_multi(&w_min, &i_min, k) {
-                Ok(roots) => hypotheses.extend(roots),
-                Err(_e) => {
-                    log::debug!("AP3P failed on minimal set at iteration {iter}");
-                    continue;
-                }
-            }
-        } else {
-            match solve_pnp(&w_min, &i_min, k, distortion, base.clone()) {
-                Ok(p) => hypotheses.push(p),
-                Err(_e) => {
-                    log::debug!("EPnP failed on minimal set at iteration {iter}");
-                    continue;
-                }
-            }
-        }
-
-        // Score every hypothesis against all points, keeping the one with most inliers.
-        let mut improved = false;
-        for pose_min in hypotheses.drain(..) {
-            // Cheirality on the minimal set. Redundant for AP3P -- `solve_ap3p_multi` already
-            // filters its roots by positive depth over these same 3 points, in f64 -- but EPnP
-            // does not, so the gate stays here rather than being hoisted into the AP3P branch.
-            if !sample_all_positive_depths(&pose_min.rotation, &pose_min.translation, &w_min) {
-                log::debug!("Cheirality check failed on iteration {iter}");
-                continue;
-            }
-
-            // SPRT precheck: if SPRT is enabled and the config is valid,
-            // stream residuals through SPRT one at a time and reject the
-            // hypothesis as soon as its LLR exceeds the threshold. This is
-            // the only way SPRT can be faster than the non-SPRT path: on a
-            // bad hypothesis we stop paying the per-point cost partway
-            // through and never touch the inlier bookkeeping. Computing
-            // the whole residual vector up front would defeat that.
-            //
-            // Adaptive epsilon: the configured `sprt_cfg.epsilon` is the
-            // caller's *prior* on the inlier ratio, but once we have a
-            // best model we know a much better estimate (the observed
-            // consensus fraction). Updating epsilon to track the best
-            // model keeps the LLR math aligned with what the data is
-            // actually telling us, which is what makes SPRT reject bad
-            // hypotheses at low outlier ratios instead of rubber-stamping
-            // every hypothesis.
-            if let Some(sprt_cfg) = params.sprt.as_ref() {
-                if sprt_cfg.is_valid() {
-                    // Adaptive epsilon: use the configured value (capped at
-                    // 0.3 — an optimistic prior would otherwise give good
-                    // hypotheses a positive LLR drift) until we have a real
-                    // consensus, then track the observed ratio.
-                    // OpenCV USAC does the same (`epsilon` starts as the
-                    // prior and is overwritten by `numInliers/total` after
-                    // the first accepted model).
-                    let prior_eps = if best_inliers.len() >= sample_size {
-                        (best_inliers.len() as f64 / n as f64).clamp(0.05, 0.95)
-                    } else {
-                        sprt_cfg.epsilon.min(0.3)
-                    };
-                    // Stream residuals through SPRT in randomised order:
-                    // rotate the base permutation by a random offset,
-                    // refreshing the base order every `SPRT_RESHUF_PERIOD`
-                    // hypotheses (O(1) per hypothesis instead of an O(n)
-                    // shuffle). Computing each residual on demand; on a
-                    // rejection we stop early — that is the entire point.
-                    const SPRT_RESHUF_PERIOD: usize = 16;
-                    if iter.is_multiple_of(SPRT_RESHUF_PERIOD) {
-                        sprt_perm.shuffle(&mut rng);
-                    }
-                    let sprt_start = rng.random_range(0..n);
-                    let threshold_sq = params.reproj_threshold_px * params.reproj_threshold_px;
-                    let mut sprt_state =
-                        crate::ransac::sprt::SPRTState::new(sprt_cfg, DEFAULT_BETA);
-                    let mut sprt_rejected = false;
-                    // Before the first accepted model the epsilon prior is
-                    // unverified: give every hypothesis a minimum look at
-                    // the data before SPRT may reject it, so a mismatched
-                    // prior cannot starve the run of its first good model.
-                    let grace = if best_inliers.len() >= sample_size {
-                        0
-                    } else {
-                        (n / 4).max(sample_size * 4)
-                    };
-                    for k in 0..n {
-                        let p_idx = sprt_perm[(sprt_start + k) % n];
-                        let sq = project_sq_error(
-                            &world[p_idx],
-                            &image[p_idx],
-                            &pose_min.rotation,
-                            &pose_min.translation,
-                            &intr_x,
-                            &intr_y,
-                            true,
-                        )
-                        .unwrap_or(f32::INFINITY);
-                        // Cache the residual so the consensus step below
-                        // (which runs on a passing hypothesis) does not
-                        // recompute it.
-                        sq_err[p_idx] = sq;
-                        let is_inlier = sq < threshold_sq;
-                        sprt_state.update(is_inlier, prior_eps, DEFAULT_CHANCE_PROB);
-                        if sprt_state.is_rejected() && sprt_state.num_tested >= grace {
-                            sprt_rejected = true;
-                            break;
-                        }
-                    }
-                    if sprt_rejected {
-                        log::debug!(
-                            "SPRT rejected hypothesis at iteration {iter} after {} points",
-                            sprt_state.num_tested
-                        );
-                        continue;
-                    }
-                }
-            }
-
-            let (inliers, _total_squared_error) = classify_points(
-                world,
-                image,
-                None,
-                None,
-                ClassificationParams {
-                    rotation_matrix: &pose_min.rotation,
-                    translation_vector: &pose_min.translation,
-                    camera_intrinsics_x: &intr_x,
-                    camera_intrinsics_y: &intr_y,
-                    threshold: Some(params.reproj_threshold_px),
-                },
-            );
-
-            if inliers.len() > best_inliers.len() {
-                best_inliers = inliers;
-                best_pose = Some(pose_min);
-                improved = true;
-            }
-        }
-
-        if improved {
-            // Update required iterations based on current inlier ratio and sample size
-            if best_inliers.len() >= sample_size {
-                let w = best_inliers.len() as f32 / n as f32;
-                let s = sample_size as f32;
-
-                // Avoid numerical issues with very small w
-                if w > EPS_PROB_MIN && w < 1.0 {
-                    let ws = w.powf(s);
-                    if ws < 1.0 - EPS_LOG_GUARD && ws > EPS_LOG_GUARD {
-                        // Avoid log(0) and log(1)
-                        let log_conf = (1.0 - params.confidence).max(EPS_LOG_GUARD).ln();
-                        let log_denom = (1.0 - ws).ln();
-                        if log_denom.is_finite() && log_denom.abs() > EPS_LOG_GUARD {
-                            let est = (log_conf / log_denom).ceil();
-
-                            if est.is_finite() && est > 0.0 {
-                                let est_usize = est.min(params.max_iterations as f32) as usize;
-                                if est_usize < required_iters {
-                                    required_iters = est_usize;
-                                }
-                            }
-                        }
-                    } else if w >= HIGH_INLIER_RATIO_STOP {
-                        // Very high inlier ratio (≥95%), we can stop early
-                        required_iters = iter;
-                    }
-                }
-            }
-        }
-    }
-
-    // Validate and optionally refine
-    if best_inliers.len() < min_correspondences {
-        let err = PnPRansacError::InsufficientInliers {
-            required: min_correspondences,
-            actual: best_inliers.len(),
-        };
-        return Err(err);
-    }
-
-    let (refined, refinement) = if params.refine {
-        // Refit on all inliers. A minimal solver cannot do this — AP3P rejects any count other
-        // than 3 — so the non-minimal refit always uses EPnP, the standard minimal-kernel /
-        // non-minimal-refit split. LM refinement is switched on for that fallback: a caller who
-        // reached for AP3P is often in the small-object / long-range or near-planar regime where
-        // EPnP's PCA control points are ill-conditioned, and handing back a bare EPnP pose there
-        // would silently undo their choice of kernel.
-        let refit_method = if is_ap3p {
-            PnPMethod::EPnP(EPnPParams {
-                refine_lm: Some(LMRefineParams::default()),
-                ..Default::default()
-            })
-        } else {
-            base.clone()
-        };
-        let mut w_all = Vec::with_capacity(best_inliers.len());
-        let mut i_all = Vec::with_capacity(best_inliers.len());
-        for &idx in &best_inliers {
-            w_all.push(world[idx]);
-            i_all.push(image[idx]);
-        }
-        // Score the refit on the SAME points and threshold that chose the consensus set, so the
-        // comparison in `keep_better_of` is like for like.
-        let refit_method_reported = refit_method.clone();
-        let refit_result = solve_pnp(&w_all, &i_all, k, distortion, refit_method);
-        let refit_inliers = refit_result.as_ref().map_or(0, |p| {
-            classify_points(
-                world,
-                image,
-                None,
-                None,
-                ClassificationParams {
-                    rotation_matrix: &p.rotation,
-                    translation_vector: &p.translation,
-                    camera_intrinsics_x: &intr_x,
-                    camera_intrinsics_y: &intr_y,
-                    threshold: Some(params.reproj_threshold_px),
-                },
-            )
-            .0
-            .len()
-        });
-        keep_better_of(
-            refit_result,
-            refit_inliers,
-            best_pose.clone(),
-            best_inliers.len(),
-            refit_method_reported,
-        )
-    } else {
-        (None, Refinement::Skipped)
     };
 
-    let mut final_pose = match refined.or(best_pose) {
+    if best.score.support < min_correspondences {
+        return Err(PnPRansacError::InsufficientInliers {
+            required: min_correspondences,
+            actual: best.score.support,
+        });
+    }
+    let best_inliers: Vec<usize> = best
+        .inliers
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &keep)| keep.then_some(i))
+        .collect();
+
+    let mut final_pose = match best.model {
         Some(p) => p,
         None => {
             return Err(PnPError::SvdFailed(
@@ -599,34 +413,249 @@ pub fn solve_pnp_ransac(
     })
 }
 
-fn sample_all_positive_depths(r: &Mat3AF32, t: &Vec3AF32, world: &[Vec3AF32]) -> bool {
-    world.iter().all(|&pw| {
-        let pc = *r * pw + *t;
+fn sample_all_positive_depths(
+    r: &Mat3AF32,
+    t: &Vec3AF32,
+    world: &[Vec3AF32],
+    sample: &[usize],
+) -> bool {
+    sample.iter().all(|&idx| {
+        let pc = *r * world[idx] + *t;
         pc.z > 0.0
     })
 }
 
-/// Reorder the first `k` entries of `indices` into a uniform-without-replacement sample.
-///
-/// Equivalent to `indices.shuffle(rng); &indices[..k]` but in O(k) instead of O(n): once the
-/// first k positions have been chosen, the remaining (n - k) entries can stay in any order —
-/// the next iteration re-samples from the top anyway. The caller is required to have
-/// `k <= indices.len()`.
-fn partial_shuffle_sample<'a, R: rand::Rng + ?Sized>(
-    indices: &'a mut [usize],
-    k: usize,
-    rng: &mut R,
-) -> &'a [usize] {
-    debug_assert!(
-        k <= indices.len(),
-        "sample size {k} exceeds population {}",
-        indices.len()
-    );
-    let drawn = rand::seq::index::sample(rng, indices.len(), k);
-    for (slot, idx) in indices.iter_mut().take(k).zip(drawn.iter()) {
-        *slot = idx;
+/// PnP over 2D-3D correspondences, as an engine [`Problem`].
+struct PnpProblem<'a> {
+    world: &'a [Vec3AF32],
+    image: &'a [Vec2F32],
+    k: &'a Mat3AF32,
+    distortion: Option<&'a PolynomialDistortion>,
+    base: &'a PnPMethod,
+    is_ap3p: bool,
+    sample_size: usize,
+    intr_x: Vec3AF32,
+    intr_y: Vec3AF32,
+    /// The current minimal sample.
+    w_min: Vec<Vec3AF32>,
+    i_min: Vec<Vec2F32>,
+    /// Minimal fits so far, i.e. the current draw (every draw is fitted).
+    draws: usize,
+    /// Its poses: up to four for AP3P, one for EPnP.
+    candidates: Vec<PnPResult>,
+}
+
+impl PnpProblem<'_> {
+    /// Squared pixel reprojection error, or `None` behind the camera.
+    #[inline]
+    fn squared_error(&self, pose: &PnPResult, index: usize) -> Option<f32> {
+        project_sq_error(
+            &self.world[index],
+            &self.image[index],
+            &pose.rotation,
+            &pose.translation,
+            &self.intr_x,
+            &self.intr_y,
+            true,
+        )
     }
-    &indices[..k]
+}
+
+impl Problem for PnpProblem<'_> {
+    type Model = PnPResult;
+
+    #[inline]
+    fn num_observations(&self) -> usize {
+        self.world.len()
+    }
+
+    #[inline]
+    fn sample_size(&self) -> usize {
+        self.sample_size
+    }
+
+    /// AP3P is a polynomial solver returning up to 4 real roots; scoring only
+    /// the first cheirality-passing one throws away most clean samples, so
+    /// every root is kept. EPnP returns one pose.
+    fn fit_minimal(&mut self, sample: &[usize]) {
+        self.draws += 1;
+        self.w_min.clear();
+        self.i_min.clear();
+        for &idx in sample {
+            self.w_min.push(self.world[idx]);
+            self.i_min.push(self.image[idx]);
+        }
+        self.candidates.clear();
+        if self.is_ap3p {
+            match solve_ap3p_multi(&self.w_min, &self.i_min, self.k) {
+                Ok(roots) => self.candidates = roots,
+                Err(_e) => log::debug!("AP3P failed on minimal set at iteration {}", self.draws),
+            }
+        } else {
+            match solve_pnp(
+                &self.w_min,
+                &self.i_min,
+                self.k,
+                self.distortion,
+                self.base.clone(),
+            ) {
+                Ok(pose) => self.candidates.push(pose),
+                Err(_e) => log::debug!("EPnP failed on minimal set at iteration {}", self.draws),
+            }
+        }
+    }
+
+    #[inline]
+    fn candidates(&self) -> &[PnPResult] {
+        &self.candidates
+    }
+
+    /// Cheirality on the minimal set. Redundant for AP3P -- `solve_ap3p_multi`
+    /// already filters its roots by positive depth over these same 3 points, in
+    /// f64 -- but EPnP does not.
+    #[inline]
+    fn check_model(&self, sample: &[usize], pose: &PnPResult) -> bool {
+        let passed =
+            sample_all_positive_depths(&pose.rotation, &pose.translation, self.world, sample);
+        if !passed {
+            log::debug!("Cheirality check failed on iteration {}", self.draws);
+        }
+        passed
+    }
+}
+
+impl PointResidual for PnpProblem<'_> {
+    #[inline]
+    fn residual(&self, pose: &PnPResult, index: usize) -> f64 {
+        self.squared_error(pose, index).unwrap_or(f32::INFINITY) as f64
+    }
+}
+
+/// Counts strict inliers, `sqrt(squared_error) < threshold_px`.
+struct ReprojectionScorer {
+    threshold_px: f32,
+}
+
+impl Scorer<PnpProblem<'_>> for ReprojectionScorer {
+    type Objective = InlierCount;
+
+    fn score_full(
+        &mut self,
+        problem: &PnpProblem<'_>,
+        pose: &PnPResult,
+        ws: &mut Workspace,
+    ) -> Score<InlierCount> {
+        let mut count = 0;
+        for (index, is_inlier) in ws.mask.iter_mut().enumerate() {
+            *is_inlier = problem
+                .squared_error(pose, index)
+                .is_some_and(|sq| sq.sqrt() < self.threshold_px);
+            count += *is_inlier as usize;
+        }
+        Score {
+            objective: InlierCount(count),
+            support: count,
+        }
+    }
+}
+
+/// The PnP loop's adaptive cap, `N = log(1-p) / log(1-w^k)` in `f32`,
+/// updated once per draw that found a new best.
+struct PnpCap {
+    required: usize,
+    max_iterations: usize,
+    confidence: f32,
+    population: usize,
+    sample_size: usize,
+}
+
+impl Termination for PnpCap {
+    #[inline]
+    fn done(&self, draws: usize) -> bool {
+        draws >= self.required || draws >= self.max_iterations
+    }
+
+    #[inline]
+    fn on_new_best(&mut self, _support: usize, _draws: usize) {}
+
+    fn after_draw(&mut self, draws: usize, improved: bool, best_support: usize) {
+        if !improved || best_support < self.sample_size {
+            return;
+        }
+        let w = best_support as f32 / self.population as f32;
+        let s = self.sample_size as f32;
+        // Avoid numerical issues with very small w
+        if w > EPS_PROB_MIN && w < 1.0 {
+            let ws = w.powf(s);
+            if ws < 1.0 - EPS_LOG_GUARD && ws > EPS_LOG_GUARD {
+                // Avoid log(0) and log(1)
+                let log_conf = (1.0 - self.confidence).max(EPS_LOG_GUARD).ln();
+                let log_denom = (1.0 - ws).ln();
+                if log_denom.is_finite() && log_denom.abs() > EPS_LOG_GUARD {
+                    let est = (log_conf / log_denom).ceil();
+                    if est.is_finite() && est > 0.0 {
+                        let est_usize = est.min(self.max_iterations as f32) as usize;
+                        if est_usize < self.required {
+                            self.required = est_usize;
+                        }
+                    }
+                }
+            } else if w >= HIGH_INLIER_RATIO_STOP {
+                // Very high inlier ratio (≥95%), we can stop early
+                self.required = draws;
+            }
+        }
+    }
+}
+
+/// The PnP final fit: a non-minimal refit over the consensus set.
+struct PnpRefit {
+    refine: bool,
+    min_support: usize,
+    refinement: Refinement,
+}
+
+impl<'a, T, R> Schedule<PnpProblem<'a>, ReprojectionScorer, T, R> for PnpRefit {
+    /// Refit on all inliers. A minimal solver cannot do this — AP3P rejects
+    /// any count other than 3 — so the non-minimal refit always uses EPnP,
+    /// the standard minimal-kernel / non-minimal-refit split. LM refinement is
+    /// switched on for that fallback: a caller who reached for AP3P is often
+    /// in the small-object / long-range or near-planar regime where EPnP's PCA
+    /// control points are ill-conditioned, and handing back a bare EPnP pose
+    /// there would silently undo their choice of kernel.
+    fn final_fit(
+        &mut self,
+        stage: &mut StageContext<'_, PnpProblem<'a>, ReprojectionScorer, T, R>,
+    ) {
+        if !self.refine || stage.best.score.support < self.min_support {
+            return;
+        }
+        let problem = stage.problem;
+        let refit_method = if problem.is_ap3p {
+            PnPMethod::EPnP(EPnPParams {
+                refine_lm: Some(LMRefineParams::default()),
+                ..Default::default()
+            })
+        } else {
+            problem.base.clone()
+        };
+        let mut w_all = Vec::with_capacity(stage.best.score.support);
+        let mut i_all = Vec::with_capacity(stage.best.score.support);
+        for (idx, &is_inlier) in stage.best.inliers.iter().enumerate() {
+            if is_inlier {
+                w_all.push(problem.world[idx]);
+                i_all.push(problem.image[idx]);
+            }
+        }
+        let refit_method_reported = refit_method.clone();
+        let refit = solve_pnp(&w_all, &i_all, problem.k, problem.distortion, refit_method);
+        // Score the refit on the SAME points and threshold that chose the
+        // consensus set, so the comparison in `keep_better_of` is like for like.
+        let refit_inliers = refit.as_ref().map_or(0, |pose| {
+            stage.scorer.score_full(problem, pose, stage.ws).support
+        });
+        self.refinement = keep_better_of(refit, refit_inliers, stage.best, refit_method_reported);
+    }
 }
 
 /// This function handles both:
@@ -1100,46 +1129,52 @@ mod tests {
             converged: None,
         };
         let minimal = pose(Vec3AF32::new(1.0, 2.0, 3.0), 0.25);
+        let incumbent = |support: usize| {
+            let mut best = Incumbent::<PnPResult, InlierCount>::new(vec![true; support]);
+            best.model = Some(minimal.clone());
+            best.score = Score {
+                objective: InlierCount(support),
+                support,
+            };
+            best
+        };
 
         // Refit failed: the minimal-sample pose comes back UNTOUCHED.
-        let (kept, how) = keep_better_of(
+        let mut best = incumbent(6);
+        let how = keep_better_of(
             Err(PnPError::SvdFailed("degenerate consensus set".to_string())),
             0,
-            Some(minimal.clone()),
-            6,
+            &mut best,
             PnPMethod::EPnPDefault,
         );
-        let kept = kept.expect("a failed refit must not discard the minimal-sample pose");
+        let kept = best
+            .model
+            .expect("a failed refit must not discard the minimal-sample pose");
         assert!(matches!(how, Refinement::Failed));
         assert_eq!(kept.rotation, minimal.rotation);
         assert_eq!(kept.translation, minimal.translation);
 
-        // Refit succeeded: its pose wins.
+        // Refit succeeded with equal support: ties go to the refit, but the
+        // minimal pose's inlier mask stays (the phase-A stale mask).
         let refined = pose(Vec3AF32::new(9.0, 9.0, 9.0), 0.01);
-        let (kept, how) = keep_better_of(
-            Ok(refined.clone()),
-            6,
-            Some(minimal.clone()),
-            6,
-            PnPMethod::EPnPDefault,
-        );
+        let mut best = incumbent(6);
+        let how = keep_better_of(Ok(refined.clone()), 6, &mut best, PnPMethod::EPnPDefault);
         assert_eq!(
-            kept.expect("a successful refit must be used").translation,
+            best.model
+                .expect("a successful refit must be used")
+                .translation,
             refined.translation
         );
         assert!(matches!(how, Refinement::Applied(_)));
+        assert_eq!(best.inliers, vec![true; 6]);
 
         // ...but a refit that LOSES support is discarded. This is the case that silently undid an
         // AP3P caller's choice of kernel: EPnP succeeds, scores worse, and won anyway.
-        let (kept, how) = keep_better_of(
-            Ok(refined.clone()),
-            4,
-            Some(minimal.clone()),
-            6,
-            PnPMethod::EPnPDefault,
-        );
+        let mut best = incumbent(6);
+        let how = keep_better_of(Ok(refined.clone()), 4, &mut best, PnPMethod::EPnPDefault);
         assert_eq!(
-            kept.expect("losing support must fall back, not fail")
+            best.model
+                .expect("losing support must fall back, not fail")
                 .translation,
             minimal.translation,
             "a refit with fewer inliers must not replace the minimal-sample pose"
@@ -1147,15 +1182,42 @@ mod tests {
         assert!(matches!(how, Refinement::RejectedWorse));
 
         // Nothing to fall back to: still nothing, and the caller turns that into an error.
-        assert!(keep_better_of(
+        let mut best = Incumbent::<PnPResult, InlierCount>::new(Vec::new());
+        keep_better_of(
             Err(PnPError::SvdFailed("x".to_string())),
             0,
-            None,
-            0,
-            PnPMethod::EPnPDefault
-        )
-        .0
-        .is_none());
+            &mut best,
+            PnPMethod::EPnPDefault,
+        );
+        assert!(best.model.is_none());
+    }
+
+    /// An equal-support refit wins the tie: the returned pose is the EPnP refit
+    /// over the consensus set, reported as applied, with the consensus indices.
+    ///
+    /// Five correspondences make the minimal sample and the refit see the same
+    /// points, in a different order. EPnP is order-sensitive at the pixel
+    /// level on this small target, so a loose threshold lets both poses
+    /// explain every point and tie.
+    #[test]
+    fn an_equal_support_refit_is_applied() -> Result<(), PnPRansacError> {
+        let (r_gt, t_gt) = pose_gt();
+        let world = &scene_non_planar()[..5];
+        let image = project_exact(world, &r_gt, &t_gt);
+        let k = k_default();
+        let params = RansacParams {
+            max_iterations: 20,
+            reproj_threshold_px: 50.0,
+            random_seed: Some(7),
+            ..Default::default()
+        };
+        let res = solve_pnp_ransac(world, &image, &k, None, PnPMethod::EPnPDefault, &params)?;
+        assert!(matches!(res.refinement, Refinement::Applied(_)));
+        assert_eq!(res.inliers, [0, 1, 2, 3, 4]);
+        let refit = solve_pnp(world, &image, &k, None, PnPMethod::EPnPDefault)?;
+        assert_eq!(res.pose.rotation, refit.rotation);
+        assert_eq!(res.pose.translation, refit.translation);
+        Ok(())
     }
 
     /// The coplanar case must succeed end to end, whichever way the refit goes.

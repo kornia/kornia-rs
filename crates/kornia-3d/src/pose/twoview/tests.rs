@@ -312,8 +312,8 @@ fn test_ransac_confidence_validation_and_defaults() {
 
 #[test]
 fn test_ransac_confidence_monotonically_increases_adaptive_cap() {
-    let low = adaptive_ransac_cap(25, 100, 7, 0.99, 1_000_000, 0);
-    let high = adaptive_ransac_cap(25, 100, 7, 0.999_999, 1_000_000, 0);
+    let low = crate::ransac::engine::adaptive_max_iters(25, 100, 7, 0.99, 1_000_000);
+    let high = crate::ransac::engine::adaptive_max_iters(25, 100, 7, 0.999_999, 1_000_000);
     assert!(high > low, "high-confidence cap {high} must exceed {low}");
 }
 
@@ -1484,4 +1484,148 @@ fn filter_by_mask(
         }
     }
     (out_kps, out_ori, out_desc)
+}
+
+/// `synthetic_two_view` inliers followed by uniformly random outliers.
+fn two_view_with_outliers(
+    n_inliers: usize,
+    n_outliers: usize,
+    noise_px: f64,
+    seed: u64,
+) -> (Vec<Vec2F64>, Vec<Vec2F64>) {
+    let (mut x1, mut x2, _, _, _) = synthetic_two_view(n_inliers, noise_px, seed);
+    let mut lcg = seed ^ 0x9E37_79B9_7F4A_7C15;
+    let mut next = || -> f64 {
+        lcg = lcg
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (lcg >> 32) as f64 / 4_294_967_296.0
+    };
+    for _ in 0..n_outliers {
+        x1.push(Vec2F64::new(next() * 640.0, next() * 480.0));
+        x2.push(Vec2F64::new(next() * 640.0, next() * 480.0));
+    }
+    (x1, x2)
+}
+
+/// With `refit`, LO+ and DEGENSAC only replace the winner through the
+/// incumbent, so the returned mask, count and score are exactly those of the
+/// returned model.
+#[test]
+fn fundamental_refit_returns_the_mask_of_its_model() -> Result<(), TwoViewError> {
+    let (x1, x2) = two_view_with_outliers(150, 100, 0.8, 0xF17);
+    let (x1_x, x1_y) = split_xy(&x1);
+    let (x2_x, x2_y) = split_xy(&x2);
+    let params = RansacParams {
+        threshold: 1.5,
+        refit: true,
+        ..Default::default()
+    };
+    let plain = RansacParams {
+        refit: false,
+        ..params
+    };
+    for (res, plain) in [
+        (
+            ransac_fundamental(&x1, &x2, &params)?,
+            ransac_fundamental(&x1, &x2, &plain)?,
+        ),
+        (
+            ransac_fundamental_8point(&x1, &x2, &params)?,
+            ransac_fundamental_8point(&x1, &x2, &plain)?,
+        ),
+    ] {
+        // The refit replaced the minimal-sample winner...
+        assert_ne!(res.model, plain.model);
+        // ...and its mask, count and score are recomputed for it.
+        let mut mask = vec![false; x1.len()];
+        let (count, score) = score_inliers_f(
+            &res.model,
+            &x1_x,
+            &x1_y,
+            &x2_x,
+            &x2_y,
+            params.threshold * params.threshold,
+            &mut mask,
+        );
+        assert_eq!(res.inliers, mask);
+        assert_eq!(res.inlier_count, count);
+        assert_eq!(res.score.to_bits(), score.to_bits());
+    }
+    Ok(())
+}
+
+/// The homography DLT refit replaces the model and the residual sum but, as
+/// before the staged engine, keeps the pre-refit inlier mask and count.
+#[test]
+fn homography_refit_keeps_the_pre_refit_mask() -> Result<(), TwoViewError> {
+    let h_true = Mat3F64::from_cols(
+        Vec3F64::new(1.1, 0.05, 1e-4),
+        Vec3F64::new(-0.04, 0.95, 2e-4),
+        Vec3F64::new(12.0, -7.0, 1.0),
+    );
+    let mut lcg: u64 = 0x4844_4C54;
+    let mut next = || -> f64 {
+        lcg = lcg
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (lcg >> 32) as f64 / 4_294_967_296.0
+    };
+    let (mut x1, mut x2) = (Vec::new(), Vec::new());
+    for i in 0..120 {
+        let p = Vec3F64::new(
+            (i % 12) as f64 * 40.0 + 30.0,
+            (i / 12) as f64 * 35.0 + 40.0,
+            1.0,
+        );
+        let hp = h_true * p;
+        x1.push(Vec2F64::new(p.x, p.y));
+        x2.push(Vec2F64::new(
+            hp.x / hp.z + (next() - 0.5) * 1.6,
+            hp.y / hp.z + (next() - 0.5) * 1.6,
+        ));
+    }
+    for _ in 0..60 {
+        x1.push(Vec2F64::new(next() * 640.0, next() * 480.0));
+        x2.push(Vec2F64::new(next() * 640.0, next() * 480.0));
+    }
+
+    let plain_params = RansacParams {
+        threshold: 2.0,
+        ..Default::default()
+    };
+    let refit_params = RansacParams {
+        refit: true,
+        ..plain_params
+    };
+    let plain = ransac_homography(&x1, &x2, &plain_params)?;
+    let refit = ransac_homography(&x1, &x2, &refit_params)?;
+    // The noisy minimal fit leaves room for the DLT to lower the residual sum.
+    assert!(refit.score < plain.score, "DLT refit was not kept");
+    assert_ne!(refit.model, plain.model);
+    assert_eq!(refit.inliers, plain.inliers);
+    assert_eq!(refit.inlier_count, plain.inlier_count);
+    Ok(())
+}
+
+/// Every sample of a collinear input is rejected before fitting, so no draw
+/// ever improves: the loop ends at the stagnation exit and reports failure.
+#[test]
+fn homography_on_collinear_points_fails() {
+    let x1: Vec<Vec2F64> = (0..40)
+        .map(|i| Vec2F64::new(i as f64 * 7.0, 3.0 + i as f64))
+        .collect();
+    let x2: Vec<Vec2F64> = x1
+        .iter()
+        .map(|p| Vec2F64::new(p.x + 5.0, p.y - 2.0))
+        .collect();
+    let params = RansacParams {
+        max_iterations: 500,
+        min_inliers: 0,
+        ..Default::default()
+    };
+    assert!(matches!(
+        ransac_homography(&x1, &x2, &params),
+        Err(TwoViewError::RansacFailure)
+    ));
 }

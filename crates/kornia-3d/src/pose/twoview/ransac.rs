@@ -1,5 +1,11 @@
 //! Robust two-view model estimation: the RANSAC entry points for the
 //! fundamental, essential and homography models.
+//!
+//! Each entry point is a preset of the crate's staged RANSAC engine: a
+//! [`Problem`] holding the prepared correspondences, an exact [`Scorer`] in
+//! pixel units, the two-view adaptive cap and a [`Schedule`] for the optional
+//! refit. Candidates are ranked by inlier count, then by the lower sum of
+//! inlier residuals, with an inclusive `residual <= threshold²` test.
 
 use super::kernels::{
     score_inliers_f, score_inliers_f_bounded_masked, score_inliers_f_upper_bound, score_inliers_h,
@@ -10,10 +16,18 @@ use super::{RansacParams, RansacResult, TwoViewError};
 use crate::pose::fundamental::fundamental_8point;
 use crate::pose::fundamental_7pt::fundamental_7point_oriented_into;
 use crate::pose::{essential_5pt, homography_4pt2d, homography_dlt};
-use crate::ransac::{adaptive_max_iters, sample_distinct_indices};
+use crate::ransac::engine::{
+    self, CapBase, Components, CountThenResidual, Incumbent, NoSchedule, NoVerifier, Objective,
+    Problem, Schedule, Score, Scorer, StageContext, Termination, Ties, TwoViewCap, UniformDraw,
+    Workspace,
+};
 use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64};
-use rand::prelude::*;
+use rand::rngs::StdRng;
 use rand::SeedableRng;
+
+/// Draws without a new best after which homography RANSAC stops.
+const HOMOGRAPHY_STAGNATION_LIMIT: usize = 200;
+
 #[inline]
 pub(super) fn ransac_confidence(params: &RansacParams, default: f64) -> Result<f64, TwoViewError> {
     match params.confidence {
@@ -25,23 +39,118 @@ pub(super) fn ransac_confidence(params: &RansacParams, default: f64) -> Result<f
     }
 }
 
+/// The run's RNG: seeded when requested, otherwise from the thread RNG.
+fn ransac_rng(params: &RansacParams) -> StdRng {
+    match params.random_seed {
+        Some(seed) => StdRng::seed_from_u64(seed),
+        None => {
+            let mut thread_rng = rand::rng();
+            StdRng::from_rng(&mut thread_rng)
+        }
+    }
+}
+
+/// Correspondences in both layouts: AoS for the solvers, SoA for the SIMD
+/// scoring kernels.
+pub(super) struct PointPairs<'a> {
+    pub(super) x1: &'a [Vec2F64],
+    pub(super) x2: &'a [Vec2F64],
+    x1_x: Vec<f64>,
+    x1_y: Vec<f64>,
+    x2_x: Vec<f64>,
+    x2_y: Vec<f64>,
+}
+
+impl<'a> PointPairs<'a> {
+    /// Flatten `x1` and `x2`, which must have equal lengths, once per run.
+    fn new(x1: &'a [Vec2F64], x2: &'a [Vec2F64]) -> Self {
+        debug_assert_eq!(x1.len(), x2.len());
+        let (x1_x, x1_y) = split_xy(x1);
+        let (x2_x, x2_y) = split_xy(x2);
+        Self {
+            x1,
+            x2,
+            x1_x,
+            x1_y,
+            x2_x,
+            x2_y,
+        }
+    }
+
+    /// Number of correspondences.
+    #[inline]
+    pub(super) fn len(&self) -> usize {
+        self.x1.len()
+    }
+
+    /// Sampson inliers of `f` at `thresh_sq`: sets their entries of the
+    /// all-false `mask` and returns their count and residual sum.
+    #[inline]
+    pub(super) fn sampson(&self, f: &Mat3F64, thresh_sq: f64, mask: &mut [bool]) -> (usize, f64) {
+        score_inliers_f(
+            f, &self.x1_x, &self.x1_y, &self.x2_x, &self.x2_y, thresh_sq, mask,
+        )
+    }
+
+    /// Transfer-error inliers of `h`, like [`Self::sampson`].
+    #[inline]
+    pub(super) fn transfer(&self, h: &Mat3F64, thresh_sq: f64, mask: &mut [bool]) -> (usize, f64) {
+        score_inliers_h(
+            h, &self.x1_x, &self.x1_y, &self.x2_x, &self.x2_y, thresh_sq, mask,
+        )
+    }
+}
+
+/// Run a two-view preset and apply the minimum-support gate.
+fn run_two_view<P, Sc, Sch>(
+    mut problem: P,
+    scorer: Sc,
+    schedule: Sch,
+    termination: TwoViewCap,
+    min_support: usize,
+    rng: &mut StdRng,
+) -> Result<RansacResult<Mat3F64>, TwoViewError>
+where
+    P: Problem<Model = Mat3F64>,
+    Sc: Scorer<P, Objective = CountThenResidual>,
+    Sch: Schedule<P, Sc, TwoViewCap, StdRng>,
+{
+    let n = problem.num_observations();
+    let mut parts = Components {
+        sampler: UniformDraw,
+        verifier: NoVerifier,
+        scorer,
+        schedule,
+        termination,
+    };
+    let mut best = Incumbent::new(vec![false; n]);
+    let mut ws = Workspace::new(vec![false; n], Vec::new());
+    engine::run(&mut problem, &mut parts, &mut best, &mut ws, rng);
+    match best.model {
+        Some(model) if best.score.support >= min_support => Ok(RansacResult {
+            model,
+            inliers: best.inliers,
+            inlier_count: best.score.support,
+            score: best.score.objective.residual,
+        }),
+        _ => Err(TwoViewError::RansacFailure),
+    }
+}
+
+/// Whether a post-sampling refit may run: the schedule only refines a
+/// winner that already passes the minimum-support gate.
 #[inline]
-pub(super) fn adaptive_ransac_cap(
-    inlier_count: usize,
-    population: usize,
-    sample_size: usize,
-    confidence: f64,
-    current_cap: usize,
-    completed: usize,
-) -> usize {
-    adaptive_max_iters(
-        inlier_count,
-        population,
-        sample_size,
-        confidence,
-        current_cap,
-    )
-    .max(completed)
+fn refit_allowed<O>(refit: bool, best: &Incumbent<Mat3F64, O>, min_support: usize) -> bool {
+    refit && best.model.is_some() && best.score.support >= min_support
+}
+
+/// A two-view score from a kernel's `(count, residual sum)`.
+#[inline]
+fn count_then_residual((count, residual): (usize, f64)) -> Score<CountThenResidual> {
+    Score {
+        objective: CountThenResidual { count, residual },
+        support: count,
+    }
 }
 
 /// Estimate a fundamental matrix with seven-point RANSAC hypotheses.
@@ -60,6 +169,21 @@ pub(super) fn adaptive_ransac_cap(
 /// # Returns
 ///
 /// The best fundamental matrix, its inlier mask, count and Sampson score.
+///
+/// # Behaviour
+///
+/// - **Inliers:** Sampson distance `d ≤ threshold²` in squared pixels
+///   (inclusive).
+/// - **Ranking:** more inliers wins, then the lower sum of inlier distances.
+/// - **Stopping:** after `max_iterations` draws, or once the adaptive bound
+///   for sampling without replacement reaches `confidence` (default 0.9999).
+///   A draw whose sample yields no consistent root still counts. Full support
+///   stops after the current draw.
+/// - **Minimum support:** the winner must have `min_inliers` inliers before
+///   any refit, otherwise the call fails.
+/// - **Refit:** with `refit`, LO+ threshold annealing and then DEGENSAC; each
+///   only replaces the winner with a strictly better model, and the returned
+///   mask, count and score are those of the returned model.
 ///
 /// # Errors
 ///
@@ -97,6 +221,21 @@ pub fn ransac_fundamental(
 ///
 /// The best fundamental matrix, its inlier mask, count and Sampson score.
 ///
+/// # Behaviour
+///
+/// - **Inliers:** Sampson distance `d ≤ threshold²` in squared pixels
+///   (inclusive).
+/// - **Ranking:** more inliers wins, then the lower sum of inlier distances.
+/// - **Stopping:** after `max_iterations` draws, or once the adaptive bound
+///   for sampling without replacement reaches `confidence` (default 0.9999).
+///   A draw whose sample is degenerate still counts. Full support
+///   stops after the current draw.
+/// - **Minimum support:** the winner must have `min_inliers` inliers before
+///   any refit, otherwise the call fails.
+/// - **Refit:** with `refit`, LO+ threshold annealing and then DEGENSAC; each
+///   only replaces the winner with a strictly better model, and the returned
+///   mask, count and score are those of the returned model.
+///
 /// # Errors
 ///
 /// Returns [`TwoViewError::InvalidInput`] for unequal lengths or fewer than
@@ -132,166 +271,182 @@ fn ransac_fundamental_impl<const SAMPLE_SIZE: usize>(
             required: SAMPLE_SIZE,
         });
     }
-
-    let mut rng = match params.random_seed {
-        Some(seed) => StdRng::seed_from_u64(seed),
-        None => {
-            let mut thread_rng = rand::rng();
-            StdRng::from_rng(&mut thread_rng)
-        }
+    let mut rng = ransac_rng(params);
+    let problem = FundamentalProblem::<SAMPLE_SIZE> {
+        points: PointPairs::new(x1, x2),
+        threshold: params.threshold,
+        thresh_sq: params.threshold * params.threshold,
+        roots: [Mat3F64::ZERO; 3],
+        num_roots: 0,
     };
-
-    let n = x1.len();
-    let thresh_sq = params.threshold * params.threshold;
-    // One-time SoA flatten so score_inliers_f's NEON path reads contiguous f64.
-    let (x1_x, x1_y) = split_xy(x1);
-    let (x2_x, x2_y) = split_xy(x2);
-    let mut best_model: Option<Mat3F64> = None;
-    let mut best_inliers = vec![false; n];
-    let mut best_count = 0usize;
-    let mut best_score = f64::INFINITY;
-    // Hoisted scratch — was per-iteration `vec![false; n]`. Adaptive cap can
-    // run hundreds of iterations on tough inputs; one alloc + clear-each-iter
-    // is much cheaper than allocator churn.
-    let mut scratch_inliers = vec![false; n];
-
     // Confidence applies to minimal samples, rather than individual roots.
-    let mut dynamic_max = params.max_iterations;
-    let mut iter = 0usize;
-    while iter < dynamic_max {
-        iter += 1;
-        let mut sample = [0usize; SAMPLE_SIZE];
-        sample_distinct_indices(&mut rng, n, &mut sample);
+    let termination = TwoViewCap::new(
+        params.max_iterations,
+        CapBase::Current,
+        x1.len(),
+        SAMPLE_SIZE,
+        confidence,
+    );
+    let schedule = FundamentalRefinement {
+        refit: params.refit,
+        min_support: params.min_inliers,
+    };
+    run_two_view(
+        problem,
+        SampsonScorer,
+        schedule,
+        termination,
+        params.min_inliers,
+        &mut rng,
+    )
+}
+
+/// Seven- or eight-point fundamental matrix estimation in pixel space.
+pub(super) struct FundamentalProblem<'a, const SAMPLE_SIZE: usize> {
+    pub(super) points: PointPairs<'a>,
+    /// Inlier threshold in pixels; LO+ anneals multiples of it.
+    pub(super) threshold: f64,
+    pub(super) thresh_sq: f64,
+    /// Roots of the last minimal sample: up to three for seven points.
+    roots: [Mat3F64; 3],
+    num_roots: usize,
+}
+
+impl<const SAMPLE_SIZE: usize> Problem for FundamentalProblem<'_, SAMPLE_SIZE> {
+    type Model = Mat3F64;
+
+    #[inline]
+    fn num_observations(&self) -> usize {
+        self.points.len()
+    }
+
+    #[inline]
+    fn sample_size(&self) -> usize {
+        SAMPLE_SIZE
+    }
+
+    #[inline]
+    fn fit_minimal(&mut self, sample: &[usize]) {
         let mut s1 = [Vec2F64::ZERO; SAMPLE_SIZE];
         let mut s2 = [Vec2F64::ZERO; SAMPLE_SIZE];
         for (i, &idx) in sample.iter().enumerate() {
-            s1[i] = x1[idx];
-            s2[i] = x2[idx];
+            s1[i] = self.points.x1[idx];
+            s2[i] = self.points.x2[idx];
         }
-        let mut seven_models = [Mat3F64::ZERO; 3];
-        let eight_model;
-        let models: &[Mat3F64] = if SAMPLE_SIZE == 7 {
-            let count = match fundamental_7point_oriented_into(&s1, &s2, &mut seven_models) {
-                Ok(count) => count,
-                Err(_) => continue,
-            };
-            &seven_models[..count]
+        self.num_roots = if SAMPLE_SIZE == 7 {
+            fundamental_7point_oriented_into(&s1, &s2, &mut self.roots).unwrap_or(0)
         } else {
             match fundamental_8point(&s1, &s2) {
-                Ok(f) => eight_model = [f],
-                Err(_) => continue,
-            }
-            &eight_model
-        };
-
-        for &f in models {
-            // A 7-point sample may yield up to three hypotheses, and most of
-            // them cannot win. A division-free pass bounds each root's
-            // support from above; roots that cannot even tie the incumbent
-            // are dropped before any exact scoring or mask traffic. The
-            // 8-point path deliberately keeps its original full scorer.
-            if SAMPLE_SIZE == 7
-                && best_count > 0
-                && score_inliers_f_upper_bound(
-                    &f,
-                    &x1_x,
-                    &x1_y,
-                    &x2_x,
-                    &x2_y,
-                    thresh_sq,
-                    best_count - 1,
-                )
-                .is_none()
-            {
-                continue;
-            }
-            // Survivors usually win or tie, so score them exactly in fixed,
-            // SIMD-aligned chunks while materializing the mask, stopping only
-            // when the exact bound cannot beat the current winner.
-            scratch_inliers.fill(false);
-            let scored = if SAMPLE_SIZE == 7 {
-                score_inliers_f_bounded_masked(
-                    &f,
-                    &x1_x,
-                    &x1_y,
-                    &x2_x,
-                    &x2_y,
-                    thresh_sq,
-                    &mut scratch_inliers,
-                    best_count,
-                    best_score,
-                )
-            } else {
-                Some(score_inliers_f(
-                    &f,
-                    &x1_x,
-                    &x1_y,
-                    &x2_x,
-                    &x2_y,
-                    thresh_sq,
-                    &mut scratch_inliers,
-                ))
-            };
-            let Some((count, score)) = scored else {
-                continue;
-            };
-
-            let improved = count > best_count || (count == best_count && score < best_score);
-            if improved {
-                best_model = Some(f);
-                std::mem::swap(&mut best_inliers, &mut scratch_inliers);
-                best_count = count;
-                best_score = score;
-
-                if best_count == n {
-                    // Finish scoring this sample's roots before stopping.
-                    dynamic_max = iter;
-                    continue;
+                Ok(f) => {
+                    self.roots[0] = f;
+                    1
                 }
-                dynamic_max =
-                    adaptive_ransac_cap(best_count, n, SAMPLE_SIZE, confidence, dynamic_max, iter);
+                Err(_) => 0,
             }
-        }
+        };
     }
 
-    let model_in = match best_model {
-        Some(m) if best_count >= params.min_inliers => m,
-        _ => return Err(TwoViewError::RansacFailure),
-    };
+    #[inline]
+    fn candidates(&self) -> &[Mat3F64] {
+        &self.roots[..self.num_roots]
+    }
+}
 
-    let (model, best_inliers, best_count, best_score) = if params.refit {
-        let polished = lo_plus_fundamental(
-            x1,
-            x2,
-            &x1_x,
-            &x1_y,
-            &x2_x,
-            &x2_y,
-            params.threshold,
-            thresh_sq,
-            model_in,
-            best_inliers,
-            best_count,
-            best_score,
-        );
-        // DEGENSAC safety net: if the LO+ winner sits on a dominant-plane local
-        // optimum (Chum'04), recover the true F via [e']× H. No-op when the
-        // scene is non-planar (the strict-improve gate guarantees we never
-        // regress from the polished F).
-        degensac_recover_fundamental(
-            &x1_x, &x1_y, &x2_x, &x2_y, thresh_sq, polished.0, polished.1, polished.2, polished.3,
-            &mut rng,
+/// Inclusive Sampson scoring. Seven-point roots are scored with pruning
+/// against the incumbent; the eight-point path keeps its full scorer.
+struct SampsonScorer;
+
+impl<const SAMPLE_SIZE: usize> Scorer<FundamentalProblem<'_, SAMPLE_SIZE>> for SampsonScorer {
+    type Objective = CountThenResidual;
+
+    #[inline]
+    fn score_raw(
+        &mut self,
+        problem: &FundamentalProblem<'_, SAMPLE_SIZE>,
+        f: &Mat3F64,
+        bound: Option<&Score<CountThenResidual>>,
+        ws: &mut Workspace,
+    ) -> Option<Score<CountThenResidual>> {
+        if SAMPLE_SIZE != 7 {
+            return Some(self.score_full(problem, f, ws));
+        }
+        let best = bound.map_or(CountThenResidual::worst(), |b| b.objective);
+        let points = &problem.points;
+        // A seven-point sample yields up to three roots, and most of them
+        // cannot win. A division-free pass bounds each root's support from
+        // above; roots that cannot even tie the incumbent are dropped before
+        // any exact scoring or mask traffic.
+        if best.count > 0
+            && score_inliers_f_upper_bound(
+                f,
+                &points.x1_x,
+                &points.x1_y,
+                &points.x2_x,
+                &points.x2_y,
+                problem.thresh_sq,
+                best.count - 1,
+            )
+            .is_none()
+        {
+            return None;
+        }
+        // Survivors usually win or tie, so score them exactly in fixed,
+        // SIMD-aligned chunks while materializing the mask, stopping only
+        // when the exact bound cannot beat the incumbent.
+        ws.mask.fill(false);
+        score_inliers_f_bounded_masked(
+            f,
+            &points.x1_x,
+            &points.x1_y,
+            &points.x2_x,
+            &points.x2_y,
+            problem.thresh_sq,
+            &mut ws.mask,
+            best.count,
+            best.residual,
         )
-    } else {
-        (model_in, best_inliers, best_count, best_score)
-    };
+        .map(count_then_residual)
+    }
 
-    Ok(RansacResult {
-        model,
-        inliers: best_inliers,
-        inlier_count: best_count,
-        score: best_score,
-    })
+    #[inline]
+    fn score_full(
+        &mut self,
+        problem: &FundamentalProblem<'_, SAMPLE_SIZE>,
+        f: &Mat3F64,
+        ws: &mut Workspace,
+    ) -> Score<CountThenResidual> {
+        ws.mask.fill(false);
+        count_then_residual(problem.points.sampson(f, problem.thresh_sq, &mut ws.mask))
+    }
+}
+
+/// The fundamental-matrix refit: LO+ threshold annealing, then DEGENSAC,
+/// once after sampling.
+struct FundamentalRefinement {
+    refit: bool,
+    min_support: usize,
+}
+
+impl<'a, const SAMPLE_SIZE: usize, Sc, T>
+    Schedule<FundamentalProblem<'a, SAMPLE_SIZE>, Sc, T, StdRng> for FundamentalRefinement
+where
+    Sc: Scorer<FundamentalProblem<'a, SAMPLE_SIZE>, Objective = CountThenResidual>,
+    T: Termination,
+{
+    fn after_sampling(
+        &mut self,
+        stage: &mut StageContext<'_, FundamentalProblem<'a, SAMPLE_SIZE>, Sc, T, StdRng>,
+    ) {
+        if !refit_allowed(self.refit, stage.best, self.min_support) {
+            return;
+        }
+        lo_plus_fundamental(stage);
+        // DEGENSAC safety net: if the LO+ winner sits on a dominant-plane
+        // local optimum (Chum'04), recover the true F via [e']× H. No-op when
+        // the scene is non-planar; the strict-improve gate guarantees we
+        // never regress from the polished F.
+        degensac_recover_fundamental(stage);
+    }
 }
 
 /// Estimate an **essential matrix** with RANSAC using the Nistér 5-point
@@ -314,6 +469,30 @@ fn ransac_fundamental_impl<const SAMPLE_SIZE: usize>(
 ///
 /// `k1` / `k2` must be invertible upper-triangular intrinsics matrices.
 ///
+/// # Arguments
+///
+/// * `x1` - Pixel coordinates in the first image (at least five points).
+/// * `x2` - Corresponding pixel coordinates in the second image.
+/// * `k1` - Intrinsics of the first camera.
+/// * `k2` - Intrinsics of the second camera.
+/// * `params` - Sampling budget, pixel threshold, minimum support, seed and
+///   confidence. `refit` is ignored.
+///
+/// # Returns
+///
+/// The best essential matrix, its inlier mask, count and pixel Sampson score.
+///
+/// # Behaviour
+///
+/// - **Inliers:** Sampson distance of `F = K2⁻ᵀ E K1⁻¹` in squared pixels,
+///   `d ≤ threshold²` (inclusive).
+/// - **Ranking:** more inliers wins, then the lower sum of inlier distances.
+/// - **Stopping:** after `max_iterations` draws, or once the adaptive bound
+///   for sampling without replacement reaches `confidence` (default 0.9999).
+///   Full support stops after the current draw.
+/// - **Minimum support:** the winner must have `min_inliers` inliers.
+/// - **Refit:** none.
+///
 /// # Errors
 ///
 /// Returns [`TwoViewError::InvalidConfidence`] if `params.confidence` is not
@@ -332,106 +511,154 @@ pub fn ransac_essential_5pt(
     if x1.len() != x2.len() || x1.len() < 5 {
         return Err(TwoViewError::InvalidInput { required: 5 });
     }
+    let mut rng = ransac_rng(params);
+    let problem = EssentialProblem::new(x1, x2, k1, k2, params.threshold)?;
+    // The default confidence is 0.9999, matching fundamental estimation;
+    // callers can override it through `RansacParams::confidence`.
+    let termination = TwoViewCap::new(
+        params.max_iterations,
+        CapBase::Configured,
+        x1.len(),
+        5,
+        confidence,
+    );
+    run_two_view(
+        problem,
+        EssentialSampsonScorer,
+        NoSchedule,
+        termination,
+        params.min_inliers,
+        &mut rng,
+    )
+}
 
-    let mut rng = match params.random_seed {
-        Some(seed) => StdRng::seed_from_u64(seed),
-        None => {
-            let mut thread_rng = rand::rng();
-            StdRng::from_rng(&mut thread_rng)
+/// Five-point essential matrix estimation, scored in pixel space.
+struct EssentialProblem<'a> {
+    points: PointPairs<'a>,
+    /// Calibrated coordinates `K⁻¹ x` for the five-point solver.
+    x1n: Vec<Vec2F64>,
+    x2n: Vec<Vec2F64>,
+    k1_inv: Mat3F64,
+    k2_inv_t: Mat3F64,
+    thresh_sq: f64,
+    /// Up to ten candidate Es of the last minimal sample.
+    candidates: Vec<Mat3F64>,
+}
+
+impl<'a> EssentialProblem<'a> {
+    fn new(
+        x1: &'a [Vec2F64],
+        x2: &'a [Vec2F64],
+        k1: &Mat3F64,
+        k2: &Mat3F64,
+        threshold: f64,
+    ) -> Result<Self, TwoViewError> {
+        // The solver lives in calibrated space while scoring stays in pixel
+        // space: every candidate E is lifted via F = K2⁻ᵀ E K1⁻¹.
+        let k1_inv = k1.inverse();
+        let k2_inv = k2.inverse();
+        let mut x1n = Vec::with_capacity(x1.len());
+        let mut x2n = Vec::with_capacity(x1.len());
+        for (p1, p2) in x1.iter().zip(x2) {
+            let h1 = k1_inv * Vec3F64::new(p1.x, p1.y, 1.0);
+            let h2 = k2_inv * Vec3F64::new(p2.x, p2.y, 1.0);
+            if h1.z.abs() < 1e-12 || h2.z.abs() < 1e-12 {
+                return Err(TwoViewError::InvalidInput { required: 5 });
+            }
+            x1n.push(Vec2F64::new(h1.x / h1.z, h1.y / h1.z));
+            x2n.push(Vec2F64::new(h2.x / h2.z, h2.y / h2.z));
         }
-    };
+        Ok(Self {
+            points: PointPairs::new(x1, x2),
+            x1n,
+            x2n,
+            k1_inv,
+            k2_inv_t: k2_inv.transpose(),
+            thresh_sq: threshold * threshold,
+            candidates: Vec::new(),
+        })
+    }
+}
 
-    let n = x1.len();
-    let thresh_sq = params.threshold * params.threshold;
+impl Problem for EssentialProblem<'_> {
+    type Model = Mat3F64;
 
-    // One-time intrinsic inversions. The pose RANSAC scoring lives in pixel
-    // space, but the 5-point solver lives in metric space — every candidate
-    // E must be lifted via F = K2⁻ᵀ E K1⁻¹ before Sampson scoring.
-    let k1_inv = k1.inverse();
-    let k2_inv = k2.inverse();
-    let k2_inv_t = k2_inv.transpose();
-
-    // Pre-normalize the full point set once — RANSAC samples just index in.
-    let mut x1n: Vec<Vec2F64> = Vec::with_capacity(n);
-    let mut x2n: Vec<Vec2F64> = Vec::with_capacity(n);
-    for i in 0..n {
-        let h1 = k1_inv * Vec3F64::new(x1[i].x, x1[i].y, 1.0);
-        let h2 = k2_inv * Vec3F64::new(x2[i].x, x2[i].y, 1.0);
-        if h1.z.abs() < 1e-12 || h2.z.abs() < 1e-12 {
-            return Err(TwoViewError::InvalidInput { required: 5 });
-        }
-        x1n.push(Vec2F64::new(h1.x / h1.z, h1.y / h1.z));
-        x2n.push(Vec2F64::new(h2.x / h2.z, h2.y / h2.z));
+    #[inline]
+    fn num_observations(&self) -> usize {
+        self.points.len()
     }
 
-    // SoA pixel coords for the inner scorer (NEON-friendly, contiguous f64).
-    let (x1_x, x1_y) = split_xy(x1);
-    let (x2_x, x2_y) = split_xy(x2);
+    #[inline]
+    fn sample_size(&self) -> usize {
+        5
+    }
 
-    let mut best_e: Option<Mat3F64> = None;
-    let mut best_inliers = Vec::new();
-    let mut best_count = 0usize;
-    let mut best_score = f64::INFINITY;
-
-    // Adaptive iteration cap. The default is 0.9999, matching fundamental
-    // estimation; callers can override it through `RansacParams::confidence`.
-    let mut dynamic_max = params.max_iterations;
-    let mut iter = 0usize;
-    while iter < dynamic_max {
-        iter += 1;
-        let sample = rand::seq::index::sample(&mut rng, n, 5);
+    #[inline]
+    fn fit_minimal(&mut self, sample: &[usize]) {
         let mut s1 = [Vec2F64::ZERO; 5];
         let mut s2 = [Vec2F64::ZERO; 5];
-        for (i, idx) in sample.iter().enumerate() {
-            s1[i] = x1n[idx];
-            s2[i] = x2n[idx];
+        for (i, &idx) in sample.iter().enumerate() {
+            s1[i] = self.x1n[idx];
+            s2[i] = self.x2n[idx];
         }
-        let candidates = essential_5pt(&s1, &s2);
-        if candidates.is_empty() {
-            continue;
-        }
-
-        // Each minimal sample yields ≤ 10 candidate Es — score them all.
-        let mut sample_improved = false;
-        for e in candidates {
-            // F = K2⁻ᵀ E K1⁻¹ — same Sampson scorer as ransac_fundamental.
-            let f = k2_inv_t * e * k1_inv;
-            let mut inliers = vec![false; n];
-            let (count, score) =
-                score_inliers_f(&f, &x1_x, &x1_y, &x2_x, &x2_y, thresh_sq, &mut inliers);
-
-            if count > best_count || (count == best_count && score < best_score) {
-                best_e = Some(e);
-                best_inliers = inliers;
-                best_count = count;
-                best_score = score;
-                sample_improved = true;
-            }
-        }
-
-        if sample_improved {
-            if best_count == n {
-                break;
-            }
-            dynamic_max =
-                adaptive_ransac_cap(best_count, n, 5, confidence, params.max_iterations, iter);
-        }
+        self.candidates = essential_5pt(&s1, &s2);
     }
 
-    let model = match best_e {
-        Some(m) if best_count >= params.min_inliers => m,
-        _ => return Err(TwoViewError::RansacFailure),
-    };
+    #[inline]
+    fn candidates(&self) -> &[Mat3F64] {
+        &self.candidates
+    }
+}
 
-    Ok(RansacResult {
-        model,
-        inliers: best_inliers,
-        inlier_count: best_count,
-        score: best_score,
-    })
+/// Sampson scoring of `F = K2⁻ᵀ E K1⁻¹`, the same scorer as for F.
+struct EssentialSampsonScorer;
+
+impl Scorer<EssentialProblem<'_>> for EssentialSampsonScorer {
+    type Objective = CountThenResidual;
+
+    #[inline]
+    fn score_full(
+        &mut self,
+        problem: &EssentialProblem<'_>,
+        e: &Mat3F64,
+        ws: &mut Workspace,
+    ) -> Score<CountThenResidual> {
+        let f = problem.k2_inv_t * *e * problem.k1_inv;
+        ws.mask.fill(false);
+        count_then_residual(problem.points.sampson(&f, problem.thresh_sq, &mut ws.mask))
+    }
 }
 
 /// Estimate a homography with RANSAC using the 4-point solver.
+///
+/// # Arguments
+///
+/// * `x1` - Pixel coordinates in the first image (at least four points).
+/// * `x2` - Corresponding pixel coordinates in the second image.
+/// * `params` - Sampling budget, pixel threshold, minimum support, seed,
+///   confidence and refit flag.
+///
+/// # Returns
+///
+/// The best homography, its inlier mask, count and transfer-error score.
+///
+/// # Behaviour
+///
+/// - **Inliers:** squared transfer error `‖H x1 − x2‖² ≤ threshold²` in
+///   pixels (inclusive).
+/// - **Ranking:** more inliers wins, then the lower sum of inlier errors.
+/// - **Stopping:** after `max_iterations` draws, once the adaptive bound
+///   reaches `confidence` (default 0.99: the homography mainly arbitrates
+///   model selection in [`super::TwoViewEstimator`]), or after 200
+///   consecutive draws without a new best. Samples with three collinear
+///   points are rejected before fitting and still count as draws. Full
+///   support stops after the current draw.
+/// - **Minimum support:** the winner must have `min_inliers` inliers before
+///   the refit, otherwise the call fails.
+/// - **Refit:** with `refit`, a DLT over the inliers replaces the model when
+///   it lowers the summed squared error over the *same* inliers. It is not
+///   re-thresholded: `inliers` and `inlier_count` stay those of the
+///   four-point winner, while `model` and `score` are the refit's.
 ///
 /// # Errors
 ///
@@ -449,33 +676,12 @@ pub fn ransac_homography(
     if x1.len() != x2.len() || x1.len() < 4 {
         return Err(TwoViewError::InvalidInput { required: 4 });
     }
-
-    let mut rng = match params.random_seed {
-        Some(seed) => StdRng::seed_from_u64(seed),
-        None => {
-            let mut thread_rng = rand::rng();
-            StdRng::from_rng(&mut thread_rng)
-        }
+    let mut rng = ransac_rng(params);
+    let problem = HomographyProblem {
+        points: PointPairs::new(x1, x2),
+        thresh_sq: params.threshold * params.threshold,
+        candidate: None,
     };
-
-    let n = x1.len();
-    let thresh_sq = params.threshold * params.threshold;
-    // One-time SoA flatten so score_inliers_h's NEON path reads contiguous f64.
-    let (x1_x, x1_y) = split_xy(x1);
-    let (x2_x, x2_y) = split_xy(x2);
-    let mut best_model = None;
-    let mut best_inliers = vec![false; n];
-    let mut best_count = 0usize;
-    let mut best_score = f64::INFINITY;
-    // Hoisted scratch — ransac_homography used to allocate `vec![false; n]`
-    // every iteration, which dominated wall time on non-planar scenes where
-    // the loop runs hundreds of iters. Reuse one buffer + a swap-on-improve.
-    let mut scratch_inliers = vec![false; n];
-
-    // Adaptive iteration count: after each time best_count improves, recompute
-    // the iteration bound that gives 99% confidence of drawing an all-inlier
-    // sample at least once. N = log(1-p) / log(1-w^s) with s=4, p=0.99.
-    //
     // **Why p=0.99 instead of 0.999.** H here is a *model-selection oracle*,
     // not a final-product matrix — its only job is "is H_count meaningfully
     // larger than F_count?" If the scene is genuinely planar, H_count grows
@@ -484,113 +690,161 @@ pub fn ransac_homography(
     // extra confidence buys us nothing but wall time. Lowering p to 0.99
     // shaves ~33% off the bound at low inlier ratios.
     //
-    // **Stagnation early-exit.** If `STAGNATION_LIMIT` iterations pass without
-    // improvement, the running best is almost certainly the local optimum for
-    // this random seed and continued sampling is wasted work. Belt-and-braces
-    // with the adaptive cap: adaptive shrinks fast at high w; stagnation
-    // shrinks fast at low w (where adaptive can't tighten).
-    const STAGNATION_LIMIT: usize = 200;
-    let mut dynamic_max = params.max_iterations;
-    let mut last_improve = 0usize;
-    let mut iter = 0usize;
-    while iter < dynamic_max {
-        if iter - last_improve >= STAGNATION_LIMIT {
-            break;
-        }
-        iter += 1;
-        let sample = rand::seq::index::sample(&mut rng, n, 4);
+    // **Stagnation early-exit.** If `HOMOGRAPHY_STAGNATION_LIMIT` draws pass
+    // without improvement, the running best is almost certainly the local
+    // optimum for this random seed and continued sampling is wasted work.
+    // Belt-and-braces with the adaptive cap: adaptive shrinks fast at high
+    // w; stagnation shrinks fast at low w (where adaptive can't tighten).
+    let termination = TwoViewCap::new(
+        params.max_iterations,
+        CapBase::Configured,
+        x1.len(),
+        4,
+        confidence,
+    )
+    .with_stagnation(HOMOGRAPHY_STAGNATION_LIMIT);
+    let schedule = HomographyRefit {
+        refit: params.refit,
+        min_support: params.min_inliers,
+    };
+    run_two_view(
+        problem,
+        TransferScorer,
+        schedule,
+        termination,
+        params.min_inliers,
+        &mut rng,
+    )
+}
+
+/// Four-point homography estimation in pixel space.
+struct HomographyProblem<'a> {
+    points: PointPairs<'a>,
+    thresh_sq: f64,
+    candidate: Option<Mat3F64>,
+}
+
+impl HomographyProblem<'_> {
+    #[inline]
+    fn minimal_sample(&self, sample: &[usize]) -> ([[f64; 2]; 4], [[f64; 2]; 4]) {
         let mut s1 = [[0.0; 2]; 4];
         let mut s2 = [[0.0; 2]; 4];
-        for (i, idx) in sample.iter().enumerate() {
-            s1[i] = [x1[idx].x, x1[idx].y];
-            s2[i] = [x2[idx].x, x2[idx].y];
+        for (i, &idx) in sample.iter().enumerate() {
+            s1[i] = [self.points.x1[idx].x, self.points.x1[idx].y];
+            s2[i] = [self.points.x2[idx].x, self.points.x2[idx].y];
         }
-        // DEGENSAC-style collinearity check: a 4-point sample with 3+ collinear
-        // points produces a wildly-wrong H. Reject before the solve and save
-        // the iteration for a real candidate.
-        if sample_is_degenerate(&s1) || sample_is_degenerate(&s2) {
-            continue;
-        }
+        (s1, s2)
+    }
+}
+
+impl Problem for HomographyProblem<'_> {
+    type Model = Mat3F64;
+
+    #[inline]
+    fn num_observations(&self) -> usize {
+        self.points.len()
+    }
+
+    #[inline]
+    fn sample_size(&self) -> usize {
+        4
+    }
+
+    /// DEGENSAC-style collinearity check: a 4-point sample with 3+ collinear
+    /// points produces a wildly-wrong H. Reject it before the solve.
+    #[inline]
+    fn check_sample(&self, sample: &[usize]) -> bool {
+        let (s1, s2) = self.minimal_sample(sample);
+        !(sample_is_degenerate(&s1) || sample_is_degenerate(&s2))
+    }
+
+    #[inline]
+    fn fit_minimal(&mut self, sample: &[usize]) {
+        let (s1, s2) = self.minimal_sample(sample);
         let mut h = [[0.0; 3]; 3];
-        if homography_4pt2d(&s1, &s2, &mut h).is_err() {
-            continue;
-        }
-        let h = Mat3F64::from_cols(
-            Vec3F64::new(h[0][0], h[1][0], h[2][0]),
-            Vec3F64::new(h[0][1], h[1][1], h[2][1]),
-            Vec3F64::new(h[0][2], h[1][2], h[2][2]),
-        );
-
-        for s in scratch_inliers.iter_mut() {
-            *s = false;
-        }
-        let (count, score) = score_inliers_h(
-            &h,
-            &x1_x,
-            &x1_y,
-            &x2_x,
-            &x2_y,
-            thresh_sq,
-            &mut scratch_inliers,
-        );
-
-        let improved = count > best_count || (count == best_count && score < best_score);
-        if improved {
-            best_model = Some(h);
-            std::mem::swap(&mut best_inliers, &mut scratch_inliers);
-            best_count = count;
-            best_score = score;
-            last_improve = iter;
-
-            if best_count == n {
-                break;
-            }
-            dynamic_max =
-                adaptive_ransac_cap(best_count, n, 4, confidence, params.max_iterations, iter);
-        }
+        self.candidate = homography_4pt2d(&s1, &s2, &mut h).ok().map(|()| {
+            Mat3F64::from_cols(
+                Vec3F64::new(h[0][0], h[1][0], h[2][0]),
+                Vec3F64::new(h[0][1], h[1][1], h[2][1]),
+                Vec3F64::new(h[0][2], h[1][2], h[2][2]),
+            )
+        });
     }
 
-    let mut model = match best_model {
-        Some(m) if best_count >= params.min_inliers => m,
-        _ => return Err(TwoViewError::RansacFailure),
-    };
+    #[inline]
+    fn candidates(&self) -> &[Mat3F64] {
+        self.candidate.as_slice()
+    }
+}
 
-    // LO-RANSAC refit: the best 4-point sample passes many inliers but those
-    // 4 points may not be a well-conditioned basis for H. A DLT across the
-    // full inlier set averages out that variance. Keep the refit only if the
-    // squared-error score improves — otherwise the DLT may have overfit a
-    // borderline inlier that RANSAC rejected.
-    if params.refit && best_count >= 4 {
-        let inl_x1: Vec<Vec2F64> = x1
-            .iter()
-            .zip(best_inliers.iter())
-            .filter_map(|(p, k)| if *k { Some(*p) } else { None })
-            .collect();
-        let inl_x2: Vec<Vec2F64> = x2
-            .iter()
-            .zip(best_inliers.iter())
-            .filter_map(|(p, k)| if *k { Some(*p) } else { None })
-            .collect();
-        if let Ok(h_refit) = homography_dlt(&inl_x1, &inl_x2) {
-            let mut refit_score = 0.0;
-            for i in 0..n {
-                if best_inliers[i] {
-                    refit_score += homography_reproj_error(&h_refit, &x1[i], &x2[i]);
-                }
-            }
-            if refit_score < best_score {
-                model = h_refit;
-                best_score = refit_score;
+/// Inclusive transfer-error scoring.
+struct TransferScorer;
+
+impl Scorer<HomographyProblem<'_>> for TransferScorer {
+    type Objective = CountThenResidual;
+
+    #[inline]
+    fn score_full(
+        &mut self,
+        problem: &HomographyProblem<'_>,
+        h: &Mat3F64,
+        ws: &mut Workspace,
+    ) -> Score<CountThenResidual> {
+        ws.mask.fill(false);
+        count_then_residual(problem.points.transfer(h, problem.thresh_sq, &mut ws.mask))
+    }
+}
+
+/// The homography refit: a DLT over the final inliers.
+struct HomographyRefit {
+    refit: bool,
+    min_support: usize,
+}
+
+impl<'a, Sc, T> Schedule<HomographyProblem<'a>, Sc, T, StdRng> for HomographyRefit
+where
+    Sc: Scorer<HomographyProblem<'a>, Objective = CountThenResidual>,
+{
+    /// The best 4-point sample passes many inliers, but those 4 points may
+    /// not be a well-conditioned basis for H. A DLT across the full inlier
+    /// set averages out that variance. The refit is kept only if the summed
+    /// squared error over the same inliers improves, since the DLT may have
+    /// overfit a borderline inlier.
+    ///
+    /// The refit is not rescored at the threshold: it keeps the pre-refit
+    /// inlier mask and count (#1171 phase A preserves this stale mask).
+    fn final_fit(&mut self, stage: &mut StageContext<'_, HomographyProblem<'a>, Sc, T, StdRng>) {
+        let best = &mut *stage.best;
+        if !refit_allowed(self.refit, best, self.min_support) || best.score.support < 4 {
+            return;
+        }
+        let points = &stage.problem.points;
+        let inlier_points = |pts: &[Vec2F64]| -> Vec<Vec2F64> {
+            pts.iter()
+                .zip(&best.inliers)
+                .filter_map(|(p, &keep)| keep.then_some(*p))
+                .collect()
+        };
+        let Ok(h_refit) = homography_dlt(&inlier_points(points.x1), &inlier_points(points.x2))
+        else {
+            return;
+        };
+        let mut refit_score = 0.0;
+        for (i, &keep) in best.inliers.iter().enumerate() {
+            if keep {
+                refit_score += homography_reproj_error(&h_refit, &points.x1[i], &points.x2[i]);
             }
         }
+        let support = best.score.support;
+        let score = Score {
+            objective: CountThenResidual {
+                count: support,
+                residual: refit_score,
+            },
+            support,
+        };
+        best.consider_keeping_mask(&h_refit, score, Ties::Strict);
     }
-
-    Ok(RansacResult {
-        model,
-        inliers: best_inliers,
-        inlier_count: best_count,
-        score: best_score,
-    })
 }
 
 /// Twice the signed area of the triangle (a, b, c) — zero iff collinear.
