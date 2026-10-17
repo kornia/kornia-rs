@@ -1,3 +1,5 @@
+//! End-to-end `umeyama_f64` benchmark over point counts and weight modes.
+
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use kornia_algebra::linalg::rigid::umeyama_f64;
 use kornia_algebra::Vec3F64;
@@ -22,7 +24,7 @@ fn bench_umeyama(c: &mut Criterion) {
             .collect();
         let weights: Vec<f64> = (0..n).map(|i| (i as f64 % 3.0) + 1.0).collect();
 
-        group.bench_with_input(BenchmarkId::new("unweighted", n), &n, |b, _| {
+        group.bench_function(BenchmarkId::new("unweighted", n), |b| {
             b.iter(|| {
                 std::hint::black_box(umeyama_f64(
                     std::hint::black_box(&src),
@@ -32,7 +34,7 @@ fn bench_umeyama(c: &mut Criterion) {
                 ))
             });
         });
-        group.bench_with_input(BenchmarkId::new("weighted", n), &n, |b, _| {
+        group.bench_function(BenchmarkId::new("weighted", n), |b| {
             b.iter(|| {
                 std::hint::black_box(umeyama_f64(
                     std::hint::black_box(&src),
