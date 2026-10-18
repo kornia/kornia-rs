@@ -201,6 +201,11 @@ pub(crate) trait Termination {
     fn on_new_best(&mut self, support: usize, draws: usize);
 
     /// Draw `draws` finished; `improved` if it replaced the incumbent.
+    ///
+    /// Like [`Schedule::after_draw`], this is skipped for draws whose sample
+    /// failed [`Problem::check_sample`], although those draws still count.
+    /// A policy that must see every draw, such as a stagnation limit that
+    /// counts rejected samples, reads `draws` in [`Self::done`] instead.
     #[inline]
     fn after_draw(&mut self, _draws: usize, _improved: bool, _best_support: usize) {}
 }
@@ -353,6 +358,9 @@ where
                 parts.schedule.on_raw_accept();
             }
         }
+        // The flag described the last raw candidate. Schedules only see
+        // derived candidates, whose residuals no verifier wrote.
+        ws.residuals_complete = false;
 
         parts
             .termination
@@ -486,6 +494,14 @@ mod tests {
         log: Vec<&'static str>,
         derived: Option<f64>,
         accepted: Vec<bool>,
+        /// Hooks that saw `ws.residuals_complete` set.
+        complete_residuals_seen: usize,
+    }
+
+    impl Recorder {
+        fn note_residuals<R>(&mut self, stage: &StageContext<'_, Values, Count, Budget, R>) {
+            self.complete_residuals_seen += stage.ws.residuals_complete as usize;
+        }
     }
 
     impl<R> Schedule<Values, Count, Budget, R> for Recorder {
@@ -493,12 +509,14 @@ mod tests {
             self.log.push("accept");
         }
 
-        fn after_draw(&mut self, _stage: &mut StageContext<'_, Values, Count, Budget, R>) {
+        fn after_draw(&mut self, stage: &mut StageContext<'_, Values, Count, Budget, R>) {
             self.log.push("draw");
+            self.note_residuals(stage);
         }
 
         fn after_sampling(&mut self, stage: &mut StageContext<'_, Values, Count, Budget, R>) {
             self.log.push("after_sampling");
+            self.note_residuals(stage);
             if let Some(model) = self.derived {
                 self.accepted
                     .push(stage.consider_derived(&model, Ties::Strict));
@@ -507,6 +525,7 @@ mod tests {
 
         fn final_fit(&mut self, stage: &mut StageContext<'_, Values, Count, Budget, R>) {
             self.log.push("final_fit");
+            self.note_residuals(stage);
             if let Some(model) = self.derived {
                 self.accepted
                     .push(stage.consider_derived(&model, Ties::AcceptTies));
@@ -526,6 +545,23 @@ mod tests {
             _: &mut R,
         ) -> bool {
             false
+        }
+    }
+
+    /// Passes every candidate and claims to have written all residuals.
+    struct PassComplete;
+
+    impl<P: Problem, R> Verifier<P, R> for PassComplete {
+        fn verify(
+            &mut self,
+            _: &P,
+            _: &P::Model,
+            _: &VerifyContext,
+            ws: &mut Workspace,
+            _: &mut R,
+        ) -> bool {
+            ws.residuals_complete = true;
+            true
         }
     }
 
@@ -614,6 +650,18 @@ mod tests {
         assert_eq!(draws, 9);
         assert!(best.model.is_none());
         assert!(budget.new_bests.is_empty());
+    }
+
+    #[test]
+    fn schedules_never_see_a_raw_candidates_residuals_flag() {
+        // The verifier marks every raw candidate's residuals complete; a
+        // schedule that scored a derived candidate with `score_raw` must not
+        // inherit that flag.
+        let mut problem = Values::new(vec![0.0, 0.1, 0.2, 5.0]);
+        let (_, best, _, schedule) = run_values(&mut problem, PassComplete, 6, Some(0.1));
+        assert!(best.model.is_some());
+        assert_eq!(schedule.log.iter().filter(|&&e| e == "draw").count(), 6);
+        assert_eq!(schedule.complete_residuals_seen, 0);
     }
 
     #[test]

@@ -113,7 +113,8 @@ pub(crate) struct Incumbent<M, O> {
     /// Score of [`Self::model`]; [`Objective::worst`] with zero support
     /// while there is no model.
     pub score: Score<O>,
-    /// Inlier mask of [`Self::model`].
+    /// Inlier mask of [`Self::model`], or of the previous model after
+    /// [`Self::consider_keeping_mask`].
     pub inliers: Vec<bool>,
 }
 
@@ -162,6 +163,10 @@ impl<M: Clone, O: Objective> Incumbent<M, O> {
     /// Reproduces two legacy final fits that return the pre-refit mask: the
     /// homography DLT refit and the PnP refit. Fixing those stale masks is a
     /// separate, deliberate behaviour change (#1171 phase B).
+    ///
+    /// Afterwards [`Self::inliers`] is the previous model's mask, and
+    /// `score.support` need not be its popcount. Callers that need the
+    /// consensus set read the mask, not the support.
     #[inline]
     pub(crate) fn consider_keeping_mask(&mut self, model: &M, score: Score<O>, ties: Ties) -> bool {
         if !score.objective.beats(&self.score.objective, ties) {

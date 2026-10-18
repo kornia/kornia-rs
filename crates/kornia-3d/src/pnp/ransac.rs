@@ -362,18 +362,20 @@ pub fn solve_pnp_ransac(
         }
     };
 
-    if best.score.support < min_correspondences {
-        return Err(PnPRansacError::InsufficientInliers {
-            required: min_correspondences,
-            actual: best.score.support,
-        });
-    }
+    // An applied refit replaces the score but keeps the minimal pose's mask,
+    // so gate on the mask: that is the consensus set the refit started from.
     let best_inliers: Vec<usize> = best
         .inliers
         .iter()
         .enumerate()
         .filter_map(|(i, &keep)| keep.then_some(i))
         .collect();
+    if best_inliers.len() < min_correspondences {
+        return Err(PnPRansacError::InsufficientInliers {
+            required: min_correspondences,
+            actual: best_inliers.len(),
+        });
+    }
 
     let mut final_pose = match best.model {
         Some(p) => p,
@@ -1222,9 +1224,9 @@ mod tests {
 
     /// The coplanar case must succeed end to end, whichever way the refit goes.
     ///
-    /// Companion to the test above: that one pins the fallback, this one pins that a coplanar
-    /// target is solvable at all. It deliberately asserts nothing about WHICH path ran, because
-    /// that is exactly the ISA-dependent part.
+    /// Companion to `a_failed_refit_keeps_the_minimal_sample_pose`: that one pins the fallback,
+    /// this one pins that a coplanar target is solvable at all. It deliberately asserts nothing
+    /// about WHICH path ran, because that is exactly the ISA-dependent part.
     ///
     /// The pose tolerances are loose FOR THE SAME REASON, and the first version of this test got
     /// that wrong: on aarch64 the refit errors and the exact AP3P pose survives (dR ~ 5e-6), while

@@ -406,7 +406,8 @@ struct LegacyGeneric<S, M> {
 
 impl<S: Copy, M> LegacyGeneric<S, M> {
     /// Refit on the incumbent's inliers and offer the polished models under
-    /// [`Ties::Strict`]. Kept out of line: it runs every `lo_every` accepts.
+    /// [`Ties::Strict`]. Split out of `after_draw`, which runs on every draw
+    /// and stays small enough to inline; this runs every `lo_every` accepts.
     fn local_optimization<'a, E, Sc, T, R>(
         &mut self,
         stage: &mut StageContext<'_, EstimatorProblem<'a, E>, Sc, T, R>,
