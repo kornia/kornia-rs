@@ -8,6 +8,25 @@ Guidance for AI AGENTS and human contributors working in this repository.
 
 ---
 
+## Required Skills
+
+Skills live in `.claude/skills/` (also exposed at `.agents/skills/`). **Read the
+relevant skill before starting a task; this is mandatory for contributors and
+agents.** CI (`skills_check.yml`) validates them and `pixi run pr-check` is the
+pre-PR gate.
+
+| Skill | Read when |
+|---|---|
+| `kornia-arch` | navigating crates, features, core types |
+| `kornia-workflow` | before committing/PR; build, lint, test, PR rules |
+| `kornia-coding-style` | any Rust edit |
+| `kornia-api-flavor` | designing new public API |
+| `kornia-simd` | SIMD / performance work in `kornia-imgproc` |
+| `kornia-bindings` | Python / C++ binding changes |
+| `release` | cutting a release |
+
+---
+
 ## Build & Development Commands
 
 The project uses [pixi](https://pixi.sh) for environment management.
@@ -197,7 +216,7 @@ Err(KorniaError::SizeMismatch {
 ### Pull Requests
 
 1. **Keep PRs focused** — one concern per PR. Multiple features → multiple PRs.
-2. **Test locally first** — all of the following must pass before opening a PR:
+2. **Test locally first** — `pixi run pr-check` must pass, plus:
 
    ```bash
    pixi run rust-lint   # formatting + clippy

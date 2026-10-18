@@ -19,6 +19,12 @@ repos:
     - id: fmt
   - repo: local
     hooks:
+    - id: check-skills
+      name: agent skills are valid and referenced in AGENTS.md
+      entry: python3 scripts/check_skills.py
+      language: system
+      files: ^(\.claude/skills/|AGENTS\.md$|pixi\.toml$)
+      pass_filenames: false
     - id: check-version-pins
       name: workspace dependency pins match workspace.package.version
       entry: python3 scripts/check_version_pins.py

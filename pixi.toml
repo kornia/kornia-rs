@@ -65,6 +65,8 @@ rust-lint = { depends-on = [
   "rust-check",
 ], description = "Run all Rust lints" }
 rust-test = { cmd = "cargo test --features ci", description = "Run Rust tests" }
+skills-check = { cmd = "python3 scripts/check_skills.py", description = "Validate agent skills in .claude/skills" }
+pr-check = { depends-on = ["skills-check", "rust-fmt-check", "rust-clippy", "rust-test"], description = "Mandatory pre-PR gate (mirrors CI)" }
 rust-test-release = { cmd = "cargo test --release --features ci", description = "Run Rust tests (release)" }
 rust-test-package = { cmd = "cargo test -p", description = "Run tests for a specific package (usage: pixi run rust-test-package <package>)" }
 rust-build-examples = { cmd = "cargo build --workspace --exclude kornia-py --exclude kornia-cpp", description = "Build examples (excluding bindings)" }

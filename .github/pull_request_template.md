@@ -33,6 +33,7 @@
 ---
 
 ## 🚦 Checklist
+- [ ] I read the relevant skills in `.claude/skills/` (see AGENTS.md) and `pixi run pr-check` passes
 - [ ] I am assigned to the linked issue (required before PR submission)
 - [ ] The linked issue has been approved by a maintainer
 - [ ] This PR strictly implements what the linked issue describes (no scope creep)

@@ -1,0 +1,25 @@
+name: Skills Check
+
+# Required check: keeps the agent/contributor skills in .claude/skills valid and
+# in sync with AGENTS.md and the pixi tasks they document.
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  skills:
+    name: Validate skills
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Validate skills
+        run: python3 scripts/check_skills.py
