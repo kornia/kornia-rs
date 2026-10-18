@@ -1,6 +1,55 @@
 use super::kernels::*;
 use super::ransac::*;
 use super::*;
+
+/// Next value in `[0, 1)` of the tests' 64-bit LCG (Knuth's MMIX constants),
+/// for deterministic data without extra RNG dependencies.
+fn lcg_next(state: &mut u64) -> f64 {
+    *state = state
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
+    (*state >> 32) as f64 / 4_294_967_296.0
+}
+
+/// The `R = Ry(5°)`, `t = (0.5, 0, 0)` scene seen through `f = 500`,
+/// `c = (320, 240)`: 100 inliers 2–5 m in front with ±0.25 px noise, then 20
+/// uniformly random outliers.
+fn ry5_scene_with_outliers() -> (Vec<Vec2F64>, Vec<Vec2F64>) {
+    let (s, c) = 5.0_f64.to_radians().sin_cos();
+    let r = Mat3F64::from_cols(
+        Vec3F64::new(c, 0.0, -s),
+        Vec3F64::new(0.0, 1.0, 0.0),
+        Vec3F64::new(s, 0.0, c),
+    );
+    let t = Vec3F64::new(0.5, 0.0, 0.0);
+    let (fx, cx, cy, noise_px) = (500.0_f64, 320.0_f64, 240.0_f64, 0.5_f64);
+    let mut lcg: u64 = 12345678901234567;
+    let mut x1 = Vec::new();
+    let mut x2 = Vec::new();
+    for _ in 0..100 {
+        let xc = (lcg_next(&mut lcg) - 0.5) * 4.0;
+        let yc = (lcg_next(&mut lcg) - 0.5) * 2.0;
+        let zc = lcg_next(&mut lcg) * 3.0 + 2.0;
+        let p1 = Vec3F64::new(xc, yc, zc);
+        let p2 = r * p1 + t;
+        let u1 = p1.x / p1.z * fx + cx + (lcg_next(&mut lcg) - 0.5) * noise_px;
+        let v1 = p1.y / p1.z * fx + cy + (lcg_next(&mut lcg) - 0.5) * noise_px;
+        let u2 = p2.x / p2.z * fx + cx + (lcg_next(&mut lcg) - 0.5) * noise_px;
+        let v2 = p2.y / p2.z * fx + cy + (lcg_next(&mut lcg) - 0.5) * noise_px;
+        x1.push(Vec2F64::new(u1, v1));
+        x2.push(Vec2F64::new(u2, v2));
+    }
+    for _ in 0..20 {
+        let u1 = lcg_next(&mut lcg) * 640.0;
+        let v1 = lcg_next(&mut lcg) * 480.0;
+        let u2 = lcg_next(&mut lcg) * 640.0;
+        let v2 = lcg_next(&mut lcg) * 480.0;
+        x1.push(Vec2F64::new(u1, v1));
+        x2.push(Vec2F64::new(u2, v2));
+    }
+    (x1, x2)
+}
+
 #[test]
 fn test_ransac_fundamental_basic() {
     let (x1, x2, _, _, _) = synthetic_two_view(50, 0.0, 0);
@@ -53,69 +102,7 @@ fn test_ransac_fundamental_seven_matches_and_all_roots() -> Result<(), TwoViewEr
 fn test_ransac_fundamental_refit_improves_accuracy() {
     use crate::pose::fundamental::sampson_distance;
 
-    // Ground-truth fundamental matrix from a simple rotation about Y.
-    // R = Ry(5°), t = [0.5, 0, 0].
-    let angle = 5.0_f64.to_radians();
-    let (s, c) = angle.sin_cos();
-    // R (column-major): Ry rotates in X-Z plane.
-    let r = Mat3F64::from_cols(
-        Vec3F64::new(c, 0.0, -s),
-        Vec3F64::new(0.0, 1.0, 0.0),
-        Vec3F64::new(s, 0.0, c),
-    );
-    // t cross-product matrix.
-    let t = Vec3F64::new(0.5, 0.0, 0.0);
-    let tx = Mat3F64::from_cols(
-        Vec3F64::new(0.0, t.z, -t.y),
-        Vec3F64::new(-t.z, 0.0, t.x),
-        Vec3F64::new(t.y, -t.x, 0.0),
-    );
-    // F = [t]_x R (unnormalized; used below to synthesize correspondences)
-    let _f_true = tx * r;
-
-    // Simple linear-congruential generator for a deterministic sequence
-    // without pulling in extra dependencies.
-    let mut lcg: u64 = 12345678901234567;
-    let lcg_next = |state: &mut u64| -> f64 {
-        *state = state
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        // map high 32 bits to [0, 1)
-        (*state >> 32) as f64 / 4294967296.0
-    };
-
-    let mut x1: Vec<Vec2F64> = Vec::new();
-    let mut x2: Vec<Vec2F64> = Vec::new();
-
-    // 100 inliers: random points in front of cam, project into both views.
-    // Focal=500, cx=320, cy=240.
-    let fx = 500.0_f64;
-    let cx = 320.0_f64;
-    let cy = 240.0_f64;
-    let noise_px = 0.5_f64; // half-pixel gaussian-ish noise
-    for _ in 0..100 {
-        let xc = (lcg_next(&mut lcg) - 0.5) * 4.0; // ±2 m
-        let yc = (lcg_next(&mut lcg) - 0.5) * 2.0;
-        let zc = lcg_next(&mut lcg) * 3.0 + 2.0; // 2-5 m in front
-        let p1 = Vec3F64::new(xc, yc, zc);
-        let p2 = r * p1 + t;
-        // Project with noise.
-        let u1 = p1.x / p1.z * fx + cx + (lcg_next(&mut lcg) - 0.5) * noise_px;
-        let v1 = p1.y / p1.z * fx + cy + (lcg_next(&mut lcg) - 0.5) * noise_px;
-        let u2 = p2.x / p2.z * fx + cx + (lcg_next(&mut lcg) - 0.5) * noise_px;
-        let v2 = p2.y / p2.z * fx + cy + (lcg_next(&mut lcg) - 0.5) * noise_px;
-        x1.push(Vec2F64::new(u1, v1));
-        x2.push(Vec2F64::new(u2, v2));
-    }
-    // 20 outliers: random pixel positions unrelated to the scene.
-    for _ in 0..20 {
-        let u1 = lcg_next(&mut lcg) * 640.0;
-        let v1 = lcg_next(&mut lcg) * 480.0;
-        let u2 = lcg_next(&mut lcg) * 640.0;
-        let v2 = lcg_next(&mut lcg) * 480.0;
-        x1.push(Vec2F64::new(u1, v1));
-        x2.push(Vec2F64::new(u2, v2));
-    }
+    let (x1, x2) = ry5_scene_with_outliers();
 
     let base_params = RansacParams {
         max_iterations: 500,
@@ -191,39 +178,7 @@ fn test_ransac_essential_5pt_recovers_known_e() {
         Vec3F64::new(cx, cy, 1.0),
     );
 
-    // LCG for deterministic noisy data — same recipe as F-RANSAC test.
-    let mut lcg: u64 = 12345678901234567;
-    let lcg_next = |state: &mut u64| -> f64 {
-        *state = state
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        (*state >> 32) as f64 / 4294967296.0
-    };
-
-    let mut x1: Vec<Vec2F64> = Vec::new();
-    let mut x2: Vec<Vec2F64> = Vec::new();
-    let noise_px = 0.5_f64;
-    for _ in 0..100 {
-        let xc = (lcg_next(&mut lcg) - 0.5) * 4.0;
-        let yc = (lcg_next(&mut lcg) - 0.5) * 2.0;
-        let zc = lcg_next(&mut lcg) * 3.0 + 2.0;
-        let p1 = Vec3F64::new(xc, yc, zc);
-        let p2 = r * p1 + t;
-        let u1 = p1.x / p1.z * fx + cx + (lcg_next(&mut lcg) - 0.5) * noise_px;
-        let v1 = p1.y / p1.z * fx + cy + (lcg_next(&mut lcg) - 0.5) * noise_px;
-        let u2 = p2.x / p2.z * fx + cx + (lcg_next(&mut lcg) - 0.5) * noise_px;
-        let v2 = p2.y / p2.z * fx + cy + (lcg_next(&mut lcg) - 0.5) * noise_px;
-        x1.push(Vec2F64::new(u1, v1));
-        x2.push(Vec2F64::new(u2, v2));
-    }
-    for _ in 0..20 {
-        let u1 = lcg_next(&mut lcg) * 640.0;
-        let v1 = lcg_next(&mut lcg) * 480.0;
-        let u2 = lcg_next(&mut lcg) * 640.0;
-        let v2 = lcg_next(&mut lcg) * 480.0;
-        x1.push(Vec2F64::new(u1, v1));
-        x2.push(Vec2F64::new(u2, v2));
-    }
+    let (x1, x2) = ry5_scene_with_outliers();
 
     let params = RansacParams {
         max_iterations: 500,
@@ -899,41 +854,7 @@ fn test_two_view_estimate_with_5pt_essential() {
         Vec3F64::new(cx, cy, 1.0),
     );
 
-    // 100 noisy inliers + 20 outliers (same recipe as the RANSAC test).
-    let mut lcg: u64 = 12345678901234567;
-    let lcg_next = |state: &mut u64| -> f64 {
-        *state = state
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        (*state >> 32) as f64 / 4294967296.0
-    };
-
-    let mut x1: Vec<Vec2F64> = Vec::new();
-    let mut x2: Vec<Vec2F64> = Vec::new();
-    let noise_px = 0.5_f64;
-    for _ in 0..100 {
-        let xc = (lcg_next(&mut lcg) - 0.5) * 4.0;
-        let yc = (lcg_next(&mut lcg) - 0.5) * 2.0;
-        let zc = lcg_next(&mut lcg) * 3.0 + 2.0;
-        let p1 = Vec3F64::new(xc, yc, zc);
-        let p2 = r_true * p1 + t_true;
-        let u1 = p1.x / p1.z * fx + cx + (lcg_next(&mut lcg) - 0.5) * noise_px;
-        let v1 = p1.y / p1.z * fx + cy + (lcg_next(&mut lcg) - 0.5) * noise_px;
-        let u2 = p2.x / p2.z * fx + cx + (lcg_next(&mut lcg) - 0.5) * noise_px;
-        let v2 = p2.y / p2.z * fx + cy + (lcg_next(&mut lcg) - 0.5) * noise_px;
-        x1.push(Vec2F64::new(u1, v1));
-        x2.push(Vec2F64::new(u2, v2));
-    }
-    for _ in 0..20 {
-        x1.push(Vec2F64::new(
-            lcg_next(&mut lcg) * 640.0,
-            lcg_next(&mut lcg) * 480.0,
-        ));
-        x2.push(Vec2F64::new(
-            lcg_next(&mut lcg) * 640.0,
-            lcg_next(&mut lcg) * 480.0,
-        ));
-    }
+    let (x1, x2) = ry5_scene_with_outliers();
 
     let est = TwoViewEstimator::builder()
         .epipolar_solver(EssentialNister5ptSolver {
@@ -1165,12 +1086,7 @@ fn synthetic_two_view(
     );
 
     let mut lcg = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
-    let mut next = || -> f64 {
-        lcg = lcg
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        (lcg >> 32) as f64 / 4_294_967_296.0
-    };
+    let mut next = || lcg_next(&mut lcg);
 
     let mut x1 = Vec::with_capacity(n_pts);
     let mut x2 = Vec::with_capacity(n_pts);
@@ -1495,12 +1411,7 @@ fn two_view_with_outliers(
 ) -> (Vec<Vec2F64>, Vec<Vec2F64>) {
     let (mut x1, mut x2, _, _, _) = synthetic_two_view(n_inliers, noise_px, seed);
     let mut lcg = seed ^ 0x9E37_79B9_7F4A_7C15;
-    let mut next = || -> f64 {
-        lcg = lcg
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        (lcg >> 32) as f64 / 4_294_967_296.0
-    };
+    let mut next = || lcg_next(&mut lcg);
     for _ in 0..n_outliers {
         x1.push(Vec2F64::new(next() * 640.0, next() * 480.0));
         x2.push(Vec2F64::new(next() * 640.0, next() * 480.0));
@@ -1565,12 +1476,7 @@ fn homography_refit_keeps_the_pre_refit_mask() -> Result<(), TwoViewError> {
         Vec3F64::new(12.0, -7.0, 1.0),
     );
     let mut lcg: u64 = 0x4844_4C54;
-    let mut next = || -> f64 {
-        lcg = lcg
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        (lcg >> 32) as f64 / 4_294_967_296.0
-    };
+    let mut next = || lcg_next(&mut lcg);
     let (mut x1, mut x2) = (Vec::new(), Vec::new());
     for i in 0..120 {
         let p = Vec3F64::new(
