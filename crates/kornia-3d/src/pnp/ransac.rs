@@ -24,7 +24,6 @@ const DEFAULT_CONFIDENCE: f32 = 0.99;
 
 const EPS_PROB_MIN: f32 = 1e-6; // Guard for tiny probabilities
 const EPS_LOG_GUARD: f32 = 1e-12; // Guard to avoid log(0) and log(1)
-const HIGH_INLIER_RATIO_STOP: f32 = 0.95; // Early stop when inlier ratio is very high
 
 /// Error type for the RANSAC-based PnP solver.
 ///
@@ -54,6 +53,15 @@ pub enum PnPRansacError {
     /// pass `distortion = None`, or use an EPnP kernel.
     #[error("AP3P inside RANSAC cannot honour a distortion model: undistort the image points first and pass `distortion = None`, or use an EPnP kernel")]
     DistortionUnsupportedByKernel,
+
+    /// The requested confidence is outside the open unit interval.
+    #[error(
+        "RANSAC confidence must be finite and strictly between zero and one, got {confidence}"
+    )]
+    InvalidConfidence {
+        /// The requested confidence.
+        confidence: f32,
+    },
 }
 
 /// The non-minimal refit over the consensus set.
@@ -197,8 +205,9 @@ pub struct PnPRansacResult {
 /// - Scoring counts strict inliers, Euclidean pixel reprojection error `< reproj_threshold_px`;
 ///   points behind the camera are outliers. A pose replaces the best one only with more inliers.
 /// - Iterations adapt from current inlier ratio and desired confidence: after every draw that
-///   finds a better pose the cap becomes `log(1-p)/log(1-w^k)` (in `f32`), and at a very high
-///   inlier ratio (≥ 95%, where that bound degenerates) sampling stops after the current draw.
+///   finds a better pose the cap becomes `⌈log(1-p)/log(1-w^k)⌉` (in `f32`). Once every point is
+///   an inlier (`w^k` rounds to one), where that bound degenerates, sampling stops after the
+///   current draw.
 /// - With `params.sprt`, Wald's SPRT may reject a hypothesis before every point is scored.
 /// - With `params.refine`, the final non-minimal refit over all inliers uses **EPnP even when the
 ///   sampling kernel was AP3P**, because a minimal solver cannot consume more than its exact
@@ -217,6 +226,11 @@ pub struct PnPRansacResult {
 ///   only 3, everything else needs 4 because the EPnP refit does.
 ///
 /// # Errors
+///
+/// Returns [`PnPRansacError::InvalidConfidence`] when `params.confidence` is not finite and
+/// strictly between zero and one, [`PnPRansacError::InsufficientInliers`] when the best pose has
+/// fewer inliers than the minimum correspondence count, and [`PnPRansacError::Base`] for
+/// mismatched or too few correspondences.
 ///
 /// Returns [`PnPRansacError::DistortionUnsupportedByKernel`] when an AP3P kernel is combined with
 /// `distortion = Some(..)`: AP3P inverts `K` alone and cannot consume a distortion model, so it
@@ -248,6 +262,10 @@ pub fn solve_pnp_ransac(
             right_len: image.len(),
         }
         .into());
+    }
+    let confidence = params.confidence;
+    if !(confidence.is_finite() && confidence > 0.0 && confidence < 1.0) {
+        return Err(PnPRansacError::InvalidConfidence { confidence });
     }
     let is_ap3p = matches!(base, PnPMethod::AP3P(_) | PnPMethod::AP3PDefault);
 
@@ -319,7 +337,7 @@ pub fn solve_pnp_ransac(
     let termination = PnpCap {
         required: params.max_iterations,
         max_iterations: params.max_iterations,
-        confidence: params.confidence,
+        confidence,
         population: n,
         sample_size,
     };
@@ -562,7 +580,8 @@ impl Scorer<PnpProblem<'_>> for ReprojectionScorer {
 }
 
 /// The PnP loop's adaptive cap, `N = log(1-p) / log(1-w^k)` in `f32`,
-/// updated once per draw that found a new best.
+/// updated once per draw that found a new best. Full support, where the
+/// bound degenerates, stops after the current draw.
 struct PnpCap {
     required: usize,
     max_iterations: usize,
@@ -587,7 +606,7 @@ impl Termination for PnpCap {
         let w = best_support as f32 / self.population as f32;
         let s = self.sample_size as f32;
         // Avoid numerical issues with very small w
-        if w > EPS_PROB_MIN && w < 1.0 {
+        if w > EPS_PROB_MIN && w <= 1.0 {
             let ws = w.powf(s);
             if ws < 1.0 - EPS_LOG_GUARD && ws > EPS_LOG_GUARD {
                 // Avoid log(0) and log(1)
@@ -602,8 +621,9 @@ impl Termination for PnpCap {
                         }
                     }
                 }
-            } else if w >= HIGH_INLIER_RATIO_STOP {
-                // Very high inlier ratio (≥95%), we can stop early
+            } else if ws >= 1.0 - EPS_LOG_GUARD {
+                // Every point is an inlier, or w^k rounds to one: log(1 - w^k)
+                // is -inf or 0, so stop after this draw.
                 self.required = draws;
             }
         }
@@ -1739,5 +1759,50 @@ mod tests {
         let (dr, dt) = pose_deviation(&res.pose, &r_gt, &t_gt);
         assert!(dr < 0.05 && dt < 0.05, "drift: ({dr}, {dt})");
         Ok(())
+    }
+
+    /// Full support stops sampling after the current draw: the bound
+    /// `log(1-p)/log(1-w^k)` degenerates there, and no later pose can have
+    /// more inliers.
+    #[test]
+    fn the_cap_stops_at_full_support() {
+        let mut cap = PnpCap {
+            required: 1000,
+            max_iterations: 1000,
+            confidence: 0.99,
+            population: 200,
+            sample_size: 5,
+        };
+        // 95% inliers keep the ordinary bound: ⌈ln(0.01) / ln(1 - 0.95⁵)⌉ = 4.
+        cap.after_draw(1, true, 190);
+        assert!(!cap.done(3) && cap.done(4));
+        cap.after_draw(2, true, 200);
+        assert!(!cap.done(1) && cap.done(2));
+    }
+
+    #[test]
+    fn an_invalid_confidence_is_rejected() {
+        let (r_gt, t_gt) = pose_gt();
+        let world = scene_non_planar();
+        let image = project_exact(&world, &r_gt, &t_gt);
+        for confidence in [0.0, 1.0, -0.1, 1.5, f32::NAN, f32::INFINITY] {
+            let params = RansacParams {
+                confidence,
+                random_seed: Some(1),
+                ..Default::default()
+            };
+            let result = solve_pnp_ransac(
+                &world,
+                &image,
+                &k_default(),
+                None,
+                PnPMethod::EPnPDefault,
+                &params,
+            );
+            assert!(
+                matches!(result, Err(PnPRansacError::InvalidConfidence { .. })),
+                "confidence {confidence} was accepted"
+            );
+        }
     }
 }
