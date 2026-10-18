@@ -121,6 +121,9 @@ pub struct RansacParams {
     /// Pixel error threshold to classify an observation as an inlier.
     pub reproj_threshold_px: f32,
     /// Desired probability that at least one sample set is outlier-free.
+    ///
+    /// Must be finite and strictly between zero and one; [`solve_pnp_ransac`]
+    /// returns [`PnPRansacError::InvalidConfidence`] otherwise.
     pub confidence: f32,
     /// Optional fixed seed for reproducible sampling.
     pub random_seed: Option<u64>,
@@ -220,6 +223,24 @@ pub struct PnPRansacResult {
 ///   [`PnPRansacResult::inliers`] are the minimal-sample pose's either way.
 /// - Minimum correspondence count is kernel- and refine-aware: AP3P with `refine: false` needs
 ///   only 3, everything else needs 4 because the EPnP refit does.
+///
+/// # Arguments
+///
+/// * `world` - 3D points in world coordinates.
+/// * `image` - Pixel observations of `world`, one per point.
+/// * `k` - Pinhole intrinsics.
+/// * `distortion` - Lens distortion of `image`, or `None` for undistorted points. Must be `None`
+///   with an AP3P kernel (see `# Errors`).
+/// * `base` - Kernel for the minimal samples (EPnP or AP3P). An EPnP `base` also configures the
+///   final refit.
+/// * `params` - RANSAC parameters; `params.confidence` must be finite and strictly between zero
+///   and one.
+///
+/// # Returns
+///
+/// The best pose, world to camera, with its reprojection RMSE over the inliers in
+/// [`PnPResult::reproj_rmse`]; the indices of its inliers; and how the final refit went
+/// ([`PnPRansacResult::refinement`]).
 ///
 /// # Errors
 ///
