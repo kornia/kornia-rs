@@ -1016,6 +1016,7 @@ mod tests {
     #[test]
     fn object_space_optimum_and_lm_refinement() -> Result<(), PnPError> {
         let k = k_matrix(800.0, 800.0, 640.0, 480.0);
+        let k_inv = Mat3F64::from(k).inverse();
         let lm = SQPnPParams {
             refine_lm: Some(LMRefineParams::default()),
             ..Default::default()
@@ -1032,11 +1033,8 @@ mod tests {
                     .iter()
                     .zip(&scene.image)
                     .map(|(&m, u)| {
-                        let v = Vector3::new(
-                            (u.x as f64 - 640.0) / 800.0,
-                            (u.y as f64 - 480.0) / 800.0,
-                            1.0,
-                        );
+                        let p = Vec2F64::from(*u);
+                        let v = Vector3::from(k_inv * Vec3F64::new(p.x, p.y, 1.0));
                         let q = Matrix3::identity() - v * v.transpose() / v.norm_squared();
                         (q * Vector3::from(r * Vec3F64::from(m) + t)).norm_squared()
                     })

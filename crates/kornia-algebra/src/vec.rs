@@ -283,7 +283,7 @@ impl Vec3F64 {
     /// Rounds each component to `f32`; values outside the `f32` range become `±inf`.
     #[inline]
     pub fn as_vec3af32(self) -> Vec3AF32 {
-        Vec3AF32::new(self.x as f32, self.y as f32, self.z as f32)
+        glam::DVec3::from(self).as_vec3a().into()
     }
 }
 
