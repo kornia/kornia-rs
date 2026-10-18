@@ -215,10 +215,13 @@ This section provides comprehensive guidance for contributing to kornia-rs, with
 
 ## Development Workflow
 
+0. **Read the Skills First**: Project skills in [`.claude/skills/`](.claude/skills) (architecture, workflow, coding style, API design, SIMD, bindings) are mandatory reading for contributors and AI agents. Start with `kornia-arch` and `kornia-workflow`; see [AGENTS.md](AGENTS.md#required-skills). CI validates them (`skills_check.yml`).
+
 1. **Keep PRs Focused**: Each PR should address a single concern. If you're working on multiple features, create separate PRs for each.
 
 2. **Test Locally First**: Always run all relevant tests locally before submitting (see [Pull Request](#pull-request) for requirements):
    ```bash
+   pixi run pr-check     # Mandatory gate: skills + fmt-check + clippy + tests
    pixi run rust-lint    # Check formatting and linting
    pixi run rust-test    # Run all tests
    pixi run rust-check   # Verify compilation

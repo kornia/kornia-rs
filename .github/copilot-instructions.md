@@ -2,6 +2,10 @@
 
 This file provides instructions for GitHub Copilot when working with code in this repository.
 
+## Skills
+
+Before any task, read the relevant skill in [`.claude/skills/`](../.claude/skills) (see the table in [AGENTS.md](../AGENTS.md#required-skills)). Reviewers should flag PRs that violate them. `pixi run pr-check` is the pre-PR gate.
+
 ## Coding Standards
 
 Follow the coding standards and best practices defined in [CONTRIBUTING.md](../CONTRIBUTING.md#coding-standards).

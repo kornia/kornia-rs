@@ -73,6 +73,17 @@ jobs:
               }
             }
 
+            // Template hygiene checks (warnings only)
+            if (!/pixi run rust-test|cargo test|pytest/i.test(prBody)) {
+              warnings.push('⚠️ **Missing proof of verification**: Please paste your local test logs (`pixi run rust-test`, `cargo test` or `pytest`).');
+            }
+            if (!/🟢|🟡|🔴/.test(prBody) || !/\[[xX]\]\s*(🟢|🟡|🔴)/.test(prBody)) {
+              warnings.push('⚠️ **Missing AI usage disclosure**: Please check exactly one option in the AI Usage Disclosure section (see AI_POLICY.md).');
+            }
+            if (!/\[[xX]\][^\n]*\.claude\/skills/.test(prBody)) {
+              warnings.push('⚠️ **Skills not acknowledged**: Please read the relevant skills in `.claude/skills/` (see AGENTS.md), run `pixi run pr-check`, and tick the checklist item.');
+            }
+
             // Post comment if there are warnings
             if (warnings.length > 0) {
               const commentBody = '## ⚠️ PR Validation Warnings\n\n' +

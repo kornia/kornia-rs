@@ -59,6 +59,22 @@ def main() -> int:
         for task in sorted(set(re.findall(r"pixi run ([a-z0-9-]+)", wf.read_text()))):
             if not re.search(rf"^{re.escape(task)}\s*=", pixi, re.M):
                 errors.append(f"kornia-workflow references unknown pixi task: {task}")
+    link = ROOT / ".agents" / "skills"
+    if not link.exists() or link.resolve() != SKILLS.resolve():
+        errors.append(".agents/skills must point to .claude/skills")
+    for skill in sorted(p for p in SKILLS.iterdir() if p.is_dir()):
+        md = skill / "SKILL.md"
+        if not md.is_file():
+            continue
+        text = md.read_text()
+        if not frontmatter(text).get("description", "").startswith("Use "):
+            errors.append(f"{skill.name}: description should start with 'Use ' (trigger wording)")
+        for ref in re.findall(r"`((?:crates|scripts|kornia-py|kornia-cpp|docs|\.github)/[A-Za-z0-9_./-]+)`", text):
+            if not (ROOT / ref.rstrip("/")).exists():
+                errors.append(f"{skill.name}: referenced path does not exist: {ref}")
+    for doc in ("CONTRIBUTING.md", ".github/copilot-instructions.md", ".github/pull_request_template.md"):
+        if ".claude/skills" not in (ROOT / doc).read_text():
+            errors.append(f"{doc} does not reference .claude/skills")
     for e in errors:
         print(f"error: {e}", file=sys.stderr)
     if not errors:
