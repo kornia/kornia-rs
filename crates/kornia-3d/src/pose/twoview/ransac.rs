@@ -17,13 +17,11 @@ use crate::pose::fundamental::fundamental_8point;
 use crate::pose::fundamental_7pt::fundamental_7point_oriented_into;
 use crate::pose::{essential_5pt, homography_4pt2d, homography_dlt};
 use crate::ransac::engine::{
-    self, CapBase, Components, CountThenResidual, Incumbent, NoSchedule, NoVerifier, Objective,
-    Problem, Schedule, Score, Scorer, StageContext, Termination, Ties, TwoViewCap, UniformDraw,
-    Workspace,
+    self, Components, CountThenResidual, Incumbent, NoSchedule, NoVerifier, Objective, Problem,
+    Schedule, Score, Scorer, StageContext, Termination, Ties, TwoViewCap, UniformDraw, Workspace,
 };
 use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64};
 use rand::rngs::StdRng;
-use rand::SeedableRng;
 
 /// Draws without a new best after which homography RANSAC stops.
 const HOMOGRAPHY_STAGNATION_LIMIT: usize = 200;
@@ -36,17 +34,6 @@ pub(super) fn ransac_confidence(params: &RansacParams, default: f64) -> Result<f
         }
         Some(confidence) => Err(TwoViewError::InvalidConfidence { confidence }),
         None => Ok(default),
-    }
-}
-
-/// The run's RNG: seeded when requested, otherwise from the thread RNG.
-fn ransac_rng(params: &RansacParams) -> StdRng {
-    match params.random_seed {
-        Some(seed) => StdRng::seed_from_u64(seed),
-        None => {
-            let mut thread_rng = rand::rng();
-            StdRng::from_rng(&mut thread_rng)
-        }
     }
 }
 
@@ -124,7 +111,7 @@ where
         termination,
     };
     let mut best = Incumbent::new(vec![false; n]);
-    let mut ws = Workspace::new(vec![false; n], Vec::new());
+    let mut ws = Workspace::new(vec![false; n], n);
     engine::run(&mut problem, &mut parts, &mut best, &mut ws, rng);
     match best.model {
         Some(model) if best.score.support >= min_support => Ok(RansacResult {
@@ -271,7 +258,7 @@ fn ransac_fundamental_impl<const SAMPLE_SIZE: usize>(
             required: SAMPLE_SIZE,
         });
     }
-    let mut rng = ransac_rng(params);
+    let mut rng = engine::run_rng(params.random_seed);
     let problem = FundamentalProblem::<SAMPLE_SIZE> {
         points: PointPairs::new(x1, x2),
         threshold: params.threshold,
@@ -280,13 +267,7 @@ fn ransac_fundamental_impl<const SAMPLE_SIZE: usize>(
         num_roots: 0,
     };
     // Confidence applies to minimal samples, rather than individual roots.
-    let termination = TwoViewCap::new(
-        params.max_iterations,
-        CapBase::Current,
-        x1.len(),
-        SAMPLE_SIZE,
-        confidence,
-    );
+    let termination = TwoViewCap::new(params.max_iterations, x1.len(), SAMPLE_SIZE, confidence);
     let schedule = FundamentalRefinement {
         refit: params.refit,
         min_support: params.min_inliers,
@@ -511,17 +492,11 @@ pub fn ransac_essential_5pt(
     if x1.len() != x2.len() || x1.len() < 5 {
         return Err(TwoViewError::InvalidInput { required: 5 });
     }
-    let mut rng = ransac_rng(params);
+    let mut rng = engine::run_rng(params.random_seed);
     let problem = EssentialProblem::new(x1, x2, k1, k2, params.threshold)?;
     // The default confidence is 0.9999, matching fundamental estimation;
     // callers can override it through `RansacParams::confidence`.
-    let termination = TwoViewCap::new(
-        params.max_iterations,
-        CapBase::Configured,
-        x1.len(),
-        5,
-        confidence,
-    );
+    let termination = TwoViewCap::new(params.max_iterations, x1.len(), 5, confidence);
     run_two_view(
         problem,
         EssentialSampsonScorer,
@@ -676,7 +651,7 @@ pub fn ransac_homography(
     if x1.len() != x2.len() || x1.len() < 4 {
         return Err(TwoViewError::InvalidInput { required: 4 });
     }
-    let mut rng = ransac_rng(params);
+    let mut rng = engine::run_rng(params.random_seed);
     let problem = HomographyProblem {
         points: PointPairs::new(x1, x2),
         thresh_sq: params.threshold * params.threshold,
@@ -695,14 +670,8 @@ pub fn ransac_homography(
     // optimum for this random seed and continued sampling is wasted work.
     // Belt-and-braces with the adaptive cap: adaptive shrinks fast at high
     // w; stagnation shrinks fast at low w (where adaptive can't tighten).
-    let termination = TwoViewCap::new(
-        params.max_iterations,
-        CapBase::Configured,
-        x1.len(),
-        4,
-        confidence,
-    )
-    .with_stagnation(HOMOGRAPHY_STAGNATION_LIMIT);
+    let termination = TwoViewCap::new(params.max_iterations, x1.len(), 4, confidence)
+        .with_stagnation(HOMOGRAPHY_STAGNATION_LIMIT);
     let schedule = HomographyRefit {
         refit: params.refit,
         min_support: params.min_inliers,
@@ -835,15 +804,11 @@ where
                 refit_score += homography_reproj_error(&h_refit, &points.x1[i], &points.x2[i]);
             }
         }
-        let support = best.score.support;
-        let score = Score {
-            objective: CountThenResidual {
-                count: support,
-                residual: refit_score,
-            },
-            support,
+        let objective = CountThenResidual {
+            count: best.score.support,
+            residual: refit_score,
         };
-        best.consider_keeping_mask(&h_refit, score, Ties::Strict);
+        best.consider_keeping_mask(&h_refit, objective, Ties::Strict);
     }
 }
 

@@ -173,6 +173,7 @@ where
     let schedule = LegacyGeneric {
         lo_every: cfg.lo_every,
         accepted_since_lo: 0,
+        unchecked_accept: false,
         inlier_samples: Vec::new(),
         models: Vec::new(),
     };
@@ -189,32 +190,23 @@ where
         consensus,
         fused_threshold,
     };
+    let mut parts = Components {
+        sampler: OwnRngSampler(sampler),
+        verifier: NoVerifier,
+        scorer,
+        schedule,
+        termination,
+    };
     let mut best = Incumbent::new(Vec::with_capacity(n));
-    let mut ws = Workspace::new(Vec::with_capacity(n), vec![0.0; n]);
-    let sampler = OwnRngSampler(sampler);
+    let mut ws = Workspace::new(Vec::with_capacity(n), n);
     let draws = match sprt {
         Some(sprt) => {
             // The legacy driver counted draws from zero.
             let verifier = SprtVerifier::new(sprt, cfg.inlier_threshold, n, E::SAMPLE_SIZE, 1);
-            let mut parts = Components {
-                sampler,
-                verifier,
-                scorer,
-                schedule,
-                termination,
-            };
+            let mut parts = parts.with_verifier(verifier);
             engine::run(&mut problem, &mut parts, &mut best, &mut ws, rng)
         }
-        None => {
-            let mut parts = Components {
-                sampler,
-                verifier: NoVerifier,
-                scorer,
-                schedule,
-                termination,
-            };
-            engine::run(&mut problem, &mut parts, &mut best, &mut ws, rng)
-        }
+        None => engine::run(&mut problem, &mut parts, &mut best, &mut ws, rng),
     };
 
     RansacResult {
@@ -399,6 +391,10 @@ impl<C: Consensus> ConsensusScorer<'_, C> {
 struct LegacyGeneric<S, M> {
     lo_every: u32,
     accepted_since_lo: u32,
+    /// Whether a raw candidate was accepted since local optimization last
+    /// found the incumbent without inliers. Until then the incumbent is
+    /// unchanged, so the mask need not be scanned again.
+    unchecked_accept: bool,
     /// Refit scratch: the incumbent's inlier samples and the refit models.
     inlier_samples: Vec<S>,
     models: Vec<M>,
@@ -417,7 +413,12 @@ impl<S: Copy, M> LegacyGeneric<S, M> {
         Sc: Scorer<EstimatorProblem<'a, E>>,
         T: Termination,
     {
+        if !self.unchecked_accept {
+            return;
+        }
         if !stage.best.inliers.iter().any(|&b| b) {
+            // LO stays due and runs once an accepted model has inliers.
+            self.unchecked_accept = false;
             return;
         }
         self.accepted_since_lo = 0;
@@ -445,6 +446,7 @@ where
     #[inline]
     fn on_raw_accept(&mut self) {
         self.accepted_since_lo += 1;
+        self.unchecked_accept = true;
     }
 
     /// Every `lo_every` accepted hypotheses, refit on the incumbent's inliers

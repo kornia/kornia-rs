@@ -11,7 +11,6 @@ use crate::ransac::engine::{
 use crate::ransac::sprt::SPRTConfig;
 use kornia_algebra::{Mat3AF32, Vec2F32, Vec3AF32};
 use kornia_imgproc::calibration::distortion::PolynomialDistortion;
-use rand::{rngs::StdRng, SeedableRng};
 use thiserror::Error;
 
 const MIN_CORRESPONDENCES: usize = 4; // Minimum 2D-3D pairs required by EPnP (and by any refit)
@@ -90,13 +89,10 @@ fn keep_better_of(
 ) -> Refinement {
     match refit {
         Ok(pose) => {
-            let score = Score {
-                objective: InlierCount(refit_inliers),
-                support: refit_inliers,
-            };
-            // The legacy refit keeps the minimal pose's inlier set (#1171
-            // phase A preserves that stale mask).
-            if best.consider_keeping_mask(&pose, score, Ties::AcceptTies) {
+            // The legacy refit keeps the minimal pose's inlier set and its
+            // support (#1171 phase A preserves that stale mask); only the
+            // refit's own count ranks it.
+            if best.consider_keeping_mask(&pose, InlierCount(refit_inliers), Ties::AcceptTies) {
                 Refinement::Applied(method)
             } else {
                 log::debug!(
@@ -241,7 +237,7 @@ pub struct PnPRansacResult {
 /// such step wired in here, so undistort the image points up front and pass `None`.
 ///
 /// Note the EPnP path is not model-consistent either, and this error does not fix that: scoring
-/// (`classify_points` / `project_sq_error`) is pure pinhole and ignores `distortion` entirely,
+/// (`project_sq_error`) is pure pinhole and ignores `distortion` entirely,
 /// while the EPnP solve and its LM refinement do apply it. So `EPnP + Some(distortion)` selects a
 /// consensus set on pinhole residuals and refits it under a distorted model. Undistorting up front
 /// is the fix for both.
@@ -307,14 +303,7 @@ pub fn solve_pnp_ransac(
     // Precompute intrinsics vectors
     let (intr_x, intr_y) = intrinsics_as_vectors(k);
 
-    // RNG setup
-    let mut rng: StdRng = match params.random_seed {
-        Some(seed) => StdRng::seed_from_u64(seed),
-        None => {
-            let mut trng = rand::rng();
-            StdRng::from_rng(&mut trng)
-        }
-    };
+    let mut rng = engine::run_rng(params.random_seed);
 
     let mut problem = PnpProblem {
         world,
@@ -346,35 +335,27 @@ pub fn solve_pnp_ransac(
         min_support: min_correspondences,
         refinement: Refinement::Skipped,
     };
+    let mut parts = Components {
+        sampler: UniformDraw,
+        verifier: NoVerifier,
+        scorer,
+        schedule,
+        termination,
+    };
     let mut best = Incumbent::new(vec![false; n]);
+    let mut ws = Workspace::new(vec![false; n], n);
     let refinement = match params.sprt.filter(SPRTConfig::is_valid) {
         Some(sprt) => {
-            // SPRT tests `sq < t²` in f32 while scoring tests `sqrt(sq) < t`;
-            // the two can disagree at the boundary, so scoring never reuses
-            // the SPRT residuals.
+            // SPRT tests `sq < t²` in f32, which can disagree with scoring's
+            // `sqrt(sq) < t` at the boundary; the scorer re-tests the
+            // residuals. The legacy loop counted draws from one.
             let threshold_sq = params.reproj_threshold_px * params.reproj_threshold_px;
-            // The legacy loop counted draws from one.
             let verifier = SprtVerifier::new(sprt, threshold_sq as f64, n, sample_size, 0);
-            let mut ws = Workspace::new(vec![false; n], vec![0.0; n]);
-            let mut parts = Components {
-                sampler: UniformDraw,
-                verifier,
-                scorer,
-                schedule,
-                termination,
-            };
+            let mut parts = parts.with_verifier(verifier);
             engine::run(&mut problem, &mut parts, &mut best, &mut ws, &mut rng);
             parts.schedule.refinement
         }
         None => {
-            let mut ws = Workspace::new(vec![false; n], Vec::new());
-            let mut parts = Components {
-                sampler: UniformDraw,
-                verifier: NoVerifier,
-                scorer,
-                schedule,
-                termination,
-            };
             engine::run(&mut problem, &mut parts, &mut best, &mut ws, &mut rng);
             parts.schedule.refinement
         }
@@ -405,20 +386,14 @@ pub fn solve_pnp_ransac(
         }
     };
 
-    // Recompute reprojection error on inliers only
-    let (_inliers, sum_sq_inliers) = classify_points(
-        world,
-        image,
-        None,
-        Some(&best_inliers),
-        ClassificationParams {
-            rotation_matrix: &final_pose.rotation,
-            translation_vector: &final_pose.translation,
-            camera_intrinsics_x: &intr_x,
-            camera_intrinsics_y: &intr_y,
-            threshold: None,
-        },
-    );
+    // Recompute reprojection error on inliers only; points the returned pose
+    // puts behind the camera are skipped.
+    let mut sum_sq_inliers: f32 = 0.0;
+    for &index in &best_inliers {
+        if let Some(squared_error) = problem.squared_error(&final_pose, index) {
+            sum_sq_inliers += squared_error;
+        }
+    }
     let rmse = if !best_inliers.is_empty() {
         (sum_sq_inliers / best_inliers.len() as f32).sqrt()
     } else {
@@ -559,6 +534,32 @@ struct ReprojectionScorer {
 impl Scorer<PnpProblem<'_>> for ReprojectionScorer {
     type Objective = InlierCount;
 
+    /// Re-tests the verifier's residuals when it wrote them all. Each is the
+    /// `f32` squared error widened to `f64`, infinite behind the camera, so
+    /// narrowing it back gives exactly the error [`Self::score_full`] would
+    /// compute, and the same mask.
+    #[inline]
+    fn score_raw(
+        &mut self,
+        problem: &PnpProblem<'_>,
+        pose: &PnPResult,
+        _bound: Option<&Score<InlierCount>>,
+        ws: &mut Workspace,
+    ) -> Option<Score<InlierCount>> {
+        if !ws.residuals_complete {
+            return Some(self.score_full(problem, pose, ws));
+        }
+        let mut count = 0;
+        for (is_inlier, &squared_error) in ws.mask.iter_mut().zip(&ws.residuals) {
+            *is_inlier = (squared_error as f32).sqrt() < self.threshold_px;
+            count += *is_inlier as usize;
+        }
+        Some(Score {
+            objective: InlierCount(count),
+            support: count,
+        })
+    }
+
     fn score_full(
         &mut self,
         problem: &PnpProblem<'_>,
@@ -678,88 +679,6 @@ impl<'a, T, R> Schedule<PnpProblem<'a>, ReprojectionScorer, T, R> for PnpRefit {
         });
         self.refinement = keep_better_of(refit, refit_inliers, stage.best, refit_method_reported);
     }
-}
-
-/// This function handles both:
-/// - Scoring all points against a candidate pose (during RANSAC)
-/// - Computing final RMSE on a subset of inlier points
-struct ClassificationParams<'a> {
-    rotation_matrix: &'a Mat3AF32,
-    translation_vector: &'a Vec3AF32,
-    camera_intrinsics_x: &'a Vec3AF32,
-    camera_intrinsics_y: &'a Vec3AF32,
-    threshold: Option<f32>,
-}
-
-fn classify_points(
-    world: &[Vec3AF32],
-    image: &[Vec2F32],
-    _distortion: Option<&PolynomialDistortion>,
-    indices: Option<&[usize]>,
-    params: ClassificationParams,
-) -> (Vec<usize>, f32) {
-    let rotation = params.rotation_matrix;
-    let translation = params.translation_vector;
-
-    let mut inliers: Vec<usize> = Vec::new();
-    let mut total_squared_error: f32 = 0.0;
-
-    match indices {
-        Some(indices) => {
-            for &idx in indices {
-                if idx >= world.len() || idx >= image.len() {
-                    continue;
-                }
-
-                if let Some(squared_error) = project_sq_error(
-                    &world[idx],
-                    &image[idx],
-                    rotation,
-                    translation,
-                    params.camera_intrinsics_x,
-                    params.camera_intrinsics_y,
-                    true,
-                ) {
-                    total_squared_error += squared_error;
-
-                    let is_inlier = match params.threshold {
-                        Some(thresh) => squared_error.sqrt() < thresh,
-                        None => true,
-                    };
-
-                    if is_inlier {
-                        inliers.push(idx);
-                    }
-                }
-            }
-        }
-        None => {
-            for (idx, (world_point, image_point)) in world.iter().zip(image.iter()).enumerate() {
-                if let Some(squared_error) = project_sq_error(
-                    world_point,
-                    image_point,
-                    rotation,
-                    translation,
-                    params.camera_intrinsics_x,
-                    params.camera_intrinsics_y,
-                    true,
-                ) {
-                    total_squared_error += squared_error;
-
-                    let is_inlier = match params.threshold {
-                        Some(thresh) => squared_error.sqrt() < thresh,
-                        None => true,
-                    };
-
-                    if is_inlier {
-                        inliers.push(idx);
-                    }
-                }
-            }
-        }
-    }
-
-    (inliers, total_squared_error)
 }
 
 #[cfg(test)]
@@ -1804,5 +1723,68 @@ mod tests {
                 "confidence {confidence} was accepted"
             );
         }
+    }
+
+    /// With SPRT on, a passing pose is scored from the verifier's residuals.
+    /// That must give exactly the exhaustive mask, including points behind
+    /// the camera and points at the threshold.
+    #[test]
+    fn scoring_from_sprt_residuals_matches_exhaustive_scoring() {
+        let (r, t) = pose_gt();
+        let mut world = scene_non_planar().to_vec();
+        let mut image = project_exact(&world, &r, &t);
+        // An outlier, a point behind the camera, and points straddling 8 px.
+        world.push(world[0]);
+        image.push(Vec2F32::new(image[0].x + 40.0, image[0].y));
+        world.push(Vec3AF32::new(0.0, 0.0, -3.0));
+        image.push(Vec2F32::new(640.0, 480.0));
+        for dx in [7.999, 8.0, 8.001] {
+            world.push(world[1]);
+            image.push(Vec2F32::new(image[1].x + dx, image[1].y));
+        }
+        let pose = PnPResult {
+            rotation: Mat3AF32::from_cols(
+                Vec3AF32::new(r[0][0], r[1][0], r[2][0]),
+                Vec3AF32::new(r[0][1], r[1][1], r[2][1]),
+                Vec3AF32::new(r[0][2], r[1][2], r[2][2]),
+            ),
+            translation: Vec3AF32::new(t[0], t[1], t[2]),
+            rvec: Vec3AF32::ZERO,
+            reproj_rmse: None,
+            num_iterations: None,
+            converged: None,
+        };
+        let k = k_default();
+        let (intr_x, intr_y) = intrinsics_as_vectors(&k);
+        let base = PnPMethod::EPnPDefault;
+        let problem = PnpProblem {
+            world: &world,
+            image: &image,
+            k: &k,
+            distortion: None,
+            base: &base,
+            is_ap3p: false,
+            sample_size: EPNP_MIN_SAMPLE_SIZE,
+            intr_x,
+            intr_y,
+            w_min: Vec::new(),
+            i_min: Vec::new(),
+            draws: 0,
+            candidates: Vec::new(),
+        };
+        let n = world.len();
+        let mut scorer = ReprojectionScorer { threshold_px: 8.0 };
+        let mut ws = Workspace::new(vec![false; n], n);
+        let full = scorer.score_full(&problem, &pose, &mut ws);
+        let full_mask = ws.mask.clone();
+        assert!(!full_mask[7], "a point behind the camera is an outlier");
+
+        for index in 0..n {
+            ws.residuals[index] = problem.residual(&pose, index);
+        }
+        ws.residuals_complete = true;
+        ws.mask.fill(false);
+        assert_eq!(scorer.score_raw(&problem, &pose, None, &mut ws), Some(full));
+        assert_eq!(ws.mask, full_mask);
     }
 }

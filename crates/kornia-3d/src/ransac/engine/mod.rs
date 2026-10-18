@@ -13,19 +13,20 @@
 //!         verifier.verify                    statistical (SPRT), raw candidates only
 //!         scorer.score_raw(incumbent)        exact; may prune a candidate that cannot win
 //!         incumbent.consider(Strict)         the guarded replacement
-//!     termination.after_draw; schedule.after_draw          generic LO
+//!     schedule.after_draw; termination.after_draw          generic LO
 //! schedule.after_sampling                                  LO+ → DEGENSAC
 //! schedule.final_fit                                       non-minimal refits
 //! ```
 //!
 //! Components are generic parameters, so each preset monomorphizes its own
-//! loop with no per-candidate dispatch. Derived candidates (local
-//! optimization, repairs, final fits) never pass the verifier; schedules
-//! offer them through [`StageContext::consider_derived`], which scores them
-//! exhaustively and replaces the incumbent through [`Incumbent::consider`]
-//! under an explicit [`Ties`] rule. The one other replacement path,
-//! [`Incumbent::consider_keeping_mask`], exists only for two legacy final
-//! fits that keep their pre-refit mask.
+//! loop with no per-candidate dispatch; a preset with optional SPRT builds one
+//! loop per verifier through [`Components::with_verifier`]. Derived candidates
+//! (local optimization, repairs, final fits) never pass the verifier;
+//! schedules offer them through [`StageContext::consider_derived`], which
+//! scores them exhaustively and replaces the incumbent through
+//! [`Incumbent::consider`] under an explicit [`Ties`] rule. The one other
+//! replacement path, [`Incumbent::consider_keeping_mask`], exists only for two
+//! legacy final fits that keep their pre-refit mask.
 //!
 //! This is phase A of #1171: each public entry point plugs in *legacy*
 //! components that reproduce its previous loop exactly, including its RNG
@@ -40,9 +41,17 @@ pub(crate) use score::{
     CountThenResidual, Incumbent, InlierCount, MaxScore, Objective, Score, Ties,
 };
 pub(crate) use sprt::SprtVerifier;
-pub(crate) use termination::{adaptive_max_iters, CapBase, GenericCap, TwoViewCap};
+pub(crate) use termination::{adaptive_max_iters, GenericCap, TwoViewCap};
 
-use rand::Rng;
+use rand::{rngs::StdRng, Rng, SeedableRng};
+
+/// A run's RNG: seeded when `seed` is given, otherwise from the thread RNG.
+pub(crate) fn run_rng(seed: Option<u64>) -> StdRng {
+    match seed {
+        Some(seed) => StdRng::seed_from_u64(seed),
+        None => StdRng::from_rng(&mut rand::rng()),
+    }
+}
 
 /// Geometry of one robust estimation problem, prepared for a single run.
 ///
@@ -200,7 +209,11 @@ pub(crate) trait Termination {
     /// `draws`.
     fn on_new_best(&mut self, support: usize, draws: usize);
 
-    /// Draw `draws` finished; `improved` if it replaced the incumbent.
+    /// Draw `draws` finished, including its [`Schedule::after_draw`] hook.
+    ///
+    /// `improved` is whether a raw candidate of the draw or a derived
+    /// candidate of that hook replaced the incumbent, and `best_support` is
+    /// the incumbent's support after both.
     ///
     /// Like [`Schedule::after_draw`], this is skipped for draws whose sample
     /// failed [`Problem::check_sample`], although those draws still count.
@@ -239,7 +252,8 @@ pub(crate) struct Workspace {
     /// The candidate's inlier mask, swapped with the incumbent's on
     /// replacement.
     pub mask: Vec<bool>,
-    /// Per-observation residuals, for scorers and verifiers that need them.
+    /// Per-observation residuals, one entry per observation, for scorers and
+    /// verifiers that need them.
     pub residuals: Vec<f64>,
     /// Whether the verifier wrote every entry of [`Self::residuals`] for the
     /// current candidate.
@@ -247,11 +261,12 @@ pub(crate) struct Workspace {
 }
 
 impl Workspace {
-    /// Wrap a candidate mask buffer and a residual buffer.
-    pub(crate) fn new(mask: Vec<bool>, residuals: Vec<f64>) -> Self {
+    /// Wrap a candidate mask buffer and allocate one residual slot per
+    /// observation of a problem with `population` observations.
+    pub(crate) fn new(mask: Vec<bool>, population: usize) -> Self {
         Self {
             mask,
-            residuals,
+            residuals: vec![0.0; population],
             residuals_complete: false,
         }
     }
@@ -269,6 +284,22 @@ pub(crate) struct Components<S, V, Sc, Sch, T> {
     pub schedule: Sch,
     /// Stops the loop.
     pub termination: T,
+}
+
+impl<S, Sc, Sch, T> Components<S, NoVerifier, Sc, Sch, T> {
+    /// The same components verified by `verifier`.
+    ///
+    /// Each verifier type gets its own monomorphized loop, so a preset with
+    /// optional SPRT resolves that choice once per run, not per candidate.
+    pub(crate) fn with_verifier<V>(self, verifier: V) -> Components<S, V, Sc, Sch, T> {
+        Components {
+            sampler: self.sampler,
+            verifier,
+            scorer: self.scorer,
+            schedule: self.schedule,
+            termination: self.termination,
+        }
+    }
 }
 
 /// What a [`Schedule`] hook may touch.
@@ -289,6 +320,8 @@ pub(crate) struct StageContext<'a, P: Problem, Sc: Scorer<P>, T, R> {
     pub rng: &'a mut R,
     /// Draws made so far.
     pub draws: usize,
+    /// Whether a derived candidate replaced the incumbent during this hook.
+    pub improved: bool,
 }
 
 impl<P: Problem, Sc: Scorer<P>, T: Termination, R> StageContext<'_, P, Sc, T, R> {
@@ -300,6 +333,7 @@ impl<P: Problem, Sc: Scorer<P>, T: Termination, R> StageContext<'_, P, Sc, T, R>
         let accepted = self.best.consider(model, score, &mut self.ws.mask, ties);
         if accepted {
             self.termination.on_new_best(score.support, self.draws);
+            self.improved = true;
         }
         accepted
     }
@@ -362,10 +396,9 @@ where
         // derived candidates, whose residuals no verifier wrote.
         ws.residuals_complete = false;
 
-        parts
-            .termination
-            .after_draw(draws, improved, best.score.support);
-        parts.schedule.after_draw(&mut StageContext {
+        // The schedule runs first, so termination sees what a per-draw local
+        // optimization gained.
+        let mut stage = StageContext {
             problem,
             scorer: &mut parts.scorer,
             termination: &mut parts.termination,
@@ -373,7 +406,13 @@ where
             ws,
             rng,
             draws,
-        });
+            improved: false,
+        };
+        parts.schedule.after_draw(&mut stage);
+        let improved = improved || stage.improved;
+        parts
+            .termination
+            .after_draw(draws, improved, best.score.support);
     }
 
     let mut stage = StageContext {
@@ -384,6 +423,7 @@ where
         ws,
         rng,
         draws,
+        improved: false,
     };
     parts.schedule.after_sampling(&mut stage);
     parts.schedule.final_fit(&mut stage);
@@ -471,7 +511,8 @@ mod tests {
     struct Budget {
         max: usize,
         new_bests: Vec<(usize, usize)>,
-        draws_seen: Vec<(usize, bool)>,
+        /// `(draws, improved, best_support)` of every `after_draw`.
+        draws_seen: Vec<(usize, bool, usize)>,
     }
 
     impl Termination for Budget {
@@ -483,8 +524,8 @@ mod tests {
             self.new_bests.push((support, draws));
         }
 
-        fn after_draw(&mut self, draws: usize, improved: bool, _best_support: usize) {
-            self.draws_seen.push((draws, improved));
+        fn after_draw(&mut self, draws: usize, improved: bool, best_support: usize) {
+            self.draws_seen.push((draws, improved, best_support));
         }
     }
 
@@ -534,6 +575,15 @@ mod tests {
     }
 
     struct RejectAll;
+
+    /// Offers the same derived candidate after every draw.
+    struct PolishEveryDraw(f64);
+
+    impl<R> Schedule<Values, Count, Budget, R> for PolishEveryDraw {
+        fn after_draw(&mut self, stage: &mut StageContext<'_, Values, Count, Budget, R>) {
+            stage.consider_derived(&self.0, Ties::Strict);
+        }
+    }
 
     impl<P: Problem, R> Verifier<P, R> for RejectAll {
         fn verify(
@@ -586,7 +636,7 @@ mod tests {
             },
         };
         let mut best = Incumbent::new(vec![false; n]);
-        let mut ws = Workspace::new(vec![false; n], Vec::new());
+        let mut ws = Workspace::new(vec![false; n], n);
         let draws = run(
             problem,
             &mut parts,
@@ -619,7 +669,7 @@ mod tests {
         assert_eq!(problem.fits, 23);
         assert!(best.model.is_none());
         assert_eq!(budget.draws_seen.len(), 23);
-        assert!(budget.draws_seen.iter().all(|&(_, improved)| !improved));
+        assert!(budget.draws_seen.iter().all(|&(_, improved, _)| !improved));
     }
 
     #[test]
@@ -676,5 +726,35 @@ mod tests {
         assert_eq!(best.model, Some(0.1));
         assert_eq!(best.score.support, 3);
         assert_eq!(budget.new_bests, [(3, 5), (3, 5)]);
+    }
+
+    #[test]
+    fn termination_sees_what_a_per_draw_schedule_gained() {
+        // Every raw candidate is rejected; the schedule's derived 0.1 explains
+        // three values and replaces the empty incumbent on the first draw.
+        let mut problem = Values::new(vec![0.0, 0.1, 0.2, 5.0]);
+        let mut parts = Components {
+            sampler: UniformDraw,
+            verifier: RejectAll,
+            scorer: Count,
+            schedule: PolishEveryDraw(0.1),
+            termination: Budget {
+                max: 3,
+                ..Default::default()
+            },
+        };
+        let mut best = Incumbent::new(vec![false; 4]);
+        let mut ws = Workspace::new(vec![false; 4], 4);
+        run(
+            &mut problem,
+            &mut parts,
+            &mut best,
+            &mut ws,
+            &mut StdRng::seed_from_u64(3),
+        );
+        assert_eq!(
+            parts.termination.draws_seen,
+            [(1, true, 3), (2, false, 3), (3, false, 3)]
+        );
     }
 }

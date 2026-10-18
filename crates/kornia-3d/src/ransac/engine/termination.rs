@@ -99,30 +99,20 @@ impl Termination for GenericCap {
     }
 }
 
-/// Which cap the two-view loops tighten from.
-///
-/// For a valid confidence the adaptive bound does not grow with support and
-/// the cap never drops below the draws made, so both bases give the same cap
-/// in every state the presets reach. Both are kept because the legacy loops
-/// differed here and phase A reproduces them literally.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CapBase {
-    /// The current, possibly already tightened cap (fundamental matrix).
-    Current,
-    /// The configured maximum (essential matrix and homography).
-    Configured,
-}
-
 /// Adaptive cap of the dedicated two-view loops (`pose::ransac_*`).
 ///
 /// The cap never drops below the draws already made, full support stops
 /// after the current draw, and the homography loop additionally stops after
 /// `stagnation` draws without a new best.
+///
+/// Every new best tightens the current cap. The legacy essential and
+/// homography loops tightened the configured maximum instead; that gives the
+/// same cap in every state the loops reach, because a new best never has
+/// less support than the last one, the adaptive bound does not grow with
+/// support, and the cap never drops below the draws made.
 #[derive(Debug, Clone)]
 pub(crate) struct TwoViewCap {
     cap: usize,
-    configured: usize,
-    base: CapBase,
     population: usize,
     sample_size: usize,
     confidence: f64,
@@ -134,15 +124,12 @@ impl TwoViewCap {
     /// A cap of `max_draws` draws, tightened at `confidence`.
     pub(crate) fn new(
         max_draws: usize,
-        base: CapBase,
         population: usize,
         sample_size: usize,
         confidence: f64,
     ) -> Self {
         Self {
             cap: max_draws,
-            configured: max_draws,
-            base,
             population,
             sample_size,
             confidence,
@@ -175,16 +162,12 @@ impl Termination for TwoViewCap {
             self.cap = draws;
             return;
         }
-        let current = match self.base {
-            CapBase::Current => self.cap,
-            CapBase::Configured => self.configured,
-        };
         self.cap = adaptive_max_iters(
             support,
             self.population,
             self.sample_size,
             self.confidence,
-            current,
+            self.cap,
         )
         .max(draws);
     }
@@ -229,7 +212,7 @@ mod tests {
 
     #[test]
     fn two_view_cap_never_drops_below_completed_draws() {
-        let mut cap = TwoViewCap::new(1000, CapBase::Current, 10, 8, 0.999_999);
+        let mut cap = TwoViewCap::new(1000, 10, 8, 0.999_999);
         cap.on_new_best(8, 700);
         // The analytic bound (615) is below the draws made (700).
         assert!(!cap.done(699));
@@ -238,36 +221,29 @@ mod tests {
 
     #[test]
     fn two_view_cap_full_support_stops_after_the_current_draw() {
-        let mut cap = TwoViewCap::new(1000, CapBase::Configured, 50, 4, 0.99);
+        let mut cap = TwoViewCap::new(1000, 50, 4, 0.99);
         cap.on_new_best(50, 3);
         assert!(!cap.done(2));
         assert!(cap.done(3));
     }
 
     #[test]
-    fn two_view_cap_base_selects_the_cap_to_tighten() {
-        let mut current = TwoViewCap::new(1000, CapBase::Current, 10, 8, 0.999_999);
-        let mut configured = TwoViewCap::new(1000, CapBase::Configured, 10, 8, 0.999_999);
-        // Both give min(1000, 615) = 615 at 8 inliers.
-        current.on_new_best(8, 1);
-        configured.on_new_best(8, 1);
-        assert!(!current.done(614) && current.done(615));
-        assert!(!configured.done(614) && configured.done(615));
-        // With zero confidence the bound returns the cap it starts from.
-        let mut current = TwoViewCap::new(1000, CapBase::Current, 10, 8, 0.0);
-        current.cap = 300;
-        current.on_new_best(9, 1);
-        assert!(current.done(300));
-        let mut configured = TwoViewCap::new(1000, CapBase::Configured, 10, 8, 0.0);
-        configured.cap = 300;
-        configured.on_new_best(9, 1);
-        assert!(!configured.done(300) && configured.done(1000));
+    fn two_view_cap_tightens_the_current_cap() {
+        let mut cap = TwoViewCap::new(1000, 10, 8, 0.999_999);
+        // min(1000, 615) = 615 at 8 inliers.
+        cap.on_new_best(8, 1);
+        assert!(!cap.done(614) && cap.done(615));
+        // An equal-support best, e.g. a lower residual, keeps it.
+        cap.on_new_best(8, 2);
+        assert!(!cap.done(614) && cap.done(615));
+        // More support tightens it further: q = C(9, 8) / C(10, 8) = 1/5.
+        cap.on_new_best(9, 3);
+        assert!(!cap.done(61) && cap.done(62));
     }
 
     #[test]
     fn two_view_cap_stagnation_counts_draws_since_the_last_best() {
-        let mut cap =
-            TwoViewCap::new(10_000, CapBase::Configured, 1000, 4, 0.99).with_stagnation(200);
+        let mut cap = TwoViewCap::new(10_000, 1000, 4, 0.99).with_stagnation(200);
         assert!(!cap.done(199));
         assert!(cap.done(200));
         cap.on_new_best(10, 150);

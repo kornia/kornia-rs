@@ -105,13 +105,15 @@ pub(crate) struct Score<O> {
 /// The best hypothesis so far: model, score and inlier mask.
 ///
 /// The engine replaces it only through [`Incumbent::consider`], and through
-/// [`Incumbent::consider_keeping_mask`] for two legacy final fits.
+/// [`Incumbent::consider_keeping_mask`] for two legacy final fits. Either way
+/// `score.support` is the support of the mask in [`Self::inliers`].
 #[derive(Debug, Clone)]
 pub(crate) struct Incumbent<M, O> {
     /// Best model, or `None` before the first accepted candidate.
     pub model: Option<M>,
     /// Score of [`Self::model`]; [`Objective::worst`] with zero support
-    /// while there is no model.
+    /// while there is no model. After [`Self::consider_keeping_mask`] the
+    /// objective is the new model's and the support the kept mask's.
     pub score: Score<O>,
     /// Inlier mask of [`Self::model`], or of the previous model after
     /// [`Self::consider_keeping_mask`].
@@ -158,22 +160,21 @@ impl<M: Clone, O: Objective> Incumbent<M, O> {
         true
     }
 
-    /// Replace model and score but keep the current inlier mask.
+    /// Replace the model and the objective if `objective` beats the
+    /// incumbent's under `ties`, but keep the inlier mask and its support.
     ///
     /// Reproduces two legacy final fits that return the pre-refit mask: the
     /// homography DLT refit and the PnP refit. Fixing those stale masks is a
-    /// separate, deliberate behaviour change (#1171 phase B).
-    ///
-    /// Afterwards [`Self::inliers`] is the previous model's mask, and
-    /// `score.support` need not be its popcount. Callers that need the
-    /// consensus set read the mask, not the support.
+    /// separate, deliberate behaviour change (#1171 phase B). Keeping the
+    /// support with the mask means every reader of `score.support` still
+    /// sees the size of the returned consensus set.
     #[inline]
-    pub(crate) fn consider_keeping_mask(&mut self, model: &M, score: Score<O>, ties: Ties) -> bool {
-        if !score.objective.beats(&self.score.objective, ties) {
+    pub(crate) fn consider_keeping_mask(&mut self, model: &M, objective: O, ties: Ties) -> bool {
+        if !objective.beats(&self.score.objective, ties) {
             return false;
         }
         self.model = Some(model.clone());
-        self.score = score;
+        self.score.objective = objective;
         true
     }
 }
@@ -242,21 +243,21 @@ mod tests {
     }
 
     #[test]
-    fn consider_keeping_mask_leaves_the_mask_in_place() {
-        let mut best = Incumbent::<u8, CountThenResidual>::new(vec![true, false]);
-        let first = Score {
-            objective: ctr(1, 4.0),
-            support: 1,
+    fn consider_keeping_mask_leaves_the_mask_and_its_support_in_place() {
+        let mut best = Incumbent::<u8, InlierCount>::new(vec![false; 3]);
+        let mut mask = vec![true, false, true];
+        let two = Score {
+            objective: InlierCount(2),
+            support: 2,
         };
-        assert!(best.consider_keeping_mask(&1, first, Ties::Strict));
-        let better = Score {
-            objective: ctr(1, 3.0),
-            support: 1,
-        };
-        assert!(best.consider_keeping_mask(&2, better, Ties::Strict));
-        assert!(!best.consider_keeping_mask(&3, better, Ties::Strict));
+        assert!(best.consider(&1, two, &mut mask, Ties::Strict));
+        // A refit that would count three inliers replaces the model, but the
+        // mask and its support of two stay.
+        assert!(best.consider_keeping_mask(&2, InlierCount(3), Ties::AcceptTies));
+        assert!(!best.consider_keeping_mask(&3, InlierCount(2), Ties::AcceptTies));
         assert_eq!(best.model, Some(2));
-        assert_eq!(best.score, better);
-        assert_eq!(best.inliers, [true, false]);
+        assert_eq!(best.score.objective, InlierCount(3));
+        assert_eq!(best.score.support, 2);
+        assert_eq!(best.inliers, [true, false, true]);
     }
 }
