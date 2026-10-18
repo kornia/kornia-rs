@@ -11,10 +11,21 @@ fn lcg_next(state: &mut u64) -> f64 {
     (*state >> 32) as f64 / 4_294_967_296.0
 }
 
+/// Correspondences and the ground truth that generated them: a point `p1` in
+/// the first camera's frame is `r * p1 + t` in the second's.
+struct Ry5Scene {
+    x1: Vec<Vec2F64>,
+    x2: Vec<Vec2F64>,
+    r: Mat3F64,
+    t: Vec3F64,
+    /// Intrinsics shared by both cameras.
+    k: Mat3F64,
+}
+
 /// The `R = Ry(5°)`, `t = (0.5, 0, 0)` scene seen through `f = 500`,
 /// `c = (320, 240)`: 100 inliers 2–5 m in front with ±0.25 px noise, then 20
 /// uniformly random outliers.
-fn ry5_scene_with_outliers() -> (Vec<Vec2F64>, Vec<Vec2F64>) {
+fn ry5_scene_with_outliers() -> Ry5Scene {
     let (s, c) = 5.0_f64.to_radians().sin_cos();
     let r = Mat3F64::from_cols(
         Vec3F64::new(c, 0.0, -s),
@@ -47,7 +58,12 @@ fn ry5_scene_with_outliers() -> (Vec<Vec2F64>, Vec<Vec2F64>) {
         x1.push(Vec2F64::new(u1, v1));
         x2.push(Vec2F64::new(u2, v2));
     }
-    (x1, x2)
+    let k = Mat3F64::from_cols(
+        Vec3F64::new(fx, 0.0, 0.0),
+        Vec3F64::new(0.0, fx, 0.0),
+        Vec3F64::new(cx, cy, 1.0),
+    );
+    Ry5Scene { x1, x2, r, t, k }
 }
 
 #[test]
@@ -102,7 +118,7 @@ fn test_ransac_fundamental_seven_matches_and_all_roots() -> Result<(), TwoViewEr
 fn test_ransac_fundamental_refit_improves_accuracy() {
     use crate::pose::fundamental::sampson_distance;
 
-    let (x1, x2) = ry5_scene_with_outliers();
+    let Ry5Scene { x1, x2, .. } = ry5_scene_with_outliers();
 
     let base_params = RansacParams {
         max_iterations: 500,
@@ -152,33 +168,13 @@ fn test_ransac_fundamental_refit_improves_accuracy() {
 /// constraints alone).
 #[test]
 fn test_ransac_essential_5pt_recovers_known_e() {
-    // R = Ry(5°), t = (0.5, 0, 0).
-    let angle = 5.0_f64.to_radians();
-    let (s, c) = angle.sin_cos();
-    let r = Mat3F64::from_cols(
-        Vec3F64::new(c, 0.0, -s),
-        Vec3F64::new(0.0, 1.0, 0.0),
-        Vec3F64::new(s, 0.0, c),
-    );
-    let t = Vec3F64::new(0.5, 0.0, 0.0);
+    let Ry5Scene { x1, x2, r, t, k } = ry5_scene_with_outliers();
     let tx = Mat3F64::from_cols(
         Vec3F64::new(0.0, t.z, -t.y),
         Vec3F64::new(-t.z, 0.0, t.x),
         Vec3F64::new(t.y, -t.x, 0.0),
     );
     let e_true = tx * r;
-
-    // Pinhole K (matches the F-RANSAC refit test).
-    let fx = 500.0_f64;
-    let cx = 320.0_f64;
-    let cy = 240.0_f64;
-    let k = Mat3F64::from_cols(
-        Vec3F64::new(fx, 0.0, 0.0),
-        Vec3F64::new(0.0, fx, 0.0),
-        Vec3F64::new(cx, cy, 1.0),
-    );
-
-    let (x1, x2) = ry5_scene_with_outliers();
 
     let params = RansacParams {
         max_iterations: 500,
@@ -835,26 +831,13 @@ fn test_two_view_euroc_mh01() {
 /// small-motion synthetic scenes.
 #[test]
 fn test_two_view_estimate_with_5pt_essential() {
-    // Synthetic scene: Ry(5°), t = (0.5, 0, 0), pinhole at fx=500.
-    let angle = 5.0_f64.to_radians();
-    let (s, c) = angle.sin_cos();
-    let r_true = Mat3F64::from_cols(
-        Vec3F64::new(c, 0.0, -s),
-        Vec3F64::new(0.0, 1.0, 0.0),
-        Vec3F64::new(s, 0.0, c),
-    );
-    let t_true = Vec3F64::new(0.5, 0.0, 0.0);
-
-    let fx = 500.0_f64;
-    let cx = 320.0_f64;
-    let cy = 240.0_f64;
-    let k = Mat3F64::from_cols(
-        Vec3F64::new(fx, 0.0, 0.0),
-        Vec3F64::new(0.0, fx, 0.0),
-        Vec3F64::new(cx, cy, 1.0),
-    );
-
-    let (x1, x2) = ry5_scene_with_outliers();
+    let Ry5Scene {
+        x1,
+        x2,
+        r: r_true,
+        t: t_true,
+        k,
+    } = ry5_scene_with_outliers();
 
     let est = TwoViewEstimator::builder()
         .epipolar_solver(EssentialNister5ptSolver {
