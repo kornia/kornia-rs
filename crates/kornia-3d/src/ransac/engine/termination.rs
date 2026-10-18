@@ -5,6 +5,7 @@
 //! details of how the bound is updated, which phase A of #1171 preserves.
 
 use super::Termination;
+use crate::ransac::is_valid_confidence;
 
 /// Recompute the adaptive iteration cap for distinct sampling without
 /// replacement. Returns the minimum of `current` and the analytic estimate.
@@ -17,11 +18,7 @@ pub(crate) fn adaptive_max_iters(
     confidence: f64,
     current: usize,
 ) -> usize {
-    if inlier_count < sample_size
-        || sample_size > population
-        || confidence <= 0.0
-        || confidence >= 1.0
-    {
+    if inlier_count < sample_size || sample_size > population || !is_valid_confidence(confidence) {
         return current;
     }
     if inlier_count == population {

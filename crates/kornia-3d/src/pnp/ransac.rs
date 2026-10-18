@@ -8,6 +8,7 @@ use crate::ransac::engine::{
     self, Components, Incumbent, InlierCount, NoVerifier, PointResidual, Problem, Schedule, Score,
     Scorer, SprtVerifier, StageContext, Termination, Ties, UniformDraw, Workspace,
 };
+use crate::ransac::is_valid_confidence;
 use crate::ransac::sprt::SPRTConfig;
 use kornia_algebra::{Mat3AF32, Vec2F32, Vec3AF32};
 use kornia_imgproc::calibration::distortion::PolynomialDistortion;
@@ -259,7 +260,7 @@ pub fn solve_pnp_ransac(
         .into());
     }
     let confidence = params.confidence;
-    if !(confidence.is_finite() && confidence > 0.0 && confidence < 1.0) {
+    if !is_valid_confidence(f64::from(confidence)) {
         return Err(PnPRansacError::InvalidConfidence { confidence });
     }
     let is_ap3p = matches!(base, PnPMethod::AP3P(_) | PnPMethod::AP3PDefault);

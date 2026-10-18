@@ -266,11 +266,7 @@ pub fn find_fundamental_py(
             (f, vec![true; n])
         }
         METHOD_RANSAC => {
-            if !confidence.is_finite() || confidence <= 0.0 || confidence >= 1.0 {
-                return Err(pyo3::exceptions::PyValueError::new_err(
-                    "confidence must be finite and strictly between 0 and 1",
-                ));
-            }
+            crate::pyutils::require_valid_confidence(confidence)?;
             let params = RansacParams {
                 max_iterations,
                 threshold: ransac_threshold,

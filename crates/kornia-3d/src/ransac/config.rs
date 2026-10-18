@@ -45,6 +45,41 @@ pub struct RansacConfig {
     pub sprt: Option<super::SPRTConfig>,
 }
 
+/// Whether `confidence` is a usable RANSAC success probability.
+///
+/// Adaptive stopping needs `ln(1 - confidence)` to be finite and negative,
+/// which holds exactly for finite values strictly between zero and one. The
+/// PnP and two-view entry points reject any other value, and so do the Python
+/// bindings; the generic driver instead treats it as "never stop early" (see
+/// [`RansacConfig::confidence`]).
+///
+/// # Arguments
+///
+/// * `confidence` - Target probability that at least one drawn sample is
+///   all-inlier.
+///
+/// # Returns
+///
+/// `true` if `confidence` is finite and `0 < confidence < 1`.
+///
+/// # Errors
+///
+/// This function is infallible.
+///
+/// # Example
+///
+/// ```rust
+/// use kornia_3d::ransac::is_valid_confidence;
+///
+/// assert!(is_valid_confidence(0.999));
+/// assert!(!is_valid_confidence(1.0));
+/// assert!(!is_valid_confidence(f64::NAN));
+/// ```
+#[inline]
+pub fn is_valid_confidence(confidence: f64) -> bool {
+    confidence.is_finite() && confidence > 0.0 && confidence < 1.0
+}
+
 impl Default for RansacConfig {
     fn default() -> Self {
         Self {
@@ -55,6 +90,21 @@ impl Default for RansacConfig {
             parallel: false,
             consensus: ConsensusKind::Threshold,
             sprt: None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_finite_confidences_strictly_inside_the_unit_interval_are_valid() {
+        for confidence in [f64::MIN_POSITIVE, 0.5, 0.99, 1.0 - f64::EPSILON] {
+            assert!(is_valid_confidence(confidence), "{confidence}");
+        }
+        for confidence in [0.0, -0.0, 1.0, -0.1, 1.5, f64::NAN, f64::INFINITY] {
+            assert!(!is_valid_confidence(confidence), "{confidence}");
         }
     }
 }

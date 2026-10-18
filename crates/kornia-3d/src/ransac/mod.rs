@@ -36,7 +36,7 @@ mod result;
 pub mod samples;
 pub mod sprt;
 
-pub use config::{ConsensusKind, RansacConfig};
+pub use config::{is_valid_confidence, ConsensusKind, RansacConfig};
 pub use driver::{run, run_parallel, run_with_rng};
 pub use kernels::{
     CauchyKernel, HuberKernel, IdentityKernel, RobustKernel, RobustKernelKind, TukeyKernel,

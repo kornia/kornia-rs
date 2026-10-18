@@ -20,6 +20,7 @@ use crate::ransac::engine::{
     self, Components, CountThenResidual, Incumbent, NoSchedule, NoVerifier, Objective, Problem,
     Schedule, Score, Scorer, StageContext, Termination, Ties, TwoViewCap, UniformDraw, Workspace,
 };
+use crate::ransac::is_valid_confidence;
 use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64};
 use rand::rngs::StdRng;
 
@@ -29,9 +30,7 @@ const HOMOGRAPHY_STAGNATION_LIMIT: usize = 200;
 #[inline]
 pub(super) fn ransac_confidence(params: &RansacParams, default: f64) -> Result<f64, TwoViewError> {
     match params.confidence {
-        Some(confidence) if confidence.is_finite() && confidence > 0.0 && confidence < 1.0 => {
-            Ok(confidence)
-        }
+        Some(confidence) if is_valid_confidence(confidence) => Ok(confidence),
         Some(confidence) => Err(TwoViewError::InvalidConfidence { confidence }),
         None => Ok(default),
     }
