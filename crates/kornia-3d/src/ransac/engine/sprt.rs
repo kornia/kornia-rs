@@ -104,6 +104,8 @@ impl SprtVerifier {
 }
 
 impl<P: PointResidual, R: Rng> Verifier<P, R> for SprtVerifier {
+    const USES_RESIDUALS: bool = true;
+
     fn verify(
         &mut self,
         problem: &P,
@@ -135,8 +137,8 @@ impl<P: PointResidual, R: Rng> Verifier<P, R> for SprtVerifier {
         let start = rng.random_range(0..n);
 
         // Bounding the residuals by the problem's size lets one index check
-        // cover both the residual and the observation lookup. The workspace
-        // holds one slot per observation, so the slice is always in bounds.
+        // cover both the residual and the observation lookup. `run` gives
+        // this verifier one slot per observation, so the slice is in bounds.
         let residuals = &mut ws.residuals[..problem.num_observations()];
         let mut state = self.initial;
         for k in 0..n {

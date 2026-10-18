@@ -140,6 +140,10 @@ pub(crate) struct VerifyContext {
 /// Unlike a [`Scorer`], a verifier may reject a good model, so it never sees
 /// derived candidates.
 pub(crate) trait Verifier<P: Problem, R> {
+    /// Whether [`Self::verify`] writes [`Workspace::residuals`]. [`run`] then
+    /// gives the workspace one residual slot per observation.
+    const USES_RESIDUALS: bool = false;
+
     /// Whether `model` passes. A verifier that writes every residual to
     /// [`Workspace::residuals`] sets [`Workspace::residuals_complete`].
     fn verify(
@@ -173,6 +177,11 @@ impl<P: Problem, R> Verifier<P, R> for NoVerifier {
 pub(crate) trait Scorer<P: Problem> {
     /// The ranking objective.
     type Objective: Objective;
+
+    /// Whether scoring writes [`Workspace::residuals`] itself. [`run`] then
+    /// gives the workspace one residual slot per observation. A scorer that
+    /// only reads residuals a verifier completed does not need this.
+    const USES_RESIDUALS: bool = false;
 
     /// Score a raw minimal candidate into [`Workspace::mask`].
     ///
@@ -252,8 +261,9 @@ pub(crate) struct Workspace {
     /// The candidate's inlier mask, swapped with the incumbent's on
     /// replacement.
     pub mask: Vec<bool>,
-    /// Per-observation residuals, one entry per observation, for scorers and
-    /// verifiers that need them.
+    /// Per-observation residuals. [`run`] sizes them to one entry per
+    /// observation when the verifier or the scorer uses them
+    /// (`USES_RESIDUALS`); otherwise they stay empty.
     pub residuals: Vec<f64>,
     /// Whether the verifier wrote every entry of [`Self::residuals`] for the
     /// current candidate.
@@ -261,12 +271,12 @@ pub(crate) struct Workspace {
 }
 
 impl Workspace {
-    /// Wrap a candidate mask buffer and allocate one residual slot per
-    /// observation of a problem with `population` observations.
-    pub(crate) fn new(mask: Vec<bool>, population: usize) -> Self {
+    /// Wrap a candidate mask buffer. [`run`] allocates the residuals if a
+    /// component uses them.
+    pub(crate) fn new(mask: Vec<bool>) -> Self {
         Self {
             mask,
-            residuals: vec![0.0; population],
+            residuals: Vec::new(),
             residuals_complete: false,
         }
     }
@@ -359,6 +369,9 @@ where
     T: Termination,
 {
     let population = problem.num_observations();
+    if V::USES_RESIDUALS || Sc::USES_RESIDUALS {
+        ws.residuals.resize(population, 0.0);
+    }
     let mut sample = vec![0usize; problem.sample_size()];
     let mut draws = 0usize;
 
@@ -615,6 +628,28 @@ mod tests {
         }
     }
 
+    /// Writes every residual by index, as SPRT does, and passes.
+    struct WriteAllResiduals;
+
+    impl<R> Verifier<Values, R> for WriteAllResiduals {
+        const USES_RESIDUALS: bool = true;
+
+        fn verify(
+            &mut self,
+            problem: &Values,
+            model: &f64,
+            _: &VerifyContext,
+            ws: &mut Workspace,
+            _: &mut R,
+        ) -> bool {
+            for (index, &x) in problem.values.iter().enumerate() {
+                ws.residuals[index] = (x - model).abs();
+            }
+            ws.residuals_complete = true;
+            true
+        }
+    }
+
     fn run_values<V: Verifier<Values, StdRng>>(
         problem: &mut Values,
         verifier: V,
@@ -636,7 +671,7 @@ mod tests {
             },
         };
         let mut best = Incumbent::new(vec![false; n]);
-        let mut ws = Workspace::new(vec![false; n], n);
+        let mut ws = Workspace::new(vec![false; n]);
         let draws = run(
             problem,
             &mut parts,
@@ -728,6 +763,38 @@ mod tests {
         assert_eq!(budget.new_bests, [(3, 5), (3, 5)]);
     }
 
+    /// Run `verifier` with [`Count`] for three draws and return the
+    /// workspace.
+    fn workspace_after<V: Verifier<Values, StdRng>>(verifier: V) -> Workspace {
+        let mut problem = Values::new(vec![0.0, 0.1, 0.2, 5.0]);
+        let mut parts = Components {
+            sampler: UniformDraw,
+            verifier,
+            scorer: Count,
+            schedule: NoSchedule,
+            termination: Budget {
+                max: 3,
+                ..Default::default()
+            },
+        };
+        let mut best = Incumbent::new(vec![false; 4]);
+        let mut ws = Workspace::new(vec![false; 4]);
+        run(
+            &mut problem,
+            &mut parts,
+            &mut best,
+            &mut ws,
+            &mut StdRng::seed_from_u64(3),
+        );
+        ws
+    }
+
+    #[test]
+    fn residuals_are_allocated_only_for_components_that_use_them() {
+        assert!(workspace_after(NoVerifier).residuals.is_empty());
+        assert_eq!(workspace_after(WriteAllResiduals).residuals.len(), 4);
+    }
+
     #[test]
     fn termination_sees_what_a_per_draw_schedule_gained() {
         // Every raw candidate is rejected; the schedule's derived 0.1 explains
@@ -744,7 +811,7 @@ mod tests {
             },
         };
         let mut best = Incumbent::new(vec![false; 4]);
-        let mut ws = Workspace::new(vec![false; 4], 4);
+        let mut ws = Workspace::new(vec![false; 4]);
         run(
             &mut problem,
             &mut parts,

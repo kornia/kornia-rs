@@ -198,7 +198,7 @@ where
         termination,
     };
     let mut best = Incumbent::new(Vec::with_capacity(n));
-    let mut ws = Workspace::new(Vec::with_capacity(n), n);
+    let mut ws = Workspace::new(Vec::with_capacity(n));
     let draws = match sprt {
         Some(sprt) => {
             // The legacy driver counted draws from zero.
@@ -320,6 +320,8 @@ where
     C: Consensus,
 {
     type Objective = MaxScore;
+
+    const USES_RESIDUALS: bool = true;
 
     #[inline]
     fn score_raw(

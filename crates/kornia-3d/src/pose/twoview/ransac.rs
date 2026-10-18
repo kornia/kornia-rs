@@ -110,7 +110,7 @@ where
         termination,
     };
     let mut best = Incumbent::new(vec![false; n]);
-    let mut ws = Workspace::new(vec![false; n], n);
+    let mut ws = Workspace::new(vec![false; n]);
     engine::run(&mut problem, &mut parts, &mut best, &mut ws, rng);
     match best.model {
         Some(model) if best.score.support >= min_support => Ok(RansacResult {

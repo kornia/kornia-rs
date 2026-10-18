@@ -343,7 +343,7 @@ pub fn solve_pnp_ransac(
         termination,
     };
     let mut best = Incumbent::new(vec![false; n]);
-    let mut ws = Workspace::new(vec![false; n], n);
+    let mut ws = Workspace::new(vec![false; n]);
     let refinement = match params.sprt.filter(SPRTConfig::is_valid) {
         Some(sprt) => {
             // SPRT tests `sq < t²` in f32, which can disagree with scoring's
@@ -688,6 +688,7 @@ mod tests {
     use super::super::ap3p::AP3PParams;
     use super::super::epnp::EPnPParams;
     use super::*;
+    use crate::ransac::engine::NoSchedule;
 
     fn k_default() -> Mat3AF32 {
         // Column-major: [fx, 0, 0,  0, fy, 0,  cx, cy, 1]
@@ -1748,13 +1749,64 @@ mod tests {
         }
     }
 
+    /// Scores like [`ReprojectionScorer`], and checks every score it takes
+    /// from a verifier's residuals against exhaustive scoring.
+    struct CheckedReuse {
+        scorer: ReprojectionScorer,
+        reused: usize,
+    }
+
+    impl Scorer<PnpProblem<'_>> for CheckedReuse {
+        type Objective = InlierCount;
+
+        fn score_raw(
+            &mut self,
+            problem: &PnpProblem<'_>,
+            pose: &PnPResult,
+            bound: Option<&Score<InlierCount>>,
+            ws: &mut Workspace,
+        ) -> Option<Score<InlierCount>> {
+            let reuses = ws.residuals_complete;
+            let score = self.scorer.score_raw(problem, pose, bound, ws);
+            if reuses {
+                self.reused += 1;
+                let mask = ws.mask.clone();
+                assert_eq!(Some(self.scorer.score_full(problem, pose, ws)), score);
+                assert_eq!(ws.mask, mask);
+            }
+            score
+        }
+
+        fn score_full(
+            &mut self,
+            problem: &PnpProblem<'_>,
+            pose: &PnPResult,
+            ws: &mut Workspace,
+        ) -> Score<InlierCount> {
+            self.scorer.score_full(problem, pose, ws)
+        }
+    }
+
+    /// A fixed number of draws.
+    struct Draws(usize);
+
+    impl Termination for Draws {
+        fn done(&self, draws: usize) -> bool {
+            draws >= self.0
+        }
+
+        fn on_new_best(&mut self, _support: usize, _draws: usize) {}
+    }
+
     /// With SPRT on, a passing pose is scored from the verifier's residuals.
-    /// That must give exactly the exhaustive mask, including points behind
-    /// the camera and points at the threshold.
+    /// Run through the real verifier and engine, each such score must equal
+    /// exhaustive scoring, including points behind the camera and points at
+    /// the threshold.
     #[test]
     fn scoring_from_sprt_residuals_matches_exhaustive_scoring() {
         let (r, t) = pose_gt();
         let mut world = scene_non_planar().to_vec();
+        world.extend(scene_non_planar().map(|p| Vec3AF32::new(1.5 * p.x, 1.5 * p.y, p.z + 0.1)));
         let mut image = project_exact(&world, &r, &t);
         // An outlier, a point behind the camera, and points straddling 8 px.
         world.push(world[0]);
@@ -1765,29 +1817,17 @@ mod tests {
             world.push(world[1]);
             image.push(Vec2F32::new(image[1].x + dx, image[1].y));
         }
-        let pose = PnPResult {
-            rotation: Mat3AF32::from_cols(
-                Vec3AF32::new(r[0][0], r[1][0], r[2][0]),
-                Vec3AF32::new(r[0][1], r[1][1], r[2][1]),
-                Vec3AF32::new(r[0][2], r[1][2], r[2][2]),
-            ),
-            translation: Vec3AF32::new(t[0], t[1], t[2]),
-            rvec: Vec3AF32::ZERO,
-            reproj_rmse: None,
-            num_iterations: None,
-            converged: None,
-        };
         let k = k_default();
         let (intr_x, intr_y) = intrinsics_as_vectors(&k);
-        let base = PnPMethod::EPnPDefault;
-        let problem = PnpProblem {
+        let base = PnPMethod::AP3PDefault;
+        let mut problem = PnpProblem {
             world: &world,
             image: &image,
             k: &k,
             distortion: None,
             base: &base,
-            is_ap3p: false,
-            sample_size: EPNP_MIN_SAMPLE_SIZE,
+            is_ap3p: true,
+            sample_size: AP3P_SAMPLE_SIZE,
             intr_x,
             intr_y,
             w_min: Vec::new(),
@@ -1796,18 +1836,32 @@ mod tests {
             candidates: Vec::new(),
         };
         let n = world.len();
-        let mut scorer = ReprojectionScorer { threshold_px: 8.0 };
-        let mut ws = Workspace::new(vec![false; n], n);
-        let full = scorer.score_full(&problem, &pose, &mut ws);
-        let full_mask = ws.mask.clone();
-        assert!(!full_mask[7], "a point behind the camera is an outlier");
-
-        for index in 0..n {
-            ws.residuals[index] = problem.residual(&pose, index);
-        }
-        ws.residuals_complete = true;
-        ws.mask.fill(false);
-        assert_eq!(scorer.score_raw(&problem, &pose, None, &mut ws), Some(full));
-        assert_eq!(ws.mask, full_mask);
+        let sprt = SPRTConfig {
+            epsilon: 0.5,
+            delta: 0.01,
+            t_M: 1.0,
+            t_m: 1.0,
+        };
+        let mut parts = Components {
+            sampler: UniformDraw,
+            verifier: SprtVerifier::new(sprt, 64.0, n, AP3P_SAMPLE_SIZE, 0),
+            scorer: CheckedReuse {
+                scorer: ReprojectionScorer { threshold_px: 8.0 },
+                reused: 0,
+            },
+            schedule: NoSchedule,
+            termination: Draws(100),
+        };
+        let mut best = Incumbent::new(vec![false; n]);
+        let mut ws = Workspace::new(vec![false; n]);
+        engine::run(
+            &mut problem,
+            &mut parts,
+            &mut best,
+            &mut ws,
+            &mut engine::run_rng(Some(7)),
+        );
+        assert!(parts.scorer.reused > 0, "no pose passed SPRT");
+        assert!(!best.inliers[13], "a point behind the camera is an outlier");
     }
 }
