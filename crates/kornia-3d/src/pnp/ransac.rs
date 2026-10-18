@@ -202,8 +202,7 @@ pub struct PnPRansacResult {
 ///   points behind the camera are outliers. A pose replaces the best one only with more inliers.
 /// - Iterations adapt from current inlier ratio and desired confidence: after every draw that
 ///   finds a better pose the cap becomes `⌈log(1-p)/log(1-w^k)⌉` (in `f32`). Once every point is
-///   an inlier (`w^k` rounds to one), where that bound degenerates, sampling stops after the
-///   current draw.
+///   an inlier, where that bound degenerates, sampling stops after the current draw.
 /// - With `params.sprt`, Wald's SPRT may reject a hypothesis before every point is scored.
 /// - With `params.refine`, the final non-minimal refit over all inliers uses **EPnP even when the
 ///   sampling kernel was AP3P**, because a minimal solver cannot consume more than its exact
@@ -604,10 +603,16 @@ impl Termination for PnpCap {
         if !improved || best_support < self.sample_size {
             return;
         }
+        if best_support == self.population {
+            // No later pose can have more inliers, and log(1 - w^k) is -inf
+            // here, so stop after this draw.
+            self.required = draws;
+            return;
+        }
         let w = best_support as f32 / self.population as f32;
         let s = self.sample_size as f32;
         // Avoid numerical issues with very small w
-        if w > EPS_PROB_MIN && w <= 1.0 {
+        if w > EPS_PROB_MIN {
             let ws = w.powf(s);
             if ws < 1.0 - EPS_LOG_GUARD && ws > EPS_LOG_GUARD {
                 // Avoid log(0) and log(1)
@@ -622,10 +627,6 @@ impl Termination for PnpCap {
                         }
                     }
                 }
-            } else if ws >= 1.0 - EPS_LOG_GUARD {
-                // Every point is an inlier, or w^k rounds to one: log(1 - w^k)
-                // is -inf or 0, so stop after this draw.
-                self.required = draws;
             }
         }
     }
@@ -1696,6 +1697,27 @@ mod tests {
         cap.after_draw(1, true, 190);
         assert!(!cap.done(3) && cap.done(4));
         cap.after_draw(2, true, 200);
+        assert!(!cap.done(1) && cap.done(2));
+    }
+
+    /// Full support is a count, not a ratio: above 2^24 points, one outlier
+    /// short of full support rounds to `w = 1.0` in `f32`, and the cap must
+    /// keep sampling there, as it did before the full-support stop existed.
+    #[test]
+    fn the_cap_stops_only_at_exact_full_support() {
+        let population = (1 << 24) + 1;
+        let support = population - 1;
+        assert_eq!(support as f32 / population as f32, 1.0);
+        let mut cap = PnpCap {
+            required: 1000,
+            max_iterations: 1000,
+            confidence: 0.99,
+            population,
+            sample_size: 5,
+        };
+        cap.after_draw(1, true, support);
+        assert!(!cap.done(999) && cap.done(1000));
+        cap.after_draw(2, true, population);
         assert!(!cap.done(1) && cap.done(2));
     }
 
