@@ -203,7 +203,7 @@ mod impl_f32 {
     #[inline(always)]
     fn conjugate_xz(s: &mut Symmetric3x3, q: &mut QuatF32) {
         // Compute Givens rotation parameters
-        let mut g = approximate_givens_parameters(s.m_00, s.m_22, s.m_20);
+        let mut g = approximate_givens_parameters(s.m_22, s.m_00, s.m_20);
         let cos_theta2 = g.cos_theta * g.cos_theta;
         let sin_theta2 = g.sin_theta * g.sin_theta;
         let scale = 1.0 / (cos_theta2 + sin_theta2);
@@ -218,11 +218,11 @@ mod impl_f32 {
         let s21 = s.m_21;
 
         // Perform the matrix conjugation
-        s.m_00 = a * (a * s00 + b * s20) + b * (a * s20 + b * s22);
-        s.m_20 = a * (-b * s00 + a * s20) + b * (-b * s20 + a * s22);
-        s.m_22 = -b * (-b * s00 + a * s20) + a * (-b * s20 + a * s22);
-        s.m_10 = a * s10 + b * s21;
-        s.m_21 = -b * s10 + a * s21;
+        s.m_22 = a * (a * s22 + b * s20) + b * (a * s20 + b * s00);
+        s.m_20 = a * (-b * s22 + a * s20) + b * (-b * s20 + a * s00);
+        s.m_00 = -b * (-b * s22 + a * s20) + a * (-b * s20 + a * s00);
+        s.m_21 = a * s21 + b * s10;
+        s.m_10 = -b * s21 + a * s10;
 
         // Update the cumulative rotation quaternion
         let q_arr = q.to_array();
@@ -1012,6 +1012,58 @@ mod tests {
         );
         let svd_result = svd3_f32(&a);
         verify_svd_properties_f32(&a, &svd_result, TEST_EPSILON_F32_STRICT);
+    }
+
+    fn reference_singular_values_f32(a: &Mat3F32) -> [f32; 3] {
+        let m = nalgebra::Matrix3::<f64>::from_fn(|r, c| a.col(c)[r] as f64);
+        let mut s: Vec<f64> = m.singular_values().iter().copied().collect();
+        s.sort_by(|x, y| y.total_cmp(x));
+        [s[0] as f32, s[1] as f32, s[2] as f32]
+    }
+
+    fn assert_s_matches_reference_f32(a: &Mat3F32) {
+        let s = *svd3_f32(a).s();
+        let expected = reference_singular_values_f32(a);
+        let scale = expected[0].max(1.0);
+        for (c, r) in [(1, 0), (2, 0), (0, 1), (2, 1), (0, 2), (1, 2)] {
+            assert!(
+                s.col(c)[r].abs() <= 1e-2 * scale,
+                "S is not diagonal for {a:?}: {s:?}"
+            );
+        }
+        let mut diagonal = [s.col(0)[0].abs(), s.col(1)[1].abs(), s.col(2)[2].abs()];
+        diagonal.sort_by(|x, y| y.total_cmp(x));
+        for (got, want) in diagonal.iter().zip(expected.iter()) {
+            assert!(
+                (got - want).abs() <= 1e-4 * scale,
+                "singular values {diagonal:?} do not match {expected:?} for {a:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_svd3_f32_s_is_diagonal() {
+        let a = Mat3F32::from_cols(
+            Vec3F32::new(1.0, 4.0, 7.0),
+            Vec3F32::new(2.0, 5.0, 8.0),
+            Vec3F32::new(3.0, 6.0, 10.0),
+        );
+        assert_s_matches_reference_f32(&a);
+    }
+
+    #[test]
+    fn test_svd3_f32_s_is_diagonal_random() {
+        let mut state: u32 = 0x1234_5678;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            (state as f32 / u32::MAX as f32) * 2.0 - 1.0
+        };
+        for _ in 0..1000 {
+            let values: [f32; 9] = std::array::from_fn(|_| next());
+            assert_s_matches_reference_f32(&Mat3F32::from_cols_array(&values));
+        }
     }
 
     #[test]
