@@ -264,6 +264,44 @@ define_cross_product!(Vec3F32, glam::Vec3);
 define_cross_product!(Vec3F64, glam::DVec3);
 define_cross_product!(Vec3AF32, glam::Vec3A);
 
+// f32 -> f64 is exact, so it is a `From`. The other way rounds and is an explicit method.
+impl From<Vec2F32> for Vec2F64 {
+    #[inline]
+    fn from(v: Vec2F32) -> Self {
+        Self::new(v.x.into(), v.y.into())
+    }
+}
+
+impl From<Vec3AF32> for Vec3F64 {
+    #[inline]
+    fn from(v: Vec3AF32) -> Self {
+        Self::new(v.x.into(), v.y.into(), v.z.into())
+    }
+}
+
+impl Vec3F64 {
+    /// Rounds each component to `f32`; values outside the `f32` range become `±inf`.
+    #[inline]
+    pub fn as_vec3af32(self) -> Vec3AF32 {
+        Vec3AF32::new(self.x as f32, self.y as f32, self.z as f32)
+    }
+}
+
+// Conversions between `Vec3F64` and nalgebra's `Vector3<f64>`, through `[f64; 3]`.
+impl From<nalgebra::Vector3<f64>> for Vec3F64 {
+    #[inline]
+    fn from(v: nalgebra::Vector3<f64>) -> Self {
+        Self::from_array(v.into())
+    }
+}
+
+impl From<Vec3F64> for nalgebra::Vector3<f64> {
+    #[inline]
+    fn from(v: Vec3F64) -> Self {
+        v.to_array().into()
+    }
+}
+
 // Dynamic-sized vectors from nalgebra (for optimization and large-scale operations)
 /// Dynamic-sized vector with f32 elements.
 pub type DVecF32 = nalgebra::DVector<f32>;
@@ -455,5 +493,23 @@ mod tests {
 
         v /= 2.0;
         assert_eq!(v, Vec2F32::new(3.0, 5.0));
+    }
+
+    #[test]
+    fn test_f32_to_f64_conversions_are_exact() {
+        // 0.1 is not exact in binary: the f64 must be the f32 value itself, not 0.1.
+        let v = Vec3F64::from(Vec3AF32::new(0.1, -2.5, 3.0e7));
+        assert_eq!(v.to_array(), [0.1f32 as f64, -2.5, 3.0e7]);
+        assert_eq!(v.as_vec3af32(), Vec3AF32::new(0.1, -2.5, 3.0e7));
+        let w = Vec2F64::from(Vec2F32::new(0.1, -2.5));
+        assert_eq!(w.to_array(), [0.1f32 as f64, -2.5]);
+    }
+
+    #[test]
+    fn test_vec3f64_nalgebra_conversions_keep_order() {
+        let v = Vec3F64::new(1.0, 2.0, 3.0);
+        let n = nalgebra::Vector3::<f64>::from(v);
+        assert_eq!((n.x, n.y, n.z), (1.0, 2.0, 3.0));
+        assert_eq!(Vec3F64::from(n), v);
     }
 }

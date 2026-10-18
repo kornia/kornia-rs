@@ -61,7 +61,7 @@
 //!
 use crate::camera::PinholeCamera;
 use crate::pose::{homography_4pt2d, Pose3d};
-use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64, SO3F64};
+use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64};
 
 /// A recovered planar pose with its reprojection error.
 #[derive(Debug, Clone)]
@@ -256,9 +256,9 @@ fn orthogonal_iteration(
         // Kabsch / Procrustes: the new rotation is the one nearest to M3. (The C reference
         // negates the third column of U·Vᵀ when it is a reflection, which is a rotation but not
         // the nearest one.)
-        rotation = SO3F64::from_matrix_nearest(&m3)
-            .ok_or(PlanarPoseError::SingularIteration)?
-            .matrix();
+        rotation = m3
+            .nearest_rotation()
+            .ok_or(PlanarPoseError::SingularIteration)?;
 
         // Error: Σᵢ (Δuᵢ² + Δvᵢ²) — sum of squared pixel reprojection errors
         error = 0.0;

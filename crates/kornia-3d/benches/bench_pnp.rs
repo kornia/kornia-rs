@@ -15,16 +15,16 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use kornia_3d::pnp::{
     solve_pnp, solve_pnp_ransac, EPnPParams, LMRefineParams, PnPMethod, RansacParams,
 };
-use kornia_algebra::{Mat3AF32, Vec2F32, Vec3AF32, Vec3F64, SO3F64};
+use kornia_algebra::{Vec2F32, Vec3AF32, Vec3F64, SO3F64};
 use rand::{rngs::StdRng, RngExt, SeedableRng};
 use std::hint::black_box;
 
-/// A standard normal sample (Box–Muller); `rand` alone has no normal distribution.
-fn gauss(rng: &mut StdRng) -> f64 {
-    let u1: f64 = rng.random_range(f64::MIN_POSITIVE..1.0);
-    let u2: f64 = rng.random_range(0.0..1.0);
-    (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
-}
+// The crate's unit-test helpers (`src/test_utils.rs`), shared with the benches; a bench uses
+// only some of them.
+#[path = "../src/test_utils.rs"]
+#[allow(dead_code)]
+mod test_utils;
+use test_utils::gauss;
 
 /// One scene's correspondences.
 type Scene = (Vec<Vec3AF32>, Vec<Vec2F32>);
@@ -53,7 +53,7 @@ fn scene(rng: &mut StdRng, n: usize, planar: bool, outliers: usize) -> Scene {
         };
         let p = Vec3F64::new(rng.random_range(-1.0..1.0), rng.random_range(-1.0..1.0), z);
         let pc = rotation * p + translation;
-        world.push(Vec3AF32::new(p.x as f32, p.y as f32, p.z as f32));
+        world.push(p.as_vec3af32());
         image.push(Vec2F32::new(
             (800.0 * pc.x / pc.z + 640.0 + gauss(rng)) as f32,
             (800.0 * pc.y / pc.z + 480.0 + gauss(rng)) as f32,
@@ -73,12 +73,8 @@ fn scene(rng: &mut StdRng, n: usize, planar: bool, outliers: usize) -> Scene {
     (world, image)
 }
 
-fn k_matrix() -> Mat3AF32 {
-    Mat3AF32::from_cols_array(&[800.0, 0.0, 0.0, 0.0, 800.0, 0.0, 640.0, 480.0, 1.0])
-}
-
 fn bench_pnp(c: &mut Criterion) {
-    let k = k_matrix();
+    let k = test_utils::k_matrix(800.0, 800.0, 640.0, 480.0);
     let mut group = c.benchmark_group("pnp");
     for (n, planar) in [6usize, 20, 100, 500]
         .into_iter()
@@ -125,7 +121,7 @@ fn bench_pnp(c: &mut Criterion) {
 }
 
 fn bench_pnp_ransac(c: &mut Criterion) {
-    let k = k_matrix();
+    let k = test_utils::k_matrix(800.0, 800.0, 640.0, 480.0);
     let batch = scenes(5, 100, false, 100);
     let params = RansacParams {
         reproj_threshold_px: 3.0,

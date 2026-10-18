@@ -1,6 +1,6 @@
 use crate::linalg;
 use kiddo::immutable::float::kdtree::ImmutableKdTree;
-use kornia_algebra::{Mat3F64, Vec3F64, SO3F64};
+use kornia_algebra::{Mat3F64, Vec3F64};
 
 /// Compute the transformation between two point clouds.
 pub(crate) fn fit_transformation(
@@ -25,7 +25,7 @@ pub(crate) fn fit_transformation(
         let p_dst = Vec3F64::from(*p_in_dst) - cd;
         hh += Mat3F64::from_cols(p_dst * p_src.x, p_dst * p_src.y, p_dst * p_src.z);
     }
-    let rr = SO3F64::from_matrix_nearest(&hh)?.matrix();
+    let rr = hh.nearest_rotation()?;
 
     // compute translation vector t = C_dst - R * C_src
     let t = cd - rr * cs;

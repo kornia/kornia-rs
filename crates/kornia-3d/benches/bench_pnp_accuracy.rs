@@ -12,7 +12,7 @@
 use kornia_3d::pnp::{
     solve_pnp, solve_pnp_ransac, EPnPParams, LMRefineParams, PnPMethod, PnPResult, RansacParams,
 };
-use kornia_algebra::{Mat3AF32, Mat3F64, Vec2F32, Vec3AF32, Vec3F64, SO3F64};
+use kornia_algebra::{Mat3AF32, Mat3F64, Vec2F32, Vec3AF32, Vec3F64};
 use rand::{rngs::StdRng, RngExt, SeedableRng};
 
 const TRIALS: usize = 200;
@@ -20,18 +20,12 @@ const FAILURE_DEG: f64 = 5.0;
 const FOCAL: f64 = 800.0;
 const CENTER: (f64, f64) = (640.0, 480.0);
 
-/// A standard normal sample (Box–Muller); `rand` alone has no normal distribution.
-fn gauss(rng: &mut StdRng) -> f64 {
-    let u1: f64 = rng.random_range(f64::MIN_POSITIVE..1.0);
-    let u2: f64 = rng.random_range(0.0..1.0);
-    (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
-}
-
-/// Rotation of a uniformly random angle in [0, π) about a random axis.
-fn random_rotation(rng: &mut StdRng) -> Mat3F64 {
-    let axis = Vec3F64::new(gauss(rng), gauss(rng), gauss(rng)).normalize();
-    SO3F64::exp(axis * rng.random_range(0.0..std::f64::consts::PI)).matrix()
-}
+// The crate's unit-test helpers (`src/test_utils.rs`), shared with the benches; a bench uses
+// only some of them.
+#[path = "../src/test_utils.rs"]
+#[allow(dead_code)]
+mod test_utils;
+use test_utils::{gauss, random_rotation, rotation_error_deg};
 
 /// The shape of one batch of random scenes.
 struct SceneKind {
@@ -51,7 +45,7 @@ struct Scene {
 }
 
 fn make_scene(rng: &mut StdRng, kind: &SceneKind) -> Scene {
-    let rotation = random_rotation(rng);
+    let rotation = random_rotation(rng, std::f64::consts::PI);
     let translation = Vec3F64::new(
         rng.random_range(-0.1..0.1) * kind.depth,
         rng.random_range(-0.1..0.1) * kind.depth,
@@ -75,7 +69,7 @@ fn make_scene(rng: &mut StdRng, kind: &SceneKind) -> Scene {
         if pc.z < 0.1 * kind.depth {
             continue;
         }
-        world.push(Vec3AF32::new(p.x as f32, p.y as f32, p.z as f32));
+        world.push(p.as_vec3af32());
         image.push(Vec2F32::new(
             (FOCAL * pc.x / pc.z + CENTER.0 + kind.noise_px * gauss(rng)) as f32,
             (FOCAL * pc.y / pc.z + CENTER.1 + kind.noise_px * gauss(rng)) as f32,
@@ -87,20 +81,6 @@ fn make_scene(rng: &mut StdRng, kind: &SceneKind) -> Scene {
         rotation,
         translation,
     }
-}
-
-/// Rotation error in degrees, `2·asin(‖R₁ − R₂‖_F / 2√2)` (accurate for small angles).
-fn rotation_error_deg(estimate: &Mat3AF32, truth: &Mat3F64) -> f64 {
-    // Both arrays are column-major, so the elements line up one to one.
-    let sq: f64 = estimate
-        .0
-        .to_cols_array()
-        .iter()
-        .zip(truth.0.to_cols_array())
-        .map(|(&e, t)| (f64::from(e) - t).powi(2))
-        .sum();
-    let chord = sq.sqrt() / (2.0 * std::f64::consts::SQRT_2);
-    (2.0 * chord.clamp(0.0, 1.0).asin()).to_degrees()
 }
 
 fn median(mut v: Vec<f64>) -> f64 {
@@ -124,17 +104,7 @@ fn evaluate(
     seed: u64,
     solve: impl Fn(&[Vec3AF32], &[Vec2F32], &Mat3AF32) -> Option<PnPResult>,
 ) -> (f64, f64, f64) {
-    let k = Mat3AF32::from_cols_array(&[
-        FOCAL as f32,
-        0.0,
-        0.0,
-        0.0,
-        FOCAL as f32,
-        0.0,
-        CENTER.0 as f32,
-        CENTER.1 as f32,
-        1.0,
-    ]);
+    let k = test_utils::k_matrix(FOCAL as f32, FOCAL as f32, CENTER.0 as f32, CENTER.1 as f32);
     // Same seed for every solver, so they all see the same scenes.
     let mut rng = StdRng::seed_from_u64(seed);
     let (mut rot, mut trans, mut failures) = (Vec::new(), Vec::new(), 0);
@@ -158,12 +128,7 @@ fn evaluate(
         };
         let r = rotation_error_deg(&pose.rotation, &scene.rotation);
         let t = scene.translation;
-        let estimate = Vec3F64::new(
-            pose.translation.x as f64,
-            pose.translation.y as f64,
-            pose.translation.z as f64,
-        );
-        let rel = (estimate - t).length() / t.length();
+        let rel = (Vec3F64::from(pose.translation) - t).length() / t.length();
         if !(r.is_finite() && r <= FAILURE_DEG) {
             failures += 1;
         }

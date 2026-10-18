@@ -366,20 +366,93 @@ define_matrix_type!(
     [x_axis, y_axis, z_axis, w_axis]
 );
 
-// Conversions between `Mat3F64` and nalgebra's `Matrix3<f64>`. Both store their columns one after
-// another, so the column-major arrays map one to one and no element is placed by hand.
+// Conversions between `Mat3F64` and nalgebra's `Matrix3<f64>`. Both are three columns of three
+// `f64` stored one after another, so a conversion hands the same `[[f64; 3]; 3]` array of columns
+// from one type to the other: no allocation, and no element placed by hand.
 impl From<nalgebra::Matrix3<f64>> for Mat3F64 {
     #[inline]
     fn from(m: nalgebra::Matrix3<f64>) -> Self {
-        // `m[i]` is nalgebra's column-major linear index.
-        Self::from_cols_array(&std::array::from_fn(|i| m[i]))
+        Self(glam::DMat3::from_cols_array_2d(&m.into()))
     }
 }
 
 impl From<Mat3F64> for nalgebra::Matrix3<f64> {
     #[inline]
     fn from(m: Mat3F64) -> Self {
-        nalgebra::Matrix3::from_column_slice(&m.to_cols_array())
+        m.0.to_cols_array_2d().into()
+    }
+}
+
+// f32 -> f64 is exact, so it is a `From`. The other way rounds and is an explicit method.
+impl From<Mat3AF32> for Mat3F64 {
+    #[inline]
+    fn from(m: Mat3AF32) -> Self {
+        Self(m.0.as_dmat3())
+    }
+}
+
+/// SVD iteration cap for [`Mat3F64::nearest_rotation`]; 3x3 SVDs converge in far fewer.
+const NEAREST_ROTATION_MAX_SVD_ITERATIONS: usize = 1000;
+
+impl Mat3F64 {
+    /// Rounds each element to `f32`; values outside the `f32` range become `±inf`.
+    #[inline]
+    pub fn as_mat3af32(self) -> Mat3AF32 {
+        Mat3AF32(glam::Mat3A::from(self.0.as_mat3()))
+    }
+
+    /// The rotation matrix closest to this matrix in the Frobenius norm.
+    ///
+    /// For the SVD `M = U·Σ·Vᵀ` this is `U·diag(1, 1, det(U·Vᵀ))·Vᵀ`: when `U·Vᵀ` is a
+    /// reflection, the singular vector of the smallest singular value changes sign. Negating a
+    /// column of `U·Vᵀ` instead also gives a rotation, but in general not the nearest one. Use it
+    /// to project a nearly orthonormal matrix back onto SO(3), or for the Kabsch / Umeyama step,
+    /// where the best rotation is the one nearest to the cross-covariance matrix. The SVD is
+    /// nalgebra's.
+    ///
+    /// # Returns
+    ///
+    /// The nearest rotation, or `None` if the matrix has a non-finite entry or its SVD does not
+    /// converge. The zero matrix, to which every rotation is equally near, gives the identity;
+    /// below rank 2 the answer is not unique either.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use kornia_algebra::Mat3F64;
+    ///
+    /// // A rotation with a little noise on one entry.
+    /// let noisy = Mat3F64::from_cols_array(&[1.0, 0.0, 0.0, 0.01, 1.0, 0.0, 0.0, 0.0, 1.0]);
+    /// let r = noisy.nearest_rotation().ok_or("no rotation")?;
+    /// assert!((r.determinant() - 1.0).abs() < 1e-12);
+    /// # Ok::<(), &str>(())
+    /// ```
+    pub fn nearest_rotation(self) -> Option<Self> {
+        if !self.is_finite() {
+            return None;
+        }
+        let m = nalgebra::Matrix3::<f64>::from(self);
+        // Scaling by a positive number does not change the nearest rotation. nalgebra's 3x3 SVD
+        // works on MᵀM, which overflows or underflows for entries far from 1, so bring the
+        // largest entry to 1 first.
+        let scale = m.amax();
+        if scale == 0.0 {
+            return Some(Self::IDENTITY);
+        }
+        // nalgebra returns the singular values in decreasing order, so index 2 is the smallest.
+        // Its default SVD has no iteration cap; this one gives up instead of looping.
+        let svd = (m / scale).try_svd(
+            true,
+            true,
+            f64::EPSILON,
+            NEAREST_ROTATION_MAX_SVD_ITERATIONS,
+        )?;
+        let (u, v_t) = (svd.u?, svd.v_t?);
+        let mut d = nalgebra::Matrix3::<f64>::identity();
+        if (u * v_t).determinant() < 0.0 {
+            d[(2, 2)] = -1.0;
+        }
+        Some(Self::from(u * d * v_t))
     }
 }
 
@@ -407,6 +480,42 @@ mod tests {
             }
         }
         assert_eq!(nalgebra::Matrix3::<f64>::from(m), na);
+    }
+
+    #[test]
+    fn test_mat3_f32_to_f64_conversion_is_exact_and_keeps_order() {
+        // Not symmetric; 0.1 is not exact in binary, so the f64 must be the f32 value itself.
+        let m = Mat3AF32::from_cols_array(&[0.1, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 10.0]);
+        let wide = Mat3F64::from(m);
+        assert_eq!(wide.to_cols_array(), m.to_cols_array().map(f64::from));
+        assert_eq!(wide.as_mat3af32(), m);
+    }
+
+    /// `nearest_rotation` returns a proper rotation (orthonormal, determinant +1), keeps a
+    /// rotation unchanged, and agrees with `SO3F64::from_matrix_nearest`.
+    #[test]
+    fn test_mat3f64_nearest_rotation() {
+        let rotation = crate::SO3F64::exp(Vec3F64::new(0.3, -0.5, 0.8)).matrix();
+        let kept = rotation
+            .nearest_rotation()
+            .map(|r| (r - rotation).to_cols_array());
+        assert!(kept.is_some_and(|d| d.iter().all(|v| v.abs() < 1e-12)));
+
+        // Not a rotation, and U·Vᵀ is a reflection (negative determinant).
+        let m = Mat3F64::from_cols_array(&[2.0, 0.3, -0.1, 0.2, 1.5, 0.4, -0.3, 0.1, -0.7]);
+        let r = m.nearest_rotation().map(nalgebra::Matrix3::<f64>::from);
+        assert!(r.is_some_and(
+            |r| (r.transpose() * r - nalgebra::Matrix3::identity()).norm() < 1e-12
+                && (r.determinant() - 1.0).abs() < 1e-12
+        ));
+        let via_so3 = crate::SO3F64::from_matrix_nearest(&m).map(|q| q.matrix());
+        let direct = m.nearest_rotation();
+        assert!(via_so3
+            .zip(direct)
+            .is_some_and(|(a, b)| (a - b).to_cols_array().iter().all(|v| v.abs() < 1e-12)));
+        assert!(Mat3F64::from_cols_array(&[f64::NAN; 9])
+            .nearest_rotation()
+            .is_none());
     }
 
     // Mat2 tests

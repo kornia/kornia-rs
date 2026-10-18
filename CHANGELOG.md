@@ -29,14 +29,16 @@ one of up to four exact solutions.
 `SQPnPParams::refine_lm` can polish the pose on reprojection error, which helps when points are
 very close to the camera.
 
-**`kornia-algebra`: `SO3F64::from_matrix_nearest`**, the rotation nearest to any 3x3 matrix
-(`U·diag(1, 1, det(U·Vᵀ))·Vᵀ`), and `From` conversions between `Mat3F64` and nalgebra's
-`Matrix3<f64>`. SQPnP, the orthogonal iteration of `estimate_planar_pose` and ICP's rigid fit
-use it. Their results are unchanged in 2000 random planar scenes and 30 ICP runs (largest
-difference 1.4e-9); they differ only when `U·Vᵀ` is a reflection, where the planar pose used to
-negate a column of `U·Vᵀ`, which is a rotation but not the nearest one. ICP also got much
-faster: its rigid fit built heap-allocated vectors for every point to form the covariance. With
-2000 points one `icp_vanilla` run went from 326 ms to 3.6 ms, with the same iterations and
+**`kornia-algebra`: `Mat3F64::nearest_rotation`** (and `SO3F64::from_matrix_nearest`), the
+rotation nearest to any 3x3 matrix (`U·diag(1, 1, det(U·Vᵀ))·Vᵀ`), and conversions: `From`
+between `Mat3F64` / `Vec3F64` and nalgebra's `Matrix3<f64>` / `Vector3<f64>`, exact `f32 → f64`
+`From` for `Mat3AF32`, `Vec3AF32` and `Vec2F32`, and the rounding `Mat3F64::as_mat3af32` /
+`Vec3F64::as_vec3af32`. SQPnP, the orthogonal iteration of `estimate_planar_pose` and ICP's rigid
+fit use the nearest rotation. Their results are unchanged in 2000 random planar scenes and 30 ICP
+runs (largest difference 1.4e-9); they differ only when `U·Vᵀ` is a reflection, where the planar
+pose used to negate a column of `U·Vᵀ`, which is a rotation but not the nearest one. ICP also got
+much faster: its rigid fit built heap-allocated vectors for every point to form the covariance.
+With 2000 points one `icp_vanilla` run went from 326 ms to 3.6 ms, with the same iterations and
 result.
 
 Breaking for Rust code: `PnPMethod` has two new variants, so exhaustive `match`es need new arms.

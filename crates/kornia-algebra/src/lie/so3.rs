@@ -43,8 +43,6 @@ use crate::{
 };
 use rand::RngExt;
 
-/// SVD iteration cap for [`SO3F64::from_matrix_nearest`]; 3x3 SVDs converge in far fewer.
-const NEAREST_ROTATION_MAX_SVD_ITERATIONS: usize = 1000;
 const SMALL_ANGLE_EPSILON: f32 = 1.0e-8;
 const SMALL_ANGLE_EPSILON_F64: f64 = 1.0e-10;
 
@@ -406,13 +404,9 @@ impl SO3F64 {
         }
     }
 
-    /// The rotation closest to `mat` in the Frobenius norm.
+    /// The rotation closest to `mat` in the Frobenius norm, as an `SO3F64`.
     ///
-    /// For the SVD `mat = U·Σ·Vᵀ` this is `U·diag(1, 1, det(U·Vᵀ))·Vᵀ`: when `U·Vᵀ` is a
-    /// reflection, the singular vector of the smallest singular value changes sign. Negating a
-    /// column of `U·Vᵀ` instead also gives a rotation, but in general not the nearest one. Use it
-    /// to project a nearly orthonormal matrix back onto SO(3), or for the Kabsch / Umeyama step,
-    /// where the best rotation is the one nearest to the cross-covariance matrix.
+    /// See [`Mat3F64::nearest_rotation`], which returns the rotation matrix itself.
     ///
     /// # Arguments
     ///
@@ -421,47 +415,9 @@ impl SO3F64 {
     /// # Returns
     ///
     /// The nearest rotation, or `None` if `mat` has a non-finite entry or its SVD does not
-    /// converge. The zero matrix, to which every rotation is equally near, gives the identity;
-    /// below rank 2 the answer is not unique either.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use kornia_algebra::{Mat3F64, SO3F64};
-    ///
-    /// // A rotation with a little noise on one entry.
-    /// let noisy = Mat3F64::from_cols_array(&[1.0, 0.0, 0.0, 0.01, 1.0, 0.0, 0.0, 0.0, 1.0]);
-    /// let r = SO3F64::from_matrix_nearest(&noisy).ok_or("no rotation")?.matrix();
-    /// assert!((r.determinant() - 1.0).abs() < 1e-12);
-    /// # Ok::<(), &str>(())
-    /// ```
+    /// converge.
     pub fn from_matrix_nearest(mat: &Mat3F64) -> Option<Self> {
-        let m = nalgebra::Matrix3::<f64>::from(*mat);
-        if !m.iter().all(|v| v.is_finite()) {
-            return None;
-        }
-        // Scaling by a positive number does not change the nearest rotation. nalgebra's 3x3 SVD
-        // works on MᵀM, which overflows or underflows for entries far from 1, so bring the
-        // largest entry to 1 first.
-        let scale = m.amax();
-        if scale == 0.0 {
-            return Some(Self::IDENTITY);
-        }
-        let m = m / scale;
-        // nalgebra returns the singular values in decreasing order, so index 2 is the smallest.
-        // Its default SVD has no iteration cap; this one gives up instead of looping.
-        let svd = m.try_svd(
-            true,
-            true,
-            f64::EPSILON,
-            NEAREST_ROTATION_MAX_SVD_ITERATIONS,
-        )?;
-        let (u, v_t) = (svd.u?, svd.v_t?);
-        let mut d = nalgebra::Matrix3::<f64>::identity();
-        if (u * v_t).determinant() < 0.0 {
-            d[(2, 2)] = -1.0;
-        }
-        Some(Self::from_matrix(&Mat3F64::from(u * d * v_t)))
+        mat.nearest_rotation().map(|r| Self::from_matrix(&r))
     }
 
     /// Create from the rotation block of a 4x4 homogeneous matrix.
@@ -1163,11 +1119,10 @@ mod tests_f64 {
 
     const EPS: f64 = 1e-12;
 
+    /// `‖a − b‖_F`, column by column on the borrowed matrices.
     fn frobenius_distance(a: &Mat3F64, b: &Mat3F64) -> f64 {
-        let (a, b) = (a.to_cols_array(), b.to_cols_array());
-        a.iter()
-            .zip(b)
-            .map(|(x, y)| (x - y).powi(2))
+        (0..3)
+            .map(|i| (a.col(i) - b.col(i)).length_squared())
             .sum::<f64>()
             .sqrt()
     }
