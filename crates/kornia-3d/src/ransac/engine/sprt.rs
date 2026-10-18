@@ -106,18 +106,23 @@ impl<P: PointResidual, R: Rng> Verifier<P, R> for SprtVerifier {
         }
         let start = rng.random_range(0..n);
 
+        // Bounding the residuals by the problem's size lets one index check
+        // cover both the residual and the observation lookup.
+        let residuals = &mut ws.residuals[..problem.num_observations()];
         let mut state = SPRTState::new(&self.config, DEFAULT_BETA);
         for k in 0..n {
             let index = self.order[(start + k) % n];
             // Lazy residuals: a rejected hypothesis never touches the rest.
             let residual = problem.residual(model, index);
-            ws.residuals[index] = residual;
+            residuals[index] = residual;
             state.update_with_steps(residual < self.threshold, inlier_step, outlier_step);
             if state.is_rejected() && state.num_tested >= grace {
+                // Log a copy: borrowing `state` for the formatter would pin
+                // it to memory for the whole walk.
+                let tested = state.num_tested;
                 log::debug!(
-                    "SPRT rejected hypothesis at iteration {} after {} points",
-                    cx.draws,
-                    state.num_tested
+                    "SPRT rejected hypothesis at iteration {} after {tested} points",
+                    cx.draws
                 );
                 return false;
             }
