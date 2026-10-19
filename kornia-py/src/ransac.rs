@@ -62,13 +62,9 @@ fn parse_two_view_matches(arr: PyReadonlyArray2<'_, f64>) -> PyResult<Vec<Match2
 }
 
 /// Rejects a confidence outside (0, 1), which the driver would otherwise
-/// treat as "never stop early", as `k3d.find_fundamental` does.
+/// treat as "never stop early".
 fn make_cfg(threshold: f64, max_iters: u32, confidence: f64) -> PyResult<RansacConfig> {
-    if !confidence.is_finite() || confidence <= 0.0 || confidence >= 1.0 {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "confidence must be finite and strictly between 0 and 1",
-        ));
-    }
+    crate::pyutils::require_valid_confidence(confidence)?;
     Ok(RansacConfig {
         max_iters,
         confidence,

@@ -248,3 +248,12 @@ def test_solve_pnp_ransac_input_validation_insufficient_points():
     image = np.zeros((3, 2), dtype=np.float64)
     with pytest.raises(ValueError):
         solve_pnp_ransac(world, image, K, method=PnPSolverMethod.EPnP, seed=0)
+
+
+@pytest.mark.parametrize("method", [PnPSolverMethod.EPnP, PnPSolverMethod.AP3P])
+@pytest.mark.parametrize("bad", [0.0, 1.0, -0.1, 1.5, float("nan"), float("inf")])
+def test_solve_pnp_ransac_invalid_confidence_rejected(method, bad):
+    """A confidence outside (0, 1) raises, as in the Rust solver and `ransac.fundamental`."""
+    world, image, K, _R_gt, _t_gt = _make_scene(20, 0, seed=1)
+    with pytest.raises(ValueError, match="confidence"):
+        solve_pnp_ransac(world, image, K, method=method, confidence=bad, seed=1)

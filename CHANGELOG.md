@@ -13,6 +13,22 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
 
 ## [Unreleased]
 
+**Breaking: `kornia_3d::pnp::solve_pnp_ransac` rejects an invalid `confidence`** (#1169).
+`RansacParams::confidence` must be finite and strictly between 0 and 1. Any other value now returns
+the new `PnPRansacError::InvalidConfidence { confidence }`, as the two-view solvers return
+`TwoViewError::InvalidConfidence`. Before, NaN and values of one or more silently behaved like a
+confidence of 1 − 10⁻¹², and zero or less never tightened the iteration cap. `PnPRansacError` is not `#[non_exhaustive]`, so
+exhaustive `match`es need a new arm. Python `kornia_rs.k3d.solve_pnp_ransac` likewise raises
+`ValueError` for such a confidence, as `kornia_rs.ransac.fundamental` does.
+
+Also:
+- PnP RANSAC stops after the draw that makes every correspondence an inlier; it used to keep
+  drawing up to `max_iterations`. The returned pose and inliers are unchanged.
+- The generic driver (`kornia_3d::ransac::run`, `run_with_rng`, `run_parallel`) no longer stops
+  after one draw at full support when `RansacConfig::confidence` is NaN; it draws all `max_iters`,
+  as the field's docs state for any confidence outside (0, 1).
+- Added `kornia_3d::ransac::is_valid_confidence`, the check the RANSAC entry points and the Python
+  bindings now share.
 **Weighted Umeyama alignment (`kornia-algebra`).** `umeyama_f64` now takes an
 optional per-point `weights` slice: `None` gives the unweighted Umeyama/Kabsch
 solution, while `Some(&weights)` minimizes `Σ wᵢ ‖dstᵢ − (s·R·srcᵢ + t)‖²` for
