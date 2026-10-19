@@ -1,8 +1,8 @@
 # kornia-3d benchmarks
 
-Timings of the PnP solvers, logged with the machine they were measured on, so a later run can
-spot regressions. Add a new dated **Results** section when re-measuring on another machine or
-after a change; do not overwrite old ones.
+Timings and accuracy of the PnP solvers, logged with the machine they were measured on, so a later
+run can spot regressions. Add a new dated **Results** section when re-measuring on another machine
+or after a change.
 
 ## How to run
 
@@ -10,19 +10,19 @@ after a change; do not overwrite old ones.
 # Speed: EPnP, EPnP + LM and SQPnP, plus solve_pnp_ransac with each kernel
 cargo bench -p kornia-3d --bench bench_pnp
 
-# Accuracy and failure rates, also inside solve_pnp_ransac (prints the Markdown tables below)
-cargo bench -p kornia-3d --bench bench_pnp_accuracy
+# Accuracy and failure rates, also inside solve_pnp_ransac (prints the tables below)
+cargo test --release -p kornia-3d --lib -- --ignored --nocapture pnp_accuracy_report
 ```
 
 ## Methodology
 
 | Parameter | Value |
 |-----------|-------|
-| Scenes (`bench_pnp`) | random points in a 2 m cube, or a 2 m square for `planar`, seen from 6 m; 1 px Gaussian noise; fixed seed |
+| Scenes (`bench_pnp`) | random points in a 2 m cube, or a 2 m square for `planar`, seen from 6 m; uniform noise of up to 1 px; fixed seed |
 | Batch | each `pnp` iteration solves 20 scenes, each `pnp_ransac` iteration 5 (100 inliers + 100 outliers); times below are per single solve |
 | Failing cases | every scene is solved once before timing; a case that fails is reported as skipped, never timed |
-| Timing | criterion defaults (3 s warm-up, 5 s measurement, 100 samples); the time shown is criterion's point estimate (the middle of the interval it prints), divided by the batch size |
-| Accuracy (`bench_pnp_accuracy`) | 200 random scenes per row, fixed seeds; failure = rotation error above 5° or no pose. The RANSAC rows add random outlier correspondences and use a 3 px threshold |
+| Timing | criterion defaults (3 s warm-up, 5 s measurement, 100 samples); the time shown is criterion's point estimate divided by the batch size |
+| Accuracy (`pnp_accuracy_report`) | 200 random scenes per row, fixed seeds; failure = rotation error above 5° or no pose. The RANSAC rows add random outlier correspondences and use a 3 px threshold |
 
 **Note:** plain EPnP still has #1181 (wrong pose on noise-free data), which is why it fails in
 most accuracy rows and why the EPnP RANSAC kernel fails on one bench scene. Expect EPnP and
@@ -30,13 +30,13 @@ EPnP + LM numbers to change when that is fixed.
 
 ---
 
-## Results — 2026-10-14
+## Results — 2026-10-19
 
 ### Hardware / software
 
 | Field | Value |
 |-------|-------|
-| Commit | `ce39c868` on `feat/sqpnp-1182` (#1183) |
+| Code | #1183 |
 | Machine | MacBook Air (Mac17,3), Apple M5 (4P+6E cores), 16 GB RAM |
 | OS | macOS 27.0.1 (arm64) |
 | Rust | 1.99.0 (b940084d7 2026-09-28), `--release` (cargo bench) |
@@ -47,10 +47,10 @@ EPnP + LM numbers to change when that is fixed.
 
 | Points | EPnP | EPnP + LM | SQPnP | EPnP, planar | EPnP + LM, planar | SQPnP, planar |
 |-------:|-----:|----------:|------:|-------------:|------------------:|--------------:|
-| 6 | 9.6 µs | 89.0 µs | 14.8 µs | 8.2 µs | 109.8 µs | 45.3 µs |
-| 20 | 10.4 µs | 255.9 µs | 11.5 µs | 8.9 µs | 278.9 µs | 40.8 µs |
-| 100 | 14.2 µs | 1.19 ms | 14.4 µs | 12.8 µs | 1.39 ms | 41.5 µs |
-| 500 | 33.2 µs | 5.58 ms | 23.6 µs | 31.7 µs | 6.23 ms | 50.5 µs |
+| 6 | 9.8 µs | 98.4 µs | 13.7 µs | 8.3 µs | 107.2 µs | 44.0 µs |
+| 20 | 10.5 µs | 274.7 µs | 10.2 µs | 9.1 µs | skipped (LM fails on one scene) | 39.7 µs |
+| 100 | 14.4 µs | 1.18 ms | 12.3 µs | 12.9 µs | 1.25 ms | 41.0 µs |
+| 500 | 33.7 µs | 5.46 ms | 19.9 µs | 32.5 µs | 6.52 ms | 47.9 µs |
 
 ### `solve_pnp_ransac` — one run (100 inliers + 100 outliers, 3 px threshold, fixed seed)
 
@@ -58,9 +58,9 @@ EPnP + LM numbers to change when that is fixed.
 |--------|-----:|
 | EPnP | skipped (fails on one scene, #1181) |
 | AP3P | 1.27 ms |
-| SQPnP | 12.52 ms |
+| SQPnP | 13.31 ms |
 
-### Accuracy (`bench_pnp_accuracy`, same solver code)
+### Accuracy
 
 Median rotation error (°), median relative translation error (%) and failure rate (%).
 

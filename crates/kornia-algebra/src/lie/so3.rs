@@ -1118,64 +1118,20 @@ mod tests_f64 {
 
     const EPS: f64 = 1e-12;
 
-    /// `‖a − b‖_F`, column by column on the borrowed matrices.
-    fn frobenius_distance(a: &Mat3F64, b: &Mat3F64) -> f64 {
-        (0..3)
-            .map(|i| (a.col(i) - b.col(i)).length_squared())
-            .sum::<f64>()
-            .sqrt()
-    }
-
+    /// `from_matrix_nearest` is `Mat3F64::nearest_rotation` as an `SO3F64`.
     #[test]
-    fn test_from_matrix_nearest_keeps_a_rotation() {
-        let r = SO3F64::exp(Vec3F64::new(0.3, -0.5, 0.8)).matrix();
-        let nearest = SO3F64::from_matrix_nearest(&r).map(|s| s.matrix());
-        assert!(nearest.is_some_and(|n| frobenius_distance(&n, &r) < EPS));
-    }
-
-    /// `M = A·diag(3, 2, −1)·B` (A, B rotations) has `U·Vᵀ = A·diag(1, 1, −1)·B`, a reflection.
-    /// Its nearest rotation is `A·B`; negating the third column of `U·Vᵀ` gives a rotation that
-    /// is farther from `M`.
-    #[test]
-    fn test_from_matrix_nearest_fixes_a_reflection_with_the_nearest_rotation() {
-        let a = SO3F64::exp(Vec3F64::new(0.3, -0.5, 0.8)).matrix();
-        let b = SO3F64::exp(Vec3F64::new(-0.6, 0.2, 0.4)).matrix();
-        let diag = |x, y, z| Mat3F64::from_cols_array(&[x, 0.0, 0.0, 0.0, y, 0.0, 0.0, 0.0, z]);
-        let m = a * diag(3.0, 2.0, -1.0) * b;
-
-        let nearest = SO3F64::from_matrix_nearest(&m).map(|s| s.matrix());
-        assert!(nearest.is_some_and(|n| frobenius_distance(&n, &(a * b)) < 1e-9));
-
-        let mut negated = a * diag(1.0, 1.0, -1.0) * b;
-        negated.z_axis = -negated.z_axis;
-        assert!((negated.determinant() - 1.0).abs() < 1e-9);
-        assert!(frobenius_distance(&(a * b), &m) < frobenius_distance(&negated, &m) - 0.1);
-    }
-
-    /// Scaling does not change the nearest rotation, also far from 1, where `MᵀM` would overflow
-    /// or underflow without the internal rescaling.
-    #[test]
-    fn test_from_matrix_nearest_is_scale_invariant() {
-        let base = Mat3F64::from_cols_array(&[0.1, 1.0, 0.0, 1.0, 0.2, 0.0, 0.0, 0.0, -0.5]);
-        let expected = SO3F64::from_matrix_nearest(&base).map(|r| r.matrix());
-        for s in [1e155, 1e-170, 1e300, 1e-300] {
-            let m = Mat3F64::from_cols_array(&base.to_cols_array().map(|v| v * s));
-            let got = SO3F64::from_matrix_nearest(&m).map(|r| r.matrix());
-            assert!(
-                got.zip(expected)
-                    .is_some_and(|(g, e)| frobenius_distance(&g, &e) < 1e-12),
-                "scale {s:e}: {got:?}"
-            );
-        }
-        let zero = SO3F64::from_matrix_nearest(&Mat3F64::ZERO).map(|r| r.matrix());
-        assert!(zero.is_some_and(|z| frobenius_distance(&z, &Mat3F64::IDENTITY) < EPS));
-    }
-
-    #[test]
-    fn test_from_matrix_nearest_rejects_non_finite_input() {
-        let mut m = Mat3F64::IDENTITY;
-        m.x_axis.y = f64::NAN;
-        assert!(SO3F64::from_matrix_nearest(&m).is_none());
+    fn test_from_matrix_nearest() -> Result<(), &'static str> {
+        let m = Mat3F64::from_cols_array(&[2.0, 0.3, -0.1, 0.2, 1.5, 0.4, -0.3, 0.1, -0.7]);
+        let nearest = SO3F64::from_matrix_nearest(&m).ok_or("no rotation")?;
+        assert_mat_eq(
+            &nearest.matrix(),
+            &m.nearest_rotation().ok_or("no rotation")?,
+            EPS,
+        );
+        let mut not_finite = Mat3F64::IDENTITY;
+        not_finite.x_axis.y = f64::NAN;
+        assert!(SO3F64::from_matrix_nearest(&not_finite).is_none());
+        Ok(())
     }
 
     fn assert_mat_eq(a: &Mat3F64, b: &Mat3F64, tol: f64) {

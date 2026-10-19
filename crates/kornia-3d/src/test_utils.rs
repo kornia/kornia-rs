@@ -1,6 +1,4 @@
-//! Helpers shared by the unit tests and the PnP benches of this crate: seeded random poses and
-//! the pixel observations they generate. The library compiles this module only for tests; the
-//! benches include the file with `#[path]`.
+//! Seeded random poses and the pixel observations they generate, shared by the unit tests.
 
 use kornia_algebra::{Mat3AF32, Mat3F64, Vec2F32, Vec3AF32, Vec3F64, SO3F64};
 use rand::{rngs::StdRng, RngExt};
@@ -23,18 +21,108 @@ pub(crate) fn k_matrix(fx: f32, fy: f32, cx: f32, cy: f32) -> Mat3AF32 {
     Mat3AF32::from_cols_array(&[fx, 0.0, 0.0, 0.0, fy, 0.0, cx, cy, 1.0])
 }
 
+/// The camera most tests use: `f = 800` px, principal point `(640, 480)`.
+pub(crate) fn k_default() -> Mat3AF32 {
+    k_matrix(800.0, 800.0, 640.0, 480.0)
+}
+
+/// The shape of a random scene.
+pub(crate) struct SceneConfig {
+    /// Number of correspondences.
+    pub n: usize,
+    /// Standard deviation of the Gaussian pixel noise.
+    pub noise_px: f64,
+    /// Half-size of the cube (or square, when `planar`) holding the points, in metres.
+    pub size: f64,
+    /// Distance of the camera from the points, in metres.
+    pub depth: f64,
+    /// Points on the plane `z = 0`, like a marker or a chessboard.
+    pub planar: bool,
+    /// Largest rotation angle of the camera, in radians.
+    pub max_angle: f64,
+}
+
+impl SceneConfig {
+    /// `n` points in a 2 m cube seen from `depth` metres at any rotation.
+    pub(crate) fn cube(n: usize, depth: f64, noise_px: f64) -> Self {
+        Self {
+            n,
+            noise_px,
+            size: 1.0,
+            depth,
+            planar: false,
+            max_angle: std::f64::consts::PI,
+        }
+    }
+
+    /// `n` points on a 2 m square seen from 5 m, at most 1.2 rad away from facing it.
+    pub(crate) fn planar(n: usize, noise_px: f64) -> Self {
+        Self {
+            n,
+            noise_px,
+            size: 1.0,
+            depth: 5.0,
+            planar: true,
+            max_angle: 1.2,
+        }
+    }
+}
+
 /// A camera, a ground-truth world → camera pose and the correspondences they generate.
 pub(crate) struct Scene {
+    /// Camera matrix.
     pub k: Mat3AF32,
+    /// Ground-truth world → camera rotation.
     pub rotation: Mat3F64,
+    /// Ground-truth world → camera translation.
     pub translation: Vec3F64,
+    /// World points.
     pub world: Vec<Vec3AF32>,
+    /// Their pixels, with noise; any outliers come last.
     pub image: Vec<Vec2F32>,
 }
 
 impl Scene {
-    /// Projects `world` with the pose through the pinhole camera `k`, adding Gaussian noise of
-    /// `noise_px` pixels to each image coordinate.
+    /// A random scene of shape `config`, seen through `k`. Points less than a tenth of the depth in
+    /// front of the camera are drawn again.
+    pub(crate) fn generate(rng: &mut StdRng, k: Mat3AF32, config: &SceneConfig) -> Self {
+        let k64 = Mat3F64::from(k);
+        let rotation = random_rotation(rng, config.max_angle);
+        let translation = Vec3F64::new(
+            rng.random_range(-0.1..0.1) * config.depth,
+            rng.random_range(-0.1..0.1) * config.depth,
+            config.depth,
+        );
+        let mut world = Vec::with_capacity(config.n);
+        let mut image = Vec::with_capacity(config.n);
+        while world.len() < config.n {
+            let z = if config.planar {
+                0.0
+            } else {
+                rng.random_range(-config.size..config.size)
+            };
+            let p = Vec3F64::new(
+                rng.random_range(-config.size..config.size),
+                rng.random_range(-config.size..config.size),
+                z,
+            );
+            let pc = rotation * p + translation;
+            if pc.z < 0.1 * config.depth {
+                continue;
+            }
+            world.push(p.as_vec3af32());
+            image.push(pixel(rng, &k64, pc, config.noise_px));
+        }
+        Self {
+            k,
+            rotation,
+            translation,
+            world,
+            image,
+        }
+    }
+
+    /// `world` seen through `k` from the pose `(rotation, translation)`, with Gaussian pixel noise.
     pub(crate) fn project(
         rng: &mut StdRng,
         k: Mat3AF32,
@@ -46,73 +134,48 @@ impl Scene {
         let k64 = Mat3F64::from(k);
         let image = world
             .iter()
-            .map(|&m| {
-                let h = k64 * (rotation * m + translation);
-                Vec2F32::new(
-                    (h.x / h.z + noise_px * gauss(rng)) as f32,
-                    (h.y / h.z + noise_px * gauss(rng)) as f32,
-                )
-            })
+            .map(|&p| pixel(rng, &k64, rotation * p + translation, noise_px))
             .collect();
         Self {
             k,
             rotation,
             translation,
-            world: world.iter().map(|m| m.as_vec3af32()).collect(),
+            world: world.iter().map(|p| p.as_vec3af32()).collect(),
             image,
         }
     }
 
-    /// `n` random points in a box of half-width `size` around the origin, seen by `k` with a
-    /// random rotation from `depth` metres.
-    pub(crate) fn random(
-        rng: &mut StdRng,
-        k: Mat3AF32,
-        n: usize,
-        size: f64,
-        depth: f64,
-        noise_px: f64,
-    ) -> Self {
-        let world = (0..n)
-            .map(|_| {
-                Vec3F64::new(
-                    rng.random_range(-size..size),
-                    rng.random_range(-size..size),
-                    rng.random_range(-size..size),
-                )
-            })
-            .collect();
-        let rotation = random_rotation(rng, std::f64::consts::PI);
-        let translation = Vec3F64::new(
-            rng.random_range(-0.5..0.5),
-            rng.random_range(-0.5..0.5),
-            depth,
-        );
-        Self::project(rng, k, world, rotation, translation, noise_px)
+    /// Appends `count` wrong correspondences: world points in `[-1, 1]³`, pixels anywhere in the
+    /// image (taken as twice the principal point).
+    pub(crate) fn add_outliers(&mut self, rng: &mut StdRng, count: usize) {
+        let (width, height) = (2.0 * self.k.z_axis().x, 2.0 * self.k.z_axis().y);
+        for _ in 0..count {
+            self.world.push(Vec3AF32::new(
+                rng.random_range(-1.0..1.0),
+                rng.random_range(-1.0..1.0),
+                rng.random_range(-1.0..1.0),
+            ));
+            self.image.push(Vec2F32::new(
+                rng.random_range(0.0..width),
+                rng.random_range(0.0..height),
+            ));
+        }
     }
+}
 
-    /// `n` random points on the square `[-1, 1]² × {0}` (a marker or chessboard), seen by `k`
-    /// from 5 m with a rotation of up to 1.2 rad.
-    pub(crate) fn random_planar(rng: &mut StdRng, k: Mat3AF32, n: usize, noise_px: f64) -> Self {
-        let world = (0..n)
-            .map(|_| {
-                Vec3F64::new(
-                    rng.random_range(-1.0..1.0),
-                    rng.random_range(-1.0..1.0),
-                    0.0,
-                )
-            })
-            .collect();
-        let rotation = random_rotation(rng, 1.2);
-        let translation = Vec3F64::new(0.1, -0.2, 5.0);
-        Self::project(rng, k, world, rotation, translation, noise_px)
-    }
+/// The pixel of the camera-frame point `pc`, with Gaussian noise of `noise_px` pixels.
+fn pixel(rng: &mut StdRng, k: &Mat3F64, pc: Vec3F64, noise_px: f64) -> Vec2F32 {
+    let (fx, fy, cx, cy) = (k.x_axis().x, k.y_axis().y, k.z_axis().x, k.z_axis().y);
+    Vec2F32::new(
+        (fx * pc.x / pc.z + cx + noise_px * gauss(rng)) as f32,
+        (fy * pc.y / pc.z + cy + noise_px * gauss(rng)) as f32,
+    )
 }
 
 /// Angle in degrees between an estimated rotation and the truth. `2·asin(‖R₁ − R₂‖_F / 2√2)`
 /// stays accurate for tiny angles, unlike `acos((tr(R₁ᵀR₂) − 1) / 2)` on `f32` matrices.
-pub(crate) fn rotation_error_deg(estimate: &Mat3AF32, truth: &Mat3F64) -> f64 {
-    let estimate = Mat3F64::from(*estimate);
+pub(crate) fn rotation_error_deg(estimate: Mat3AF32, truth: Mat3F64) -> f64 {
+    let estimate = Mat3F64::from(estimate);
     let frobenius = (0..3)
         .map(|i| (estimate.col(i) - truth.col(i)).length_squared())
         .sum::<f64>()

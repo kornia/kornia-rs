@@ -12,56 +12,27 @@ pub(crate) fn fit_transformation(
     assert_eq!(points_in_src.len(), points_in_dst.len());
 
     // compute centroids
-    let (src_centroid, dst_centroid) = compute_centroids(points_in_src, points_in_dst);
+    let src_centroid = linalg::centroid(points_in_src);
+    let dst_centroid = linalg::centroid(points_in_dst);
 
-    let cs = Vec3F64::new(src_centroid[0], src_centroid[1], src_centroid[2]);
-    let cd = Vec3F64::new(dst_centroid[0], dst_centroid[1], dst_centroid[2]);
-
-    // Kabsch: with the cross-covariance H = Σ (p_dst − c_dst)(p_src − c_src)ᵀ, the best rotation
-    // is the one nearest to H (also when the SVD's U·Vᵀ is a reflection).
+    // compute covariance matrix
     let mut hh = Mat3F64::ZERO;
     for (p_in_src, p_in_dst) in points_in_src.iter().zip(points_in_dst.iter()) {
-        let p_src = Vec3F64::from(*p_in_src) - cs;
-        let p_dst = Vec3F64::from(*p_in_dst) - cd;
+        let p_src = Vec3F64::from(*p_in_src) - src_centroid;
+        let p_dst = Vec3F64::from(*p_in_dst) - dst_centroid;
         hh += Mat3F64::from_cols(p_dst * p_src.x, p_dst * p_src.y, p_dst * p_src.z);
     }
+
+    // compute rotation matrix: the rotation nearest to H, which also fixes a reflection
     let rr = hh.nearest_rotation()?;
 
     // compute translation vector t = C_dst - R * C_src
-    let t = cd - rr * cs;
+    let t = dst_centroid - rr * src_centroid;
 
-    // copy results back to output: `dst_r_src` is row-major, and Rᵀ's columns are R's rows
+    // copy results back to output (`dst_r_src` is row-major)
     *dst_r_src = rr.transpose().to_cols_array_2d();
     *dst_t_src = t.into();
     Some(())
-}
-
-/// Compute the centroids of two sets of points.
-///
-/// # Arguments
-///
-/// * `points1` - A set of points.
-/// * `points2` - Another set of points.
-///
-/// # Returns
-///
-/// The centroids of the two sets of points.
-pub(crate) fn compute_centroids(
-    points1: &[[f64; 3]],
-    points2: &[[f64; 3]],
-) -> (faer::Col<f64>, faer::Col<f64>) {
-    let mut centroid1 = faer::Col::zeros(3);
-    let mut centroid2 = faer::Col::zeros(3);
-
-    for (p1, p2) in points1.iter().zip(points2.iter()) {
-        centroid1 += faer::col![p1[0], p1[1], p1[2]];
-        centroid2 += faer::col![p2[0], p2[1], p2[2]];
-    }
-
-    centroid1 /= points1.len() as f64;
-    centroid2 /= points2.len() as f64;
-
-    (centroid1, centroid2)
 }
 
 pub(crate) fn find_correspondences(
@@ -168,17 +139,6 @@ mod tests {
             rand::random::<f64>() * factor,
             rand::random::<f64>() * factor,
         ]
-    }
-
-    #[test]
-    fn test_compute_centroids() {
-        let points1 = vec![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]];
-        let points2 = vec![[7.0, 8.0, 9.0], [10.0, 11.0, 12.0]];
-        let (centroid1, centroid2) = compute_centroids(&points1, &points2);
-        let c1: Vec<f64> = centroid1.as_ref().iter().copied().collect();
-        let c2: Vec<f64> = centroid2.as_ref().iter().copied().collect();
-        assert_eq!(c1, vec![2.5, 3.5, 4.5]);
-        assert_eq!(c2, vec![8.5, 9.5, 10.5]);
     }
 
     #[test]

@@ -31,10 +31,6 @@ name = "bench_stereo_match"
 harness = false
 name = "bench_pnp"
 
-[[bench]]
-harness = false
-name = "bench_pnp_accuracy"
-
 [dependencies]
 bincode = { workspace = true }
 cudarc = { workspace = true, optional = true }

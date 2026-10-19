@@ -13,35 +13,29 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
 
 ## [Unreleased]
 
-**SQPnP pose solver in `kornia-3d`** (`kornia_3d::pnp::solve_sqpnp`, or `PnPMethod::SQPnP` /
+**SQPnP pose solver in `kornia-3d`** (`kornia_3d::pnp::sqpnp::solve_sqpnp`, or `PnPMethod::SQPnP` /
 `PnPMethod::SQPnPDefault` through `solve_pnp` and `solve_pnp_ransac`), after Terzakis & Lourakis,
 ECCV 2020. It minimises the object-space error over all rotations, for planar and non-planar
-points. Its gain is robustness: with 1 px noise it failed (rotation error above 5°) on none of
-200 planar scenes and on at most 0.5% of 4-point ones, where EPnP with LM refinement failed on
-24.5–48% and 6–13% (without and with the EPnP fix for #1181;
-`cargo bench -p kornia-3d --bench bench_pnp_accuracy`). One solve takes about 12–24 µs for 6–500
-non-planar points and about 40–50 µs for planar ones (Apple M5,
-`cargo bench -p kornia-3d --bench bench_pnp`; full tables and machine in
-`crates/kornia-3d/benchmarks.md`). As a `solve_pnp_ransac` kernel it never failed in
-`bench_pnp_accuracy` (up to 50% outliers) but is about 10× slower than AP3P: a 5-point sample
-needs more draws than a 3-point one, and every draw runs SQP. With exactly 3 points it returns
-one of up to four exact solutions.
-`SQPnPParams::refine_lm` can polish the pose on reprojection error, which helps when points are
-very close to the camera.
+points. With 1 px noise it failed (rotation error above 5°) on none of 200 planar scenes and on
+0.5% of 4-point ones, where EPnP with LM refinement failed on 24.5% and 11.5%
+(`cargo test --release -p kornia-3d --lib -- --ignored --nocapture pnp_accuracy_report`). One solve
+takes about 10–20 µs for 6–500 non-planar points and 40–48 µs for planar ones on an Apple M5
+(`cargo bench -p kornia-3d --bench bench_pnp`; tables in `crates/kornia-3d/benchmarks.md`). As a
+`solve_pnp_ransac` kernel it is about 10× slower than AP3P (larger samples, and a costlier solve per
+sample). With exactly 3 points it returns one of up to four exact solutions.
+`SQPnPParams::refine_lm` polishes the pose on the reprojection error.
 
 **`kornia-algebra`: `Mat3F64::nearest_rotation`** (and `SO3F64::from_matrix_nearest`), the
-rotation nearest to any 3x3 matrix (`U·diag(1, 1, det(U·Vᵀ))·Vᵀ`), and conversions: `From`
-between `Mat3F64` / `Vec3F64` and nalgebra's `Matrix3<f64>` / `Vector3<f64>`, exact `f32 → f64`
-`From` for `Mat3AF32`, `Vec3AF32` and `Vec2F32`, and the rounding `Mat3F64::as_mat3af32` /
-`Vec3F64::as_vec3af32`. SQPnP, the orthogonal iteration of `estimate_planar_pose` and ICP's rigid
-fit use the nearest rotation. Their results are unchanged in 2000 random planar scenes and 30 ICP
-runs (largest difference 1.4e-9); they differ only when `U·Vᵀ` is a reflection, where the planar
-pose used to negate a column of `U·Vᵀ`, which is a rotation but not the nearest one. ICP also got
-much faster: its rigid fit built heap-allocated vectors for every point to form the covariance.
-With 2000 points one `icp_vanilla` run went from 326 ms to 3.6 ms, with the same iterations and
-result.
+rotation nearest to any 3x3 matrix, plus `From` conversions between `Mat3F64` / `Vec3F64` and
+nalgebra's `Matrix3<f64>` / `Vector3<f64>`, exact `f32 → f64` `From` for `Mat3AF32`, `Vec3AF32` and
+`Vec2F32`, and the rounding `Mat3F64::as_mat3af32` / `Vec3F64::as_vec3af32`. The orthogonal
+iteration of `estimate_planar_pose` and ICP's rigid fit now use it. ICP's result is unchanged (it
+no longer logs a warning when `U·Vᵀ` is a reflection). The planar pose changes only in that case:
+it used to negate a column of `U·Vᵀ`, which is a rotation but not the nearest one.
 
-Breaking for Rust code: `PnPMethod` has two new variants, so exhaustive `match`es need new arms.
+Breaking for Rust code: `PnPMethod` has two new variants and `PnPError` three
+(`InvalidCameraMatrix`, `NonFinite`, `DegenerateConfiguration`), so exhaustive `match`es need new
+arms.
 
 **Breaking: fundamental-matrix RANSAC now samples seven points by default.** A seven-point
 hypothesis needs one correspondence fewer than an eight-point one, so RANSAC reaches the same

@@ -1,3 +1,5 @@
+use kornia_algebra::Vec3F64;
+
 /// Transform a set of 3D points using a rotation and translation.
 ///
 /// # Arguments
@@ -291,9 +293,31 @@ pub fn normalize_mat33_inplace(m: &mut [[f64; 3]; 3]) {
     mat33_div_scalar_inplace(m, norm);
 }
 
+/// The mean of `points`, summed in `f64`.
+pub(crate) fn centroid<P: Copy>(points: &[P]) -> Vec3F64
+where
+    Vec3F64: From<P>,
+{
+    points
+        .iter()
+        .fold(Vec3F64::ZERO, |sum, &p| sum + Vec3F64::from(p))
+        / points.len() as f64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_centroid() {
+        let arrays = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]];
+        assert_eq!(centroid(&arrays).to_array(), [2.5, 3.5, 4.5]);
+        let points = [
+            kornia_algebra::Vec3AF32::new(0.0, 0.0, 0.0),
+            kornia_algebra::Vec3AF32::new(3.0, 3.0, 6.0),
+        ];
+        assert_eq!(centroid(&points).to_array(), [1.5, 1.5, 3.0]);
+    }
 
     #[test]
     fn test_dot_product3() {

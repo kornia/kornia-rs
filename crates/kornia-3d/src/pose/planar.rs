@@ -253,9 +253,7 @@ fn orthogonal_iteration(
             m3 += Mat3F64::from_cols(dq * p_res[i].x, dq * p_res[i].y, dq * p_res[i].z);
         }
 
-        // Kabsch / Procrustes: the new rotation is the one nearest to M3. (The C reference
-        // negates the third column of U·Vᵀ when it is a reflection, which is a rotation but not
-        // the nearest one.)
+        // Kabsch / Procrustes: the new rotation is the one nearest to M3.
         rotation = m3
             .nearest_rotation()
             .ok_or(PlanarPoseError::SingularIteration)?;
@@ -297,8 +295,8 @@ fn orthogonal_iteration(
 ///
 /// # Errors
 /// * [`PlanarPoseError::Homography`] — the initial homography could not be fitted.
-/// * [`PlanarPoseError::SingularIteration`] — the refinement's linear system degenerated (all
-///   four image rays effectively identical).
+/// * [`PlanarPoseError::SingularIteration`] — the refinement degenerated (all four image rays
+///   effectively identical, or a rotation update with non-finite values).
 /// * [`PlanarPoseError::DegenerateObjectPoints`] — the object points have no extent in their
 ///   own plane.
 /// * [`PlanarPoseError::ZeroIterations`] — `n_iters == 0`, which would otherwise return an

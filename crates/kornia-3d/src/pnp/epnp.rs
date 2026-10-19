@@ -43,16 +43,13 @@
 //! P3P-RANSAC when N ≥ 4 — its minimal solver doesn't rely on
 //! control-point conditioning.
 
-use super::ops::{compute_centroid, gauss_newton, intrinsics_as_vectors};
+use super::ops::{compute_centroid, gauss_newton, rmse_px};
 use super::refine::{refine_pose_lm, LMRefineParams};
 use super::{NumericTol, PnPError, PnPResult, PnPSolver};
 use kornia_algebra::linalg::rigid::umeyama;
 use kornia_algebra::linalg::svd::svd3_f32;
 use kornia_algebra::{Mat3AF32, Mat3F32, Vec2F32, Vec3AF32, Vec3F32, SO3F32};
-use kornia_imgproc::calibration::{
-    distortion::{distort_point_polynomial, PolynomialDistortion},
-    CameraIntrinsic,
-};
+use kornia_imgproc::calibration::distortion::PolynomialDistortion;
 use nalgebra::{DMatrix, DVector, Vector4};
 
 /// Marker type representing the Efficient PnP algorithm.
@@ -243,64 +240,6 @@ fn pose_from_betas(
 
     let (r, t, _s) = umeyama(cw, &cc).map_err(|e| PnPError::SvdFailed(e.to_string()))?;
     Ok((r, t))
-}
-
-/// Root-mean-square reprojection error in pixels.
-pub(crate) fn rmse_px(
-    points_world: &[Vec3AF32],
-    points_image: &[Vec2F32],
-    r: &Mat3AF32,
-    t: &Vec3AF32,
-    k: &Mat3AF32,
-    distortion: Option<&PolynomialDistortion>,
-) -> Result<f32, PnPError> {
-    if points_world.len() != points_image.len() {
-        return Err(PnPError::MismatchedArrayLengths {
-            left_name: "world points",
-            left_len: points_world.len(),
-            right_name: "image points",
-            right_len: points_image.len(),
-        });
-    }
-
-    let (intr_x, intr_y) = intrinsics_as_vectors(k);
-    let fx = k.x_axis().x;
-    let fy = k.y_axis().y;
-    let cx = k.z_axis().x;
-    let cy = k.z_axis().y;
-
-    let mut sum_sq = 0.0;
-    let n = points_world.len() as f32;
-
-    // Prepare camera intrinsic for distortion if needed
-    let cam_intr = CameraIntrinsic {
-        fx: fx as f64,
-        fy: fy as f64,
-        cx: cx as f64,
-        cy: cy as f64,
-    };
-
-    for (&pw, &uv) in points_world.iter().zip(points_image.iter()) {
-        let pc = *r * pw + *t; // camera-frame point
-
-        let inv_z = 1.0 / pc.z;
-        let u_undist = intr_x.dot(pc) * inv_z; // (fx * x + cx * z) / z
-        let v_undist = intr_y.dot(pc) * inv_z; // (fy * y + cy * z) / z
-
-        // Apply distortion model if provided
-        let (u_hat, v_hat) = if let Some(d) = distortion {
-            let (ud, vd) = distort_point_polynomial(u_undist as f64, v_undist as f64, &cam_intr, d);
-            (ud as f32, vd as f32)
-        } else {
-            (u_undist, v_undist)
-        };
-
-        let du = u_hat - uv.x;
-        let dv = v_hat - uv.y;
-        sum_sq += du.mul_add(du, dv * dv); // FMA where available
-    }
-
-    Ok((sum_sq / n).sqrt())
 }
 
 fn select_control_points(points_world: &[Vec3AF32]) -> [Vec3AF32; 4] {

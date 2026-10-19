@@ -366,9 +366,8 @@ define_matrix_type!(
     [x_axis, y_axis, z_axis, w_axis]
 );
 
-// Conversions between `Mat3F64` and nalgebra's `Matrix3<f64>`. Both are three columns of three
-// `f64` stored one after another, so a conversion hands the same `[[f64; 3]; 3]` array of columns
-// from one type to the other: no allocation, and no element placed by hand.
+// Conversions between `Mat3F64` and nalgebra's `Matrix3<f64>`, through the `[[f64; 3]; 3]` array of
+// columns both store.
 impl From<nalgebra::Matrix3<f64>> for Mat3F64 {
     #[inline]
     fn from(m: nalgebra::Matrix3<f64>) -> Self {
@@ -383,7 +382,6 @@ impl From<Mat3F64> for nalgebra::Matrix3<f64> {
     }
 }
 
-// f32 -> f64 is exact, so it is a `From`. The other way rounds and is an explicit method.
 impl From<Mat3AF32> for Mat3F64 {
     #[inline]
     fn from(m: Mat3AF32) -> Self {
@@ -407,8 +405,7 @@ impl Mat3F64 {
     /// reflection, the singular vector of the smallest singular value changes sign. Negating a
     /// column of `U·Vᵀ` instead also gives a rotation, but in general not the nearest one. Use it
     /// to project a nearly orthonormal matrix back onto SO(3), or for the Kabsch / Umeyama step,
-    /// where the best rotation is the one nearest to the cross-covariance matrix. The SVD is
-    /// nalgebra's.
+    /// where the best rotation is the one nearest to the cross-covariance matrix.
     ///
     /// # Returns
     ///
@@ -431,6 +428,8 @@ impl Mat3F64 {
         if !self.is_finite() {
             return None;
         }
+        // nalgebra's SVD: near a rotation the singular values repeat, which `svd3_f64` does not
+        // handle (see `linalg::rigid`).
         let m = nalgebra::Matrix3::<f64>::from(self);
         // Scaling by a positive number does not change the nearest rotation. nalgebra's 3x3 SVD
         // works on MᵀM, which overflows or underflows for entries far from 1, so bring the
@@ -467,8 +466,7 @@ pub type DMatF64 = nalgebra::DMatrix<f64>;
 mod tests {
     use super::*;
 
-    /// Every element must keep its row and column through both conversions; a transposed copy
-    /// is the bug these conversions exist to prevent.
+    /// Every element must keep its row and column through both conversions.
     #[test]
     fn test_mat3f64_nalgebra_conversions_keep_rows_and_columns() {
         // Not symmetric, so a transposed copy changes the matrix.
@@ -491,31 +489,56 @@ mod tests {
         assert_eq!(wide.as_mat3af32(), m);
     }
 
-    /// `nearest_rotation` returns a proper rotation (orthonormal, determinant +1), keeps a
-    /// rotation unchanged, and agrees with `SO3F64::from_matrix_nearest`.
-    #[test]
-    fn test_mat3f64_nearest_rotation() {
-        let rotation = crate::SO3F64::exp(Vec3F64::new(0.3, -0.5, 0.8)).matrix();
-        let kept = rotation
-            .nearest_rotation()
-            .map(|r| (r - rotation).to_cols_array());
-        assert!(kept.is_some_and(|d| d.iter().all(|v| v.abs() < 1e-12)));
+    fn max_abs_diff(a: Mat3F64, b: Mat3F64) -> f64 {
+        (a - b)
+            .to_cols_array()
+            .iter()
+            .fold(0.0, |m, v| m.max(v.abs()))
+    }
 
-        // Not a rotation, and U·Vᵀ is a reflection (negative determinant).
-        let m = Mat3F64::from_cols_array(&[2.0, 0.3, -0.1, 0.2, 1.5, 0.4, -0.3, 0.1, -0.7]);
-        let r = m.nearest_rotation().map(nalgebra::Matrix3::<f64>::from);
-        assert!(r.is_some_and(
-            |r| (r.transpose() * r - nalgebra::Matrix3::identity()).norm() < 1e-12
-                && (r.determinant() - 1.0).abs() < 1e-12
-        ));
-        let via_so3 = crate::SO3F64::from_matrix_nearest(&m).map(|q| q.matrix());
-        let direct = m.nearest_rotation();
-        assert!(via_so3
-            .zip(direct)
-            .is_some_and(|(a, b)| (a - b).to_cols_array().iter().all(|v| v.abs() < 1e-12)));
+    #[test]
+    fn test_mat3f64_nearest_rotation_keeps_a_rotation() -> Result<(), &'static str> {
+        let rotation = crate::SO3F64::exp(Vec3F64::new(0.3, -0.5, 0.8)).matrix();
+        let nearest = rotation.nearest_rotation().ok_or("no rotation")?;
+        assert!(max_abs_diff(nearest, rotation) < 1e-12);
         assert!(Mat3F64::from_cols_array(&[f64::NAN; 9])
             .nearest_rotation()
             .is_none());
+        Ok(())
+    }
+
+    /// `M = A·diag(3, 2, −1)·B` (A, B rotations) has `U·Vᵀ = A·diag(1, 1, −1)·B`, a reflection.
+    /// Its nearest rotation is `A·B`; negating the third column of `U·Vᵀ` gives a rotation that
+    /// is farther from `M`.
+    #[test]
+    fn test_mat3f64_nearest_rotation_of_a_reflection() -> Result<(), &'static str> {
+        let a = crate::SO3F64::exp(Vec3F64::new(0.3, -0.5, 0.8)).matrix();
+        let b = crate::SO3F64::exp(Vec3F64::new(-0.6, 0.2, 0.4)).matrix();
+        let diag = |x, y, z| Mat3F64::from_diagonal(Vec3F64::new(x, y, z));
+        let m = a * diag(3.0, 2.0, -1.0) * b;
+        let nearest = m.nearest_rotation().ok_or("no rotation")?;
+        assert!(max_abs_diff(nearest, a * b) < 1e-9);
+
+        let mut negated = a * diag(1.0, 1.0, -1.0) * b;
+        negated.z_axis = -negated.z_axis;
+        assert!((negated.determinant() - 1.0).abs() < 1e-9);
+        let distance_to_m = |x: Mat3F64| (x - m).to_cols_array().map(|v| v * v).iter().sum::<f64>();
+        assert!(distance_to_m(a * b) < distance_to_m(negated) - 0.1);
+        Ok(())
+    }
+
+    /// Scaling does not change the nearest rotation, also far from 1, where `MᵀM` would overflow
+    /// or underflow without the internal rescaling; the zero matrix gives the identity.
+    #[test]
+    fn test_mat3f64_nearest_rotation_is_scale_invariant() -> Result<(), &'static str> {
+        let base = Mat3F64::from_cols_array(&[0.1, 1.0, 0.0, 1.0, 0.2, 0.0, 0.0, 0.0, -0.5]);
+        let expected = base.nearest_rotation().ok_or("no rotation")?;
+        for s in [1e155, 1e-170, 1e300, 1e-300] {
+            let got = (base * s).nearest_rotation().ok_or("no rotation")?;
+            assert!(max_abs_diff(got, expected) < 1e-12, "scale {s:e}");
+        }
+        assert_eq!(Mat3F64::ZERO.nearest_rotation(), Some(Mat3F64::IDENTITY));
+        Ok(())
     }
 
     // Mat2 tests

@@ -17,13 +17,16 @@ pub mod sqpnp;
 
 mod ops;
 
+#[cfg(test)]
+mod accuracy;
+
 pub use ap3p::{AP3PParams, AP3P};
 pub use epnp::{EPnP, EPnPParams};
 use kornia_algebra::{Mat3AF32, Vec2F32, Vec3AF32};
 use kornia_imgproc::calibration::distortion::PolynomialDistortion;
 pub use ransac::{solve_pnp_ransac, PnPRansacError, PnPRansacResult, RansacParams};
 pub use refine::{refine_pose_lm, LMRefineParams};
-pub use sqpnp::{solve_sqpnp, SQPnP, SQPnPParams};
+pub use sqpnp::{SQPnP, SQPnPParams};
 use thiserror::Error;
 
 /// Error types for PnP solvers.
@@ -54,6 +57,18 @@ pub enum PnPError {
     /// Singular value decomposition failed.
     #[error("SVD computation failed: {0}")]
     SvdFailed(String),
+
+    /// The camera matrix `K` is singular or has a non-finite entry.
+    #[error("Camera matrix K is singular or not finite")]
+    InvalidCameraMatrix,
+
+    /// An input point or a value computed from the inputs is not finite.
+    #[error("Non-finite value: {0}")]
+    NonFinite(&'static str),
+
+    /// The correspondences do not determine a pose.
+    #[error("Degenerate correspondences: {0}")]
+    DegenerateConfiguration(&'static str),
 
     /// All returned poses placed the points behind the camera.
     #[error("Cheirality check failed: all mathematically valid poses place the 3D points behind the camera lens.")]
