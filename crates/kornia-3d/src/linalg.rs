@@ -293,7 +293,15 @@ pub fn normalize_mat33_inplace(m: &mut [[f64; 3]; 3]) {
     mat33_div_scalar_inplace(m, norm);
 }
 
-/// The mean of `points`, summed in `f64`.
+/// Compute the mean of a set of 3D points, summed in `f64`.
+///
+/// # Arguments
+///
+/// * `points` - The points, of any type that converts into `Vec3F64`.
+///
+/// # Returns
+///
+/// The centroid of the points; `NaN` in every component when `points` is empty.
 pub(crate) fn centroid<P: Copy>(points: &[P]) -> Vec3F64
 where
     Vec3F64: From<P>,

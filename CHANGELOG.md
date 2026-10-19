@@ -13,29 +13,24 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
 
 ## [Unreleased]
 
-**SQPnP pose solver in `kornia-3d`** (`kornia_3d::pnp::sqpnp::solve_sqpnp`, or `PnPMethod::SQPnP` /
-`PnPMethod::SQPnPDefault` through `solve_pnp` and `solve_pnp_ransac`), after Terzakis & Lourakis,
-ECCV 2020. It minimises the object-space error over all rotations, for planar and non-planar
-points. With 1 px noise it failed (rotation error above 5°) on none of 200 planar scenes and on
-0.5% of 4-point ones, where EPnP with LM refinement failed on 24.5% and 11.5%
-(`cargo test --release -p kornia-3d --lib -- --ignored --nocapture pnp_accuracy_report`). One solve
-takes about 10–20 µs for 6–500 non-planar points and 40–48 µs for planar ones on an Apple M5
-(`cargo bench -p kornia-3d --bench bench_pnp`; tables in `crates/kornia-3d/benchmarks.md`). As a
-`solve_pnp_ransac` kernel it is about 10× slower than AP3P (larger samples, and a costlier solve per
-sample). With exactly 3 points it returns one of up to four exact solutions.
-`SQPnPParams::refine_lm` polishes the pose on the reprojection error. **Breaking:** `PnPMethod`
-has two new variants and `PnPError` three (`InvalidCameraMatrix`, `NonFinite`,
-`DegenerateConfiguration`), so exhaustive `match`es need new arms.
+**SQPnP pose solver in `kornia-3d`** (#1183): `kornia_3d::pnp::sqpnp::solve_sqpnp`, also as
+`PnPMethod::SQPnP` / `PnPMethod::SQPnPDefault` in `solve_pnp` and `solve_pnp_ransac` (Terzakis &
+Lourakis, ECCV 2020; Rust only for now, the Python bindings still offer EPnP and AP3P). It searches
+all rotations for the lowest object-space error, for planar and non-planar points, and
+`SQPnPParams::refine_lm` can polish the pose on the reprojection error. With 1 px noise it failed
+(rotation error above 5°) on 0 of 200 20-point planar scenes and 1 of 200 4-point scenes; EPnP with
+LM failed on 49 and 23 (EPnP still has #1181). One solve takes 10–20 µs for 6–500 non-planar points
+and 40–51 µs for planar ones on an Apple M5; as a RANSAC kernel it is about 10× slower than AP3P.
+Tables in `crates/kornia-3d/benchmarks.md`. **Breaking:** `PnPMethod` has two new variants and
+`PnPError` three (`InvalidCameraMatrix`, `NonFinite`, `DegenerateConfiguration`), so exhaustive
+`match`es need new arms.
 
-**`kornia-algebra`: `Mat3F64::nearest_rotation`** (and `SO3F64::from_matrix_nearest`), the
-rotation nearest to any 3x3 matrix, plus `From` conversions between `Mat3F64` / `Vec3F64` and
-nalgebra's `Matrix3<f64>` / `Vector3<f64>`, exact `f32 → f64` `From` for `Mat3AF32`, `Vec3AF32` and
-`Vec2F32`, and the rounding `Mat3F64::as_mat3af32` / `Vec3F64::as_vec3af32`. The orthogonal
-iteration of `estimate_planar_pose` and ICP's rigid fit now use it. ICP's result is the same up
-to rounding (it no longer logs a warning when `U·Vᵀ` is a reflection). The planar pose changes when
-`U·Vᵀ` is a reflection: it used to negate a column of `U·Vᵀ`, which is a rotation but not the
-nearest one; otherwise it is the same up to rounding. A NaN image point now makes
-`estimate_planar_pose` return `PlanarPoseError::SingularIteration` instead of a NaN pose.
+**`kornia-algebra`: `Mat3F64::nearest_rotation`** and `SO3F64::from_matrix_nearest`, the rotation
+nearest to a 3x3 matrix, plus `From` conversions between `Mat3F64` / `Vec3F64` and nalgebra's
+`Matrix3<f64>` / `Vector3<f64>`, exact `f32 → f64` `From` for `Mat3AF32`, `Vec3AF32` and
+`Vec2F32`, and the rounding `Mat3F64::as_mat3af32` / `Vec3F64::as_vec3af32`. ICP's rigid fit
+now uses it: the same result up to rounding, no warning for a reflection, and about 100× faster (a
+5-iteration `icp_vanilla` on 2000 points went from about 130 ms to 1 ms on an Apple M5).
 
 **Breaking: `kornia_3d::pnp::solve_pnp_ransac` rejects an invalid `confidence`** (#1169).
 `RansacParams::confidence` must be finite and strictly between 0 and 1. Any other value now returns

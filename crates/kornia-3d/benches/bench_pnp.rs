@@ -1,5 +1,6 @@
-//! PnP solver benchmarks. Each `pnp` iteration solves 20 scenes and each `pnp_ransac` iteration 5;
-//! a case where the solver fails on any scene is skipped, so no error path is timed.
+//! PnP solver benchmarks. Each iteration solves `PNP_SCENES` (`pnp`) or `RANSAC_SCENES`
+//! (`pnp_ransac`) scenes; a case where the solver fails on any scene is skipped, so no error path
+//! is timed.
 //!
 //! `cargo bench -p kornia-3d --bench bench_pnp`
 
@@ -13,6 +14,10 @@ use rand::{rngs::StdRng, RngExt, SeedableRng};
 const FOCAL: f32 = 800.0;
 const CX: f32 = 640.0;
 const CY: f32 = 480.0;
+/// Scenes solved per `pnp` iteration.
+const PNP_SCENES: usize = 20;
+/// Scenes solved per `pnp_ransac` iteration.
+const RANSAC_SCENES: usize = 5;
 
 /// The 2D-3D correspondences of one scene.
 struct Correspondences {
@@ -29,7 +34,7 @@ fn generate_scenes(count: usize, n: usize, planar: bool, outliers: usize) -> Vec
         .collect()
 }
 
-/// Points in a 2 m cube (or, when `planar`, a 2 m square) seen from 6 m.
+/// Points in a 2 m cube (or, when `planar`, a 2 m square) seen from a fixed pose 6 m away.
 fn generate_scene(rng: &mut StdRng, n: usize, planar: bool, outliers: usize) -> Correspondences {
     let rotation = SO3F32::exp(Vec3AF32::new(0.48, -0.6, 0.64) * 0.6).matrix();
     let translation = Vec3AF32::new(0.2, -0.1, 6.0);
@@ -64,25 +69,26 @@ fn generate_scene(rng: &mut StdRng, n: usize, planar: bool, outliers: usize) -> 
     Correspondences { world, image }
 }
 
+/// The camera matrix with focal length `FOCAL` and principal point `(CX, CY)`.
 fn camera_matrix() -> Mat3AF32 {
     Mat3AF32::from_cols_array(&[FOCAL, 0.0, 0.0, 0.0, FOCAL, 0.0, CX, CY, 1.0])
 }
 
 fn bench_pnp(c: &mut Criterion) {
     let k = camera_matrix();
+    let epnp_lm = PnPMethod::EPnP(EPnPParams {
+        refine_lm: Some(LMRefineParams::default()),
+        ..Default::default()
+    });
     let mut group = c.benchmark_group("pnp");
     for (n, planar) in [6usize, 20, 100, 500]
         .into_iter()
         .flat_map(|n| [(n, false), (n, true)])
     {
-        let scenes = generate_scenes(20, n, planar, 0);
-        let epnp_lm = PnPMethod::EPnP(EPnPParams {
-            refine_lm: Some(LMRefineParams::default()),
-            ..Default::default()
-        });
+        let scenes = generate_scenes(PNP_SCENES, n, planar, 0);
         for (name, method) in [
             ("epnp", PnPMethod::EPnPDefault),
-            ("epnp_lm", epnp_lm),
+            ("epnp_lm", epnp_lm.clone()),
             ("sqpnp", PnPMethod::SQPnPDefault),
         ] {
             let name = if planar {
@@ -117,7 +123,7 @@ fn bench_pnp(c: &mut Criterion) {
 
 fn bench_pnp_ransac(c: &mut Criterion) {
     let k = camera_matrix();
-    let scenes = generate_scenes(5, 100, false, 100);
+    let scenes = generate_scenes(RANSAC_SCENES, 100, false, 100);
     let params = RansacParams {
         reproj_threshold_px: 3.0,
         random_seed: Some(1),

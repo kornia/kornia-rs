@@ -31,6 +31,12 @@ impl Row {
     }
 }
 
+/// A solver (or RANSAC kernel) and its column label.
+struct Method {
+    name: &'static str,
+    method: PnPMethod,
+}
+
 /// How well a solver did on one row.
 struct Accuracy {
     /// Median rotation error, in degrees.
@@ -63,7 +69,9 @@ fn evaluate(
 ) -> Accuracy {
     let k = k_default();
     let mut rng = StdRng::seed_from_u64(seed);
-    let (mut rot, mut trans, mut failures) = (Vec::new(), Vec::new(), 0);
+    let mut rot = Vec::new();
+    let mut trans = Vec::new();
+    let mut failures = 0;
     for _ in 0..TRIALS {
         let mut scene = Scene::generate(&mut rng, k, &row.config);
         scene.add_outliers(&mut rng, row.outliers);
@@ -93,14 +101,14 @@ fn evaluate(
 fn print_table(
     title: &str,
     column: &str,
-    methods: &[(&str, PnPMethod)],
+    methods: &[Method],
     ransac: Option<&RansacParams>,
     rows: &[Row],
     seed: u64,
 ) {
     println!("\n### {title}\n");
     print!("| {column} |");
-    for (name, _) in methods {
+    for Method { name, .. } in methods {
         print!(" {name} rot° | {name} trans % | {name} fail % |");
     }
     println!();
@@ -111,7 +119,7 @@ fn print_table(
     println!();
     for (i, row) in rows.iter().enumerate() {
         print!("| {} |", row.label);
-        for (_, method) in methods {
+        for Method { method, .. } in methods {
             let a = evaluate(row, seed + i as u64, |w, img, k| match ransac {
                 None => solve_pnp(w, img, k, None, method.clone()).ok(),
                 Some(params) => solve_pnp_ransac(w, img, k, None, method.clone(), params)
@@ -135,32 +143,28 @@ fn print_table(
 #[test]
 #[ignore = "measurement, not an assertion; run explicitly in release"]
 fn pnp_accuracy_report() {
+    let method = |name, method| Method { name, method };
     let solvers = [
-        ("EPnP", PnPMethod::EPnPDefault),
-        (
+        method("EPnP", PnPMethod::EPnPDefault),
+        method(
             "EPnP+LM",
             PnPMethod::EPnP(EPnPParams {
                 refine_lm: Some(LMRefineParams::default()),
                 ..Default::default()
             }),
         ),
-        ("SQPnP", PnPMethod::SQPnPDefault),
+        method("SQPnP", PnPMethod::SQPnPDefault),
     ];
     let kernels = [
-        ("EPnP", PnPMethod::EPnPDefault),
-        ("AP3P", PnPMethod::AP3PDefault),
-        ("SQPnP", PnPMethod::SQPnPDefault),
+        method("EPnP", PnPMethod::EPnPDefault),
+        method("AP3P", PnPMethod::AP3PDefault),
+        method("SQPnP", PnPMethod::SQPnPDefault),
     ];
     let ransac = RansacParams {
         reproj_threshold_px: 3.0,
         random_seed: Some(1),
         ..Default::default()
     };
-    let planar = |config: SceneConfig| SceneConfig {
-        planar: true,
-        ..config
-    };
-
     println!(
         "PnP accuracy, {TRIALS} random scenes per cell, fixed seeds; \
          failure = rotation error > {FAILURE_DEG}° or no pose."
@@ -189,11 +193,11 @@ fn pnp_accuracy_report() {
         &solvers,
         None,
         &[
-            Row::new("planar, n=20", planar(SceneConfig::cube(20, 6.0, 1.0))),
+            Row::new("planar, n=20", SceneConfig::cube(20, 6.0, 1.0).planar()),
             Row::new(
                 "small object far (0.5 m cube at 30 m), n=20",
                 SceneConfig {
-                    size: 0.25,
+                    half_size: 0.25,
                     ..SceneConfig::cube(20, 30.0, 1.0)
                 },
             ),
@@ -219,7 +223,7 @@ fn pnp_accuracy_report() {
             Row::new("50% outliers", SceneConfig::cube(50, 6.0, 1.0)).with_outliers(50),
             Row::new(
                 "planar, 25% outliers",
-                planar(SceneConfig::cube(50, 6.0, 1.0)),
+                SceneConfig::cube(50, 6.0, 1.0).planar(),
             )
             .with_outliers(17),
         ],

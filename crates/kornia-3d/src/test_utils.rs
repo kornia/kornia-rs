@@ -33,8 +33,8 @@ pub(crate) struct SceneConfig {
     pub n: usize,
     /// Standard deviation of the Gaussian pixel noise.
     pub noise_px: f64,
-    /// Half-size of the cube (or square, when `planar`) holding the points, in metres.
-    pub size: f64,
+    /// Half the side of the cube (or square, when `planar`) holding the points, in metres.
+    pub half_size: f64,
     /// Distance of the camera from the points, in metres.
     pub depth: f64,
     /// Points on the plane `z = 0`, like a marker or a chessboard.
@@ -49,22 +49,18 @@ impl SceneConfig {
         Self {
             n,
             noise_px,
-            size: 1.0,
+            half_size: 1.0,
             depth,
             planar: false,
             max_angle: std::f64::consts::PI,
         }
     }
 
-    /// `n` points on a 2 m square seen from 5 m, at most 1.2 rad away from facing it.
-    pub(crate) fn planar(n: usize, noise_px: f64) -> Self {
+    /// The same shape with the points on the plane `z = 0`.
+    pub(crate) fn planar(self) -> Self {
         Self {
-            n,
-            noise_px,
-            size: 1.0,
-            depth: 5.0,
             planar: true,
-            max_angle: 1.2,
+            ..self
         }
     }
 }
@@ -100,11 +96,11 @@ impl Scene {
             let z = if config.planar {
                 0.0
             } else {
-                rng.random_range(-config.size..config.size)
+                rng.random_range(-config.half_size..config.half_size)
             };
             let p = Vec3F64::new(
-                rng.random_range(-config.size..config.size),
-                rng.random_range(-config.size..config.size),
+                rng.random_range(-config.half_size..config.half_size),
+                rng.random_range(-config.half_size..config.half_size),
                 z,
             );
             let Some(uv) =
@@ -150,10 +146,7 @@ fn pinhole(k: Mat3AF32) -> PinholeCamera {
         fy: k.y_axis().y,
         cx: k.z_axis().x,
         cy: k.z_axis().y,
-        k1: 0.0,
-        k2: 0.0,
-        p1: 0.0,
-        p2: 0.0,
+        ..PinholeCamera::IDENTITY
     }
 }
 
@@ -167,8 +160,8 @@ fn with_noise(rng: &mut StdRng, uv: Vec2F64, noise_px: f64) -> Vec2F32 {
 
 /// Angle in degrees between an estimated rotation and the truth. `2·asin(‖R₁ − R₂‖_F / 2√2)`
 /// stays accurate for tiny angles, unlike `acos((tr(R₁ᵀR₂) − 1) / 2)` on `f32` matrices.
-pub(crate) fn rotation_error_deg(estimate: Mat3AF32, truth: Mat3F64) -> f64 {
-    let estimate = Mat3F64::from(estimate);
+pub(crate) fn rotation_error_deg(estimate: impl Into<Mat3F64>, truth: Mat3F64) -> f64 {
+    let estimate = estimate.into();
     let frobenius = (0..3)
         .map(|i| (estimate.col(i) - truth.col(i)).length_squared())
         .sum::<f64>()
@@ -178,6 +171,6 @@ pub(crate) fn rotation_error_deg(estimate: Mat3AF32, truth: Mat3F64) -> f64 {
 }
 
 /// Distance between an estimated translation and the truth.
-pub(crate) fn translation_error(estimate: Vec3AF32, truth: Vec3F64) -> f64 {
-    (Vec3F64::from(estimate) - truth).length()
+pub(crate) fn translation_error(estimate: impl Into<Vec3F64>, truth: Vec3F64) -> f64 {
+    (estimate.into() - truth).length()
 }

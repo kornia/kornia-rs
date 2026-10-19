@@ -148,7 +148,7 @@ pub enum PnPMethod {
     AP3PDefault,
     /// SQPnP solver with a user-supplied parameter object.
     SQPnP(SQPnPParams),
-    /// SQPnP with the module's default parameters.
+    /// SQPnP solver with the module's default parameters.
     SQPnPDefault,
 }
 

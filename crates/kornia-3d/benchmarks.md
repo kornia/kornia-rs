@@ -25,40 +25,40 @@ cargo test --release -p kornia-3d --lib -- --ignored --nocapture pnp_accuracy_re
 | Accuracy (`pnp_accuracy_report`) | 200 random scenes per row, fixed seeds; Gaussian pixel noise with the σ given in each table; failure = rotation error above 5° or no pose. The RANSAC rows add random outlier correspondences and use a 3 px threshold |
 
 **Note:** plain EPnP still has #1181 (wrong pose on noise-free data), which is why it fails in
-most accuracy rows and why the EPnP RANSAC kernel fails on one bench scene. Expect EPnP and
+most accuracy rows and likely why the EPnP RANSAC kernel finds too few inliers on one bench scene. Expect EPnP and
 EPnP + LM numbers to change when that is fixed.
 
 ---
 
-## Results — 2026-10-19
+## Results — 2026-10-20
 
 ### Hardware / software
 
 | Field | Value |
 |-------|-------|
-| Commit | `0e627844` on `feat/sqpnp-1182` |
+| Branch | `feat/sqpnp-1182` (#1183), 2026-10-20 |
 | Machine | MacBook Air (Mac17,3), Apple M5 (4P+6E cores), 16 GB RAM |
 | OS | macOS 27.0.1 (arm64) |
 | Rust | 1.99.0 (b940084d7 2026-09-28), `--release` (cargo bench) |
-| Criterion | 0.7.0 |
-| Power | on battery (laptop; expect a few % to ~20% run-to-run noise) |
+| Criterion | 0.8.2 |
+| Power | on AC power, load average ~3 (laptop; expect a few % to ~20% run-to-run noise); the `solve_pnp_ransac` rows are a separate run (`-- pnp_ransac`) at the same load |
 
 ### Speed — one solve
 
 | Points | EPnP | EPnP + LM | SQPnP | EPnP, planar | EPnP + LM, planar | SQPnP, planar |
 |-------:|-----:|----------:|------:|-------------:|------------------:|--------------:|
-| 6 | 9.8 µs | 98.4 µs | 13.7 µs | 8.3 µs | 107.2 µs | 44.0 µs |
-| 20 | 10.5 µs | 274.7 µs | 10.2 µs | 9.1 µs | skipped (LM fails on one scene) | 39.7 µs |
-| 100 | 14.4 µs | 1.18 ms | 12.3 µs | 12.9 µs | 1.25 ms | 41.0 µs |
-| 500 | 33.7 µs | 5.46 ms | 19.9 µs | 32.5 µs | 6.52 ms | 47.9 µs |
+| 6 | 10.0 µs | 100.1 µs | 13.9 µs | 8.6 µs | 105.9 µs | 46.0 µs |
+| 20 | 10.7 µs | 278.2 µs | 10.8 µs | 9.5 µs | skipped (LM's linear solve fails on one scene) | 39.6 µs |
+| 100 | 14.3 µs | 1.18 ms | 12.2 µs | 12.8 µs | 1.26 ms | 40.6 µs |
+| 500 | 33.9 µs | 6.09 ms | 19.2 µs | 34.9 µs | 6.94 ms | 50.7 µs |
 
 ### `solve_pnp_ransac` — one run (100 inliers + 100 outliers, 3 px threshold, fixed seed)
 
 | Kernel | Time |
 |--------|-----:|
-| EPnP | skipped (fails on one scene, #1181) |
-| AP3P | 1.27 ms |
-| SQPnP | 13.31 ms |
+| EPnP | skipped (too few inliers on one scene; EPnP still has #1181) |
+| AP3P | 1.31 ms |
+| SQPnP | 13.12 ms |
 
 ### Accuracy
 

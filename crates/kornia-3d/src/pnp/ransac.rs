@@ -201,7 +201,7 @@ pub struct PnPRansacResult {
 ///   them is not merely an accuracy improvement: `N = log(1-p)/log(1-w^k)` below assumes a trial
 ///   yields the correct model with probability `w^k`, which holds only if every root is tried.
 ///   Scoring one root would leave the true probability at `w^k / roots` while the loop kept
-///   planning against `w^k`, and stop early. EPnP returns one solution and keeps its
+///   planning against `w^k`, and stop early. EPnP and SQPnP return one solution and keep the
 ///   single-hypothesis path.
 /// - Scoring counts strict inliers, Euclidean pixel reprojection error `< reproj_threshold_px`;
 ///   points behind the camera are outliers. A pose replaces the best one only with more inliers.
@@ -233,8 +233,8 @@ pub struct PnPRansacResult {
 /// * `k` - Pinhole intrinsics.
 /// * `distortion` - Lens distortion of `image`, or `None` for undistorted points. Must be `None`
 ///   with an AP3P kernel (see `# Errors`).
-/// * `base` - Kernel for the minimal samples (EPnP or AP3P). An EPnP `base` also configures the
-///   final refit.
+/// * `base` - Kernel for the minimal samples (EPnP, SQPnP or AP3P). An EPnP or SQPnP `base` also
+///   configures the final refit.
 /// * `params` - RANSAC parameters; `params.confidence` must be finite and strictly between zero
 ///   and one.
 ///
@@ -261,9 +261,9 @@ pub struct PnPRansacResult {
 ///
 /// Note the EPnP and SQPnP paths are not model-consistent either, and this error does not fix
 /// that: scoring (`project_sq_error`) is pure pinhole and ignores `distortion` entirely, while the
-/// EPnP and SQPnP solves (and LM refinement) do apply it. So `EPnP + Some(distortion)` (or SQPnP)
-/// selects a consensus set on pinhole residuals and refits it under a distorted model. Undistorting
-/// up front is the fix for all of them.
+/// EPnP and SQPnP solves (and LM refinement) do apply it. So with `Some(distortion)` an EPnP or
+/// SQPnP kernel selects a consensus set on pinhole residuals and refits it under a distorted model.
+/// Undistorting up front is the fix for all of them.
 pub fn solve_pnp_ransac(
     world: &[Vec3AF32],
     image: &[Vec2F32],

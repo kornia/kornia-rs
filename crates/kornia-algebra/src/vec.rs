@@ -279,7 +279,7 @@ impl From<Vec3AF32> for Vec3F64 {
 }
 
 impl Vec3F64 {
-    /// Rounds each component to `f32`; values outside the `f32` range become `±inf`.
+    /// Round each component to `f32`; values outside the `f32` range become `±inf`.
     #[inline]
     pub fn as_vec3af32(self) -> Vec3AF32 {
         glam::DVec3::from(self).as_vec3a().into()
@@ -512,7 +512,7 @@ mod tests {
     fn test_vec3f64_nalgebra_conversions() {
         let v = Vec3F64::new(1.0, 2.0, 3.0);
         let n = nalgebra::Vector3::<f64>::from(v);
-        assert_eq!((n.x, n.y, n.z), (1.0, 2.0, 3.0));
+        assert_eq!(n, nalgebra::Vector3::new(1.0, 2.0, 3.0));
         assert_eq!(Vec3F64::from(n), v);
     }
 }

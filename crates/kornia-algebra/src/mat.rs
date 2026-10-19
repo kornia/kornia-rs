@@ -328,16 +328,17 @@ impl Mat3F64 {
         Self(glam::DMat3::from_quat(quat.0))
     }
 
-    /// Rounds each element to `f32`; values outside the `f32` range become `±inf`.
+    /// Round each element to `f32`; values outside the `f32` range become `±inf`.
     #[inline]
     pub fn as_mat3af32(self) -> Mat3AF32 {
         Mat3AF32(glam::Mat3A::from(self.0.as_mat3()))
     }
 
-    /// The rotation matrix closest to this matrix in the Frobenius norm.
+    /// Project the matrix onto the nearest rotation in the Frobenius norm.
     ///
     /// For the SVD `M = U·Σ·Vᵀ` this is `U·diag(1, 1, det(U·Vᵀ))·Vᵀ`. When `U·Vᵀ` is a
-    /// reflection, negating a column of `U·Vᵀ` instead gives a rotation that is not the nearest.
+    /// reflection, negating a column of `U·Vᵀ` instead gives a rotation that is in general not the
+    /// nearest.
     ///
     /// # Returns
     ///
@@ -360,8 +361,7 @@ impl Mat3F64 {
         if !self.is_finite() {
             return None;
         }
-        // nalgebra, not `svd3_f64`: both give a rotation, but on the matrix in
-        // `test_mat3f64_nearest_rotation_is_exact` `svd3_f64`'s is 5e-5 off the nearest one.
+        // nalgebra's SVD, which is more accurate here than `svd3_f64`.
         let m = nalgebra::Matrix3::<f64>::from(self);
         // The 3x3 SVD works on MᵀM; rescaling keeps it from overflowing or underflowing.
         let scale = m.amax();
@@ -456,6 +456,7 @@ pub type DMatF64 = nalgebra::DMatrix<f64>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SO3F64;
 
     // Mat2 tests
     #[test]
@@ -865,18 +866,11 @@ mod tests {
         assert_eq!(wide.as_mat3af32(), m);
     }
 
-    fn max_abs_diff(a: Mat3F64, b: Mat3F64) -> f64 {
-        (a - b)
-            .to_cols_array()
-            .iter()
-            .fold(0.0, |m, v| m.max(v.abs()))
-    }
-
     #[test]
     fn test_mat3f64_nearest_rotation_keeps_a_rotation() -> Result<(), &'static str> {
-        let rotation = crate::SO3F64::exp(Vec3F64::new(0.3, -0.5, 0.8)).matrix();
+        let rotation = SO3F64::exp(Vec3F64::new(0.3, -0.5, 0.8)).matrix();
         let nearest = rotation.nearest_rotation().ok_or("no rotation")?;
-        assert!(max_abs_diff(nearest, rotation) < 1e-12);
+        assert!(nearest.abs_diff_eq(rotation.0, 1e-12));
         assert!(Mat3F64::from_cols_array(&[f64::NAN; 9])
             .nearest_rotation()
             .is_none());
@@ -888,12 +882,12 @@ mod tests {
     /// is farther from `M`.
     #[test]
     fn test_mat3f64_nearest_rotation_of_a_reflection() -> Result<(), &'static str> {
-        let a = crate::SO3F64::exp(Vec3F64::new(0.3, -0.5, 0.8)).matrix();
-        let b = crate::SO3F64::exp(Vec3F64::new(-0.6, 0.2, 0.4)).matrix();
+        let a = SO3F64::exp(Vec3F64::new(0.3, -0.5, 0.8)).matrix();
+        let b = SO3F64::exp(Vec3F64::new(-0.6, 0.2, 0.4)).matrix();
         let diag = |x, y, z| Mat3F64::from_diagonal(Vec3F64::new(x, y, z));
         let m = a * diag(3.0, 2.0, -1.0) * b;
         let nearest = m.nearest_rotation().ok_or("no rotation")?;
-        assert!(max_abs_diff(nearest, a * b) < 1e-9);
+        assert!(nearest.abs_diff_eq((a * b).0, 1e-9));
 
         let mut negated = a * diag(1.0, 1.0, -1.0) * b;
         negated.z_axis = -negated.z_axis;
@@ -911,20 +905,19 @@ mod tests {
         let expected = base.nearest_rotation().ok_or("no rotation")?;
         for s in [1e155, 1e-170, 1e300, 1e-300] {
             let got = (base * s).nearest_rotation().ok_or("no rotation")?;
-            assert!(max_abs_diff(got, expected) < 1e-12, "scale {s:e}");
+            assert!(got.abs_diff_eq(expected.0, 1e-12), "scale {s:e}");
         }
         assert_eq!(Mat3F64::ZERO.nearest_rotation(), Some(Mat3F64::IDENTITY));
         Ok(())
     }
 
-    /// `R` is the rotation nearest to `M` exactly when `Rᵀ·M` is symmetric (polar decomposition).
+    /// `R` is the rotation nearest to `M` only if `Rᵀ·M` is symmetric (polar decomposition).
     #[test]
     fn test_mat3f64_nearest_rotation_is_exact() -> Result<(), &'static str> {
-        // `svd3_f64` leaves `Rᵀ·M` asymmetric by about 2e-5 on this matrix.
         let m = Mat3F64::from_cols_array(&[-0.2, 0.6, -0.6, -0.3, 0.6, -0.3, 0.0, 0.9, -0.8]);
         let r = m.nearest_rotation().ok_or("no rotation")?;
         let p = r.transpose() * m;
-        assert!(max_abs_diff(p, p.transpose()) < 1e-12);
+        assert!(p.abs_diff_eq(p.transpose().0, 1e-12));
         Ok(())
     }
 
