@@ -1022,7 +1022,9 @@ mod tests {
     }
 
     fn assert_s_matches_reference_f32(a: &Mat3F32) {
-        let s = *svd3_f32(a).s();
+        let svd = svd3_f32(a);
+        verify_svd_properties_f32(a, &svd, TEST_EPSILON_F32);
+        let s = *svd.s();
         let expected = reference_singular_values_f32(a);
         let scale = expected[0].max(1.0);
         for (c, r) in [(1, 0), (2, 0), (0, 1), (2, 1), (0, 2), (1, 2)] {
