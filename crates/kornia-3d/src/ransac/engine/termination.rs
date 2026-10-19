@@ -194,6 +194,10 @@ mod tests {
         assert_eq!(adaptive_max_iters(10, 10, 8, 0.999, 500), 1);
         assert_eq!(adaptive_max_iters(8, 10, 8, 1.0, 500), 500);
         assert_eq!(adaptive_max_iters(8, 10, 8, 0.999_999, 100), 100);
+        // NaN disables adaptive stopping, as `RansacConfig::confidence`
+        // documents, including at full support (which used to return 1).
+        assert_eq!(adaptive_max_iters(8, 10, 8, f64::NAN, 500), 500);
+        assert_eq!(adaptive_max_iters(10, 10, 8, f64::NAN, 500), 500);
     }
 
     #[test]

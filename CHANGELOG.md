@@ -24,6 +24,9 @@ exhaustive `match`es need a new arm. Python `kornia_rs.k3d.solve_pnp_ransac` lik
 Also:
 - PnP RANSAC stops after the draw that makes every correspondence an inlier; it used to keep
   drawing up to `max_iterations`. The returned pose and inliers are unchanged.
+- The generic driver (`kornia_3d::ransac::run`, `run_with_rng`, `run_parallel`) no longer stops
+  after one draw at full support when `RansacConfig::confidence` is NaN; it draws all `max_iters`,
+  as the field's docs state for any confidence outside (0, 1).
 - Added `kornia_3d::ransac::is_valid_confidence`, the check the RANSAC entry points and the Python
   bindings now share.
 
