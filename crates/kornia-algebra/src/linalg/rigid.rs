@@ -1,5 +1,6 @@
 //! Rigid alignment utilities (Kabsch / Umeyama)
 
+use crate::linalg::svd::svd3_f64;
 use crate::{Mat3AF32, Mat3F32, Mat3F64, Vec3AF32, Vec3F32, Vec3F64, Vec4F64};
 use nalgebra::{Matrix3, SVD};
 use thiserror::Error;
@@ -9,7 +10,6 @@ pub type UmeyamaOutput = (Mat3AF32, Vec3AF32, f32);
 
 /// Error type for Umeyama rigid alignment operations.
 #[derive(Debug, Error)]
-#[non_exhaustive]
 pub enum UmeyamaError {
     /// Source and destination arrays must have the same length
     #[error("Source and destination arrays must have the same length")]
@@ -169,7 +169,6 @@ pub type UmeyamaResultF64 = Result<UmeyamaOutputF64, UmeyamaError>;
 /// length, so it takes precedence over a length mismatch.
 /// Returns [`UmeyamaError::MismatchedWeightsLength`] if otherwise-valid
 /// `weights` do not have exactly one entry per point.
-/// Returns [`UmeyamaError::SvdU`] or [`UmeyamaError::SvdVT`] if the SVD fails.
 ///
 /// # Example
 ///
@@ -213,60 +212,38 @@ pub fn umeyama_f64(
         var_src,
     } = moments(src, dst, weights)?;
 
-    // SVD of H via nalgebra (avoids the known svd3_f64 Jacobi bug)
-    let h_na = Matrix3::<f64>::from_columns(&[
-        nalgebra::Vector3::new(h[0].x, h[0].y, h[0].z),
-        nalgebra::Vector3::new(h[1].x, h[1].y, h[1].z),
-        nalgebra::Vector3::new(h[2].x, h[2].y, h[2].z),
-    ]);
-    let svd = SVD::new(h_na, true, true);
-    let Some(u) = svd.u else {
-        return Err(UmeyamaError::SvdU);
-    };
-    let Some(v_t) = svd.v_t else {
-        return Err(UmeyamaError::SvdVT);
-    };
+    // SVD of H via the crate's `svd3_f64` (handles repeated singular values).
+    let h_mat = Mat3F64::from_cols(
+        Vec3F64::new(h[0].x, h[0].y, h[0].z),
+        Vec3F64::new(h[1].x, h[1].y, h[1].z),
+        Vec3F64::new(h[2].x, h[2].y, h[2].z),
+    );
+    let svd = svd3_f64(&h_mat);
+    let (u, sigma, v) = (svd.u(), svd.s(), svd.v());
 
-    // Reflection correction: S = diag(1, 1, det(U)·det(V^T))
-    let d = u.determinant() * v_t.determinant();
-    let s_sign = if d < 0.0 { -1.0 } else { 1.0 };
-    let s_diag = Matrix3::<f64>::from_diagonal(&nalgebra::Vector3::new(1.0, 1.0, s_sign));
+    // Reflection correction: S = diag(1, 1, det(U)·det(V)) (det(V^T) == det(V))
+    let s_sign = if u.determinant() * v.determinant() < 0.0 {
+        -1.0
+    } else {
+        1.0
+    };
 
     // R = U · S · V^T
-    let r_na = u * s_diag * v_t;
+    let r = *u * Mat3F64::from_diagonal(Vec3F64::new(1.0, 1.0, s_sign)) * v.transpose();
 
-    // Scale
+    // Scale: s = tr(S · Σ) / σ²_src
     let scale = if with_scale && var_src > 1e-15 {
-        // s = tr(S · Σ) / σ²_src
-        let sigma = &svd.singular_values;
-        (sigma[0] + sigma[1] + s_sign * sigma[2]) / var_src
+        (sigma.x_axis.x + sigma.y_axis.y + s_sign * sigma.z_axis.z) / var_src
     } else {
         1.0
     };
 
     // Translation: t = μ_d − s·R·μ_s
-    let mu_s_na = nalgebra::Vector3::new(mu_s.x, mu_s.y, mu_s.z);
-    let mu_d_na = nalgebra::Vector3::new(mu_d.x, mu_d.y, mu_d.z);
-    let t_na = mu_d_na - scale * r_na * mu_s_na;
+    let mu_s3 = Vec3F64::new(mu_s.x, mu_s.y, mu_s.z);
+    let mu_d3 = Vec3F64::new(mu_d.x, mu_d.y, mu_d.z);
+    let t = mu_d3 - scale * r * mu_s3;
 
-    // Convert to glam types (row-major → column-major for from_cols_array)
-    let r_flat = [
-        r_na[(0, 0)],
-        r_na[(1, 0)],
-        r_na[(2, 0)],
-        r_na[(0, 1)],
-        r_na[(1, 1)],
-        r_na[(2, 1)],
-        r_na[(0, 2)],
-        r_na[(1, 2)],
-        r_na[(2, 2)],
-    ];
-
-    Ok((
-        Mat3F64::from_cols_array(&r_flat),
-        Vec3F64::new(t_na[0], t_na[1], t_na[2]),
-        scale,
-    ))
+    Ok((r, t, scale))
 }
 
 /// Accumulated first- and second-order statistics of the two point sets.
@@ -901,6 +878,51 @@ mod tests {
         assert!((mapped.x - dst[0].x).abs() < 1e-9, "x");
         assert!((mapped.y - dst[0].y).abs() < 1e-9, "y");
         assert!((mapped.z - dst[0].z).abs() < 1e-9, "z");
+        Ok(())
+    }
+
+    #[test]
+    fn test_umeyama_f64_repeated_singular_values() -> Result<(), UmeyamaError> {
+        // Regular hexagon, pre-rotated so the cross-covariance is dense with two
+        // equal non-zero singular values — the degenerate case `svd3_f64`'s Jacobi
+        // solver must actually diagonalize (axis-aligned would already be diagonal).
+        use crate::SO3F64;
+        let pre = SO3F64::exp(Vec3F64::new(0.37, -0.52, 0.61)).matrix();
+        let src: Vec<Vec3F64> = (0..6)
+            .map(|k| {
+                let a = k as f64 * std::f64::consts::FRAC_PI_3;
+                pre * Vec3F64::new(a.cos(), a.sin(), 0.0)
+            })
+            .collect();
+
+        let r_true = Mat3F64::from_cols_array(&[0.0, 1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+        let t_true = Vec3F64::new(0.5, -0.3, 2.0);
+        let s_true = 1.7;
+        let dst: Vec<Vec3F64> = src
+            .iter()
+            .map(|p| (r_true * *p) * s_true + t_true)
+            .collect();
+
+        let (r, t, s) = umeyama_f64(&src, &dst, None, true)?;
+
+        // In-plane singular vectors are ambiguous; assert the transform reproduces
+        // the data rather than matching the planted rotation.
+        assert!(
+            (s - s_true).abs() < 1e-12,
+            "scale: got {s}, expected {s_true}"
+        );
+        assert!(
+            (r.determinant() - 1.0).abs() < 1e-12,
+            "R must be a proper rotation"
+        );
+        for (i, p) in src.iter().enumerate() {
+            let mapped = (r * *p) * s + t;
+            assert!(
+                (mapped - dst[i]).length() < 1e-12,
+                "point {i} not reproduced: {mapped:?} vs {:?}",
+                dst[i]
+            );
+        }
         Ok(())
     }
 
