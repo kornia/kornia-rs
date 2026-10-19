@@ -14,16 +14,17 @@ struct FrameBuffer {
     caps: gstreamer::Caps,
 }
 
+#[derive(Clone, Copy)]
 enum GrabFormat {
     Rgb8,
     Gray8,
 }
 
-impl GrabFormat {
-    fn video_format(&self) -> gstreamer_video::VideoFormat {
-        match self {
-            Self::Rgb8 => gstreamer_video::VideoFormat::Rgb,
-            Self::Gray8 => gstreamer_video::VideoFormat::Gray8,
+impl From<GrabFormat> for gstreamer_video::VideoFormat {
+    fn from(format: GrabFormat) -> Self {
+        match format {
+            GrabFormat::Rgb8 => Self::Rgb,
+            GrabFormat::Gray8 => Self::Gray8,
         }
     }
 }
@@ -215,7 +216,7 @@ impl StreamCapture {
 
         let info = gstreamer_video::VideoInfo::from_caps(&caps)
             .map_err(|e| StreamCaptureError::GetCapsError(e.to_string()))?;
-        let expected_format = grab_format.video_format();
+        let expected_format: gstreamer_video::VideoFormat = grab_format.into();
         if info.format() != expected_format {
             return Err(StreamCaptureError::InvalidImageFormat(format!(
                 "{grab_format} needs {expected_format} frames, but the pipeline produces {} frames",
