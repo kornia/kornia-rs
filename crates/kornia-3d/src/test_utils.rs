@@ -1,6 +1,7 @@
 //! Seeded random poses and the pixel observations they generate, shared by the unit tests.
 
-use kornia_algebra::{Mat3AF32, Mat3F64, Vec2F32, Vec3AF32, Vec3F64, SO3F64};
+use crate::camera::PinholeCamera;
+use kornia_algebra::{Mat3AF32, Mat3F64, Vec2F32, Vec2F64, Vec3AF32, Vec3F64, SO3F64};
 use rand::{rngs::StdRng, RngExt};
 
 /// A standard normal sample (Box–Muller); `rand` alone has no normal distribution.
@@ -86,7 +87,7 @@ impl Scene {
     /// A random scene of shape `config`, seen through `k`. Points less than a tenth of the depth in
     /// front of the camera are drawn again.
     pub(crate) fn generate(rng: &mut StdRng, k: Mat3AF32, config: &SceneConfig) -> Self {
-        let k64 = Mat3F64::from(k);
+        let camera = pinhole(k);
         let rotation = random_rotation(rng, config.max_angle);
         let translation = Vec3F64::new(
             rng.random_range(-0.1..0.1) * config.depth,
@@ -106,41 +107,19 @@ impl Scene {
                 rng.random_range(-config.size..config.size),
                 z,
             );
-            let pc = rotation * p + translation;
-            if pc.z < 0.1 * config.depth {
+            let Some(uv) =
+                camera.project_to_pixel(&(rotation * p + translation), 0.1 * config.depth)
+            else {
                 continue;
-            }
+            };
             world.push(p.as_vec3af32());
-            image.push(pixel(rng, &k64, pc, config.noise_px));
+            image.push(with_noise(rng, uv, config.noise_px));
         }
         Self {
             k,
             rotation,
             translation,
             world,
-            image,
-        }
-    }
-
-    /// `world` seen through `k` from the pose `(rotation, translation)`, with Gaussian pixel noise.
-    pub(crate) fn project(
-        rng: &mut StdRng,
-        k: Mat3AF32,
-        world: Vec<Vec3F64>,
-        rotation: Mat3F64,
-        translation: Vec3F64,
-        noise_px: f64,
-    ) -> Self {
-        let k64 = Mat3F64::from(k);
-        let image = world
-            .iter()
-            .map(|&p| pixel(rng, &k64, rotation * p + translation, noise_px))
-            .collect();
-        Self {
-            k,
-            rotation,
-            translation,
-            world: world.iter().map(|p| p.as_vec3af32()).collect(),
             image,
         }
     }
@@ -163,12 +142,26 @@ impl Scene {
     }
 }
 
-/// The pixel of the camera-frame point `pc`, with Gaussian noise of `noise_px` pixels.
-fn pixel(rng: &mut StdRng, k: &Mat3F64, pc: Vec3F64, noise_px: f64) -> Vec2F32 {
-    let (fx, fy, cx, cy) = (k.x_axis().x, k.y_axis().y, k.z_axis().x, k.z_axis().y);
+/// The distortion-free camera with the focal lengths and principal point of `k`.
+fn pinhole(k: Mat3AF32) -> PinholeCamera {
+    let k = Mat3F64::from(k);
+    PinholeCamera {
+        fx: k.x_axis().x,
+        fy: k.y_axis().y,
+        cx: k.z_axis().x,
+        cy: k.z_axis().y,
+        k1: 0.0,
+        k2: 0.0,
+        p1: 0.0,
+        p2: 0.0,
+    }
+}
+
+/// The pixel `uv` with Gaussian noise of `noise_px` pixels.
+fn with_noise(rng: &mut StdRng, uv: Vec2F64, noise_px: f64) -> Vec2F32 {
     Vec2F32::new(
-        (fx * pc.x / pc.z + cx + noise_px * gauss(rng)) as f32,
-        (fy * pc.y / pc.z + cy + noise_px * gauss(rng)) as f32,
+        (uv.x + noise_px * gauss(rng)) as f32,
+        (uv.y + noise_px * gauss(rng)) as f32,
     )
 }
 

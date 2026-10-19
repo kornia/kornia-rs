@@ -22,7 +22,7 @@ cargo test --release -p kornia-3d --lib -- --ignored --nocapture pnp_accuracy_re
 | Batch | each `pnp` iteration solves 20 scenes, each `pnp_ransac` iteration 5 (100 inliers + 100 outliers); times below are per single solve |
 | Failing cases | every scene is solved once before timing; a case that fails is reported as skipped, never timed |
 | Timing | criterion defaults (3 s warm-up, 5 s measurement, 100 samples); the time shown is criterion's point estimate divided by the batch size |
-| Accuracy (`pnp_accuracy_report`) | 200 random scenes per row, fixed seeds; failure = rotation error above 5° or no pose. The RANSAC rows add random outlier correspondences and use a 3 px threshold |
+| Accuracy (`pnp_accuracy_report`) | 200 random scenes per row, fixed seeds; Gaussian pixel noise with the σ given in each table; failure = rotation error above 5° or no pose. The RANSAC rows add random outlier correspondences and use a 3 px threshold |
 
 **Note:** plain EPnP still has #1181 (wrong pose on noise-free data), which is why it fails in
 most accuracy rows and why the EPnP RANSAC kernel fails on one bench scene. Expect EPnP and
@@ -36,7 +36,7 @@ EPnP + LM numbers to change when that is fixed.
 
 | Field | Value |
 |-------|-------|
-| Code | #1183 |
+| Commit | `0e627844` on `feat/sqpnp-1182` |
 | Machine | MacBook Air (Mac17,3), Apple M5 (4P+6E cores), 16 GB RAM |
 | OS | macOS 27.0.1 (arm64) |
 | Rust | 1.99.0 (b940084d7 2026-09-28), `--release` (cargo bench) |
@@ -62,7 +62,7 @@ EPnP + LM numbers to change when that is fixed.
 
 ### Accuracy
 
-Median rotation error (°), median relative translation error (%) and failure rate (%).
+Median rotation error (°) and median relative translation error (%) over the scenes that returned a pose, and failure rate (%).
 
 #### Correspondence count (1 px noise, points in a 2 m cube 6 m away)
 
@@ -93,7 +93,7 @@ Median rotation error (°), median relative translation error (%) and failure ra
 | planar, n=20 | 78.625 | 23.255 | 99.5 | 0.639 | 0.274 | 24.5 | 0.411 | 0.211 | 0.0 |
 | small object far (0.5 m cube at 30 m), n=20 | 34.747 | 10.236 | 91.5 | 8.840 | 8.322 | 81.5 | 5.147 | 7.121 | 52.0 |
 | close range (2 m cube at 2.5 m), n=20 | 52.409 | 14.725 | 67.0 | 0.093 | 0.070 | 0.5 | 0.109 | 0.073 | 0.0 |
-| minimum, n=4 | 1.009 | 0.806 | 30.0 | 0.409 | 0.255 | 6.0 | 0.395 | 0.224 | 0.0 |
+| minimum, n=4 (0.5 px noise) | 1.009 | 0.806 | 30.0 | 0.409 | 0.255 | 6.0 | 0.395 | 0.224 | 0.0 |
 
 #### Inside solve_pnp_ransac (50 inliers with 1 px noise, plus random outliers)
 

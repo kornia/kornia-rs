@@ -18,7 +18,7 @@ pub mod sqpnp;
 mod ops;
 
 #[cfg(test)]
-mod accuracy;
+mod tests_accuracy;
 
 pub use ap3p::{AP3PParams, AP3P};
 pub use epnp::{EPnP, EPnPParams};
@@ -146,8 +146,7 @@ pub enum PnPMethod {
     AP3P(AP3PParams),
     /// Algebraic Perspective-3-Point solver with the module's default parameters.
     AP3PDefault,
-    /// SQPnP (global minimum of the object-space error, `N ≥ 3`; see [`sqpnp`] for its limits)
-    /// with a user-supplied parameter object.
+    /// SQPnP solver with a user-supplied parameter object.
     SQPnP(SQPnPParams),
     /// SQPnP with the module's default parameters.
     SQPnPDefault,

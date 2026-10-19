@@ -495,17 +495,21 @@ mod tests {
     }
 
     #[test]
-    fn test_f32_to_f64_conversions_are_exact() {
+    fn test_vec3f64_from_vec3af32() {
         // 0.1 is not exact in binary: the f64 must be the f32 value itself, not 0.1.
         let v = Vec3F64::from(Vec3AF32::new(0.1, -2.5, 3.0e7));
         assert_eq!(v.to_array(), [0.1f32 as f64, -2.5, 3.0e7]);
         assert_eq!(v.as_vec3af32(), Vec3AF32::new(0.1, -2.5, 3.0e7));
+    }
+
+    #[test]
+    fn test_vec2f64_from_vec2f32() {
         let w = Vec2F64::from(Vec2F32::new(0.1, -2.5));
         assert_eq!(w.to_array(), [0.1f32 as f64, -2.5]);
     }
 
     #[test]
-    fn test_vec3f64_nalgebra_conversions_keep_order() {
+    fn test_vec3f64_nalgebra_conversions() {
         let v = Vec3F64::new(1.0, 2.0, 3.0);
         let n = nalgebra::Vector3::<f64>::from(v);
         assert_eq!((n.x, n.y, n.z), (1.0, 2.0, 3.0));

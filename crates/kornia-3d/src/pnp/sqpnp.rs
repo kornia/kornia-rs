@@ -6,9 +6,8 @@
 //! SQPnP minimises the object-space error `Σ ‖Q_i (R·M_i + t)‖²`, the distance of each world point
 //! from the line of sight of its pixel, written as `rᵀ Ω r` with `r = vec(R)` (columns stacked).
 //! SQP starts from the eigenvectors of `Ω` with the smallest eigenvalues and keeps only poses that
-//! put the centroid of the points in front of the camera. It runs in `f64`; `Ω`, `P`, the KKT
-//! system and `r` use nalgebra, since kornia-algebra has no 9×9 or 15×15 types, and so do the 3×3
-//! blocks added into them.
+//! put the centroid of the points in front of the camera. It runs in `f64`, with nalgebra for the
+//! 9×9 and 15×15 systems and the 3×3 blocks written into them.
 //!
 //! # Limits
 //!
@@ -36,27 +35,25 @@ type Mat69 = SMatrix<f64, 6, 9>;
 type Mat15 = SMatrix<f64, 15, 15>;
 type Vec15 = SVector<f64, 15>;
 
-/// Minimum number of correspondences SQPnP accepts. With exactly 3 the problem has up to four
-/// exact solutions and SQPnP returns one of them.
+/// Minimum number of correspondences (with 3, SQPnP returns one of up to four exact solutions).
 const MIN_CORRESPONDENCES: usize = 3;
 
 /// `√3`: the norm of `vec(R)` for any rotation `R`.
 const SQRT3: f64 = 1.732_050_807_568_877_2;
 
-/// Iteration cap for the SVD and eigen decompositions; nalgebra's defaults never stop on
-/// non-finite input.
+/// Iteration cap for the SVD and eigen decompositions (nalgebra's defaults never stop on NaN).
 const MAX_DECOMPOSITION_ITERATIONS: usize = 1000;
 
 /// Singular values below this are treated as zero in the least-squares KKT solve.
 const KKT_SINGULAR_VALUE_TOLERANCE: f64 = 1e-12;
 
-/// Relative difference below which two costs `rᵀ Ω r` count as equal, such as a planar pose and
-/// its twin behind the camera. OpenCV uses `1e-6` as an absolute bound (`EQUAL_SQUARED_ERRORS_DIFF`).
+/// Relative tolerance below which two costs `rᵀ Ω r` count as equal.
 const EQUAL_COST_RELATIVE_TOLERANCE: f64 = 1e-6;
 
-/// Stopping rule for undistorting each image point. The pose is solved on the undistorted points,
-/// so the iteration has to converge far below the pixel noise; the library default (5 iterations,
-/// `eps = 1e-2`) does not.
+/// `det(S) / (tr(S) / 3)³` below which all lines of sight count as parallel (`S = Σ Q_i`).
+const PARALLEL_RAYS_TOLERANCE: f64 = 1e-10;
+
+/// Undistortion stopping rule, far below the pixel noise (the library default stops at 1e-2).
 const UNDISTORT_CRITERIA: TermCriteria = TermCriteria {
     max_iter: 20,
     eps: 1e-8,
@@ -79,26 +76,19 @@ impl PnPSolver for SQPnP {
     }
 }
 
-/// Parameters controlling the SQPnP solver.
-///
-/// The defaults follow the OpenCV implementation, except the rank tolerance: OpenCV uses `1e-7`
-/// as an absolute bound, here it is `1e-10` relative to the largest eigenvalue of `Ω`, so it does
-/// not depend on the scale of the world points.
+/// Parameters controlling the SQPnP solver. The defaults follow OpenCV, except that
+/// `rank_tolerance` is relative to the largest eigenvalue of `Ω`.
 #[derive(Debug, Clone)]
 pub struct SQPnPParams {
-    /// An eigenvalue `λ` of `Ω` counts as zero (part of its null space) when
-    /// `λ ≤ rank_tolerance · λ_max`. A cost `rᵀ Ω r` below `3 · rank_tolerance · λ_max` likewise
-    /// counts as zero when the search compares costs (`‖vec(R)‖² = 3`).
+    /// An eigenvalue `λ` of `Ω` counts as zero when `λ ≤ rank_tolerance · λ_max`.
     pub rank_tolerance: f64,
     /// SQP stops when the squared norm of the step is below this value.
     pub sqp_squared_tolerance: f64,
     /// Maximum number of SQP iterations per starting rotation.
     pub sqp_max_iterations: usize,
-    /// A starting point `√3·e` whose squared orthogonality error `‖X·Xᵀ − I‖²_F` is below this
-    /// value is already a rotation and is used without running SQP.
+    /// A start whose squared orthogonality error `‖X·Xᵀ − I‖²_F` is below this skips SQP.
     pub orthogonality_squared_error_threshold: f64,
-    /// Optional LM refinement of the reprojection error after SQPnP. SQPnP is optimal for its
-    /// object-space cost; LM then minimises the image-space reprojection error instead.
+    /// Optional LM refinement of the reprojection error after SQPnP.
     pub refine_lm: Option<LMRefineParams>,
 }
 
@@ -131,9 +121,15 @@ impl Default for SQPnPParams {
 ///
 /// # Errors
 ///
-/// Returns a [`PnPError`] if the inputs differ in length, `N < 3`, `K` is singular, a value is
-/// not finite, the points do not determine a pose, a decomposition fails, or no pose puts the
-/// points in front of the camera; with `params.refine_lm`, also any error of [`refine_pose_lm`].
+/// * [`PnPError::MismatchedArrayLengths`] - `points_world` and `points_image` differ in length.
+/// * [`PnPError::InsufficientCorrespondences`] - Fewer than 3 correspondences.
+/// * [`PnPError::InvalidCameraMatrix`] - `K` is singular or not finite.
+/// * [`PnPError::NonFinite`] - An input point or the reprojection error is not finite.
+/// * [`PnPError::DegenerateConfiguration`] - All lines of sight are parallel or all world points
+///   coincide.
+/// * [`PnPError::SvdFailed`] - The eigen-decomposition of `Ω` does not converge.
+/// * [`PnPError::CheiralityCheckFailed`] - No pose puts the points in front of the camera.
+/// * With `params.refine_lm`, any error of [`refine_pose_lm`].
 ///
 /// # Example
 ///
@@ -182,8 +178,7 @@ pub fn solve_sqpnp(
     }
 
     let sight = LineOfSight::new(k, distortion)?;
-    // Centre the world points: it improves the conditioning of Ω and puts the centroid at the
-    // origin, so its camera-frame depth is simply t'_z.
+    // Centred world points: better conditioned Ω, and the centroid's depth is t'_z.
     let world_centroid = centroid(points_world);
     let objective = Objective::new(points_world, points_image, world_centroid, &sight)?;
     let best = minimize_on_so3(&objective, params)?;
@@ -195,8 +190,8 @@ pub fn solve_sqpnp(
     let rotation_f32 = rotation.as_mat3af32();
     let translation_f32 = translation.as_vec3af32();
 
-    if let Some(ref lm_params) = params.refine_lm {
-        return refine_pose_lm(
+    let pose = match params.refine_lm {
+        Some(ref lm_params) => refine_pose_lm(
             points_world,
             points_image,
             k,
@@ -204,49 +199,48 @@ pub fn solve_sqpnp(
             &translation_f32,
             distortion,
             lm_params,
-        );
-    }
-
-    let rmse = rmse_px(
-        points_world,
-        points_image,
-        &rotation_f32,
-        &translation_f32,
-        k,
-        distortion,
-    )?;
+        )?,
+        None => PnPResult {
+            rotation: rotation_f32,
+            translation: translation_f32,
+            rvec: SO3F32::from_matrix(&rotation_f32).log(),
+            reproj_rmse: Some(rmse_px(
+                points_world,
+                points_image,
+                &rotation_f32,
+                &translation_f32,
+                k,
+                distortion,
+            )?),
+            num_iterations: Some(best.solution.iterations),
+            converged: Some(best.solution.converged),
+        },
+    };
     // Finite but extreme inputs (e.g. a pixel at 1e30) can overflow the reprojection.
-    if !rmse.is_finite() {
-        return Err(PnPError::NonFinite("reprojection error"));
+    if pose.reproj_rmse.is_some_and(f32::is_finite) {
+        Ok(pose)
+    } else {
+        Err(PnPError::NonFinite("reprojection error"))
     }
-
-    Ok(PnPResult {
-        rotation: rotation_f32,
-        translation: translation_f32,
-        rvec: SO3F32::from_matrix(&rotation_f32).log(),
-        reproj_rmse: Some(rmse),
-        num_iterations: Some(best.solution.iterations),
-        converged: Some(best.solution.converged),
-    })
 }
 
 /// Maps pixels to lines of sight `(x, y, 1)` in normalised pinhole coordinates `K⁻¹·(u, v, 1)`,
 /// undistorting them first when a distortion model is given.
-struct LineOfSight<'a> {
+struct LineOfSight {
     k_inv: Mat3F64,
     intrinsic: CameraIntrinsic,
-    distortion: Option<&'a PolynomialDistortion>,
+    distortion: Option<PolynomialDistortion>,
 }
 
-impl<'a> LineOfSight<'a> {
+impl LineOfSight {
     /// The map for the camera `k` and optional `distortion`.
     ///
     /// # Errors
     ///
     /// Returns [`PnPError::InvalidCameraMatrix`] if `K` is singular or not finite.
-    fn new(k: &Mat3AF32, distortion: Option<&'a PolynomialDistortion>) -> Result<Self, PnPError> {
+    fn new(k: &Mat3AF32, distortion: Option<&PolynomialDistortion>) -> Result<Self, PnPError> {
         let k = Mat3F64::from(*k);
-        // `try_inverse` only rejects a zero determinant; a non-finite K gives a non-finite inverse.
+        // `try_inverse` only rejects a zero determinant.
         let k_inv = k
             .try_inverse()
             .filter(|m| m.is_finite())
@@ -260,7 +254,7 @@ impl<'a> LineOfSight<'a> {
         Ok(Self {
             k_inv: Mat3F64::from(k_inv),
             intrinsic,
-            distortion,
+            distortion: distortion.copied(),
         })
     }
 
@@ -273,7 +267,7 @@ impl<'a> LineOfSight<'a> {
         let uv = Vec2F64::from(*uv);
         let h = self.k_inv * Vec3F64::new(uv.x, uv.y, 1.0);
         let (mut x, mut y) = (h.x / h.z, h.y / h.z);
-        if let Some(d) = self.distortion {
+        if let Some(d) = &self.distortion {
             let undistorted = undistort_normalized_point_iter(
                 x,
                 y,
@@ -308,8 +302,8 @@ impl Objective {
     ///
     /// # Errors
     ///
-    /// Returns [`PnPError::DegenerateConfiguration`] if `S` is singular, i.e. all lines of sight
-    /// are parallel (every image point is the same), and [`PnPError::NonFinite`] if an image point
+    /// Returns [`PnPError::DegenerateConfiguration`] if all lines of sight are parallel (every image
+    /// point is the same), so `S` is singular, and [`PnPError::NonFinite`] if an image point
     /// maps to a non-finite coordinate or `Ω` is not finite.
     fn new(
         points_world: &[Vec3AF32],
@@ -317,9 +311,8 @@ impl Objective {
         centroid: Vec3F64,
         sight: &LineOfSight,
     ) -> Result<Self, PnPError> {
-        // Block j of A_i is M_i[j]·I₃, so block (j, l) of A_iᵀ Q_i A_i is M_i[j]·M_i[l]·Q_i and
-        // block j of Q_i A_i is M_i[j]·Q_i. Only the blocks with j ≤ l are accumulated here; the
-        // lower triangle of Ω is filled in from the upper one below.
+        // Block (j, l) of A_iᵀ Q_i A_i is M_i[j]·M_i[l]·Q_i and block j of Q_i A_i is M_i[j]·Q_i;
+        // only the upper triangle (j ≤ l) of Ω is accumulated.
         let mut omega = Mat9::zeros();
         let mut s = Matrix3::<f64>::zeros();
         let mut b = Mat39::zeros();
@@ -340,14 +333,15 @@ impl Objective {
             }
         }
 
-        let s_inv = s.try_inverse().ok_or(PnPError::DegenerateConfiguration(
-            "all lines of sight are parallel",
-        ))?;
+        // Parallel lines of sight make S singular, but rounding can leave det(S) just above zero.
+        let parallel = s.determinant() <= PARALLEL_RAYS_TOLERANCE * (s.trace() / 3.0).powi(3);
+        let s_inv = (!parallel).then(|| s.try_inverse()).flatten().ok_or(
+            PnPError::DegenerateConfiguration("all lines of sight are parallel"),
+        )?;
         let p = -(s_inv * b);
         // Ω += Bᵀ·P, accumulated in place.
         omega.gemm_tr(1.0, &b, &p, 1.0);
-        // Ω is symmetric: mirroring the upper triangle gives the symmetric eigensolver and the KKT
-        // system an exactly symmetric matrix.
+        // Mirror the upper triangle so Ω is exactly symmetric.
         omega.fill_lower_triangle_with_upper_triangle();
 
         if omega.iter().all(|v| v.is_finite()) {
@@ -425,7 +419,7 @@ fn minimize_on_so3(objective: &Objective, params: &SQPnPParams) -> Result<Candid
         let x: Vec9 = eig.eigenvectors.column(order[k]) * SQRT3;
         if orthogonality_squared_error(&x) < params.orthogonality_squared_error_threshold {
             // Already close to a rotation up to sign; project it so the result is orthonormal.
-            if let Some(r) = nearest_rotation(&with_positive_det(x)) {
+            if let Some(r) = project_to_so3(&with_positive_det(x)) {
                 search.consider(SqpSolution {
                     r,
                     iterations: 0,
@@ -435,7 +429,7 @@ fn minimize_on_so3(objective: &Objective, params: &SQPnPParams) -> Result<Candid
         } else {
             for start in [x, -x] {
                 if let Some(solution) =
-                    nearest_rotation(&start).and_then(|r0| sqp(&objective.omega, r0, params))
+                    project_to_so3(&start).and_then(|r0| sqp(&objective.omega, r0, params))
                 {
                     search.consider(solution);
                 }
@@ -447,9 +441,8 @@ fn minimize_on_so3(objective: &Objective, params: &SQPnPParams) -> Result<Candid
     for k in 0..num_null {
         try_eigenvector(k, &mut search);
     }
-    // The paper's bound: e_k can only improve on the best cost if that cost is above 3·λ_k. Planar
-    // points give every pose a twin of equal cost behind the camera, so the bound ends the search
-    // only while no rejected rotation has a lower cost. `cost_floor` is numerically zero.
+    // The paper's bound (e_k can only improve a best cost above 3·λ_k) stops the search, unless a
+    // rotation rejected by the depth check had a lower cost (planar points have such twins).
     let cost_floor = 3.0 * params.rank_tolerance * lambda_max;
     for k in num_null..9 {
         let best_cost = search.best.as_ref().map_or(f64::INFINITY, |c| c.cost);
@@ -475,7 +468,7 @@ struct Search<'a> {
 
 impl Search<'_> {
     /// Keeps `solution` as the best candidate if it puts the centroid in front of the camera and
-    /// has the lowest cost so far. Its rotation comes from `nearest_rotation`, so it is finite.
+    /// has the lowest cost so far. Its rotation comes from `project_to_so3`, so it is finite.
     fn consider(&mut self, solution: SqpSolution) {
         let cost = self.objective.cost(&solution.r);
         if self.objective.centroid_depth(&solution.r) <= 0.0 {
@@ -536,7 +529,7 @@ fn sqp(omega: &Mat9, r0: Vec9, params: &SQPnPParams) -> Option<SqpSolution> {
     }
 
     Some(SqpSolution {
-        r: nearest_rotation(&r)?,
+        r: project_to_so3(&r)?,
         iterations,
         converged,
     })
@@ -616,7 +609,7 @@ fn orthogonality_squared_error(x: &Vec9) -> f64 {
 
 /// The rotation closest to `to_mat3(x)` in the Frobenius norm, as `vec(R)`, or `None` if `x` is not
 /// finite or the SVD does not converge.
-fn nearest_rotation(x: &Vec9) -> Option<Vec9> {
+fn project_to_so3(x: &Vec9) -> Option<Vec9> {
     to_mat3(x).nearest_rotation().map(to_vec9)
 }
 
@@ -680,9 +673,7 @@ mod tests {
                     "n={n}: {pose:?}"
                 );
                 if n >= 10 {
-                    // The null vector of Ω is already ±vec(R): the sign fix alone must give the
-                    // pose, without SQP. (With 6 points the f32 rounding of the pixels leaves it
-                    // just above the orthogonality threshold in about 1 scene in 20.)
+                    // The null vector of Ω is already ±vec(R), so no SQP step is needed.
                     assert_eq!(pose.num_iterations, Some(0), "n={n}");
                 }
             }
@@ -729,18 +720,11 @@ mod tests {
         let k = k_matrix(600.0, 600.0, 320.0, 240.0);
         let mut rng = StdRng::seed_from_u64(4);
         for _ in 0..10 {
-            let world = (0..50)
-                .map(|_| {
-                    Vec3F64::new(
-                        rng.random_range(-0.1..0.1),
-                        rng.random_range(-0.1..0.1),
-                        rng.random_range(-0.1..0.1),
-                    )
-                })
-                .collect();
-            let rotation = random_rotation(&mut rng, std::f64::consts::PI);
-            let translation = Vec3F64::new(0.1, -0.05, 6.0);
-            let scene = Scene::project(&mut rng, k, world, rotation, translation, 0.0);
+            let config = SceneConfig {
+                size: 0.1,
+                ..SceneConfig::cube(50, 6.0, 0.0)
+            };
+            let scene = Scene::generate(&mut rng, k, &config);
             let pose = solve(&scene)?;
             assert!(
                 rotation_error_deg(pose.rotation, scene.rotation) < 0.01,
@@ -831,8 +815,7 @@ mod tests {
             cx: 640.0,
             cy: 480.0,
         };
-        // Strong enough that the library's default undistortion stopping rule fails the 0.01 px
-        // bound below (see `UNDISTORT_CRITERIA`).
+        // Strong enough to fail the 0.01 px bound with the default undistortion stopping rule.
         let distortion = PolynomialDistortion {
             k1: -0.4,
             k2: 0.08,
@@ -913,11 +896,17 @@ mod tests {
                 "all world points coincide"
             ))
         ));
-        // Every line of sight is the same ray: the translation cannot be recovered.
-        assert!(matches!(
-            solve_sqpnp(&world, &same_pixel, &k, None, &params),
-            Err(PnPError::DegenerateConfiguration(_))
-        ));
+        // Every line of sight is the same ray: the translation cannot be recovered. Off the
+        // principal point, rounding leaves S = Σ Q_i invertible in floating point.
+        for pixel in [Vec2F32::new(640.0, 480.0), Vec2F32::new(700.0, 433.0)] {
+            assert!(
+                matches!(
+                    solve_sqpnp(&world, &[pixel; 4], &k, None, &params),
+                    Err(PnPError::DegenerateConfiguration(_))
+                ),
+                "{pixel:?}"
+            );
+        }
         // Singular camera matrix.
         let singular = Mat3AF32::from_cols_array(&[0.0; 9]);
         assert!(matches!(
@@ -983,10 +972,8 @@ mod tests {
         Ok(())
     }
 
-    /// For planar points every pose has a twin of equal cost behind the camera. When the search
-    /// lands on the twin first, the early stop must not settle for a worse local minimum: the
-    /// result must match running SQP from every eigenvector of Ω; without the depth-aware stop
-    /// this test fails.
+    /// Planar poses have a twin of equal cost behind the camera; the early stop must still find
+    /// the same minimum as running SQP from every eigenvector of Ω.
     #[test]
     fn noisy_planar_search_matches_every_start() -> Result<(), PnPError> {
         let k = k_default();
@@ -1006,7 +993,7 @@ mod tests {
                 let x: Vec9 = e * SQRT3;
                 for start in [x, -x] {
                     let Some(solution) =
-                        nearest_rotation(&start).and_then(|r0| sqp(&objective.omega, r0, &params))
+                        project_to_so3(&start).and_then(|r0| sqp(&objective.omega, r0, &params))
                     else {
                         continue;
                     };
@@ -1015,8 +1002,7 @@ mod tests {
                     }
                 }
             }
-            // The guarantee assumes SQP converged. On these ill-conditioned scenes it sometimes
-            // stops at its iteration cap instead, and then the result can fall slightly short.
+            // The guarantee holds only when SQP converged.
             if found.solution.converged {
                 assert!(
                     found.cost <= every * (1.0 + 1e-6),
@@ -1176,7 +1162,7 @@ mod tests {
     fn non_finite_values_terminate() {
         // nalgebra's unbounded SVD never converges on NaN; these calls must still return.
         let nan = Vec9::from_element(f64::NAN);
-        assert!(nearest_rotation(&nan).is_none());
+        assert!(project_to_so3(&nan).is_none());
         assert!(sqp(&Mat9::identity(), nan, &SQPnPParams::default()).is_none());
 
         let k = k_default();
@@ -1206,18 +1192,26 @@ mod tests {
             solve_sqpnp(&world, &image, &k, None, &params),
             Err(PnPError::NonFinite("image point"))
         ));
-        // Finite but extreme values overflow the reprojection error.
+        // Finite but extreme values overflow the reprojection error; with LM they must still be an
+        // error, never a pose with a NaN error.
+        let with_lm = SQPnPParams {
+            refine_lm: Some(LMRefineParams::default()),
+            ..Default::default()
+        };
         image[2].y = 1e30;
         assert!(matches!(
             solve_sqpnp(&world, &image, &k, None, &params),
             Err(PnPError::NonFinite("reprojection error"))
         ));
+        assert!(solve_sqpnp(&world, &image, &k, None, &with_lm).is_err());
         image[2].y = 500.0;
         world[0] = Vec3AF32::new(3e38, 3e38, 3e38);
-        assert!(matches!(
-            solve_sqpnp(&world, &image, &k, None, &params),
-            Err(PnPError::NonFinite("reprojection error"))
-        ));
+        for params in [&params, &with_lm] {
+            assert!(matches!(
+                solve_sqpnp(&world, &image, &k, None, params),
+                Err(PnPError::NonFinite("reprojection error"))
+            ));
+        }
     }
 
     #[test]

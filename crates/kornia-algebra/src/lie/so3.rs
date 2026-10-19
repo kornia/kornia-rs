@@ -403,18 +403,8 @@ impl SO3F64 {
         }
     }
 
-    /// The rotation closest to `mat` in the Frobenius norm, as an `SO3F64`.
-    ///
-    /// See [`Mat3F64::nearest_rotation`], which returns the rotation matrix itself.
-    ///
-    /// # Arguments
-    ///
-    /// * `mat` - Any 3x3 matrix.
-    ///
-    /// # Returns
-    ///
-    /// The nearest rotation, or `None` if `mat` has a non-finite entry or its SVD does not
-    /// converge.
+    /// Create from the rotation nearest to `mat` ([`Mat3F64::nearest_rotation`]); `None` if `mat`
+    /// is not finite or its SVD does not converge.
     pub fn from_matrix_nearest(mat: &Mat3F64) -> Option<Self> {
         mat.nearest_rotation().map(|r| Self::from_matrix(&r))
     }
@@ -1120,7 +1110,7 @@ mod tests_f64 {
 
     /// `from_matrix_nearest` is `Mat3F64::nearest_rotation` as an `SO3F64`.
     #[test]
-    fn test_from_matrix_nearest() -> Result<(), &'static str> {
+    fn from_matrix_nearest_is_the_nearest_rotation() -> Result<(), &'static str> {
         let m = Mat3F64::from_cols_array(&[2.0, 0.3, -0.1, 0.2, 1.5, 0.4, -0.3, 0.1, -0.7]);
         let nearest = SO3F64::from_matrix_nearest(&m).ok_or("no rotation")?;
         assert_mat_eq(

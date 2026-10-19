@@ -201,7 +201,10 @@ fn pnp_accuracy_report() {
                 "close range (2 m cube at 2.5 m), n=20",
                 SceneConfig::cube(20, 2.5, 1.0),
             ),
-            Row::new("minimum, n=4", SceneConfig::cube(4, 6.0, 0.5)),
+            Row::new(
+                "minimum, n=4 (0.5 px noise)",
+                SceneConfig::cube(4, 6.0, 0.5),
+            ),
         ],
         1000,
     );

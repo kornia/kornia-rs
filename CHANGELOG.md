@@ -23,19 +23,19 @@ takes about 10–20 µs for 6–500 non-planar points and 40–48 µs for planar
 (`cargo bench -p kornia-3d --bench bench_pnp`; tables in `crates/kornia-3d/benchmarks.md`). As a
 `solve_pnp_ransac` kernel it is about 10× slower than AP3P (larger samples, and a costlier solve per
 sample). With exactly 3 points it returns one of up to four exact solutions.
-`SQPnPParams::refine_lm` polishes the pose on the reprojection error.
+`SQPnPParams::refine_lm` polishes the pose on the reprojection error. **Breaking:** `PnPMethod`
+has two new variants and `PnPError` three (`InvalidCameraMatrix`, `NonFinite`,
+`DegenerateConfiguration`), so exhaustive `match`es need new arms.
 
 **`kornia-algebra`: `Mat3F64::nearest_rotation`** (and `SO3F64::from_matrix_nearest`), the
 rotation nearest to any 3x3 matrix, plus `From` conversions between `Mat3F64` / `Vec3F64` and
 nalgebra's `Matrix3<f64>` / `Vector3<f64>`, exact `f32 → f64` `From` for `Mat3AF32`, `Vec3AF32` and
 `Vec2F32`, and the rounding `Mat3F64::as_mat3af32` / `Vec3F64::as_vec3af32`. The orthogonal
-iteration of `estimate_planar_pose` and ICP's rigid fit now use it. ICP's result is unchanged (it
-no longer logs a warning when `U·Vᵀ` is a reflection). The planar pose changes only in that case:
-it used to negate a column of `U·Vᵀ`, which is a rotation but not the nearest one.
-
-Breaking for Rust code: `PnPMethod` has two new variants and `PnPError` three
-(`InvalidCameraMatrix`, `NonFinite`, `DegenerateConfiguration`), so exhaustive `match`es need new
-arms.
+iteration of `estimate_planar_pose` and ICP's rigid fit now use it. ICP's result is the same up
+to rounding (it no longer logs a warning when `U·Vᵀ` is a reflection). The planar pose changes when
+`U·Vᵀ` is a reflection: it used to negate a column of `U·Vᵀ`, which is a rotation but not the
+nearest one; otherwise it is the same up to rounding. A NaN image point now makes
+`estimate_planar_pose` return `PlanarPoseError::SingularIteration` instead of a NaN pose.
 
 **Breaking: `kornia_3d::pnp::solve_pnp_ransac` rejects an invalid `confidence`** (#1169).
 `RansacParams::confidence` must be finite and strictly between 0 and 1. Any other value now returns

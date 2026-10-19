@@ -1,5 +1,8 @@
 //! PnP solver benchmarks. Each `pnp` iteration solves 20 scenes and each `pnp_ransac` iteration 5;
 //! a case where the solver fails on any scene is skipped, so no error path is timed.
+//!
+//! `cargo bench -p kornia-3d --bench bench_pnp`
+
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use kornia_3d::pnp::{
     solve_pnp, solve_pnp_ransac, EPnPParams, LMRefineParams, PnPMethod, RansacParams,

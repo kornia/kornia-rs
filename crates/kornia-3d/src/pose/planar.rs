@@ -564,6 +564,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_estimate_planar_pose_non_finite_pixel() {
+        let camera = test_camera();
+        let object_pts = [
+            Vec3F64::new(-0.05, -0.05, 0.0),
+            Vec3F64::new(0.05, -0.05, 0.0),
+            Vec3F64::new(0.05, 0.05, 0.0),
+            Vec3F64::new(-0.05, 0.05, 0.0),
+        ];
+        let image_pts = [
+            Vec2F64::new(280.0, 200.0),
+            Vec2F64::new(360.0, 201.0),
+            Vec2F64::new(361.0, 281.0),
+            Vec2F64::new(f64::NAN, 280.0),
+        ];
+        let result = estimate_planar_pose(&object_pts, &image_pts, &camera, 50);
+        assert!(
+            matches!(result, Err(PlanarPoseError::SingularIteration)),
+            "expected SingularIteration, got {result:?}"
+        );
+    }
+
     /// Project `object_pts` from `r_gt` at `depth`, solve, and return `best`'s rotation error in
     /// degrees at `n_iters`.
     fn rot_err_deg_at(
