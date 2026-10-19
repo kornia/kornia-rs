@@ -152,7 +152,8 @@ fn test_ransac_fundamental_refit_improves_accuracy() {
     // Refit must not regress: at least as many inliers, and if equal then
     // a lower or equal Sampson score.
     assert!(
-        res_refit.inlier_count >= res_base.inlier_count || score_refit <= score_base,
+        res_refit.inlier_count > res_base.inlier_count
+            || (res_refit.inlier_count == res_base.inlier_count && score_refit <= score_base),
         "refit regressed: base inliers={} score={:.4}, refit inliers={} score={:.4}",
         res_base.inlier_count,
         score_base,
