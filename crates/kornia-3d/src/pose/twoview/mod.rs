@@ -615,9 +615,11 @@ impl TwoViewEstimatorBuilder {
 pub struct TwoViewResult {
     /// Selected model.
     pub model: TwoViewModel,
-    /// Relative rotation from view1 to view2.
+    /// Rotation that maps camera-1 coordinates into camera 2:
+    /// `X_cam2 = rotation · X_cam1 + translation`.
     pub rotation: Mat3F64,
-    /// Relative translation direction from view1 to view2.
+    /// Unit-norm translation direction in camera-2 coordinates, in the same
+    /// convention as [`Self::rotation`]. Monocular scale is unobservable.
     pub translation: Vec3F64,
     /// Triangulated 3D points for inliers.
     pub points3d: Vec<Vec3F64>,
@@ -742,6 +744,31 @@ impl TwoViewEstimator {
     ///    drive the ambiguity-ratio guard so the test stays in one unit.
     /// 6. **Pose refinement** through the registered [`PoseRefiner`]
     ///    ([`LmRefiner`] by default; [`NoopRefiner`] to skip).
+    ///
+    /// # Arguments
+    ///
+    /// * `x1` - Pixel coordinates in the first image.
+    /// * `x2` - Corresponding pixel coordinates in the second image.
+    /// * `k1` - Intrinsics of the first camera.
+    /// * `k2` - Intrinsics of the second camera.
+    ///
+    /// # Returns
+    ///
+    /// A [`TwoViewResult`] with the selected model, the relative pose
+    /// (`X_cam2 = R · X_cam1 + t`, `t` a unit vector), the triangulated inlier
+    /// points with their input indices, and the selected model's inlier mask.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwoViewError::InvalidInput`] or
+    /// [`TwoViewError::InvalidConfidence`] from either RANSAC stage,
+    /// [`TwoViewError::RansacFailure`] if no model or no cheirality-passing
+    /// pose is found, [`TwoViewError::NumericalFailure`] if projecting onto or
+    /// decomposing the essential matrix fails, and
+    /// [`TwoViewError::AmbiguousCheirality`] if the runner-up pose passes more
+    /// than `cheirality_ambiguity_max` times the winner's cheirality count; the
+    /// caller should then try another frame pair. Errors from a custom
+    /// [`EpipolarSolver`] are returned unchanged.
     pub fn estimate(
         &self,
         x1: &[Vec2F64],
