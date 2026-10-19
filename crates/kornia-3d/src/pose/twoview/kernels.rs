@@ -3,6 +3,29 @@
 
 use kornia_algebra::{Mat3F64, Vec2F64};
 
+/// Reslices the four SoA coordinate slices to their common length, capped at
+/// `limit`.
+///
+/// The SIMD kernels read every slice (and write the mask) through unchecked
+/// accesses bounded only by `x1_x.len()`, so each safe entry point clamps
+/// first; only the common prefix is scored. A no-op for the equal-length
+/// input every caller passes.
+#[inline]
+fn clamp_soa<'a>(
+    x1_x: &'a [f64],
+    x1_y: &'a [f64],
+    x2_x: &'a [f64],
+    x2_y: &'a [f64],
+    limit: usize,
+) -> [&'a [f64]; 4] {
+    let n = limit
+        .min(x1_x.len())
+        .min(x1_y.len())
+        .min(x2_x.len())
+        .min(x2_y.len());
+    [&x1_x[..n], &x1_y[..n], &x2_x[..n], &x2_y[..n]]
+}
+
 /// Batched H reprojection scorer. For N correspondences in SoA layout and one
 /// candidate homography, returns (inlier_count, score_sum) and populates
 /// `inliers`. Bypasses `glam::DMat3 * DVec3` (scalar 9-mul per-call) with a
@@ -18,7 +41,9 @@ pub(super) fn score_inliers_h(
     thresh_sq: f64,
     inliers: &mut [bool],
 ) -> (usize, f64) {
+    let [x1_x, x1_y, x2_x, x2_y] = clamp_soa(x1_x, x1_y, x2_x, x2_y, inliers.len());
     let n = x1_x.len();
+    let inliers = &mut inliers[..n];
     // Column-major glam::DMat3: row-r, col-c = {x,y,z}_axis[r] at column c.
     let a = h.x_axis.x;
     let b = h.y_axis.x;
@@ -36,6 +61,8 @@ pub(super) fn score_inliers_h(
     let mut idx = 0usize;
 
     #[cfg(target_arch = "aarch64")]
+    // SAFETY: NEON is baseline on aarch64; `clamp_soa` gave all SoA slices and
+    // the mask length `n`, which bounds every vector load and mask write.
     let mut idx = unsafe {
         score_inliers_h_neon(
             (a, b, c, d, e, f, g, hh, ii),
@@ -54,6 +81,8 @@ pub(super) fn score_inliers_h(
     let mut idx = if kornia_imgproc::simd::cpu_features().has_avx2
         && kornia_imgproc::simd::cpu_features().has_fma
     {
+        // SAFETY: AVX2/FMA support is runtime checked; `clamp_soa` gave all
+        // SoA slices and the mask length `n`, which bounds every access.
         unsafe {
             score_inliers_h_avx2(
                 (a, b, c, d, e, f, g, hh, ii),
@@ -253,7 +282,9 @@ fn score_inliers_f_accumulate(
     count: &mut usize,
     score: &mut f64,
 ) {
+    let [x1_x, x1_y, x2_x, x2_y] = clamp_soa(x1_x, x1_y, x2_x, x2_y, inliers.len());
     let n = x1_x.len();
+    let inliers = &mut inliers[..n];
     // F entries (row-major naming, same convention as score_inliers_h).
     let f00 = f_mat.x_axis.x;
     let f01 = f_mat.y_axis.x;
@@ -269,8 +300,8 @@ fn score_inliers_f_accumulate(
     let mut idx = 0usize;
 
     #[cfg(target_arch = "aarch64")]
-    // SAFETY: NEON is baseline on aarch64; all SoA slices and the mask have
-    // the same length, and the kernel bounds every vector load/store.
+    // SAFETY: NEON is baseline on aarch64; `clamp_soa` gave all SoA slices and
+    // the mask length `n`, and the kernel bounds every vector load/store.
     let mut idx = unsafe {
         score_inliers_f_neon(
             (f00, f01, f02, f10, f11, f12, f20, f21, f22),
@@ -289,8 +320,8 @@ fn score_inliers_f_accumulate(
     let mut idx = if kornia_imgproc::simd::cpu_features().has_avx2
         && kornia_imgproc::simd::cpu_features().has_fma
     {
-        // SAFETY: AVX2/FMA support is runtime checked; equally sized SoA
-        // slices and mask satisfy the kernel's bounded access requirements.
+        // SAFETY: AVX2/FMA support is runtime checked; `clamp_soa` gave all
+        // SoA slices and the mask length `n`, which bounds every access.
         unsafe {
             score_inliers_f_avx2(
                 (f00, f01, f02, f10, f11, f12, f20, f21, f22),
@@ -408,6 +439,7 @@ pub(super) fn score_inliers_f_upper_bound(
     thresh_sq: f64,
     prune_at: usize,
 ) -> Option<usize> {
+    let [x1_x, x1_y, x2_x, x2_y] = clamp_soa(x1_x, x1_y, x2_x, x2_y, usize::MAX);
     let n = x1_x.len();
     if thresh_sq.is_nan() || thresh_sq < F_UPPER_BOUND_MIN_THRESHOLD {
         return Some(n);
@@ -416,8 +448,8 @@ pub(super) fn score_inliers_f_upper_bound(
 
     #[cfg(target_arch = "aarch64")]
     return {
-        // SAFETY: NEON is baseline on aarch64 and the kernel only performs
-        // bounded loads from equally sized SoA coordinate slices.
+        // SAFETY: NEON is baseline on aarch64 and the kernel only loads below
+        // `n`, the common length `clamp_soa` gave every coordinate slice.
         unsafe { score_inliers_f_upper_bound_neon(f, x1_x, x1_y, x2_x, x2_y, thresh_sq, prune_at) }
     };
 
@@ -427,8 +459,8 @@ pub(super) fn score_inliers_f_upper_bound(
         if kornia_imgproc::simd::cpu_features().has_avx2
             && kornia_imgproc::simd::cpu_features().has_fma
         {
-            // SAFETY: AVX2/FMA support is runtime checked; all coordinate
-            // slices have the same length and the kernel bounds every load.
+            // SAFETY: AVX2/FMA support is runtime checked; `clamp_soa` gave
+            // every coordinate slice length `n`, which bounds every load.
             return unsafe {
                 score_inliers_f_upper_bound_avx2(f, x1_x, x1_y, x2_x, x2_y, thresh_sq, prune_at)
             };

@@ -384,6 +384,98 @@ fn test_score_inliers_f_matches_scalar() {
     assert!((score - score_ref).abs() < 1e-9);
 }
 
+/// The safe scorers index every SoA slice and the mask by `x1_x.len()` in
+/// their SIMD kernels; mismatched input must score only the common prefix
+/// instead of reading or writing past the shortest slice.
+#[test]
+fn test_scorers_clamp_mismatched_slices_to_common_prefix() {
+    let x1: Vec<_> = (0..37)
+        .map(|i| Vec2F64::new(i as f64 * 0.5 - 9.0, (i as f64 * 0.3).sin() * 4.0))
+        .collect();
+    let x2: Vec<_> = x1
+        .iter()
+        .enumerate()
+        .map(|(i, p)| *p + Vec2F64::new((i as f64).sin() * 0.1, (i as f64).cos() * 0.1))
+        .collect();
+    let (x1_x, x1_y) = split_xy(&x1);
+    let (x2_x, x2_y) = split_xy(&x2);
+    // Not a multiple of either SIMD width, so the scalar tail runs too.
+    let n = 13;
+    let h = Mat3F64::IDENTITY;
+    // Pure x-translation: F = [e]ₓ with e = (1, 0, 0).
+    let f_mat = Mat3F64::from_cols(
+        Vec3F64::new(0.0, 0.0, 0.0),
+        Vec3F64::new(0.0, 0.0, 1.0),
+        Vec3F64::new(0.0, -1.0, 0.0),
+    );
+    let thresh_sq = 1.0;
+
+    let mut h_mask = vec![false; n];
+    let h_ref = score_inliers_h(
+        &h,
+        &x1_x[..n],
+        &x1_y[..n],
+        &x2_x[..n],
+        &x2_y[..n],
+        thresh_sq,
+        &mut h_mask,
+    );
+    let mut f_mask = vec![false; n];
+    let f_ref = score_inliers_f(
+        &f_mat,
+        &x1_x[..n],
+        &x1_y[..n],
+        &x2_x[..n],
+        &x2_y[..n],
+        thresh_sq,
+        &mut f_mask,
+    );
+    assert!(h_ref.0 > 0 && h_ref.1 > 0.0 && f_ref.0 > 0 && f_ref.1 > 0.0);
+
+    // One short coordinate slice.
+    let mut mask = vec![false; x1.len()];
+    let h_short = score_inliers_h(&h, &x1_x, &x1_y[..n], &x2_x, &x2_y, thresh_sq, &mut mask);
+    assert_eq!(h_short, h_ref);
+    assert_eq!(&mask[..n], &h_mask[..]);
+    assert!(mask[n..].iter().all(|&m| !m));
+
+    let mut mask = vec![false; x1.len()];
+    let f_short = score_inliers_f(
+        &f_mat,
+        &x1_x,
+        &x1_y,
+        &x2_x[..n],
+        &x2_y,
+        thresh_sq,
+        &mut mask,
+    );
+    assert_eq!(f_short, f_ref);
+    assert_eq!(&mask[..n], &f_mask[..]);
+    assert!(mask[n..].iter().all(|&m| !m));
+
+    // A short mask.
+    let mut mask = vec![false; n];
+    let h_short = score_inliers_h(&h, &x1_x, &x1_y, &x2_x, &x2_y, thresh_sq, &mut mask);
+    assert_eq!((h_short, mask), (h_ref, h_mask));
+    let mut mask = vec![false; n];
+    let f_short = score_inliers_f(&f_mat, &x1_x, &x1_y, &x2_x, &x2_y, thresh_sq, &mut mask);
+    assert_eq!((f_short, mask), (f_ref, f_mask));
+
+    // The count-only bound reads no mask, but still stops at the shortest slice.
+    assert_eq!(
+        score_inliers_f_upper_bound(&f_mat, &x1_x, &x1_y, &x2_x, &x2_y[..n], thresh_sq, 0),
+        score_inliers_f_upper_bound(
+            &f_mat,
+            &x1_x[..n],
+            &x1_y[..n],
+            &x2_x[..n],
+            &x2_y[..n],
+            thresh_sq,
+            0
+        )
+    );
+}
+
 #[test]
 fn test_bounded_f_scorer_matches_full_winner_and_zero_denominator() {
     let f_mat = Mat3F64::ZERO;
