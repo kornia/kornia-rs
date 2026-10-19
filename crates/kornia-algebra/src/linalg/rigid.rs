@@ -1,7 +1,7 @@
-//! Rigid alignment utilities (Kabsch / Umeyama)
+//! Rigid alignment utilities (Kabsch / Umeyama), with optional per-point weights.
 
 use crate::linalg::svd::svd3_f64;
-use crate::{Mat3AF32, Mat3F32, Mat3F64, Vec3AF32, Vec3F32, Vec3F64, Vec4F64};
+use crate::{Mat3AF32, Mat3F32, Mat3F64, Vec3AF32, Vec3F32, Vec3F64};
 use nalgebra::{Matrix3, SVD};
 use thiserror::Error;
 
@@ -14,6 +14,9 @@ pub enum UmeyamaError {
     /// Source and destination arrays must have the same length
     #[error("Source and destination arrays must have the same length")]
     MismatchedInputLengths,
+    /// Source and destination arrays must not be empty
+    #[error("Source and destination arrays must not be empty")]
+    EmptyInput,
     /// Failed to compute U in SVD
     #[error("Failed to compute U in SVD")]
     SvdU,
@@ -139,8 +142,9 @@ pub type UmeyamaResultF64 = Result<UmeyamaOutputF64, UmeyamaError>;
 /// `weights == None` every point is weighted equally, i.e. the unweighted
 /// Umeyama/Kabsch solution.
 ///
-/// Point coordinates are assumed finite; non-finite coordinates are not
-/// validated and propagate to the result.
+/// Point coordinates are assumed finite; non-finite coordinates of points with
+/// a non-zero weight are not validated and propagate to the result. A point with
+/// weight `0` is ignored entirely.
 ///
 /// # Arguments
 ///
@@ -152,7 +156,8 @@ pub type UmeyamaResultF64 = Result<UmeyamaOutputF64, UmeyamaError>;
 ///   a positive sum; they are normalized internally (only their relative values
 ///   matter), and a point with weight `0` is ignored.
 /// * `with_scale` - If `true`, estimates the scale `s`; otherwise `s` is fixed
-///   to `1.0` (rigid alignment only).
+///   to `1.0` (rigid alignment only). If the source points have (near-)zero
+///   variance, `s` falls back to `1.0`.
 ///
 /// # Returns
 ///
@@ -164,9 +169,12 @@ pub type UmeyamaResultF64 = Result<UmeyamaOutputF64, UmeyamaError>;
 ///
 /// Returns [`UmeyamaError::MismatchedInputLengths`] if `src` and `dst` differ in
 /// length.
+/// Returns [`UmeyamaError::EmptyInput`] if `src` and `dst` are both empty.
 /// Returns [`UmeyamaError::InvalidWeights`] if `weights` is empty, contains a
 /// non-finite or negative value, or is all zero. This is checked before the
-/// length, so it takes precedence over a length mismatch.
+/// weights-length check, so it takes precedence over
+/// [`UmeyamaError::MismatchedWeightsLength`] (but not over
+/// [`UmeyamaError::MismatchedInputLengths`] or [`UmeyamaError::EmptyInput`]).
 /// Returns [`UmeyamaError::MismatchedWeightsLength`] if otherwise-valid
 /// `weights` do not have exactly one entry per point.
 ///
@@ -193,6 +201,14 @@ pub type UmeyamaResultF64 = Result<UmeyamaOutputF64, UmeyamaError>;
 /// let weights = [1.0, 2.0, 3.0, 4.0];
 /// let (_r, t, _s) = umeyama_f64(&src, &dst, Some(&weights), false)?;
 /// assert!((t.x - 1.0).abs() < 1e-12);
+///
+/// // A zero weight ignores a point entirely (here a corrupted destination),
+/// // and the scale can still be estimated from the remaining points.
+/// let mut noisy = dst.clone();
+/// noisy[3] = Vec3F64::new(1e6, -1e6, 1e6);
+/// let weights = [1.0, 1.0, 1.0, 0.0];
+/// let (_r, t, s) = umeyama_f64(&src, &noisy, Some(&weights), true)?;
+/// assert!((t.x - 1.0).abs() < 1e-9 && (s - 1.0).abs() < 1e-9);
 /// # Ok::<(), kornia_algebra::linalg::rigid::UmeyamaError>(())
 /// ```
 pub fn umeyama_f64(
@@ -204,6 +220,9 @@ pub fn umeyama_f64(
     if src.len() != dst.len() {
         return Err(UmeyamaError::MismatchedInputLengths);
     }
+    if src.is_empty() {
+        return Err(UmeyamaError::EmptyInput);
+    }
 
     let Moments {
         mu_s,
@@ -213,12 +232,7 @@ pub fn umeyama_f64(
     } = moments(src, dst, weights)?;
 
     // SVD of H via the crate's `svd3_f64` (handles repeated singular values).
-    let h_mat = Mat3F64::from_cols(
-        Vec3F64::new(h[0].x, h[0].y, h[0].z),
-        Vec3F64::new(h[1].x, h[1].y, h[1].z),
-        Vec3F64::new(h[2].x, h[2].y, h[2].z),
-    );
-    let svd = svd3_f64(&h_mat);
+    let svd = svd3_f64(&h);
     let (u, sigma, v) = (svd.u(), svd.s(), svd.v());
 
     // Reflection correction: S = diag(1, 1, det(U)·det(V)) (det(V^T) == det(V))
@@ -239,9 +253,7 @@ pub fn umeyama_f64(
     };
 
     // Translation: t = μ_d − s·R·μ_s
-    let mu_s3 = Vec3F64::new(mu_s.x, mu_s.y, mu_s.z);
-    let mu_d3 = Vec3F64::new(mu_d.x, mu_d.y, mu_d.z);
-    let t = mu_d3 - scale * r * mu_s3;
+    let t = mu_d - scale * r * mu_s;
 
     Ok((r, t, scale))
 }
@@ -249,20 +261,18 @@ pub fn umeyama_f64(
 /// Accumulated first- and second-order statistics of the two point sets.
 #[derive(Debug)]
 struct Moments {
-    /// Source centroid (the `w` lane is always 0).
-    mu_s: Vec4F64,
-    /// Destination centroid (the `w` lane is always 0).
-    mu_d: Vec4F64,
-    /// Cross-covariance columns, normalized by the total weight (`w` lane always 0).
-    h: [Vec4F64; 3],
+    /// Source centroid.
+    mu_s: Vec3F64,
+    /// Destination centroid.
+    mu_d: Vec3F64,
+    /// Cross-covariance columns, normalized by the total weight.
+    h: Mat3F64,
     /// Source variance `Σ wᵢ·‖src_c‖²`, normalized by the total weight.
     var_src: f64,
 }
 
 /// Accumulates the centroids, cross-covariance, and source variance, weighted by
 /// `weights` or uniformly when it is `None`.
-///
-/// Uses `Vec4F64`: the fourth lane is kept at 0 and dropped before the SVD.
 fn moments(
     src: &[Vec3F64],
     dst: &[Vec3F64],
@@ -291,50 +301,60 @@ fn moments(
         }
     };
 
-    // Normalize by max_w (it cancels in every ratio): keeps Σw' in [1, n] and
-    // w_i' * p_i bounded, so extreme finite weights cannot overflow. Divide
+    // Normalize by max_w (cancels in every ratio): keeps Σw in [1, n] and
+    // w_i * p_i bounded, so extreme finite weights cannot overflow. Divide
     // rather than multiply by 1/max_w so a subnormal max_w stays exact.
     let weight_at = |i: usize| weights.map_or(1.0, |w| w[i] / max_w);
 
+    // glam's f64 types are scalar (`DVec3`/`DMat3` set `USES_SCALAR_MATH`), so
+    // this accumulation is deliberately scalar — there is no f64 SIMD to use.
+    //
     // Weighted centroids μ = Σ wᵢ pᵢ / Σ wᵢ.
-    let mut mu_s = Vec4F64::ZERO;
-    let mut mu_d = Vec4F64::ZERO;
+    let mut mu_s = Vec3F64::ZERO;
+    let mut mu_d = Vec3F64::ZERO;
     let mut sum_w = 0.0f64;
-    for i in 0..src.len() {
+    for (i, (s, d)) in src.iter().zip(dst).enumerate() {
         let wi = weight_at(i);
+        // A zero-weight point is ignored entirely: `inf * 0.0 = NaN` would
+        // otherwise poison the centroid.
+        if wi == 0.0 {
+            continue;
+        }
         sum_w += wi;
-        mu_s += Vec4F64::new(src[i].x, src[i].y, src[i].z, 0.0) * wi;
-        mu_d += Vec4F64::new(dst[i].x, dst[i].y, dst[i].z, 0.0) * wi;
+        mu_s += *s * wi;
+        mu_d += *d * wi;
     }
     mu_s /= sum_w;
     mu_d /= sum_w;
 
     // Weighted cross-covariance columns and source variance.
-    let mut h = [Vec4F64::ZERO; 3];
+    let mut h_x = Vec3F64::ZERO;
+    let mut h_y = Vec3F64::ZERO;
+    let mut h_z = Vec3F64::ZERO;
     let mut var_src = 0.0f64;
-    for i in 0..src.len() {
+    for (i, (s, d)) in src.iter().zip(dst).enumerate() {
         let wi = weight_at(i);
         // Zero-weight points are ignored; a centered extreme coordinate would
         // otherwise give `0.0 * inf = NaN`.
         if wi == 0.0 {
             continue;
         }
-        let sc = Vec4F64::new(src[i].x - mu_s.x, src[i].y - mu_s.y, src[i].z - mu_s.z, 0.0);
-        let dc = Vec4F64::new(dst[i].x - mu_d.x, dst[i].y - mu_d.y, dst[i].z - mu_d.z, 0.0);
-        h[0] += dc * sc.x * wi;
-        h[1] += dc * sc.y * wi;
-        h[2] += dc * sc.z * wi;
+        let sc = *s - mu_s;
+        let dc = *d - mu_d;
+        h_x += dc * sc.x * wi;
+        h_y += dc * sc.y * wi;
+        h_z += dc * sc.z * wi;
         var_src += sc.dot(sc) * wi;
     }
-    for col in &mut h {
-        *col /= sum_w;
-    }
+    h_x /= sum_w;
+    h_y /= sum_w;
+    h_z /= sum_w;
     var_src /= sum_w;
 
     Ok(Moments {
         mu_s,
         mu_d,
-        h,
+        h: Mat3F64::from_cols(h_x, h_y, h_z),
         var_src,
     })
 }
@@ -342,6 +362,11 @@ fn moments(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 90° rotation about Z, column-major (`[[0, -1, 0], [1, 0, 0], [0, 0, 1]]`).
+    fn rot_z90() -> Mat3F64 {
+        Mat3F64::from_cols_array(&[0.0, 1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 1.0])
+    }
 
     #[test]
     #[cfg(feature = "approx")]
@@ -380,7 +405,7 @@ mod tests {
             Vec3F64::new(1.0, 1.0, 0.0),
             Vec3F64::new(0.0, 1.0, 0.0),
         ];
-        let r_true = Mat3F64::from_cols_array(&[0.0, 1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+        let r_true = rot_z90();
         let t_true = Vec3F64::new(0.5, -0.3, 2.0);
         let dst: Vec<Vec3F64> = src.iter().map(|p| r_true * *p + t_true).collect();
 
@@ -447,40 +472,21 @@ mod tests {
         s_true: f64,
         eps: f64,
     ) {
-        let r_true_arr: [f64; 9] = (*r_true).into();
-        let r_got_arr: [f64; 9] = got.0.into();
-        for i in 0..9 {
-            assert!(
-                (r_got_arr[i] - r_true_arr[i]).abs() < eps,
-                "R mismatch at {i}: {} vs {}",
-                r_got_arr[i],
-                r_true_arr[i]
-            );
-        }
-        assert!((got.1.x - t_true.x).abs() < eps, "t.x: {}", got.1.x);
-        assert!((got.1.y - t_true.y).abs() < eps, "t.y: {}", got.1.y);
-        assert!((got.1.z - t_true.z).abs() < eps, "t.z: {}", got.1.z);
-        assert!((got.2 - s_true).abs() < eps, "s: {} vs {}", got.2, s_true);
+        assert_outputs_close(got, &(*r_true, *t_true, s_true), eps);
     }
 
-    /// Assert two [`Moments`] agree component-wise within `eps`, with the SIMD
-    /// padding lane left at exactly 0.
+    /// Assert two [`Moments`] agree component-wise within `eps`.
     fn assert_moments_close(a: &Moments, b: &Moments, eps: f64) {
         let (a_mu_s, b_mu_s) = (a.mu_s.to_array(), b.mu_s.to_array());
         let (a_mu_d, b_mu_d) = (a.mu_d.to_array(), b.mu_d.to_array());
-        for lane in [a_mu_s, a_mu_d, b_mu_s, b_mu_d] {
-            assert!(lane[3] == 0.0, "padding lane must stay 0");
-        }
         for k in 0..3 {
             assert!((a_mu_s[k] - b_mu_s[k]).abs() < eps, "mu_s[{k}]");
             assert!((a_mu_d[k] - b_mu_d[k]).abs() < eps, "mu_d[{k}]");
         }
+        let a_cols = [a.h.x_axis(), a.h.y_axis(), a.h.z_axis()];
+        let b_cols = [b.h.x_axis(), b.h.y_axis(), b.h.z_axis()];
         for c in 0..3 {
-            let (a_col, b_col) = (a.h[c].to_array(), b.h[c].to_array());
-            assert!(
-                a_col[3] == 0.0 && b_col[3] == 0.0,
-                "h[{c}] padding lane must stay 0"
-            );
+            let (a_col, b_col) = (a_cols[c].to_array(), b_cols[c].to_array());
             for r in 0..3 {
                 assert!(
                     (a_col[r] - b_col[r]).abs() < eps,
@@ -496,6 +502,23 @@ mod tests {
             a.var_src,
             b.var_src
         );
+    }
+
+    /// Assert `H` is symmetric and `trace(H) == var_src` (both equal
+    /// `Σ wᵢ‖src_c‖² / Σ wᵢ`).
+    fn assert_covariance_symmetric_with_trace(m: &Moments) {
+        let cols: [[f64; 3]; 3] = [
+            m.h.x_axis().to_array(),
+            m.h.y_axis().to_array(),
+            m.h.z_axis().to_array(),
+        ];
+        let trace = cols[0][0] + cols[1][1] + cols[2][2];
+        for (r, row_r) in cols.iter().enumerate() {
+            for (c, row_c) in cols.iter().enumerate() {
+                assert!((row_c[r] - row_r[c]).abs() < 1e-12, "H not symmetric");
+            }
+        }
+        assert!((trace - m.var_src).abs() < 1e-12, "trace(H) != var_src");
     }
 
     #[test]
@@ -530,15 +553,8 @@ mod tests {
         // Σ‖sc‖² / 4 = 2.25 / 4.
         assert!((m.var_src - 0.5625).abs() < 1e-12, "var_src: {}", m.var_src);
 
-        // H is symmetric and trace(H) == var_src (both equal Σ‖sc‖² / n).
-        let cols: [[f64; 4]; 3] = [m.h[0].to_array(), m.h[1].to_array(), m.h[2].to_array()];
-        let trace = cols[0][0] + cols[1][1] + cols[2][2];
-        for (r, row_r) in cols.iter().enumerate() {
-            for (c, row_c) in cols.iter().enumerate() {
-                assert!((row_c[r] - row_r[c]).abs() < 1e-12, "H not symmetric");
-            }
-        }
-        assert!((trace - m.var_src).abs() < 1e-12, "trace(H) != var_src");
+        // H is symmetric and trace(H) == var_src.
+        assert_covariance_symmetric_with_trace(&m);
         Ok(())
     }
 
@@ -571,14 +587,7 @@ mod tests {
         let w = [1.0, 2.0, 3.0];
         let m = moments(&src, &src, Some(&w))?;
 
-        let cols: [[f64; 4]; 3] = [m.h[0].to_array(), m.h[1].to_array(), m.h[2].to_array()];
-        let trace = cols[0][0] + cols[1][1] + cols[2][2];
-        for (r, row_r) in cols.iter().enumerate() {
-            for (c, row_c) in cols.iter().enumerate() {
-                assert!((row_c[r] - row_r[c]).abs() < 1e-12, "H not symmetric");
-            }
-        }
-        assert!((trace - m.var_src).abs() < 1e-12, "trace(H) != var_src");
+        assert_covariance_symmetric_with_trace(&m);
         Ok(())
     }
 
@@ -708,6 +717,20 @@ mod tests {
     }
 
     #[test]
+    fn test_weighted_moments_zero_weight_non_finite_point_ignored() -> Result<(), UmeyamaError> {
+        let src = [
+            Vec3F64::new(0.2, -0.4, 1.1),
+            Vec3F64::new(1.3, 0.7, -0.5),
+            Vec3F64::new(f64::INFINITY, f64::NAN, f64::NEG_INFINITY),
+        ];
+        let dst = src;
+        let base = moments(&src[..2], &dst[..2], Some(&[1.0, 1.0]))?;
+        let with_non_finite = moments(&src, &dst, Some(&[1.0, 1.0, 0.0]))?;
+        assert_moments_close(&base, &with_non_finite, 1e-12);
+        Ok(())
+    }
+
+    #[test]
     fn test_umeyama_f64_recovers_exact_transform() -> Result<(), UmeyamaError> {
         let src = [
             Vec3F64::new(0.0, 0.0, 0.0),
@@ -716,7 +739,7 @@ mod tests {
             Vec3F64::new(0.0, 0.0, 1.0),
             Vec3F64::new(1.0, 1.0, 1.0),
         ];
-        let r_true = Mat3F64::from_cols_array(&[0.0, 1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+        let r_true = rot_z90();
         let t_true = Vec3F64::new(0.5, -0.3, 2.0);
         let s_true = 2.0;
         let dst: Vec<Vec3F64> = src
@@ -739,7 +762,7 @@ mod tests {
             Vec3F64::new(0.9, -1.2, 2.4),
             Vec3F64::new(1.7, 1.5, -1.9),
         ];
-        let r_true = Mat3F64::from_cols_array(&[0.0, 1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+        let r_true = rot_z90();
         let t_true = Vec3F64::new(0.5, -0.3, 2.0);
         let dst: Vec<Vec3F64> = src.iter().map(|p| r_true * *p + t_true).collect();
 
@@ -760,7 +783,7 @@ mod tests {
             Vec3F64::new(0.9, -1.2, 2.4),
             Vec3F64::new(1.7, 1.5, -1.9),
         ];
-        let r_true = Mat3F64::from_cols_array(&[0.0, 1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+        let r_true = rot_z90();
         let t_true = Vec3F64::new(0.5, -0.3, 2.0);
         let dst: Vec<Vec3F64> = src.iter().map(|p| r_true * *p + t_true).collect();
 
@@ -782,7 +805,7 @@ mod tests {
             Vec3F64::new(0.0, 0.0, 1.0),
             Vec3F64::new(0.5, 0.5, 0.5),
         ];
-        let r_true = Mat3F64::from_cols_array(&[0.0, 1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+        let r_true = rot_z90();
         let t_true = Vec3F64::new(0.5, -0.3, 2.0);
         let mut dst: Vec<Vec3F64> = src.iter().map(|p| r_true * *p + t_true).collect();
         // Corrupt the last destination wildly; its weight is zero so it must be
@@ -808,7 +831,7 @@ mod tests {
             Vec3F64::new(0.5, 1.0, 0.0),
             Vec3F64::new(0.0, 0.5, 0.0),
         ];
-        let r_true = Mat3F64::from_cols_array(&[0.0, 1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+        let r_true = rot_z90();
         let t_true = Vec3F64::new(0.5, -0.3, 2.0);
         let s_true = 1.3;
         let dst: Vec<Vec3F64> = src
@@ -831,7 +854,7 @@ mod tests {
             Vec3F64::new(2.0, 0.0, 0.0),
             Vec3F64::new(3.0, 0.0, 0.0),
         ];
-        let r_true = Mat3F64::from_cols_array(&[0.0, 1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+        let r_true = rot_z90();
         let t_true = Vec3F64::new(0.5, -0.3, 2.0);
         let s_true = 2.0;
         let dst: Vec<Vec3F64> = src
@@ -895,7 +918,7 @@ mod tests {
             })
             .collect();
 
-        let r_true = Mat3F64::from_cols_array(&[0.0, 1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+        let r_true = rot_z90();
         let t_true = Vec3F64::new(0.5, -0.3, 2.0);
         let s_true = 1.7;
         let dst: Vec<Vec3F64> = src
@@ -971,6 +994,16 @@ mod tests {
     }
 
     #[test]
+    fn test_umeyama_f64_empty_input_is_rejected() {
+        let err = umeyama_f64(&[], &[], None, true).unwrap_err();
+        assert!(matches!(err, UmeyamaError::EmptyInput), "got {err:?}");
+
+        // Empty input is rejected before weight validation.
+        let err = umeyama_f64(&[], &[], Some(&[]), true).unwrap_err();
+        assert!(matches!(err, UmeyamaError::EmptyInput), "got {err:?}");
+    }
+
+    #[test]
     fn test_umeyama_f64_no_scale_returns_unit() -> Result<(), UmeyamaError> {
         let src = [
             Vec3F64::new(0.2, -0.4, 1.1),
@@ -984,6 +1017,112 @@ mod tests {
 
         let (_r, _t, s) = umeyama_f64(&src, &dst, Some(&weights), false)?;
         assert!((s - 1.0).abs() < 1e-15, "scale should be 1.0, got {s}");
+        Ok(())
+    }
+
+    #[test]
+    fn test_umeyama_f64_weighted_is_stationary() -> Result<(), UmeyamaError> {
+        // Noisy (non-exact) data with non-uniform weights. The exact-recovery
+        // tests can pass even if the objective is subtly wrong, so check the
+        // first-order optimality conditions instead:
+        //   ∂/∂t: Σ wᵢ·rᵢ = 0,   ∂/∂s: Σ wᵢ·rᵢ·(R·srcᵢ) = 0,
+        //   ∂/∂R: Σ wᵢ·(R·srcᵢ) × rᵢ = 0,   rᵢ = dstᵢ − (s·R·srcᵢ + t).
+        let src = [
+            Vec3F64::new(0.2, -0.4, 1.1),
+            Vec3F64::new(1.3, 0.7, -0.5),
+            Vec3F64::new(-0.8, 2.1, 0.3),
+            Vec3F64::new(0.9, -1.2, 2.4),
+            Vec3F64::new(1.7, 1.5, -1.9),
+            Vec3F64::new(-1.4, 0.6, 0.8),
+        ];
+        let r_true = rot_z90();
+        let t_true = Vec3F64::new(0.5, -0.3, 2.0);
+        let s_true = 1.7;
+        let noise = [
+            Vec3F64::new(0.01, -0.02, 0.03),
+            Vec3F64::new(-0.04, 0.02, -0.01),
+            Vec3F64::new(0.02, 0.03, -0.02),
+            Vec3F64::new(-0.03, -0.01, 0.04),
+            Vec3F64::new(0.01, 0.02, 0.01),
+            Vec3F64::new(-0.02, 0.04, -0.03),
+        ];
+        let dst: Vec<Vec3F64> = src
+            .iter()
+            .zip(noise)
+            .map(|(p, n)| (r_true * *p) * s_true + t_true + n)
+            .collect();
+        let weights = [0.5, 3.0, 1.0, 2.0, 4.0, 1.5];
+
+        let (r, t, s) = umeyama_f64(&src, &dst, Some(&weights), true)?;
+
+        let mut mean_res = Vec3F64::ZERO;
+        let mut rot = Vec3F64::ZERO;
+        let mut scale_cond = 0.0f64;
+        let mut bound = 0.0f64;
+        for (i, (p, d)) in src.iter().zip(&dst).enumerate() {
+            let wi = weights[i];
+            let rs = r * *p;
+            let res = *d - (rs * s + t);
+            mean_res += res * wi;
+            rot += rs.cross(res) * wi;
+            scale_cond += res.dot(rs) * wi;
+            bound += wi * res.length() * rs.length();
+        }
+        let tol = 1e-9 * (bound + 1.0);
+        assert!(mean_res.length() <= tol, "Σw·r = 0 violated: {mean_res:?}");
+        assert!(
+            rot.length() <= tol,
+            "rotation stationarity violated: {rot:?}"
+        );
+        assert!(
+            scale_cond.abs() <= tol,
+            "scale stationarity violated: {scale_cond}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_umeyama_f64_small_scale_cloud_falls_back_to_unit_scale() -> Result<(), UmeyamaError> {
+        // Coordinates ~1e-8 put `var_src` below the 1e-15 guard, so the scale
+        // falls back to 1.0 even though the destination is scaled by 2.
+        let src = [
+            Vec3F64::new(0.0, 0.0, 0.0),
+            Vec3F64::new(1e-8, 0.0, 0.0),
+            Vec3F64::new(0.0, 1e-8, 0.0),
+            Vec3F64::new(1e-8, 1e-8, 0.0),
+        ];
+        let dst: Vec<Vec3F64> = src.iter().map(|p| *p * 2.0).collect();
+
+        let (_r, _t, s) = umeyama_f64(&src, &dst, None, true)?;
+        assert!((s - 1.0).abs() < 1e-12, "documented fallback, got {s}");
+        Ok(())
+    }
+
+    #[test]
+    fn test_umeyama_f64_single_nonzero_weight_is_reproduced() -> Result<(), UmeyamaError> {
+        let src = [
+            Vec3F64::new(0.2, -0.4, 1.1),
+            Vec3F64::new(1.3, 0.7, -0.5),
+            Vec3F64::new(-0.8, 2.1, 0.3),
+        ];
+        let dst = [
+            Vec3F64::new(0.5, 0.1, 1.0),
+            Vec3F64::new(1.1, 0.9, -0.2),
+            Vec3F64::new(-0.3, 2.4, 0.6),
+        ];
+
+        // Only the third correspondence counts: `var_src` is zero, so the scale
+        // falls back to 1.0 and the single point must be reproduced.
+        let weights = [0.0, 0.0, 1.0];
+        let (r, t, s) = umeyama_f64(&src, &dst, Some(&weights), true)?;
+
+        assert!((s - 1.0).abs() < 1e-12, "s: {s}");
+        let mapped = (r * src[2]) * s + t;
+        assert!(
+            (mapped - dst[2]).length() < 1e-9,
+            "single weighted point not reproduced: {mapped:?} vs {:?}",
+            dst[2]
+        );
         Ok(())
     }
 }
