@@ -25,7 +25,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
-use crate::metric::{DistanceMetric, Feature, Hamming};
+use crate::metric::{Feature, Hamming};
 use crate::{BlockCluster, BlockContent, BowError, BowResult, InternalMeta, LeafData, Vocabulary};
 
 /// Branching factor of the ORB-SLAM3 vocabulary (`k` in the DBoW2 header).
@@ -149,22 +149,9 @@ pub fn load_orb_slam3_vocabulary<P: AsRef<Path>>(path: P) -> BowResult<OrbVocabu
 /// block (the same trick the trainer uses for unbalanced trees). Leaf weights
 /// come straight from the file.
 fn build_vocabulary(nodes: &[DbowNode]) -> BowResult<OrbVocabulary> {
-    let padding = Hamming::<ORB_WORDS>::padding();
-
-    // Fill for block slots that are never assigned a real node — the padding
-    // child slots of an internal node with fewer than `B` children. A default
-    // `BlockCluster` is an `Internal` node pointing back to the root, so a query
-    // that descends into one (a query nearer the `u64::MAX` padding descriptor
-    // than any real child) would loop forever. A self-terminating leaf block
-    // ends traversal harmlessly with weight 0 instead. Real ORBvoc nodes are
-    // full so this never fires, but it keeps the loader safe for unbalanced
-    // DBoW2 trees.
-    let terminator = BlockCluster {
-        descriptors: [padding; ORB_BRANCHING],
-        content: BlockContent::Leaf(LeafData {
-            weights: [0.0; ORB_BRANCHING],
-        }),
-    };
+    // Real ORBvoc nodes are full, so the terminator fill and the slot padding
+    // below only matter for unbalanced DBoW2 trees.
+    let terminator = BlockCluster::terminator();
 
     let mut blocks: Vec<BlockCluster<ORB_BRANCHING, Hamming<ORB_WORDS>>> = vec![terminator];
 
@@ -216,16 +203,7 @@ fn build_vocabulary(nodes: &[DbowNode]) -> BowResult<OrbVocabulary> {
             }
         }
 
-        // Pad the unused descriptor slots of an under-full node with a copy of
-        // the first real child's descriptor. Traversal picks the argmin with a
-        // strict `<`, so a padded slot can only ever tie — never beat — the real
-        // child at index 0, and the lower index wins. This keeps a high-bit-count
-        // query from being lured into a `u64::MAX` padding slot (and thus a dead
-        // terminator block). Real ORBvoc nodes are full, so this only matters for
-        // unbalanced DBoW2 trees.
-        for i in n_children..ORB_BRANCHING {
-            block.descriptors[i] = block.descriptors[0];
-        }
+        block.pad_unused_slots(n_children);
 
         if block_idx as usize >= blocks.len() {
             blocks.resize(block_idx as usize + 1, terminator);
