@@ -865,6 +865,8 @@ mod tests {
     const TEST_EPSILON_F32: f32 = 1e-5;
     const TEST_EPSILON_F32_STRICT: f32 = 1e-6;
     const TEST_EPSILON_F64: f64 = 1e-10;
+    const TEST_S_OFF_DIAGONAL_F32: f32 = 1e-2;
+    const TEST_SINGULAR_VALUE_F32: f32 = 1e-4;
 
     fn verify_svd_properties_f32(a: &Mat3F32, svd: &SVD3SetF32, epsilon: f32) {
         let u = *svd.u();
@@ -1022,12 +1024,14 @@ mod tests {
     }
 
     fn assert_s_matches_reference_f32(a: &Mat3F32) {
-        let s = *svd3_f32(a).s();
+        let svd = svd3_f32(a);
+        verify_svd_properties_f32(a, &svd, TEST_EPSILON_F32);
+        let s = *svd.s();
         let expected = reference_singular_values_f32(a);
         let scale = expected[0].max(1.0);
         for (c, r) in [(1, 0), (2, 0), (0, 1), (2, 1), (0, 2), (1, 2)] {
             assert!(
-                s.col(c)[r].abs() <= 1e-2 * scale,
+                s.col(c)[r].abs() <= TEST_S_OFF_DIAGONAL_F32 * scale,
                 "S is not diagonal for {a:?}: {s:?}"
             );
         }
@@ -1035,7 +1039,7 @@ mod tests {
         diagonal.sort_by(|x, y| y.total_cmp(x));
         for (got, want) in diagonal.iter().zip(expected.iter()) {
             assert!(
-                (got - want).abs() <= 1e-4 * scale,
+                (got - want).abs() <= TEST_SINGULAR_VALUE_F32 * scale,
                 "singular values {diagonal:?} do not match {expected:?} for {a:?}"
             );
         }
