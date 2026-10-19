@@ -5,7 +5,7 @@ use kornia_algebra::{Mat3AF32, Mat3F64, Vec2F32, Vec2F64, Vec3AF32, Vec3F64, SO3
 use rand::{rngs::StdRng, RngExt};
 
 /// A standard normal sample (Box–Muller); `rand` alone has no normal distribution.
-pub(crate) fn gauss(rng: &mut StdRng) -> f64 {
+fn gauss(rng: &mut StdRng) -> f64 {
     let u1: f64 = rng.random_range(f64::MIN_POSITIVE..1.0);
     let u2: f64 = rng.random_range(0.0..1.0);
     (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()

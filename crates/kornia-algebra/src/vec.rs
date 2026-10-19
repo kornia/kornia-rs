@@ -498,14 +498,14 @@ mod tests {
     fn test_vec3f64_from_vec3af32() {
         // 0.1 is not exact in binary: the f64 must be the f32 value itself, not 0.1.
         let v = Vec3F64::from(Vec3AF32::new(0.1, -2.5, 3.0e7));
-        assert_eq!(v.to_array(), [0.1f32 as f64, -2.5, 3.0e7]);
+        assert_eq!(v.to_array(), [f64::from(0.1f32), -2.5, 3.0e7]);
         assert_eq!(v.as_vec3af32(), Vec3AF32::new(0.1, -2.5, 3.0e7));
     }
 
     #[test]
     fn test_vec2f64_from_vec2f32() {
         let w = Vec2F64::from(Vec2F32::new(0.1, -2.5));
-        assert_eq!(w.to_array(), [0.1f32 as f64, -2.5]);
+        assert_eq!(w.to_array(), [f64::from(0.1f32), -2.5]);
     }
 
     #[test]

@@ -50,8 +50,8 @@ pub enum PnPRansacError {
     /// cannot be honoured while generating hypotheses. Silently ignoring it would score the
     /// consensus set under an ideal-pinhole model and then refit it under a distorted one —
     /// two different camera models for one answer. Undistort the image points up front and
-    /// pass `distortion = None`, or use an EPnP kernel.
-    #[error("AP3P inside RANSAC cannot honour a distortion model: undistort the image points first and pass `distortion = None`, or use an EPnP kernel")]
+    /// pass `distortion = None`, or use an EPnP or SQPnP kernel.
+    #[error("AP3P inside RANSAC cannot honour a distortion model: undistort the image points first and pass `distortion = None`, or use an EPnP or SQPnP kernel")]
     DistortionUnsupportedByKernel,
 
     /// The requested confidence is outside the open unit interval.
@@ -459,7 +459,7 @@ struct PnpProblem<'a> {
     i_min: Vec<Vec2F32>,
     /// Minimal fits so far, i.e. the current draw (every draw is fitted).
     draws: usize,
-    /// Its poses: up to four for AP3P, one for EPnP.
+    /// Its poses: up to four for AP3P, one for EPnP or SQPnP.
     candidates: Vec<PnPResult>,
 }
 
@@ -533,7 +533,7 @@ impl Problem for PnpProblem<'_> {
 
     /// Cheirality on the minimal set. Redundant for AP3P -- `solve_ap3p_multi`
     /// already filters its roots by positive depth over these same 3 points, in
-    /// f64 -- but EPnP does not.
+    /// f64 -- but EPnP and SQPnP do not.
     #[inline]
     fn check_model(&self, sample: &[usize], pose: &PnPResult) -> bool {
         let passed =

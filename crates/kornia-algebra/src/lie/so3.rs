@@ -1111,13 +1111,12 @@ mod tests_f64 {
     /// `from_matrix_nearest` is `Mat3F64::nearest_rotation` as an `SO3F64`.
     #[test]
     fn from_matrix_nearest_is_the_nearest_rotation() -> Result<(), &'static str> {
-        let m = Mat3F64::from_cols_array(&[2.0, 0.3, -0.1, 0.2, 1.5, 0.4, -0.3, 0.1, -0.7]);
+        // `A·diag(3, 2, −1)·B` (A, B rotations) is nearest to the rotation `A·B`.
+        let a = SO3F64::exp(Vec3F64::new(0.3, -0.5, 0.8)).matrix();
+        let b = SO3F64::exp(Vec3F64::new(-0.6, 0.2, 0.4)).matrix();
+        let m = a * Mat3F64::from_diagonal(Vec3F64::new(3.0, 2.0, -1.0)) * b;
         let nearest = SO3F64::from_matrix_nearest(&m).ok_or("no rotation")?;
-        assert_mat_eq(
-            &nearest.matrix(),
-            &m.nearest_rotation().ok_or("no rotation")?,
-            EPS,
-        );
+        assert_mat_eq(&nearest.matrix(), &(a * b), 1e-9);
         let mut not_finite = Mat3F64::IDENTITY;
         not_finite.x_axis.y = f64::NAN;
         assert!(SO3F64::from_matrix_nearest(&not_finite).is_none());

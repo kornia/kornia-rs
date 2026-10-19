@@ -36,7 +36,7 @@ EPnP + LM numbers to change when that is fixed.
 
 | Field | Value |
 |-------|-------|
-| Branch | `feat/sqpnp-1182` (#1183), 2026-10-20 |
+| Commit | `d12c8045` on `feat/sqpnp-1182` (#1183) |
 | Machine | MacBook Air (Mac17,3), Apple M5 (4P+6E cores), 16 GB RAM |
 | OS | macOS 27.0.1 (arm64) |
 | Rust | 1.99.0 (b940084d7 2026-09-28), `--release` (cargo bench) |

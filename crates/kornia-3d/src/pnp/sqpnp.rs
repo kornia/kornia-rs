@@ -127,7 +127,8 @@ impl Default for SQPnPParams {
 /// # Returns
 ///
 /// The world → camera pose and its reprojection RMSE in pixels. `num_iterations` and `converged`
-/// describe the SQP run, or the LM run when `params.refine_lm` is set.
+/// are those of the SQP run that gave the returned rotation (0 and `true` when its start was
+/// already a rotation), or of the LM run when `params.refine_lm` is set.
 ///
 /// # Errors
 ///
@@ -187,7 +188,7 @@ pub fn solve_sqpnp(
         });
     }
 
-    let sight = LineOfSight::new(k, distortion)?;
+    let sight = LineOfSight::new(*k, distortion.copied())?;
     // Centred world points: better conditioned Ω, and the centroid's depth is t'_z.
     let world_centroid = centroid(points_world);
     let objective = Objective::new(points_world, points_image, world_centroid, &sight)?;
@@ -248,8 +249,8 @@ impl LineOfSight {
     /// # Errors
     ///
     /// Returns [`PnPError::InvalidCameraMatrix`] if `K` is singular or not finite.
-    fn new(k: &Mat3AF32, distortion: Option<&PolynomialDistortion>) -> Result<Self, PnPError> {
-        let k = Mat3F64::from(*k);
+    fn new(k: Mat3AF32, distortion: Option<PolynomialDistortion>) -> Result<Self, PnPError> {
+        let k = Mat3F64::from(k);
         let k_inv = k.inverse();
         if !k_inv.is_finite() {
             return Err(PnPError::InvalidCameraMatrix);
@@ -263,7 +264,7 @@ impl LineOfSight {
         Ok(Self {
             k_inv,
             intrinsic,
-            distortion: distortion.copied(),
+            distortion,
         })
     }
 
@@ -311,9 +312,9 @@ impl Objective {
     ///
     /// # Errors
     ///
-    /// Returns [`PnPError::DegenerateConfiguration`] if all lines of sight are parallel (every image
-    /// point is the same), so `S` is singular, and [`PnPError::NonFinite`] if an image point
-    /// maps to a non-finite coordinate or `Ω` is not finite.
+    /// Returns [`PnPError::NonFinite`] if an image point maps to a non-finite coordinate,
+    /// [`PnPError::DegenerateConfiguration`] if all lines of sight are parallel (every image point
+    /// is the same), and [`PnPError::NonFinite`] if `Ω` is not finite.
     fn new(
         points_world: &[Vec3AF32],
         points_image: &[Vec2F32],
@@ -405,11 +406,11 @@ struct Candidate {
 fn minimize_on_so3(objective: &Objective, params: &SQPnPParams) -> Result<Candidate, PnPError> {
     let eig = SymmetricEigen::try_new(objective.omega, f64::EPSILON, MAX_DECOMPOSITION_ITERATIONS)
         .ok_or_else(|| PnPError::SvdFailed("eigen-decomposition did not converge".to_string()))?;
-    let mut order: [usize; VEC_R_LEN] = core::array::from_fn(|i| i);
+    let mut order: [usize; VEC_R_LEN] = std::array::from_fn(|i| i);
     order.sort_by(|&a, &b| eig.eigenvalues[a].total_cmp(&eig.eigenvalues[b]));
     let eigenvalue = |k: usize| eig.eigenvalues[order[k]].max(0.0);
 
-    let lambda_max = eigenvalue(order.len() - 1);
+    let lambda_max = eigenvalue(VEC_R_LEN - 1);
     if lambda_max <= 0.0 {
         return Err(PnPError::DegenerateConfiguration(
             "all world points coincide",
@@ -417,8 +418,7 @@ fn minimize_on_so3(objective: &Objective, params: &SQPnPParams) -> Result<Candid
     }
     let num_null = (0..VEC_R_LEN)
         .filter(|&k| eigenvalue(k) <= params.rank_tolerance * lambda_max)
-        .count()
-        .max(1);
+        .count();
 
     let mut search = Search {
         best: None,
@@ -573,19 +573,19 @@ impl Constraints {
         // Entry (i, j) of R is r[3j + i] (columns stacked).
         let mut jacobian = Mat69::zeros();
         for j in 0..3 {
-            let (row1, row2, row3) = (3 * j, 3 * j + 1, 3 * j + 2);
-            jacobian[(0, row1)] = 2.0 * r1[j];
-            jacobian[(1, row2)] = 2.0 * r2[j];
-            jacobian[(2, row3)] = 2.0 * r3[j];
+            let (i1, i2, i3) = (3 * j, 3 * j + 1, 3 * j + 2);
+            jacobian[(0, i1)] = 2.0 * r1[j];
+            jacobian[(1, i2)] = 2.0 * r2[j];
+            jacobian[(2, i3)] = 2.0 * r3[j];
             // d(r1·r2)
-            jacobian[(3, row1)] = r2[j];
-            jacobian[(3, row2)] = r1[j];
+            jacobian[(3, i1)] = r2[j];
+            jacobian[(3, i2)] = r1[j];
             // d(r2·r3)
-            jacobian[(4, row2)] = r3[j];
-            jacobian[(4, row3)] = r2[j];
+            jacobian[(4, i2)] = r3[j];
+            jacobian[(4, i3)] = r2[j];
             // d(r1·r3)
-            jacobian[(5, row1)] = r3[j];
-            jacobian[(5, row3)] = r1[j];
+            jacobian[(5, i1)] = r3[j];
+            jacobian[(5, i3)] = r1[j];
         }
         Self { h, jacobian }
     }
@@ -659,7 +659,7 @@ mod tests {
         ]
     }
 
-    /// The pixels of [`valid_world`].
+    /// Five finite pixels paired with [`valid_world`].
     fn valid_image() -> Vec<Vec2F32> {
         vec![
             Vec2F32::new(600.0, 400.0),
@@ -687,6 +687,14 @@ mod tests {
             sum += off_line.dot(off_line);
         }
         Ok(sum)
+    }
+
+    /// Default parameters with LM refinement.
+    fn with_lm() -> SQPnPParams {
+        SQPnPParams {
+            refine_lm: Some(LMRefineParams::default()),
+            ..Default::default()
+        }
     }
 
     fn solve_with(scene: &Scene, params: &SQPnPParams) -> Result<PnPResult, PnPError> {
@@ -809,10 +817,7 @@ mod tests {
             );
             assert!(rotation_error_deg(pose.rotation, scene.rotation) < 0.5);
 
-            let params = SQPnPParams {
-                refine_lm: Some(LMRefineParams::default()),
-                ..Default::default()
-            };
+            let params = with_lm();
             let refined = solve_with(&scene, &params)?;
             let refined_rmse = refined.reproj_rmse.ok_or("SQPnP + LM returned no RMSE")?;
             assert!(
@@ -968,11 +973,8 @@ mod tests {
     #[test]
     fn object_space_optimum_and_lm_refinement() -> Result<(), PnPError> {
         let k = k_default();
-        let sight = LineOfSight::new(&k, None)?;
-        let lm = SQPnPParams {
-            refine_lm: Some(LMRefineParams::default()),
-            ..Default::default()
-        };
+        let sight = LineOfSight::new(k, None)?;
+        let lm = with_lm();
         let mut rng = StdRng::seed_from_u64(9);
         for _ in 0..10 {
             // Points as close as ~0.3 m with 3 px noise.
@@ -1002,7 +1004,7 @@ mod tests {
     fn noisy_planar_search_matches_every_start() -> Result<(), PnPError> {
         let k = k_default();
         let params = SQPnPParams::default();
-        let sight = LineOfSight::new(&k, None)?;
+        let sight = LineOfSight::new(k, None)?;
         let mut rng = StdRng::seed_from_u64(84);
         let mut checked = 0;
         for _ in 0..50 {
@@ -1089,7 +1091,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(13);
         let scene = Scene::generate(&mut rng, k, &SceneConfig::cube(20, 5.0, 2.0));
         let c = centroid(&scene.world);
-        let sight = LineOfSight::new(&k, None)?;
+        let sight = LineOfSight::new(k, None)?;
         let objective = Objective::new(&scene.world, &scene.image, c, &sight)?;
         let error = |r, t| object_space_error(&scene, &sight, c, r, t);
         for _ in 0..5 {
@@ -1179,10 +1181,7 @@ mod tests {
         let k = k_default();
         let (mut world, mut image) = (valid_world(), valid_image());
         let plain = SQPnPParams::default();
-        let with_lm = SQPnPParams {
-            refine_lm: Some(LMRefineParams::default()),
-            ..Default::default()
-        };
+        let with_lm = with_lm();
         world[1].x = f32::NAN;
         assert!(matches!(
             solve_sqpnp(&world, &image, &k, None, &plain),
@@ -1230,6 +1229,28 @@ mod tests {
             PnPMethod::SQPnPDefault,
         )?;
         assert_eq!(direct.rotation, dispatched.rotation);
+
+        // `PnPMethod::SQPnP` must pass its parameters on: a 1-step cap on a noisy scene shows.
+        let noisy = Scene::generate(
+            &mut StdRng::seed_from_u64(12),
+            k,
+            &SceneConfig::cube(6, 5.0, 2.0),
+        );
+        let one_step = SQPnPParams {
+            sqp_max_iterations: 1,
+            ..Default::default()
+        };
+        let capped = solve_pnp(
+            &noisy.world,
+            &noisy.image,
+            &k,
+            None,
+            PnPMethod::SQPnP(one_step),
+        )?;
+        assert_eq!(
+            (capped.num_iterations, capped.converged),
+            (Some(1), Some(false))
+        );
 
         // 40 inliers plus 40 outliers.
         scene.add_outliers(&mut rng, 40);

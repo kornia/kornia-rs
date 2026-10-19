@@ -56,10 +56,10 @@ pub(crate) fn rmse_px(
 
     // Prepare camera intrinsic for distortion if needed
     let cam_intr = CameraIntrinsic {
-        fx: fx as f64,
-        fy: fy as f64,
-        cx: cx as f64,
-        cy: cy as f64,
+        fx: f64::from(fx),
+        fy: f64::from(fy),
+        cx: f64::from(cx),
+        cy: f64::from(cy),
     };
 
     for (&pw, &uv) in points_world.iter().zip(points_image.iter()) {
@@ -71,7 +71,8 @@ pub(crate) fn rmse_px(
 
         // Apply distortion model if provided
         let (u_hat, v_hat) = if let Some(d) = distortion {
-            let (ud, vd) = distort_point_polynomial(u_undist as f64, v_undist as f64, &cam_intr, d);
+            let (ud, vd) =
+                distort_point_polynomial(f64::from(u_undist), f64::from(v_undist), &cam_intr, d);
             (ud as f32, vd as f32)
         } else {
             (u_undist, v_undist)

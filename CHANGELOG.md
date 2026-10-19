@@ -29,8 +29,9 @@ Tables in `crates/kornia-3d/benchmarks.md`. **Breaking:** `PnPMethod` has two ne
 nearest to a 3x3 matrix, plus `From` conversions between `Mat3F64` / `Vec3F64` and nalgebra's
 `Matrix3<f64>` / `Vector3<f64>`, exact `f32 → f64` `From` for `Mat3AF32`, `Vec3AF32` and
 `Vec2F32`, and the rounding `Mat3F64::as_mat3af32` / `Vec3F64::as_vec3af32`. ICP's rigid fit
-now uses it: the same result up to rounding, no warning for a reflection, and about 100× faster (a
-5-iteration `icp_vanilla` on 2000 points went from about 130 ms to 1 ms on an Apple M5).
+now uses it: the same result up to rounding, no warning for a reflection, and no per-point
+allocation (a 5-iteration `icp_vanilla` on 2000 points went from about 130 ms to 1 ms on an
+Apple M5).
 
 **Breaking: `kornia_3d::pnp::solve_pnp_ransac` rejects an invalid `confidence`** (#1169).
 `RansacParams::confidence` must be finite and strictly between 0 and 1. Any other value now returns

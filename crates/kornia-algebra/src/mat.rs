@@ -914,6 +914,7 @@ mod tests {
     /// `R` is the rotation nearest to `M` only if `Rᵀ·M` is symmetric (polar decomposition).
     #[test]
     fn test_mat3f64_nearest_rotation_is_exact() -> Result<(), &'static str> {
+        // `svd3_f64`'s projection leaves Rᵀ·M asymmetric by about 2e-5 on this matrix.
         let m = Mat3F64::from_cols_array(&[-0.2, 0.6, -0.6, -0.3, 0.6, -0.3, 0.0, 0.9, -0.8]);
         let r = m.nearest_rotation().ok_or("no rotation")?;
         let p = r.transpose() * m;
