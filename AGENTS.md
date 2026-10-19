@@ -182,6 +182,8 @@ Err(KorniaError::SizeMismatch {
 })
 ```
 
+- Keep public **error enums exhaustively matchable** — do **not** mark them `#[non_exhaustive]`. When a new failure mode appears, add a variant to the existing error enum and document the (pre-1.0) breaking change in the `CHANGELOG`. Reserve `#[non_exhaustive]` for public data structs where future field additions are expected.
+
 ### Performance
 
 - Avoid allocations in hot paths — use pre-allocated `&mut` output buffers (established pattern)
