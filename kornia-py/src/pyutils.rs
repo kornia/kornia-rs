@@ -21,6 +21,20 @@ pub(crate) fn value_err(e: impl std::fmt::Display) -> PyErr {
     PyValueError::new_err(e.to_string())
 }
 
+/// Require a RANSAC `confidence` that is finite and strictly between 0 and 1.
+///
+/// The generic driver would treat any other value as "never stop early", so
+/// every RANSAC binding rejects it, as the Rust PnP and two-view solvers do.
+pub(crate) fn require_valid_confidence(confidence: f64) -> PyResult<()> {
+    if kornia_3d::ransac::is_valid_confidence(confidence) {
+        Ok(())
+    } else {
+        Err(PyValueError::new_err(
+            "confidence must be finite and strictly between 0 and 1",
+        ))
+    }
+}
+
 /// `true` if `ptr` is a multiple of `align` (which must be non-zero).
 #[inline]
 pub(crate) fn is_ptr_aligned(ptr: *const u8, align: usize) -> bool {

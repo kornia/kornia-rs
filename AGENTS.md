@@ -97,7 +97,7 @@ kornia-cpp/         ← C++ bindings
 
 ### General
 
-- Rust edition **2021**, MSRV **1.82**
+- Rust edition **2021**, MSRV **1.89**
 - Run `rustfmt` and `clippy` before every commit — **warnings are denied**
 - Prefer **borrowing over cloning**, especially for images and tensors
 - No `unwrap()` or `expect()` in library code — always propagate errors with `?`
@@ -181,6 +181,8 @@ Err(KorniaError::SizeMismatch {
     got: dst.size(),
 })
 ```
+
+- Keep public **error enums exhaustively matchable** — do **not** mark them `#[non_exhaustive]`. When a new failure mode appears, add a variant to the existing error enum and document the (pre-1.0) breaking change in the `CHANGELOG`. Reserve `#[non_exhaustive]` for public data structs where future field additions are expected.
 
 ### Performance
 

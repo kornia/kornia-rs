@@ -35,7 +35,8 @@ pub enum PnPSolverMethod {
 ///     method: `PnPSolverMethod` to use (EPnP or APnP). Default is EPnP.
 ///     threshold: reprojection-error threshold in pixels (default 4.0).
 ///     max_iterations: RANSAC iteration cap (default 1000).
-///     confidence: target probability of an all-inlier sample (default 0.999).
+///     confidence: target probability of an all-inlier sample, finite and
+///         strictly between 0 and 1 (default 0.999).
 ///     lo_every: frequency of local optimization passes. 0 means disabled (default 0).
 ///     seed: optional RNG seed for deterministic runs.
 ///     use_sprt: enable Wald's Sequential Probability Ratio Test to reject bad
@@ -51,7 +52,8 @@ pub enum PnPSolverMethod {
 ///     * `inlier_mask` — `(N,)` uint8 per-correspondence mask (1 = inlier).
 ///     * `inlier_count` — total inliers (int).
 ///
-/// Raises ValueError on shape mismatches or when RANSAC produces no model.
+/// Raises ValueError on shape mismatches, an invalid `confidence`, `sprt_epsilon`
+/// or `sprt_delta`, or when RANSAC produces no model.
 #[pyfunction(name = "solve_pnp_ransac")]
 #[pyo3(signature = (world, image, k, method=PnPSolverMethod::EPnP, threshold=4.0, max_iterations=1000, confidence=0.999, lo_every=0, seed=None, use_sprt=false, sprt_epsilon=0.5, sprt_delta=0.01))]
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
@@ -98,6 +100,7 @@ pub fn solve_pnp_ransac_py<'py>(
             "k must be (3, 3) float64",
         ));
     }
+    crate::pyutils::require_valid_confidence(confidence)?;
     if !(sprt_epsilon.is_finite() && sprt_epsilon > 0.0 && sprt_epsilon < 1.0) {
         return Err(pyo3::exceptions::PyValueError::new_err(
             "sprt_epsilon must be a finite number in (0, 1)",

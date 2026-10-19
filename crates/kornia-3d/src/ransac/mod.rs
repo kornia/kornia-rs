@@ -13,17 +13,22 @@
 //! - [`Sampler`] draws minimal subsets. [`UniformSampler`] is the default;
 //!   PROSAC-style guided sampling can plug in later.
 //!
-//! The driver loop (`core::run`, landing in a follow-up) consumes one of each
-//! and emits a [`RansacResult`].
+//! [`run`](crate::ransac::run) / [`run_with_rng`](crate::ransac::run_with_rng)
+//! consume one of each and emit a [`RansacResult`](crate::ransac::RansacResult).
 //!
-//! # Why the split?
-//! Existing estimators in [`crate::pose`] each carry their own copy of the
-//! RANSAC loop. Centralising the loop here lets us add LO-RANSAC, adaptive
-//! iteration caps, and σ-consensus once instead of per-estimator, and keeps
-//! the public surface small enough to bind cleanly from `kornia-py`.
+//! # One loop
+//! Every robust estimator in this crate runs on the same crate-private
+//! staged loop: [`run`](crate::ransac::run) here, the two-view entry points in [`crate::pose`]
+//! (`ransac_fundamental`, `ransac_essential_5pt`, `ransac_homography`) and
+//! [`crate::pnp::solve_pnp_ransac`]. Each plugs its own sampling, scoring,
+//! termination and refinement components into that loop, so improvements
+//! such as LO-RANSAC, SPRT or σ-consensus land once instead of per
+//! estimator. [`run_parallel`](crate::ransac::run_parallel) is still a
+//! separate loop.
 
 mod config;
 mod driver;
+pub(crate) mod engine;
 pub mod estimators;
 pub mod kernels;
 pub mod magsac;
@@ -31,8 +36,7 @@ mod result;
 pub mod samples;
 pub mod sprt;
 
-pub use config::{ConsensusKind, RansacConfig};
-pub(crate) use driver::adaptive_max_iters;
+pub use config::{is_valid_confidence, ConsensusKind, RansacConfig};
 pub use driver::{run, run_parallel, run_with_rng};
 pub use kernels::{
     CauchyKernel, HuberKernel, IdentityKernel, RobustKernel, RobustKernelKind, TukeyKernel,

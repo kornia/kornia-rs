@@ -19,6 +19,10 @@ name = "bench_linalg"
 harness = false
 name = "bench_l2_line"
 
+[[bench]]
+harness = false
+name = "bench_umeyama"
+
 [dependencies]
 approx = { workspace = true, optional = true }
 glam = { workspace = true }
