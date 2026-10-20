@@ -13,6 +13,17 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
 
 ## [Unreleased]
 
+**`kornia-3d` `pnp::refine_pose_lm` works far from the world origin and in millimetres** (#1202).
+Its `f32` solver lost the pose update in rounding when coordinates were large: with the scene 100 m
+from the origin a 0.5° start error only fell to 0.33°, and 271 of 5217 refinements on the EPOS PnP
+data of the 2020 RANSAC tutorial (millimetres) failed with "LU solve failed". It now solves in a
+frame centred on the points and scaled by their distance from the start camera; on those EPOS
+refinements the pose mAA went from 0.281 to 0.379, the same as OpenCV's `solvePnPRefineLM` and
+PoseLib. EPnP with `refine_lm` and the `solve_pnp_ransac` refit (Rust and Python) use it. Behaviour
+changes: the reported RMSE, `initial_lambda` and `gradient_tolerance` are in that frame; a
+non-finite world point or start pose, or all points on the start camera, returns
+`PnPError::SvdFailed` instead of a NaN pose; a non-orthonormal start rotation is normalised first.
+
 **Breaking: `kornia_3d::pnp::solve_pnp_ransac` rejects an invalid `confidence`** (#1169).
 `RansacParams::confidence` must be finite and strictly between 0 and 1. Any other value now returns
 the new `PnPRansacError::InvalidConfidence { confidence }`, as the two-view solvers return

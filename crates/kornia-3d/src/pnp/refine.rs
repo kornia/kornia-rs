@@ -350,10 +350,66 @@ fn build_robust_loss(params: &LMRefineParams) -> Result<Option<Arc<dyn RobustLos
     Ok(Some(loss))
 }
 
+/// The world frame the solver works in: `x' = scale · (x − centre)`, with `centre` the centroid
+/// of the points and `scale` one over their median distance from the starting camera.
+///
+/// Reprojection does not change when the world and the camera move together by a similarity, but
+/// the `f32` solver does: with large coordinates its finite-difference steps and pose updates are
+/// lost in rounding. In this frame every number stays near 1. The centre is on the points, not on
+/// the camera: about the camera, a small rotation and a sideways shift move a narrow view almost
+/// the same way, and the finite differences cannot tell them apart.
+struct WorkFrame {
+    centre: Vec3AF32,
+    scale: f32,
+}
+
+impl WorkFrame {
+    /// The frame for the camera pose `(rotation, translation)` (world → camera), or `None` if a
+    /// world point or the pose is not finite, or the points sit on the camera.
+    fn new(points_world: &[Vec3AF32], rotation: Mat3AF32, translation: Vec3AF32) -> Option<Self> {
+        let centre =
+            points_world.iter().fold(Vec3AF32::ZERO, |sum, &p| sum + p) / points_world.len() as f32;
+        if !(centre.x.is_finite() && centre.y.is_finite() && centre.z.is_finite()) {
+            return None;
+        }
+        let camera = -(rotation.transpose() * translation);
+        let mut distances: Vec<f32> = points_world
+            .iter()
+            .map(|&p| (p - camera).length())
+            .collect();
+        let mid = distances.len() / 2;
+        let (_, median, _) = distances.select_nth_unstable_by(mid, f32::total_cmp);
+        // A non-finite start pose, or the points sitting on the start camera, has no scale.
+        let scale = 1.0 / *median;
+        (scale.is_finite() && scale > 0.0).then_some(Self { centre, scale })
+    }
+
+    /// A world point in this frame.
+    fn point(&self, p: Vec3AF32) -> Vec3AF32 {
+        (p - self.centre) * self.scale
+    }
+
+    /// The translation of a world → camera pose with this rotation, in this frame.
+    fn translation_in(&self, rotation: Mat3AF32, translation: Vec3AF32) -> Vec3AF32 {
+        (translation + rotation * self.centre) * self.scale
+    }
+
+    /// The translation of a pose in this frame, back in the world frame.
+    fn translation_out(&self, rotation: Mat3AF32, translation: Vec3AF32) -> Vec3AF32 {
+        translation / self.scale - rotation * self.centre
+    }
+}
+
 /// Refine a PnP pose estimate using Levenberg-Marquardt optimization.
 ///
 /// This function takes an initial pose estimate (typically from EPnP or similar)
 /// and refines it by minimizing the reprojection error across all correspondences.
+///
+/// The solver works in a frame centred on the points and scaled by their median distance from the
+/// initial camera, so large world coordinates (points far from the origin, a far camera, or
+/// millimetre units) do not break its `f32` steps. The returned pose is in the original world
+/// frame. The LM settings that depend on the pose units (`initial_lambda`, `gradient_tolerance`)
+/// act in that frame.
 ///
 /// # Arguments
 ///
@@ -368,6 +424,13 @@ fn build_robust_loss(params: &LMRefineParams) -> Result<Option<Arc<dyn RobustLos
 /// # Returns
 ///
 /// Refined `PnPResult` with updated rotation, translation, and convergence info.
+///
+/// # Errors
+///
+/// Returns [`PnPError::MismatchedArrayLengths`] if the slices differ in length,
+/// [`PnPError::InsufficientCorrespondences`] for fewer than 3 points, and [`PnPError::SvdFailed`]
+/// if a world point or the initial pose is not finite, the points sit on the initial camera, the
+/// robust loss parameters are invalid, or the optimization fails.
 pub fn refine_pose_lm(
     points_world: &[Vec3AF32],
     points_image: &[Vec2F32],
@@ -394,9 +457,22 @@ pub fn refine_pose_lm(
         });
     }
 
-    // Convert initial pose to SE3 and then to parameter array
-    let initial_so3 = SO3F32::from_matrix(initial_rotation);
-    let initial_se3 = SE3F32::new(initial_so3, *initial_translation);
+    // Convert initial pose to SE3 and then to parameter array, in the work frame. The quaternion
+    // is normalised so the frame uses the same rotation as the factors (they normalise it too).
+    let initial_so3 = SO3F32::from_quaternion(SO3F32::from_matrix(initial_rotation).q.normalize());
+    let start_rotation = initial_so3.matrix();
+    let frame =
+        WorkFrame::new(points_world, start_rotation, *initial_translation).ok_or_else(|| {
+            PnPError::SvdFailed(
+                "non-finite world points or initial pose, or the points sit on the camera"
+                    .to_string(),
+            )
+        })?;
+    let points_work: Vec<Vec3AF32> = points_world.iter().map(|&p| frame.point(p)).collect();
+    let initial_se3 = SE3F32::new(
+        initial_so3,
+        frame.translation_in(start_rotation, *initial_translation),
+    );
     let initial_params = initial_se3.to_params().to_vec();
 
     // Create optimization problem
@@ -414,7 +490,7 @@ pub fn refine_pose_lm(
 
     // Add reprojection factors for each correspondence
     let loss = build_robust_loss(params)?;
-    for (pw, pi) in points_world.iter().zip(points_image.iter()) {
+    for (pw, pi) in points_work.iter().zip(points_image.iter()) {
         let factor =
             Box::new(ReprojectionFactor::new(*pw, *pi, k, distortion).with_loss(loss.clone()));
         problem
@@ -457,18 +533,19 @@ pub fn refine_pose_lm(
 
     let refined_se3 = SE3F32::from_qxyz(q_normalized, t);
     let refined_rotation = refined_se3.r.matrix();
-    let refined_translation = refined_se3.t;
     let refined_rvec = refined_se3.r.log();
 
-    // Compute final RMSE
+    // Final RMSE in the work frame: the same pixels as in the world frame, without the rounding of
+    // large world coordinates.
     let rmse = compute_rmse(
-        points_world,
+        &points_work,
         points_image,
         &refined_rotation,
-        &refined_translation,
+        &refined_se3.t,
         k,
         distortion,
     )?;
+    let refined_translation = frame.translation_out(refined_rotation, refined_se3.t);
 
     let converged = matches!(
         result.termination_reason,
@@ -553,6 +630,7 @@ fn compute_rmse(
 mod tests {
     use super::*;
     use kornia_algebra::optim::Factor;
+    use kornia_algebra::{Mat3F64, Vec3F64, SO3F64};
 
     fn k_default() -> Mat3AF32 {
         Mat3AF32::from_cols(
@@ -782,5 +860,215 @@ mod tests {
             result,
             Err(PnPError::InsufficientCorrespondences { .. })
         ));
+    }
+
+    fn f32_vec(v: Vec3F64) -> Vec3AF32 {
+        Vec3AF32::new(v.x as f32, v.y as f32, v.z as f32)
+    }
+
+    fn f64_vec(v: Vec3AF32) -> Vec3F64 {
+        Vec3F64::new(v.x.into(), v.y.into(), v.z.into())
+    }
+
+    fn f32_mat(m: Mat3F64) -> Mat3AF32 {
+        Mat3AF32::from_cols_array(&m.to_cols_array().map(|v| v as f32))
+    }
+
+    fn f64_mat(m: Mat3AF32) -> Mat3F64 {
+        Mat3F64::from_cols_array(&m.to_cols_array().map(f64::from))
+    }
+
+    /// A refined pose and its errors against the true pose.
+    struct MovedSceneResult {
+        pose: PnPResult,
+        /// Rotation error in degrees.
+        rotation_deg: f64,
+        /// Camera-centre error relative to the depth.
+        centre: f64,
+    }
+
+    /// Refines a pose that starts 0.5° and 1% of the depth away from the truth. The scene is 27
+    /// points on a cube of half-size `size`, seen from `depth` metres, and the whole scene is
+    /// moved `offset` metres from the world origin.
+    fn refine_moved_scene(
+        offset: f64,
+        depth: f64,
+        size: f64,
+    ) -> Result<MovedSceneResult, PnPError> {
+        let rotation = SO3F64::exp(Vec3F64::new(0.2, -0.4, 0.7)).matrix();
+        let centre = Vec3F64::new(1.0, 0.5, 0.25).normalize() * offset;
+        let translation = Vec3F64::new(0.0, 0.0, depth) - rotation * centre;
+        let (mut world, mut image) = (Vec::new(), Vec::new());
+        for i in 0..27u8 {
+            let corner = Vec3F64::new(
+                f64::from(i % 3) - 1.0,
+                f64::from(i / 3 % 3) - 1.0,
+                f64::from(i / 9) - 1.0,
+            );
+            let point = f32_vec(centre + corner * size);
+            // Project the stored f32 point, so the data is exact for the true pose.
+            let pc = rotation * f64_vec(point) + translation;
+            world.push(point);
+            image.push(Vec2F32::new(
+                (800.0 * pc.x / pc.z + 640.0) as f32,
+                (800.0 * pc.y / pc.z + 480.0) as f32,
+            ));
+        }
+
+        let camera_centre = -(rotation.transpose() * translation);
+        let start_rotation =
+            SO3F64::exp(Vec3F64::new(0.0, 0.5f64.to_radians(), 0.0)).matrix() * rotation;
+        let start_centre =
+            camera_centre + Vec3F64::new(0.3, -0.5, 0.8).normalize() * (0.01 * depth);
+        let start_translation = -(start_rotation * start_centre);
+
+        let result = refine_pose_lm(
+            &world,
+            &image,
+            &k_default(),
+            &f32_mat(start_rotation),
+            &f32_vec(start_translation),
+            None,
+            &LMRefineParams::default(),
+        )?;
+
+        let estimate = f64_mat(result.rotation);
+        let chord = (0..3)
+            .map(|i| (estimate.col(i) - rotation.col(i)).length_squared())
+            .sum::<f64>()
+            .sqrt()
+            / (2.0 * std::f64::consts::SQRT_2);
+        let rotation_error_deg = (2.0 * chord.clamp(0.0, 1.0).asin()).to_degrees();
+        let estimated_centre = -(estimate.transpose() * f64_vec(result.translation));
+        let centre_error = (estimated_centre - camera_centre).length() / depth;
+        Ok(MovedSceneResult {
+            pose: result,
+            rotation_deg: rotation_error_deg,
+            centre: centre_error,
+        })
+    }
+
+    /// The same scene and start, moved away from the world origin. Large world coordinates used to
+    /// swallow the f32 pose update: of the 0.5° start error, 0.33° was left at 100 m and almost
+    /// all of it at 10 km.
+    #[test]
+    fn refinement_does_not_depend_on_the_world_origin() -> Result<(), PnPError> {
+        for offset in [0.0, 100.0, 1_000.0, 10_000.0] {
+            let MovedSceneResult {
+                pose: result,
+                rotation_deg,
+                centre,
+            } = refine_moved_scene(offset, 6.0, 1.0)?;
+            assert!(
+                rotation_deg < 1e-3 && centre < 1e-3,
+                "{offset} m from the origin: {rotation_deg}°, centre off by {centre} of the depth"
+            );
+            assert_eq!(result.converged, Some(true), "{offset} m from the origin");
+            // The data is exact, so the reported reprojection error must be about zero too.
+            let rmse = result.reproj_rmse.unwrap_or(f32::NAN);
+            assert!(rmse < 1e-2, "{offset} m from the origin: RMSE {rmse} px");
+        }
+        Ok(())
+    }
+
+    /// A distant scene has the same problem even at the world origin, because the translation is
+    /// large; a very close one must keep working.
+    #[test]
+    fn refinement_does_not_depend_on_the_scene_distance() -> Result<(), PnPError> {
+        for (offset, depth, size) in [
+            (0.0, 100.0, 10.0),
+            (0.0, 300.0, 30.0),
+            (10_000.0, 300.0, 30.0),
+            (0.0, 0.3, 0.05),
+        ] {
+            let MovedSceneResult {
+                pose: result,
+                rotation_deg,
+                centre,
+            } = refine_moved_scene(offset, depth, size)?;
+            assert!(
+                rotation_deg < 1e-3 && centre < 1e-3,
+                "scene {depth} m away, {offset} m from the origin: {rotation_deg}°, \
+                 centre off by {centre} of the depth"
+            );
+            assert_eq!(result.converged, Some(true), "scene {depth} m away");
+            let rmse = result.reproj_rmse.unwrap_or(f32::NAN);
+            assert!(rmse < 1e-2, "scene {depth} m away: RMSE {rmse} px");
+        }
+        Ok(())
+    }
+
+    /// The work frame must map the pose back exactly: with no LM iteration the start translation
+    /// comes back, also 10 km from the origin and for a start rotation that is not quite
+    /// orthonormal (the frame must use the normalised rotation the solver uses).
+    #[test]
+    fn zero_iterations_return_the_start_translation() -> Result<(), PnPError> {
+        let rotation = SO3F64::exp(Vec3F64::new(0.2, -0.4, 0.7)).matrix();
+        let centre = Vec3F64::new(1.0, 0.5, 0.25).normalize() * 10_000.0;
+        let translation = Vec3F64::new(0.0, 0.0, 6.0) - rotation * centre;
+        let world: Vec<Vec3AF32> = (0..27)
+            .map(|i| {
+                let corner = Vec3F64::new(
+                    (i % 3) as f64 - 1.0,
+                    (i / 3 % 3) as f64 - 1.0,
+                    (i / 9) as f64 - 1.0,
+                );
+                f32_vec(centre + corner)
+            })
+            .collect();
+        // Without iterations only the start pose matters, not the pixels.
+        let image = vec![Vec2F32::new(640.0, 480.0); world.len()];
+        for stretch in [1.0, 1.01] {
+            let start = Mat3F64::from_cols_array(&rotation.to_cols_array().map(|v| v * stretch));
+            let result = refine_pose_lm(
+                &world,
+                &image,
+                &k_default(),
+                &f32_mat(start),
+                &f32_vec(translation),
+                None,
+                &LMRefineParams::default().with_max_iterations(0),
+            )?;
+            // |t| is about 10 km, where f32 steps are 1 mm.
+            let moved = (f64_vec(result.translation) - translation).length();
+            assert!(
+                moved < 0.05,
+                "stretch {stretch}: the translation moved by {moved} m"
+            );
+        }
+        Ok(())
+    }
+
+    /// Input the work frame cannot be built from is an error, not a NaN pose: a non-finite world
+    /// point, a non-finite start pose, or every point on the start camera.
+    #[test]
+    fn non_finite_or_degenerate_input_is_an_error() {
+        let world: Vec<Vec3AF32> = (0..6)
+            .map(|i| Vec3AF32::new(0.1 * i as f32, 0.05 * (i % 2) as f32, 5.0))
+            .collect();
+        let mut nan_point = world.clone();
+        nan_point[2].x = f32::NAN;
+        let on_camera = vec![Vec3AF32::ZERO; world.len()];
+        let image = vec![Vec2F32::new(640.0, 480.0); world.len()];
+        for (name, points, translation) in [
+            ("NaN world point", &nan_point, Vec3AF32::ZERO),
+            (
+                "NaN start translation",
+                &world,
+                Vec3AF32::new(f32::NAN, 0.0, 0.0),
+            ),
+            ("points on the camera", &on_camera, Vec3AF32::ZERO),
+        ] {
+            let result = refine_pose_lm(
+                points,
+                &image,
+                &k_default(),
+                &Mat3AF32::IDENTITY,
+                &translation,
+                None,
+                &LMRefineParams::default(),
+            );
+            assert!(matches!(result, Err(PnPError::SvdFailed(_))), "{name}");
+        }
     }
 }
