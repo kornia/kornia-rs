@@ -335,13 +335,13 @@ fn build_robust_loss(params: &LMRefineParams) -> Result<Option<Arc<dyn RobustLos
     let loss: Arc<dyn RobustLoss> = match params.robust {
         RobustKernelKind::Identity => unreachable!("handled above"),
         RobustKernelKind::Huber => Arc::new(HuberLoss::new(delta).map_err(|e| {
-            PnPError::SvdFailed(format!("Invalid Huber robust loss parameters: {e}"))
+            PnPError::InvalidParams(format!("Invalid Huber robust loss parameters: {e}"))
         })?),
         RobustKernelKind::Cauchy => Arc::new(CauchyLoss::new(delta).map_err(|e| {
-            PnPError::SvdFailed(format!("Invalid Cauchy robust loss parameters: {e}"))
+            PnPError::InvalidParams(format!("Invalid Cauchy robust loss parameters: {e}"))
         })?),
         RobustKernelKind::Tukey => {
-            return Err(PnPError::SvdFailed(
+            return Err(PnPError::InvalidParams(
                 "Tukey robust kernel is not supported for LM pose refinement".to_string(),
             ));
         }
@@ -782,5 +782,50 @@ mod tests {
             result,
             Err(PnPError::InsufficientCorrespondences { .. })
         ));
+    }
+
+    #[test]
+    fn test_refine_pose_lm_tukey_is_rejected_as_invalid_params() {
+        let points_world: [Vec3AF32; 6] = [
+            Vec3AF32::new(0.0315, 0.03333, -0.10409),
+            Vec3AF32::new(-0.0315, 0.03333, -0.10409),
+            Vec3AF32::new(0.0, -0.00102, -0.12977),
+            Vec3AF32::new(0.02646, -0.03167, -0.1053),
+            Vec3AF32::new(-0.02646, -0.031667, -0.1053),
+            Vec3AF32::new(0.0, 0.04515, -0.11033),
+        ];
+        let points_image: [Vec2F32; 6] = [
+            Vec2F32::new(722.96466, 502.0828),
+            Vec2F32::new(669.88837, 498.61877),
+            Vec2F32::new(707.0025, 478.48975),
+            Vec2F32::new(728.05634, 447.56918),
+            Vec2F32::new(682.6069, 443.91776),
+            Vec2F32::new(696.4414, 511.96442),
+        ];
+
+        let params = LMRefineParams {
+            robust: RobustKernelKind::Tukey,
+            robust_scale_sq: 25.0,
+            ..LMRefineParams::default()
+        };
+
+        let result = refine_pose_lm(
+            &points_world,
+            &points_image,
+            &k_default(),
+            &Mat3AF32::IDENTITY,
+            &Vec3AF32::new(0.0, 0.0, 1.0),
+            None,
+            &params,
+        );
+
+        match result {
+            Err(err @ PnPError::InvalidParams(_)) => {
+                let msg = err.to_string();
+                assert!(msg.contains("Tukey"), "unexpected message: {msg}");
+                assert!(!msg.contains("SVD"), "misleading SVD wording: {msg}");
+            }
+            other => panic!("expected InvalidParams for Tukey, got {other:?}"),
+        }
     }
 }
