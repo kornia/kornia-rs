@@ -16,7 +16,6 @@ use kornia_imgproc::calibration::{
 };
 use std::sync::Arc;
 
-use super::ops::compute_centroid;
 use super::{PnPError, PnPResult};
 
 const DEFAULT_MIN_Z_DEPTH: f32 = 1e-10;
@@ -351,12 +350,13 @@ fn build_robust_loss(params: &LMRefineParams) -> Result<Option<Arc<dyn RobustLos
     Ok(Some(loss))
 }
 
-/// The world frame the solver works in: `x' = scale · (x − centre)`, with `centre` the centroid
-/// of the points and `scale` one over their median distance from the starting camera.
+/// The world frame the solver works in: `x' = scale · (x − centre)`, with `centre` the per-axis
+/// median of the points and `scale` one over their median distance from the starting camera.
 ///
 /// Reprojection does not change when the world and the camera move together by a similarity, but
 /// the `f32` solver does: with large coordinates its finite-difference steps and pose updates are
-/// lost in rounding. In this frame every number stays near 1. The centre is on the points, not on
+/// lost in rounding. In this frame most points stay near 1; medians keep a few far outliers from
+/// moving the frame, which a mean would do. The centre is on the points, not on
 /// the camera: about the camera, a small rotation and a sideways shift move a narrow view almost
 /// the same way, and the finite differences cannot tell them apart.
 struct WorkFrame {
@@ -368,19 +368,28 @@ impl WorkFrame {
     /// The frame for the camera pose `(rotation, translation)` (world → camera), or `None` if a
     /// world point or the pose is not finite, or more than half of the points sit on the camera.
     fn new(points_world: &[Vec3AF32], rotation: Mat3AF32, translation: Vec3AF32) -> Option<Self> {
-        let centre = compute_centroid(points_world);
-        if !(centre.x.is_finite() && centre.y.is_finite() && centre.z.is_finite()) {
+        if !points_world
+            .iter()
+            .all(|p| p.x.is_finite() && p.y.is_finite() && p.z.is_finite())
+        {
             return None;
         }
+        let axis_median = |axis: fn(&Vec3AF32) -> f32| {
+            let mut values: Vec<f32> = points_world.iter().map(axis).collect();
+            median(&mut values)
+        };
+        let centre = Vec3AF32::new(
+            axis_median(|p| p.x),
+            axis_median(|p| p.y),
+            axis_median(|p| p.z),
+        );
         let camera = -(rotation.transpose() * translation);
         let mut distances: Vec<f32> = points_world
             .iter()
             .map(|&p| (p - camera).length())
             .collect();
-        let mid = distances.len() / 2;
-        let (_, median, _) = distances.select_nth_unstable_by(mid, f32::total_cmp);
         // A non-finite start pose, or most points sitting on the start camera, has no scale.
-        let scale = 1.0 / *median;
+        let scale = 1.0 / median(&mut distances);
         (scale.is_finite() && scale > 0.0).then_some(Self { centre, scale })
     }
 
@@ -398,6 +407,13 @@ impl WorkFrame {
     fn translation_out(&self, rotation: Mat3AF32, translation: Vec3AF32) -> Vec3AF32 {
         translation / self.scale - rotation * self.centre
     }
+}
+
+/// The median of `values` (the upper one for an even count), reordering them. `values` must not
+/// be empty.
+fn median(values: &mut [f32]) -> f32 {
+    let mid = values.len() / 2;
+    *values.select_nth_unstable_by(mid, f32::total_cmp).1
 }
 
 /// Refine a PnP pose estimate using Levenberg-Marquardt optimization.
@@ -898,11 +914,13 @@ mod tests {
 
     /// Refines a pose that starts 0.5° and 1% of the depth away from the truth. The scene is a
     /// 3×3×3 grid filling a cube of half-size `size`, seen from `depth` units, and the whole scene
-    /// is moved `offset` units from the world origin.
+    /// is moved `offset` units from the world origin. With `outlier`, one more point that far
+    /// along the view is added at a wrong pixel, and a Cauchy loss is used.
     fn refine_moved_scene(
         offset: f64,
         depth: f64,
         size: f64,
+        outlier: Option<f64>,
     ) -> Result<MovedSceneResult, PnPError> {
         let rotation = SO3F64::exp(Vec3F64::new(0.2, -0.4, 0.7)).matrix();
         let centre = Vec3F64::new(1.0, 0.5, 0.25).normalize() * offset;
@@ -920,6 +938,14 @@ mod tests {
         }
 
         let camera_centre = -(rotation.transpose() * translation);
+        let mut params = LMRefineParams::default();
+        if let Some(distance) = outlier {
+            let view = rotation.transpose() * Vec3F64::new(0.05, 0.02, 1.0).normalize();
+            world.push(f32_vec(camera_centre + view * distance));
+            image.push(Vec2F32::new(100.0, 100.0));
+            params.robust = RobustKernelKind::Cauchy;
+            params.robust_scale_sq = 4.0;
+        }
         let start_rotation =
             SO3F64::exp(Vec3F64::new(0.0, 0.5f64.to_radians(), 0.0)).matrix() * rotation;
         let start_centre =
@@ -933,7 +959,7 @@ mod tests {
             &f32_mat(start_rotation),
             &f32_vec(start_translation),
             None,
-            &LMRefineParams::default(),
+            &params,
         )?;
 
         let estimate = f64_mat(result.rotation);
@@ -960,7 +986,7 @@ mod tests {
                 pose: result,
                 rotation_deg,
                 centre,
-            } = refine_moved_scene(offset, 6.0, 1.0)?;
+            } = refine_moved_scene(offset, 6.0, 1.0, None)?;
             assert!(
                 rotation_deg < 1e-3 && centre < 1e-3,
                 "{offset} m from the origin: {rotation_deg}°, centre off by {centre} of the depth"
@@ -988,7 +1014,7 @@ mod tests {
                 pose: result,
                 rotation_deg,
                 centre,
-            } = refine_moved_scene(offset, depth, size)?;
+            } = refine_moved_scene(offset, depth, size, None)?;
             assert!(
                 rotation_deg < 1e-3 && centre < 1e-3,
                 "scene {depth} m away, {offset} m from the origin: {rotation_deg}°, \
@@ -997,6 +1023,25 @@ mod tests {
             assert_eq!(result.converged, Some(true), "scene {depth} m away");
             let rmse = result.reproj_rmse.unwrap_or(f32::NAN);
             assert!(rmse < 1e-2, "scene {depth} m away: RMSE {rmse} px");
+        }
+        Ok(())
+    }
+
+    /// One gross outlier far behind the scene, with a robust loss: the frame must stay on the
+    /// inliers. A mean centre followed the outlier and lost the pose from 10 km on.
+    #[test]
+    fn a_far_outlier_does_not_move_the_work_frame() -> Result<(), PnPError> {
+        for distance in [1e4, 1e5, 1e6] {
+            let MovedSceneResult {
+                pose: result,
+                rotation_deg,
+                centre,
+            } = refine_moved_scene(0.0, 6.0, 1.0, Some(distance))?;
+            assert!(
+                rotation_deg < 1e-2 && centre < 1e-3,
+                "outlier {distance} m away: {rotation_deg}°, centre off by {centre} of the depth"
+            );
+            assert_eq!(result.converged, Some(true), "outlier {distance} m away");
         }
         Ok(())
     }
