@@ -135,10 +135,10 @@ const MAX_INITIAL_LAMBDA: f32 = 1e10;
 /// IRLS weight `w = ρ'(s)` for `s = ‖r‖²`. The residual and its Jacobian rows are scaled by √w,
 /// which is what makes the normal equations those of the robust problem.
 ///
-/// `Tukey` deliberately falls back to `Cauchy`, matching `BaParams::robust`'s documented fallback
-/// and `ba::build_robust_loss`. NOTE this disagrees with `impl RobustKernel for RobustKernelKind`
-/// in [`crate::ransac`], which dispatches `Tukey` to the real hard redescender — the same enum
-/// value means two different kernels depending on which module consumes it.
+/// `Tukey` never reaches this function from the solver: `bundle_adjust_schur_impl` rejects it
+/// up front, matching `ba::bundle_adjust`. The `Tukey` arm below only keeps the `match`
+/// exhaustive (and pins the old aliasing in unit tests). NOTE `impl RobustKernel for
+/// RobustKernelKind` in [`crate::ransac`] dispatches `Tukey` to the real hard redescender.
 #[inline]
 fn robust_weight(kind: RobustKernelKind, scale: f32, r_sq: f32) -> f32 {
     match kind {
@@ -1291,8 +1291,9 @@ fn sparse_llt_solve(
 /// accept test compares the true robust cost ½ρ(s)), plus `max_iterations`,
 /// `initial_lambda` and `cost_tolerance`.
 ///
-/// `RobustKernelKind::Tukey` maps to Cauchy, as it does in `BaParams::robust`. A non-finite or
-/// non-positive `BaParams::robust_scale_sq` collapses to plain L2 for every kernel, as
+/// `RobustKernelKind::Tukey` is rejected with [`BaError::InvalidInput`], as in
+/// [`crate::ba::bundle_adjust`]. A non-finite or non-positive
+/// `BaParams::robust_scale_sq` collapses to plain L2 for every kernel, as
 /// `BaParams::robust_scale_sq` documents.
 ///
 /// # `initial_lambda` does NOT mean the same thing here as in [`crate::ba::bundle_adjust`]
@@ -1374,6 +1375,12 @@ pub fn bundle_adjust_schur_with_all_priors(
     pose_priors: Option<&[Option<BaPosePrior>]>,
     motion_priors: Option<&[BaMotionPrior]>,
 ) -> Result<BaResult, SchurBaError> {
+    if params.robust == RobustKernelKind::Tukey {
+        return Err(SchurBaError::Ba(BaError::InvalidInput(
+            "Tukey robust kernel is not supported for bundle adjustment".to_string(),
+        )));
+    }
+
     bundle_adjust_schur_impl(
         poses,
         points,
@@ -1449,6 +1456,11 @@ fn bundle_adjust_schur_impl(
     pose_priors: Option<&[Option<BaPosePrior>]>,
     motion_priors: Option<&[BaMotionPrior]>,
 ) -> Result<BaResult, SchurBaError> {
+    if params.robust == RobustKernelKind::Tukey {
+        return Err(SchurBaError::Ba(BaError::InvalidInput(
+            "Tukey robust kernel is not supported for bundle adjustment".to_string(),
+        )));
+    }
     // The ONLY read of `camera_seed` before the result is packed.
     let intr_seed = BaIntrinsics::seed(camera_seed, params.refine_k1);
     // Shared free-intrinsic border: which columns exist, and the fixed focals `α` scales.
@@ -6722,6 +6734,30 @@ mod tests {
             println!(
                 "hi={hi} raw={raw} -> forced step {step}, k1_trial {}",
                 -0.15 + step as f32
+            );
+        }
+    }
+    #[test]
+    fn tukey_is_rejected_by_both_ba_solvers() {
+        let (poses, points, obs, cam) = perturbed_two_view_problem();
+        // A finite scale and the INFINITY default: neither may slip through.
+        for scale_sq in [5.99_f32, f32::INFINITY] {
+            let params = BaParams {
+                robust: RobustKernelKind::Tukey,
+                robust_scale_sq: scale_sq,
+                ..BaParams::default()
+            };
+
+            let plain = crate::ba::bundle_adjust(&poses, &points, &obs, &cam, &params);
+            assert!(
+                matches!(plain, Err(BaError::InvalidInput(_))),
+                "bundle_adjust accepted Tukey at scale_sq={scale_sq}"
+            );
+
+            let schur = bundle_adjust_schur(&poses, &points, &obs, &cam, &params);
+            assert!(
+                matches!(schur, Err(SchurBaError::Ba(BaError::InvalidInput(_)))),
+                "bundle_adjust_schur accepted Tukey at scale_sq={scale_sq}"
             );
         }
     }
