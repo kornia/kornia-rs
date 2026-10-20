@@ -19,10 +19,10 @@ from the origin a 0.5° start error only fell to 0.33°, and 271 of 5217 refinem
 data of the 2020 RANSAC tutorial (millimetres) failed with "LU solve failed". It now solves in a
 frame centred on the points and scaled by their distance from the start camera; on those EPOS
 refinements the pose mAA went from 0.281 to 0.379, the same as OpenCV's `solvePnPRefineLM` and
-PoseLib. EPnP with `refine_lm` and the `solve_pnp_ransac` refit (Rust and Python) use it. Behaviour
-changes: the reported RMSE, `initial_lambda` and `gradient_tolerance` are in that frame; a
-non-finite world point or start pose, or all points on the start camera, returns
-`PnPError::SvdFailed` instead of a NaN pose; a non-orthonormal start rotation is normalised first.
+PoseLib. EPnP with `refine_lm` (also the AP3P refit of `solve_pnp_ransac`) and the Python
+`solve_pnp_ransac` polish use it. Behaviour changes: `initial_lambda` and `gradient_tolerance` act
+in that frame; a non-finite world point or start pose returns `PnPError::SvdFailed` instead of `Ok`
+with a NaN RMSE or a NaN pose.
 
 **Breaking: `kornia_3d::pnp::solve_pnp_ransac` rejects an invalid `confidence`** (#1169).
 `RansacParams::confidence` must be finite and strictly between 0 and 1. Any other value now returns

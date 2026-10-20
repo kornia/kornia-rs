@@ -16,6 +16,7 @@ use kornia_imgproc::calibration::{
 };
 use std::sync::Arc;
 
+use super::ops::compute_centroid;
 use super::{PnPError, PnPResult};
 
 const DEFAULT_MIN_Z_DEPTH: f32 = 1e-10;
@@ -365,10 +366,9 @@ struct WorkFrame {
 
 impl WorkFrame {
     /// The frame for the camera pose `(rotation, translation)` (world → camera), or `None` if a
-    /// world point or the pose is not finite, or the points sit on the camera.
+    /// world point or the pose is not finite, or more than half of the points sit on the camera.
     fn new(points_world: &[Vec3AF32], rotation: Mat3AF32, translation: Vec3AF32) -> Option<Self> {
-        let centre =
-            points_world.iter().fold(Vec3AF32::ZERO, |sum, &p| sum + p) / points_world.len() as f32;
+        let centre = compute_centroid(points_world);
         if !(centre.x.is_finite() && centre.y.is_finite() && centre.z.is_finite()) {
             return None;
         }
@@ -379,7 +379,7 @@ impl WorkFrame {
             .collect();
         let mid = distances.len() / 2;
         let (_, median, _) = distances.select_nth_unstable_by(mid, f32::total_cmp);
-        // A non-finite start pose, or the points sitting on the start camera, has no scale.
+        // A non-finite start pose, or most points sitting on the start camera, has no scale.
         let scale = 1.0 / *median;
         (scale.is_finite() && scale > 0.0).then_some(Self { centre, scale })
     }
@@ -429,8 +429,8 @@ impl WorkFrame {
 ///
 /// Returns [`PnPError::MismatchedArrayLengths`] if the slices differ in length,
 /// [`PnPError::InsufficientCorrespondences`] for fewer than 3 points, and [`PnPError::SvdFailed`]
-/// if a world point or the initial pose is not finite, the points sit on the initial camera, the
-/// robust loss parameters are invalid, or the optimization fails.
+/// if a world point or the initial pose is not finite, more than half of the points sit on the
+/// initial camera, the robust loss is invalid or not supported, or the optimization fails.
 pub fn refine_pose_lm(
     points_world: &[Vec3AF32],
     points_image: &[Vec2F32],
@@ -464,7 +464,7 @@ pub fn refine_pose_lm(
     let frame =
         WorkFrame::new(points_world, start_rotation, *initial_translation).ok_or_else(|| {
             PnPError::SvdFailed(
-                "non-finite world points or initial pose, or the points sit on the camera"
+                "non-finite world points or initial pose, or most points sit on the camera"
                     .to_string(),
             )
         })?;
@@ -878,6 +878,15 @@ mod tests {
         Mat3F64::from_cols_array(&m.to_cols_array().map(f64::from))
     }
 
+    /// Point `i` (0..27) of the 3×3×3 grid filling [-1, 1]³.
+    fn grid_point(i: u8) -> Vec3F64 {
+        Vec3F64::new(
+            f64::from(i % 3) - 1.0,
+            f64::from(i / 3 % 3) - 1.0,
+            f64::from(i / 9) - 1.0,
+        )
+    }
+
     /// A refined pose and its errors against the true pose.
     struct MovedSceneResult {
         pose: PnPResult,
@@ -887,9 +896,9 @@ mod tests {
         centre: f64,
     }
 
-    /// Refines a pose that starts 0.5° and 1% of the depth away from the truth. The scene is 27
-    /// points on a cube of half-size `size`, seen from `depth` metres, and the whole scene is
-    /// moved `offset` metres from the world origin.
+    /// Refines a pose that starts 0.5° and 1% of the depth away from the truth. The scene is a
+    /// 3×3×3 grid filling a cube of half-size `size`, seen from `depth` units, and the whole scene
+    /// is moved `offset` units from the world origin.
     fn refine_moved_scene(
         offset: f64,
         depth: f64,
@@ -900,12 +909,7 @@ mod tests {
         let translation = Vec3F64::new(0.0, 0.0, depth) - rotation * centre;
         let (mut world, mut image) = (Vec::new(), Vec::new());
         for i in 0..27u8 {
-            let corner = Vec3F64::new(
-                f64::from(i % 3) - 1.0,
-                f64::from(i / 3 % 3) - 1.0,
-                f64::from(i / 9) - 1.0,
-            );
-            let point = f32_vec(centre + corner * size);
+            let point = f32_vec(centre + grid_point(i) * size);
             // Project the stored f32 point, so the data is exact for the true pose.
             let pc = rotation * f64_vec(point) + translation;
             world.push(point);
@@ -933,12 +937,10 @@ mod tests {
         )?;
 
         let estimate = f64_mat(result.rotation);
-        let chord = (0..3)
-            .map(|i| (estimate.col(i) - rotation.col(i)).length_squared())
-            .sum::<f64>()
-            .sqrt()
-            / (2.0 * std::f64::consts::SQRT_2);
-        let rotation_error_deg = (2.0 * chord.clamp(0.0, 1.0).asin()).to_degrees();
+        let rotation_error_deg = SO3F64::from_matrix(&(estimate.transpose() * rotation))
+            .log()
+            .length()
+            .to_degrees();
         let estimated_centre = -(estimate.transpose() * f64_vec(result.translation));
         let centre_error = (estimated_centre - camera_centre).length() / depth;
         Ok(MovedSceneResult {
@@ -972,13 +974,14 @@ mod tests {
     }
 
     /// A distant scene has the same problem even at the world origin, because the translation is
-    /// large; a very close one must keep working.
+    /// large, and so does a scene in millimetres; a very close one must keep working.
     #[test]
     fn refinement_does_not_depend_on_the_scene_distance() -> Result<(), PnPError> {
         for (offset, depth, size) in [
             (0.0, 100.0, 10.0),
             (0.0, 300.0, 30.0),
             (10_000.0, 300.0, 30.0),
+            (0.0, 6_000.0, 1_000.0),
             (0.0, 0.3, 0.05),
         ] {
             let MovedSceneResult {
@@ -998,24 +1001,15 @@ mod tests {
         Ok(())
     }
 
-    /// The work frame must map the pose back exactly: with no LM iteration the start translation
-    /// comes back, also 10 km from the origin and for a start rotation that is not quite
+    /// The work frame must map the pose back to f32 rounding: with no LM iteration the start
+    /// translation comes back, also 10 km from the origin and for a start rotation that is not quite
     /// orthonormal (the frame must use the normalised rotation the solver uses).
     #[test]
     fn zero_iterations_return_the_start_translation() -> Result<(), PnPError> {
         let rotation = SO3F64::exp(Vec3F64::new(0.2, -0.4, 0.7)).matrix();
         let centre = Vec3F64::new(1.0, 0.5, 0.25).normalize() * 10_000.0;
         let translation = Vec3F64::new(0.0, 0.0, 6.0) - rotation * centre;
-        let world: Vec<Vec3AF32> = (0..27)
-            .map(|i| {
-                let corner = Vec3F64::new(
-                    (i % 3) as f64 - 1.0,
-                    (i / 3 % 3) as f64 - 1.0,
-                    (i / 9) as f64 - 1.0,
-                );
-                f32_vec(centre + corner)
-            })
-            .collect();
+        let world: Vec<Vec3AF32> = (0..27u8).map(|i| f32_vec(centre + grid_point(i))).collect();
         // Without iterations only the start pose matters, not the pixels.
         let image = vec![Vec2F32::new(640.0, 480.0); world.len()];
         for stretch in [1.0, 1.01] {
@@ -1039,8 +1033,8 @@ mod tests {
         Ok(())
     }
 
-    /// Input the work frame cannot be built from is an error, not a NaN pose: a non-finite world
-    /// point, a non-finite start pose, or every point on the start camera.
+    /// Input the work frame cannot be built from is an error: a non-finite world point, a
+    /// non-finite start pose, or every point on the start camera.
     #[test]
     fn non_finite_or_degenerate_input_is_an_error() {
         let world: Vec<Vec3AF32> = (0..6)
