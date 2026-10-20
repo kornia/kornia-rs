@@ -1375,12 +1375,6 @@ pub fn bundle_adjust_schur_with_all_priors(
     pose_priors: Option<&[Option<BaPosePrior>]>,
     motion_priors: Option<&[BaMotionPrior]>,
 ) -> Result<BaResult, SchurBaError> {
-    if params.robust == RobustKernelKind::Tukey {
-        return Err(SchurBaError::Ba(BaError::InvalidInput(
-            "Tukey robust kernel is not supported for bundle adjustment".to_string(),
-        )));
-    }
-
     bundle_adjust_schur_impl(
         poses,
         points,

@@ -327,6 +327,12 @@ impl Factor for ReprojectionFactor {
 /// Translate `LMRefineParams::robust`/`robust_scale_sq` into a concrete
 /// `RobustLoss` shared across all reprojection factors, or `None` for plain L2.
 fn build_robust_loss(params: &LMRefineParams) -> Result<Option<Arc<dyn RobustLoss>>, PnPError> {
+    if params.robust == RobustKernelKind::Tukey {
+        return Err(PnPError::InvalidParams(
+            "Tukey robust kernel is not supported for LM pose refinement".to_string(),
+        ));
+    }
+
     if params.robust == RobustKernelKind::Identity || !params.robust_scale_sq.is_finite() {
         return Ok(None);
     }
@@ -803,29 +809,34 @@ mod tests {
             Vec2F32::new(696.4414, 511.96442),
         ];
 
-        let params = LMRefineParams {
-            robust: RobustKernelKind::Tukey,
-            robust_scale_sq: 25.0,
-            ..LMRefineParams::default()
-        };
+        // A finite scale and the INFINITY default: neither may slip through.
+        for scale_sq in [25.0_f32, f32::INFINITY] {
+            let params = LMRefineParams {
+                robust: RobustKernelKind::Tukey,
+                robust_scale_sq: scale_sq,
+                ..LMRefineParams::default()
+            };
 
-        let result = refine_pose_lm(
-            &points_world,
-            &points_image,
-            &k_default(),
-            &Mat3AF32::IDENTITY,
-            &Vec3AF32::new(0.0, 0.0, 1.0),
-            None,
-            &params,
-        );
+            let result = refine_pose_lm(
+                &points_world,
+                &points_image,
+                &k_default(),
+                &Mat3AF32::IDENTITY,
+                &Vec3AF32::new(0.0, 0.0, 1.0),
+                None,
+                &params,
+            );
 
-        match result {
-            Err(err @ PnPError::InvalidParams(_)) => {
-                let msg = err.to_string();
-                assert!(msg.contains("Tukey"), "unexpected message: {msg}");
-                assert!(!msg.contains("SVD"), "misleading SVD wording: {msg}");
+            match result {
+                Err(err @ PnPError::InvalidParams(_)) => {
+                    let msg = err.to_string();
+                    assert!(msg.contains("Tukey"), "unexpected message: {msg}");
+                    assert!(!msg.contains("SVD"), "misleading SVD wording: {msg}");
+                }
+                other => {
+                    panic!("expected InvalidParams for Tukey at scale_sq={scale_sq}, got {other:?}")
+                }
             }
-            other => panic!("expected InvalidParams for Tukey, got {other:?}"),
         }
     }
 }
