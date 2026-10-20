@@ -40,6 +40,9 @@ pub struct LMRefineParams {
     /// Squared scale for `robust`; its square root is the linear delta fed
     /// to `HuberLoss::new`/`CauchyLoss::new`. Default `f32::INFINITY`
     /// collapses to L2 regardless of `robust`.
+    ///
+    /// Exception: [`RobustKernelKind::Tukey`] is not supported and is rejected
+    /// with [`PnPError::InvalidParams`] at any scale, including `INFINITY`.
     pub robust_scale_sq: f32,
 }
 

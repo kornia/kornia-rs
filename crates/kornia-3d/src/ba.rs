@@ -245,8 +245,11 @@ pub struct BaParams {
     pub robust: RobustKernelKind,
     /// Squared scale parameter for [`Self::robust`]. The square root is
     /// the linear scale fed to `HuberLoss::new`/`CauchyLoss::new`. Default
-    /// `f32::INFINITY` collapses to the L2 fast path even for non-Identity
-    /// kernel choices.
+    /// `f32::INFINITY` collapses to the L2 fast path for every supported
+    /// kernel.
+    ///
+    /// Exception: [`RobustKernelKind::Tukey`] is not supported and is rejected
+    /// with [`BaError::InvalidInput`] at any scale, including `INFINITY`.
     pub robust_scale_sq: f32,
     /// Robust-kernel scale (squared) for the σ-WHITENED residual families — the per-observation
     /// depth residual ([`BaObservation::depth_meas`]) and the constant-velocity motion prior
