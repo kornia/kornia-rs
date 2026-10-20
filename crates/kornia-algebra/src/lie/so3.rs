@@ -403,8 +403,15 @@ impl SO3F64 {
         }
     }
 
-    /// Create from the rotation nearest to `mat` ([`Mat3F64::nearest_rotation`]); `None` if `mat`
-    /// is not finite or its SVD does not converge.
+    /// Create from the rotation nearest to `mat` ([`Mat3F64::nearest_rotation`]).
+    ///
+    /// # Arguments
+    ///
+    /// * `mat` - Any 3x3 matrix, e.g. a noisy rotation.
+    ///
+    /// # Returns
+    ///
+    /// The rotation, or `None` if `mat` is not finite or its SVD does not converge.
     pub fn from_matrix_nearest(mat: &Mat3F64) -> Option<Self> {
         mat.nearest_rotation().map(|r| Self::from_matrix(&r))
     }

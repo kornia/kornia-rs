@@ -14,6 +14,14 @@
 //! - On noisy, nearly fronto-parallel planar scenes SQP can stop at `sqp_max_iterations`
 //!   (`converged == Some(false)`) slightly short of the global minimum.
 //! - Points close to the camera get little weight; set `refine_lm` when the pixel error matters.
+//!
+//! # Differences from OpenCV
+//!
+//! - The depth check uses the centroid only; OpenCV also accepts a majority of points in front.
+//! - The search goes past the paper's `3·λ_k` bound while a depth-rejected rotation had a lower
+//!   cost.
+//! - Each SQP step solves the full KKT system (LU, SVD when singular); OpenCV uses the null space
+//!   of the constraints.
 
 use kornia_algebra::{Mat3AF32, Mat3F64, Vec2F32, Vec2F64, Vec3AF32, Vec3F64, SO3F32};
 use kornia_imgproc::calibration::{
@@ -705,6 +713,18 @@ mod tests {
         solve_with(scene, &SQPnPParams::default())
     }
 
+    /// Every null vector of `Ω` is a start: on this noisy 4-point scene the first one alone gives
+    /// a pose about 180° off (found by a seeded search).
+    #[test]
+    fn every_null_vector_is_a_start() -> Result<(), PnPError> {
+        let mut rng = StdRng::seed_from_u64(13611);
+        let scene = Scene::generate(&mut rng, k_default(), &SceneConfig::cube(4, 8.0, 0.5));
+        let pose = solve(&scene)?;
+        let rot_err = rotation_error_deg(pose.rotation, scene.rotation);
+        assert!(rot_err < 2.0, "rotation error {rot_err} deg");
+        Ok(())
+    }
+
     #[test]
     fn noise_free_poses_are_exact() -> Result<(), PnPError> {
         let k = k_default();
@@ -829,7 +849,7 @@ mod tests {
     }
 
     /// Scaling the world (and translation) and moving its origin must not change the rotation:
-    /// the points are centred and the rank test is relative.
+    /// the points are centred.
     #[test]
     fn invariant_to_world_scale_and_origin() -> Result<(), PnPError> {
         let k = k_default();

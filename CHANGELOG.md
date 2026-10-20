@@ -15,8 +15,8 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
 
 **SQPnP pose solver in `kornia-3d`** (#1183): `kornia_3d::pnp::sqpnp::solve_sqpnp`, also as
 `PnPMethod::SQPnP` / `PnPMethod::SQPnPDefault` in `solve_pnp` and `solve_pnp_ransac` (Terzakis &
-Lourakis, ECCV 2020; Rust only for now, the Python bindings still offer EPnP and AP3P). It searches
-all rotations for the lowest object-space error, for planar and non-planar points, and
+Lourakis, ECCV 2020; Rust only for now, the Python bindings still offer EPnP and AP3P). It minimises
+the object-space error over rotations, for planar and non-planar points, and
 `SQPnPParams::refine_lm` can polish the pose on the reprojection error. With 1 px noise it failed
 (rotation error above 5°) on 0 of 200 20-point planar scenes and 1 of 200 4-point scenes; EPnP with
 LM failed on 49 and 23 (EPnP still has #1181). One solve takes 10–20 µs for 6–500 non-planar points

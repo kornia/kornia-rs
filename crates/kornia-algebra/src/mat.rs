@@ -328,7 +328,11 @@ impl Mat3F64 {
         Self(glam::DMat3::from_quat(quat.0))
     }
 
-    /// Round each element to `f32`; values outside the `f32` range become `±inf`.
+    /// Round each element to `f32`.
+    ///
+    /// # Returns
+    ///
+    /// The `f32` matrix; values outside the `f32` range become `±inf`.
     #[inline]
     pub fn as_mat3af32(self) -> Mat3AF32 {
         Mat3AF32(glam::Mat3A::from(self.0.as_mat3()))
