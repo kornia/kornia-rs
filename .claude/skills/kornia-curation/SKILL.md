@@ -31,6 +31,8 @@ cross-checks it.
    edits) catches the checked facts; the rest is on the author and reviewer.
 2. **Link, don't copy.** New guidance names the file that owns the fact. If you
    must restate a fact, add its check to `scripts/check_skills.py` in the same PR.
+   When rewording a restated fact, verify it against the source (e.g.
+   `PUBLISH_ORDER`), not only against the check: the check can be wrong too.
 3. **Record traps.** A non-obvious failure hit during a task (silent skip,
    wrong default, misleading error) becomes one line in the owning skill: the
    invariant and how to detect it. No narratives, no dates.

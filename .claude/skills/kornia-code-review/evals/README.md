@@ -12,6 +12,10 @@ directory with:
 
 ## Run
 
+Work on a copy of the tree (`rsync -a --exclude target --exclude .git`), apply
+`patch.diff` with `patch -p1`. In that copy, `check_skills.py` reports the
+case's own patch as "no longer applies"; that line is expected, ignore it.
+
 Give a fresh agent, with no other context, only `../SKILL.md`, the repo,
 `pr.md` and `patch.diff`, and ask for a review in the skill's format. Grade
 it against `expected.md`: every defect found with the right severity, and no

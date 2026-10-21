@@ -6,4 +6,4 @@ A passing review reports all of:
 4. §3 — perf claim without `bench_color` before/after numbers.
 5. The "faster" / "cache locality" claim is treated as unmeasured (tagged inferred or challenged), and "tests pass" is not accepted as evidence for the shape check.
 
-First validated 2026-10-21: 5/5, scope listed first.
+Validated 2026-10-21: 5/5 on the first skill draft, and 5/5 on the revised skill (scope first, missing Self-review and walkthrough flagged).

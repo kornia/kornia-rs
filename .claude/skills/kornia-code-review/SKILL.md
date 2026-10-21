@@ -114,7 +114,9 @@ filters, features, SIMD, CUDA, tensor ops):
 - Bug fix ⇒ regression test that fails on `main`.
 - Public API change ⇒ bindings updated or the PR says it is not exposed
   (see `kornia-bindings`).
-- Docs, units and coordinate frames match the code.
+- Docs, units and coordinate frames match the code. A change that weakens a
+  check the `# Errors` rustdoc promises is a behaviour change: cite the
+  rustdoc line.
 
 ## 4b. Checks, scripts and CI (tooling PRs)
 
@@ -125,6 +127,10 @@ or claims (validator, CI step, lint, hook):
   fixes, plus a rephrasing of it. A check that passes the original bug ⇒
   blocking. Work on a copy (`git archive HEAD | tar -x -C <tmp>`), never with
   `git checkout --` on a tree with uncommitted work.
+- A PR that changes a check (refactor, "simplify") must show its coverage
+  did not shrink: run the **old and new** check on the same negative probes,
+  including any text the PR itself edits that the check guards. Old rejects
+  and new passes ⇒ blocking.
 - Check what the docs claim the check covers against what it actually matches.
 - Workflows: note which ref they run from (`pull_request_target` runs from
   `main`, so a PR cannot show its own new logic working).
