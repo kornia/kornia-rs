@@ -227,6 +227,8 @@ Err(KorniaError::SizeMismatch {
    pixi run cpp-test    # C++ binding tests (if C++ code changed)
    ```
 
+   Agents posting comments or reviews for someone end them with `Posted on behalf of @<handle> by <Agent> (<actual model>).`
+
    Then self-review with `kornia-code-review` and paste its output in the PR's Self-review section. The human author then writes the Author walkthrough in their own words (each file, why, riskiest part). Both are required; the PR check fails without them. Agents must not write the walkthrough.
 
 3. **Update documentation** — any new or changed public API must have updated doc comments. New features need an entry in the relevant crate's `README.md` or module-level doc.

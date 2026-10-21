@@ -56,9 +56,12 @@ Without pixi: `cargo test --features ci`, `cargo test -p kornia-imgproc`,
 5. Perf-sensitive change ⇒ before/after bench numbers (`kornia-code-review`).
 6. Changed a fact the skills describe ⇒ update them (`kornia-curation`).
 7. Reference the existing library implementation (OpenCV, a Rust crate) when
-   porting an algorithm.
+   porting an algorithm; state deliberate departures from it in the rustdoc.
 8. Conventional Commits: `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`.
 9. New/changed public API needs doc comments; bug fixes need a regression test.
+10. An agent posting a comment or review on someone's behalf ends it with
+    `Posted on behalf of @<handle> by <Agent> (<actual model>).` (not
+    `Co-Authored-By:`). The PR body is never committed (`/PR.md` is ignored).
 
 ## Debugging CI
 

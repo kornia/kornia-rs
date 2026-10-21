@@ -12,3 +12,6 @@ build/
 .omc/
 tests/data/euroc_mh01_gt/
 target
+
+# PR descriptions drafted by agents are never committed
+/PR.md

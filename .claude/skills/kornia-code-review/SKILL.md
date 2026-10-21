@@ -35,7 +35,9 @@ Every finding, scope findings included, is one line:
   burden is on the PR, not the reviewer. Run a bench or test yourself when it
   is cheap and settles a disagreement.
 - Never write "should be faster" or "tests pass" without output. "Tests
-  pass" is no evidence for a path no test exercises: check one exists.
+  pass" is no evidence for a path no test exercises: check one exists, and
+  that it ran (name or count in the output). `#[ignore]`, unmet
+  `required-features` and `#[cfg(target_arch = ...)]` tests skip silently.
 
 ## 0. Scope and size (check first, blocking)
 
@@ -99,9 +101,16 @@ filters, features, SIMD, CUDA, tensor ops):
    ```
 3. Benches with `required-features` (e.g. `cuda`) are **silently skipped**
    without the feature — check the output shows the bench actually ran.
-4. If the change alters what a bench measures (signature, input size, dtype),
+4. **A/A trap**: an A/B run can silently measure the same code twice and
+   report "no change". Causes: worktrees sharing one `CARGO_TARGET_DIR`, a
+   downstream `path =` / `[patch]` resolving to another checkout, a
+   `maturin develop` wheel built from another tree. Each arm records
+   `git rev-parse HEAD` and the bench binary path (Python:
+   `kornia_rs.__file__`); "no change" without that provenance is not evidence.
+   Fix `RAYON_NUM_THREADS` and warm up before timing.
+5. If the change alters what a bench measures (signature, input size, dtype),
    the bench is updated in the same PR, not left measuring the old path.
-5. A regression beyond noise needs an explicit reason in the PR, or it blocks.
+6. A regression beyond noise needs an explicit reason in the PR, or it blocks.
 
 ## 4. Correctness traps
 
@@ -112,6 +121,13 @@ filters, features, SIMD, CUDA, tensor ops):
 - SIMD path matches the scalar path in a test (see `kornia-simd`); tail
   elements handled.
 - Bug fix ⇒ regression test that fails on `main`.
+- Port of a reference (OpenCV, a crate): match it, not its bugs. Every
+  deliberate departure (e.g. strict vs `>=` maxima) is stated in the rustdoc.
+- Closing an issue: `grep -rnE "#NNNN|issues/NNNN" crates/ kornia-py/ kornia-cpp/`
+  for inline notes, `#[ignore]` reasons and tests that name it; each hit is
+  updated in the same PR.
+- Behaviour that depends on the toolchain is checked on MSRV and with the
+  `ci` feature set, not only on local stable.
 - Public API change ⇒ bindings updated or the PR says it is not exposed
   (see `kornia-bindings`).
 - Docs, units and coordinate frames match the code. A change that weakens a

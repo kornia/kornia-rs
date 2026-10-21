@@ -66,7 +66,7 @@ If AI was used, fill in every line (exact names, e.g. `Claude Code 2.x`, `claude
 - **Model:**
 - **Effort level:**
 - **Skills applied:** (names from `.claude/skills/`)
-- **Human vs AI part:** (what the human did, what the agent did)
+- **Human vs AI part:** (which part was done by a human, if any; e.g. "human diagnosed the bug and reviewed the diff, agent wrote the fix and tests")
 
 ---
 
