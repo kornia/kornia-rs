@@ -8,7 +8,7 @@ or after a change.
 
 ```sh
 # Speed: EPnP, EPnP + LM and SQPnP, plus solve_pnp_ransac with each kernel
-cargo bench -p kornia-3d --bench bench_pnp
+cargo bench -p kornia-3d --features test-utils --bench bench_pnp
 
 # Accuracy and failure rates, also inside solve_pnp_ransac (prints the tables below)
 cargo test --release -p kornia-3d --lib -- --ignored --nocapture pnp_accuracy_report
@@ -18,7 +18,7 @@ cargo test --release -p kornia-3d --lib -- --ignored --nocapture pnp_accuracy_re
 
 | Parameter | Value |
 |-----------|-------|
-| Scenes (`bench_pnp`) | random points in a 2 m cube, or a 2 m square for `planar`, seen from 6 m; uniform noise of up to 1 px; fixed seed |
+| Scenes (`bench_pnp`) | random points in a 2 m cube, or a 2 m square for `planar`, seen from 6 m; Gaussian pixel noise with σ = 1 px; random poses; fixed seed |
 | Batch | each `pnp` iteration solves 20 scenes, each `pnp_ransac` iteration 5 (100 inliers + 100 outliers); times below are per single solve |
 | Failing cases | every scene is solved once before timing; a case that fails is reported as skipped, never timed |
 | Timing | criterion defaults (3 s warm-up, 5 s measurement, 100 samples); the time shown is criterion's point estimate divided by the batch size |
@@ -30,7 +30,75 @@ EPnP + LM numbers to change when that is fixed.
 
 ---
 
-## Results — 2026-10-20
+## Results — 2026-10-22 (follow-up review)
+
+Compared the first corrected-objective revision below with the follow-up that shares one scaled
+3×3 SVD between decomposition and rotation projection. Projection skips the former second
+normalization and does not restore unused singular values. The shared fixtures now validate
+inputs, bound rejection sampling and propagate typed errors; valid seeded scenes use the same
+random draws and coordinates as before. Setup remains outside the timed loop.
+
+Hardware, compiler and batch size match the first review run. Three alternating rounds used
+20 samples, 0.5 s warm-up, 1 s measurement and 10,000 bootstrap resamples. Each executable was
+captured separately after building: SHA-256 prefixes `c0ea9582a17acfbb` (first correction) and
+`9678dddced572314` (follow-up). Both ran from this checkout; no shared-target rebuilds occurred
+between timing the two versions. Values are the lowest round mean per solve and its 95% interval.
+
+**Timing limitation:** observed one-minute load averages at round starts were approximately
+101–119. Competing workloads severely limit interpretation of these results; do not infer a
+speedup or compare their absolute times with the lower-load run below. Repeat on an idle machine
+before making performance claims. The 100-point cases were slightly slower in these samples.
+
+| Points | First correction, non-planar (µs) | Follow-up, non-planar (µs) | First correction, planar (µs) | Follow-up, planar (µs) |
+| ---: | ---: | ---: | ---: | ---: |
+| 6 | 50.9 [45.9, 57.0] | 45.0 [42.1, 48.9] | 131.3 [116.0, 150.8] | 113.5 [109.1, 118.5] |
+| 20 | 32.5 [31.2, 34.0] | 31.1 [28.4, 34.6] | 126.0 [115.9, 138.7] | 116.8 [104.4, 132.7] |
+| 100 | 39.0 [35.3, 43.1] | 39.6 [37.0, 42.5] | 108.5 [99.9, 118.8] | 109.6 [105.0, 114.6] |
+| 500 | 59.0 [55.5, 63.6] | 55.3 [50.6, 62.3] | 111.9 [108.6, 115.3] | 105.8 [102.4, 110.0] |
+
+Use the command below with `--nresamples 10000` and distinct `--save-baseline` names to repeat
+these measurement settings. No updated full accuracy or downstream SLAM evaluation is claimed.
+
+## Results — 2026-10-21 (first objective correction)
+
+Compared PR head `34f5519a` with the local review revision that corrects the algebraic objective,
+validates parameters and uses borrowed constraint views plus the shared SVD backend. Both used
+the **same current scene generator**, Cargo.lock, Rust 1.99.0, Criterion 0.8.2, and MacBook Air
+Mac17,3 (Apple M5, 16 GB RAM, macOS 27.0.1). The old build received only the shared fixtures and
+benchmark feature wiring. Separate captured executables were checked to distinguish the two
+implementations; each round ran the original and corrected version sequentially.
+
+Three alternating rounds, 20 samples per case, 0.5 s warm-up, 1 s measurement. Values below
+are the **lowest round mean per solve**, dividing the 20-scene batch by 20. Brackets are that
+round's 95% confidence interval. The machine was shared with other workloads: observed
+one-minute load averages were approximately 18–30, and some round means varied by more than 2×.
+These are preliminary measurements, not evidence of a general speedup. The 100- and 500-point
+planar cases were slower in this run; an idle-machine profile is needed to attribute that change.
+
+```sh
+cargo bench -p kornia-3d --features test-utils --bench bench_pnp -- \
+  'pnp/sqpnp' --sample-size 20 --warm-up-time 0.5 --measurement-time 1 \
+  --save-baseline <version-and-round> --noplot
+```
+
+| Points | Original, non-planar (µs) | Corrected, non-planar (µs) | Original, planar (µs) | Corrected, planar (µs) |
+| ---: | ---: | ---: | ---: | ---: |
+| 6 | 36.3 [35.2, 37.4] | 27.9 [27.4, 28.4] | 88.0 [85.7, 90.3] | 83.2 [81.5, 84.9] |
+| 20 | 20.0 [19.6, 20.3] | 20.8 [18.3, 24.9] | 80.5 [76.1, 86.8] | 71.9 [69.3, 74.7] |
+| 100 | 25.8 [25.0, 26.8] | 23.9 [23.7, 24.1] | 74.9 [73.6, 76.5] | 96.0 [91.6, 100.8] |
+| 500 | 40.5 [38.6, 42.5] | 38.2 [36.5, 40.5] | 72.7 [71.2, 74.3] | 91.9 [86.7, 98.5] |
+
+The corrected solver passes a fixed noisy OpenCV 5.0.0 SQPnP reference case that the original
+fails, and an independently evaluated algebraic-residual test. The historical accuracy tables
+below have not been regenerated for the corrected objective and must not be cited as its results.
+
+## Historical results — 2026-10-20 (superseded)
+
+These numbers describe commit `d12c8045`, whose objective was perpendicular distance to rays.
+That objective differs from the algebraic reprojection objective in SQPnP's paper and OpenCV.
+The speed harness also used a separate generator with a fixed pose and uniform ±1 px noise.
+Keep these results only as historical measurements; they do not validate the corrected solver
+or the current shared-fixture benchmark.
 
 ### Hardware / software
 

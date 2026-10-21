@@ -30,6 +30,7 @@ name = "bench_stereo_match"
 [[bench]]
 harness = false
 name = "bench_pnp"
+required-features = ["test-utils"]
 
 [dependencies]
 bincode = { workspace = true }
@@ -55,6 +56,8 @@ kornia-tensor = { workspace = true }
 tempfile = { workspace = true }
 
 [features]
+# Shared synthetic scene fixtures for tests and benchmarks; disabled in production builds.
+test-utils = []
 # CUDA-resident rectification and stereo matching. Rectification uploads the remap tables once and serves device frames through
 # kornia-imgproc's residency-dispatched remap — see CudaStereoRectifier's doc for the
 # CPU<->CUDA byte-exact contract

@@ -18,7 +18,7 @@
 *   **Registration:** Algorithms like Iterative Closest Point (ICP) for aligning point clouds.
 *   **Fundamental RANSAC:** Seven-point minimal hypotheses (every real solution that satisfies the oriented epipolar constraint on its sample, as in DEGENSAC), with eight-point inlier refinement. `pose::fundamental_7point` exposes the minimal solver; `ransac::estimators::Fundamental8PointEstimator` and `pose::ransac_fundamental_8point` retain the original sampling path for comparisons. The two-view builder also accepts `Fundamental7ptSolver`; its existing `Fundamental8ptSolver` default is preserved.
     `pose::RansacParams::confidence` accepts an explicit sampling target; `None` preserves each model family's default. Exhaustive struct literals must add `confidence: None` or use `..Default::default()`. Adaptive caps use the all-inlier probability for distinct sampling without replacement.
-*   **PnP Solvers:** Solve for camera pose given 3D-2D point correspondences: EPnP, AP3P and SQPnP (`pnp::sqpnp::solve_sqpnp`, minimises the object-space error over rotations), with RANSAC and optional LM refinement.
+*   **PnP Solvers:** Solve for camera pose given 3D-2D point correspondences: EPnP, AP3P and SQPnP (`pnp::sqpnp::solve_sqpnp`, minimizes algebraic reprojection error over rotations), with RANSAC and optional LM refinement.
 
 ## 📦 Installation
 
@@ -80,3 +80,18 @@ Contributions are welcome! This crate is part of the Kornia workspace. Please re
 ## 📄 License
 
 This crate is licensed under the Apache-2.0 License.
+
+## PnP validation and benchmarks
+
+SQPnP accepts `f32` correspondences, matching the other PnP solvers, and optimizes in `f64`.
+Its camera matrix must have positive focal lengths, zero skew and bottom row `[0, 0, 1]`.
+Optional LM refinement minimizes pixel reprojection error. Exactly three correspondences can
+have multiple valid poses. Direct SQPnP supports distortion; SQPnP inside RANSAC requires
+undistorted observations and `distortion = None`, matching its pinhole scoring model.
+
+The optional `test-utils` feature exposes shared seeded synthetic scenes for tests and benches.
+It is disabled by default and is intended for development, not application APIs.
+Scene generation and outlier insertion return typed errors for invalid settings, unavailable
+storage or sampling exhaustion. Fixture generation happens outside benchmark timing.
+Run `cargo bench -p kornia-3d --features test-utils --bench bench_pnp` for timings and see
+[benchmarks.md](benchmarks.md) for measurement conditions and accuracy reports.

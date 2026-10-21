@@ -281,9 +281,17 @@ impl From<Vec3AF32> for Vec3F64 {
 impl Vec3F64 {
     /// Round each component to `f32`.
     ///
+    /// # Arguments
+    ///
+    /// * `self` - Vector whose components are rounded to `f32`.
+    ///
     /// # Returns
     ///
     /// The `f32` vector; values outside the `f32` range become `±inf`.
+    ///
+    /// # Errors
+    ///
+    /// This conversion is infallible; it preserves NaNs and may overflow to infinity.
     #[inline]
     pub fn as_vec3af32(self) -> Vec3AF32 {
         glam::DVec3::from(self).as_vec3a().into()
