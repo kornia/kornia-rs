@@ -74,9 +74,7 @@ If you are an AI agent (GitHub Copilot, CodeRabbit, etc.) reviewing a PR for Kor
 
 **IF** the PR description does not contain "Closes #" or "Fixes #" or "Relates to #" pattern, **THEN** comment: "Missing Issue Link: PRs must be linked to an issue. Use 'Closes #123' or 'Fixes #123' in the PR description."
 
-**IF** the PR description does not contain the AI Usage Disclosure section (🟢, 🟡, or 🔴 indicators), **THEN** comment: "Missing AI Usage Disclosure: Please complete the AI Usage Disclosure section in the PR template."
-
-**IF** 🟡 or 🔴 is ticked and any of **Agent + version**, **Model**, **Effort level**, **Skills applied** or **Human vs AI part** is empty, **THEN** comment: "Incomplete AI Disclosure: Please name the agent and its version, the model, the effort level, the skills applied, and which part a human did."
+**IF** the AI Usage Disclosure leaves **Agent + version** or **Human vs AI part** empty, or names an agent but leaves **Model**, **Effort level** or **Skills applied** empty, **THEN** comment: "Incomplete AI Disclosure: Please name the agent and its version (or `none`), the model, the effort level, the skills applied, and which part a human did." Contributions are not classified by how much AI was involved; the author is responsible for every line either way.
 
 **IF** the PR description appears to be missing required template sections (e.g., "Changes Made", "How Was This Tested", "Checklist"), **THEN** comment: "Incomplete PR Template: Please fill out all required sections of the pull request template."
 

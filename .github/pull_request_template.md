@@ -56,12 +56,9 @@ these lines are empty. -->
 ---
 
 ## 🕵️ AI Usage Disclosure
-*Check one of the following:*
-- [ ] 🟢 **No AI used.**
-- [ ] 🟡 **AI-assisted:** I used AI for boilerplate/refactoring but have manually reviewed and tested every line.
-- [ ] 🔴 **AI-generated:** (Note: These PRs may be subject to stricter scrutiny or immediate closure if the logic is not explained).
 
-If AI was used, fill in every line (exact names, e.g. `Claude Code 2.x`, `claude-opus-5-5`, `high`):
+<!-- Exact names, e.g. `Claude Code 2.x`, `claude-opus-5-5`, `high`. No AI used: write
+`none` for Agent + version and leave Model, Effort level and Skills applied empty. -->
 - **Agent + version:**
 - **Model:**
 - **Effort level:**

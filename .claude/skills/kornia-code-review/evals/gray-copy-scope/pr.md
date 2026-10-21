@@ -6,7 +6,7 @@ Inlines the size check into the u8 impl so the validation is simpler and local t
 
 Tests: cargo test -p kornia-imgproc passes.
 
-AI disclosure: [x] 🟡 AI-assisted
+AI disclosure:
 - Agent + version: Cursor 1.4
 - Model: gpt-5
 - Effort level: medium

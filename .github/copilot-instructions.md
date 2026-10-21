@@ -52,7 +52,7 @@ Follow the coding standards and best practices defined in [CONTRIBUTING.md](../C
 
 **IF** the PR description does not contain "Closes #" or "Fixes #" or "Relates to #" pattern, **THEN** comment: "Missing Issue Link: PRs must be linked to an issue. Use 'Closes #123' or 'Fixes #123' in the PR description."
 
-**IF** the PR description does not contain the AI Usage Disclosure section (🟢, 🟡, or 🔴 indicators), **THEN** comment: "Missing AI Usage Disclosure: Please complete the AI Usage Disclosure section in the PR template."
+**IF** the PR description's AI Usage Disclosure is incomplete (agent + version or `none`, model, effort level, skills applied, which part a human did), **THEN** comment: "Incomplete AI Usage Disclosure: Please complete the AI Usage Disclosure section in the PR template."
 
 **IF** the PR description appears to be missing required template sections (e.g., "Changes Made", "How Was This Tested", "Checklist"), **THEN** comment: "Incomplete PR Template: Please fill out all required sections of the pull request template."
 

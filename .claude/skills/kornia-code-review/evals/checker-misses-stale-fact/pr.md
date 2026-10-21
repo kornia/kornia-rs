@@ -6,7 +6,7 @@ Replaces the sentence splitting with a plain per-line check, which is easier to 
 
 Tests: `python3 scripts/check_skills.py` → skills OK.
 
-AI disclosure: [x] 🟡 AI-assisted
+AI disclosure:
 - Agent + version: Codex CLI 0.9
 - Model: gpt-5.6-terra
 - Effort level: medium
