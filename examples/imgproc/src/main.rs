@@ -3,12 +3,12 @@ use std::path::PathBuf;
 
 use kornia::io::functional as F;
 use kornia::{
-    image::{ops, Image},
+    image::{ops, Image, ImageSize},
     imgproc,
 };
 
 #[derive(FromArgs)]
-/// Compute the distance transform of an image and log it to Rerun
+/// Perform basic image processing and log it to Rerun
 struct Args {
     /// path to an input image
     #[argh(option, short = 'i')]
@@ -29,44 +29,45 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut gray_f32 = Image::<f32, 1>::from_size_val(gray.size(), 0.0)?;
     ops::cast_and_scale(&gray, &mut gray_f32, 1.0 / 255.0)?;
 
-    // binarize: pixels brighter than 0.5 are foreground
-    let mut mask = Image::<f32, 1>::from_size_val(gray_f32.size(), 0.0)?;
-    imgproc::threshold::threshold_binary(&gray_f32, &mut mask, 0.5, 1.0)?;
-
-    // distance from every pixel to the nearest foreground pixel
-    let mut executor = imgproc::distance_transform::DistanceTransformExecutor::new();
-    let distance = executor.execute(&mask)?;
-
-    println!("distance: {:?}", distance.size());
-
-    let has_foreground = mask.as_slice().iter().any(|&m| m > 0.0);
-
-    // scale the distances to [0, 1] for display
-    let distance_vis: Vec<f32> = if has_foreground {
-        let max = distance.as_slice().iter().cloned().fold(1.0f32, f32::max);
-        distance.as_slice().iter().map(|d| d / max).collect()
-    } else {
-        println!("the mask has no foreground pixels, distances are undefined");
-        vec![0.0; distance.as_slice().len()]
+    let new_size = ImageSize {
+        width: 128,
+        height: 128,
     };
+
+    let mut gray_resize = Image::<f32, 1>::from_size_val(new_size, 0.0)?;
+    imgproc::resize::resize(
+        &gray_f32,
+        &mut gray_resize,
+        imgproc::interpolation::InterpolationMode::Bilinear,
+    )?;
+
+    println!("gray_resize: {:?}", gray_resize.size());
 
     // create a Rerun recording stream
     let rec = rerun::RecordingStreamBuilder::new("Kornia App").spawn()?;
 
     // log the images
     rec.log(
+        "image",
+        &rerun::Image::from_elements(
+            image.as_slice(),
+            image.size().into(),
+            rerun::ColorModel::RGB,
+        ),
+    )?;
+
+    rec.log(
         "gray",
         &rerun::Image::from_elements(gray.as_slice(), gray.size().into(), rerun::ColorModel::L),
     )?;
 
     rec.log(
-        "mask",
-        &rerun::Image::from_elements(mask.as_slice(), mask.size().into(), rerun::ColorModel::L),
-    )?;
-
-    rec.log(
-        "distance",
-        &rerun::Image::from_elements(&distance_vis, distance.size().into(), rerun::ColorModel::L),
+        "gray_resize",
+        &rerun::Image::from_elements(
+            gray_resize.as_slice(),
+            gray_resize.size().into(),
+            rerun::ColorModel::L,
+        ),
     )?;
 
     Ok(())
