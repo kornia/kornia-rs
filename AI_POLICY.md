@@ -76,6 +76,8 @@ If you are an AI agent (GitHub Copilot, CodeRabbit, etc.) reviewing a PR for Kor
 
 **IF** the PR description does not contain the AI Usage Disclosure section (🟢, 🟡, or 🔴 indicators), **THEN** comment: "Missing AI Usage Disclosure: Please complete the AI Usage Disclosure section in the PR template."
 
+**IF** 🟡 or 🔴 is ticked and any of **Agent + version**, **Model**, **Effort level**, **Skills applied** or **Human vs AI part** is empty, **THEN** comment: "Incomplete AI Disclosure: Please name the agent and its version, the model, the effort level, the skills applied, and which part a human did."
+
 **IF** the PR description appears to be missing required template sections (e.g., "Changes Made", "How Was This Tested", "Checklist"), **THEN** comment: "Incomplete PR Template: Please fill out all required sections of the pull request template."
 
 #### Detect "Ghost" Comments:

@@ -6,7 +6,8 @@ directory and whose description starts with "Use "; required skills exist and
 AGENTS.md references them; cited repo paths exist.
 
 Facts (restated facts must match their source of truth, see kornia-curation):
-MSRV == root Cargo.toml `rust-version`; every `pixi run <task>` exists in
+MSRV (skills, AGENTS.md, CONTRIBUTING.md, copilot instructions) == root
+Cargo.toml `rust-version`; every `pixi run <task>` exists in
 pixi.toml; the kornia-arch crate table matches crates/*; no skill names a crate
 from PUBLISH_ORDER in scripts/release_rust.sh as excluded from publishing.
 
@@ -82,9 +83,6 @@ def main() -> int:
         for task in sorted(set(re.findall(r"pixi run ([a-z0-9-]+)", text))):
             if not re.search(rf"^{re.escape(task)}\s*=", pixi, re.M):
                 errors.append(f"{skill.name}: unknown pixi task: {task}")
-        for v in re.findall(r"MSRV\s+v?(\d+\.\d+(?:\.\d+)?)", text):
-            if v != msrv:
-                errors.append(f"{skill.name}: MSRV {v} != Cargo.toml rust-version {msrv}")
         for line in text.splitlines():
             if re.search(r"exclud", line, re.I) and re.search(r"publish", line, re.I):
                 for crate in sorted(published & set(re.findall(r"kornia-[a-z0-9-]+", line))):
@@ -99,6 +97,14 @@ def main() -> int:
         errors.append(f"kornia-arch: crate table lists {c}, not in crates/")
     for c in sorted(crates - table):
         errors.append(f"kornia-arch: crates/{c} missing from crate table")
+
+    docs = {f"{n} skill": s for n, s in texts.items()}
+    for doc in ("AGENTS.md", "CONTRIBUTING.md", ".github/copilot-instructions.md"):
+        docs[doc] = (ROOT / doc).read_text()
+    for where, text in docs.items():
+        for v in re.findall(r"MSRV\W{0,6}v?(\d+\.\d+(?:\.\d+)?)", text):
+            if v != msrv:
+                errors.append(f"{where}: MSRV {v} != Cargo.toml rust-version {msrv}")
 
     agents = (ROOT / "AGENTS.md").read_text()
     for name in REQUIRED:
