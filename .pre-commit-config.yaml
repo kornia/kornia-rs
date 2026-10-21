@@ -19,6 +19,12 @@ repos:
     - id: fmt
   - repo: local
     hooks:
+    - id: changelog-fragments
+      name: changelog.d fragments are valid
+      entry: python3 scripts/changelog.py preview
+      language: system
+      files: ^(changelog\.d/|scripts/changelog\.py$)
+      pass_filenames: false
     - id: check-skills
       name: agent skills are valid and match the facts they restate
       entry: python3 scripts/check_skills.py

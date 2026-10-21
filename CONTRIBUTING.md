@@ -225,9 +225,11 @@ This section provides comprehensive guidance for contributing to kornia-rs, with
    ```
    Then run the `kornia-code-review` skill on your diff (`git diff main...HEAD`) and paste its output in the PR's **Self-review** section. Then write the **Author walkthrough** yourself, without AI: each changed file, why the issue needs it, the riskiest part and how you checked it. Both are required: the PR check fails without them, and reviewers will ask you about specific lines.
 
-3. **Update Documentation**: When adding new features or changing behavior, update rustdoc comments for public APIs (see [Coding Standards](#coding-standards) and [Rust-Specific Best Practices](#rust-specific-best-practices) for documentation guidelines).
+3. **Add a Changelog Fragment**: For a user-visible change, add `changelog.d/<PR>.<type>.md` (`breaking`, `added`, `perf`, `fixed`) as described in [`changelog.d/README.md`](changelog.d/README.md). Do not edit `CHANGELOG.md`; releases assemble it. Internal-only PRs say so and get the `no-changelog` label.
 
-4. **Follow Rust Idioms**:
+4. **Update Documentation**: When adding new features or changing behavior, update rustdoc comments for public APIs (see [Coding Standards](#coding-standards) and [Rust-Specific Best Practices](#rust-specific-best-practices) for documentation guidelines).
+
+5. **Follow Rust Idioms**:
    - Use pattern matching effectively (`match`, `if let`, `while let`)
    - Prefer composition over inheritance
    - Use `Option` and `Result` types appropriately

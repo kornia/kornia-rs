@@ -7,9 +7,9 @@ changed and why it matters, not a raw commit dump.
 Pre-releases (`-rc.N`) are cut before a stable tag so the community can try
 changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre kornia-rs`.
 
-<!-- When cutting a release, move the curated items from [Unreleased] into a new
-     dated section and reset [Unreleased]. Reference the diff range and prior tag
-     so the changelog stays navigable (see the "Full changelog" links below). -->
+<!-- Do not edit [Unreleased] in feature PRs: add changelog.d/<PR>.<type>.md instead
+     (see changelog.d/README.md). Releases assemble it with scripts/changelog.py build
+     and add the compare link to the prior tag (see the "Full changelog" links below). -->
 
 ## [Unreleased]
 

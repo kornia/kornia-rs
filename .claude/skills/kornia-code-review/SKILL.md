@@ -13,6 +13,10 @@ Two uses, same procedure:
 - **Review.** A reviewer runs it on the PR and compares with the author's
   self-review (section 7).
 
+Judge the change, not its author: do not speculate about whether or how AI
+was used (disclosure belongs to the author, `AI_POLICY.md`). A defect is a
+defect whoever wrote it.
+
 ## Output
 
 ```
@@ -177,6 +181,9 @@ themselves, review against the skills on `main` and call out the self-reference.
   output; no checklist box ticked for something not run.
 - If the PR changes a fact a skill states, the skill is updated in the same PR
   (see `kornia-curation`).
+- User-visible change ⇒ `changelog.d/<PR>.<type>.md` whose type and text match
+  the diff (a `breaking` change filed as `fixed` ⇒ major; a `perf` entry without
+  a measured number ⇒ major). Internal-only ⇒ the PR says so (no-changelog).
 
 ## 7. Close the loop (every review)
 

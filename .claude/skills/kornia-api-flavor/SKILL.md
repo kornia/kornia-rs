@@ -24,5 +24,5 @@ description: Use before designing a new public function, trait, config struct or
 9. **Feature gating**: hardware-specific code (`cuda`, `gstreamer`, `v4l`,
    `turbojpeg`) stays behind features; the default build must compile without.
 10. **Docs**: new public API is not done until it has rustdoc with Arguments,
-    Returns, Errors, Example, and an entry in the crate README/CHANGELOG
-    `[Unreleased]` when user-visible.
+    Returns, Errors, Example, and an entry in the crate README and a `changelog.d/` fragment
+    when user-visible.

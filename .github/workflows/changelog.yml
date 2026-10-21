@@ -1,0 +1,34 @@
+name: Changelog
+
+# Each user-visible PR adds changelog.d/<PR>.<type>.md; the no-changelog label
+# waives that (internal, CI-only and release PRs) but never fragment validity.
+on:
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check changelog fragments
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # compare against the merge base, not the moving main tip
+
+      - name: Check fragments
+        env:
+          BASE_REF: origin/${{ github.base_ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          NO_CHANGELOG: ${{ contains(github.event.pull_request.labels.*.name, 'no-changelog') }}
+        run: |
+          args=(--base-ref "$BASE_REF" --pr-number "$PR_NUMBER")
+          if [[ "$NO_CHANGELOG" == "true" ]]; then args+=(--skip-presence); fi
+          python3 scripts/changelog.py check "${args[@]}"
+
+      - name: Preview release notes
+        run: python3 scripts/changelog.py preview

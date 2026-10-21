@@ -52,10 +52,13 @@ Create one todo per step.
 2. **Gather what changed.** `git log <last-tag>..main --oneline --no-merges`.
    Group by theme (not per-commit). Read the previous CHANGELOG.md entries first
    to match tone and altitude — user-impact prose, not a commit dump.
-3. **Update `CHANGELOG.md`:**
-   - Move the curated items from `## [Unreleased]` into a new dated section
-     `## [X.Y.Z] — YYYY-MM-DD` (for an rc, keep it labelled `(pre-release)`).
-   - Reset `## [Unreleased]` to empty.
+3. **Update `CHANGELOG.md`** from the fragments in `changelog.d/`:
+   - `pixi run changelog-preview`, curate the fragments (merge duplicates,
+     fix wording) in the release PR, then
+     `python3 scripts/changelog.py build --version X.Y.Z --date YYYY-MM-DD`
+     (rc: `--version "X.Y.Z-rc.N"` and add ` (pre-release)` to the heading).
+     It moves `[Unreleased]` into the dated section, resets it and deletes the
+     fragments. The release PR carries the `no-changelog` label.
    - Add/refresh the compare link at the bottom **referencing the previous
      release tag**: `[X.Y.Z]: https://github.com/kornia/kornia-rs/compare/<prev-tag>...vX.Y.Z`.
      This is what keeps the changelog navigable across releases.

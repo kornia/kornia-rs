@@ -16,10 +16,11 @@ jobs:
     steps:
       - uses: actions/stale@1e223db275d687790206a7acac4d1a11bd6fe629 # v10.4.0
         with:
-          stale-pr-message: "This pull request has been automatically marked as stale because it has not had recent activity. It will be closed if no further activity occurs within 7 days. Thank you for your contributions!"
-          close-pr-message: "This pull request has been automatically closed due to inactivity. Feel free to reopen it if you would like to continue working on it."
+          # PRs are labelled, never closed for inactivity: a quiet PR is often waiting
+          # on review, and closing it bills our latency to the contributor (kornia#4629).
+          stale-pr-message: "This pull request has had no activity for 15 days. If it is waiting on review, a maintainer will pick it up; if it is waiting on you, please push an update or say if you need help. It will not be closed automatically."
           days-before-pr-stale: 15
-          days-before-pr-close: 7
+          days-before-pr-close: -1
           stale-pr-label: "stale"
           exempt-pr-labels: "pinned,work-in-progress,on-hold"
           days-before-issue-stale: -1

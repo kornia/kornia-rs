@@ -4,6 +4,9 @@
 
 **Fixes/Relates to:** # (issue number)
 
+<!-- User-visible change: add changelog.d/<PR>.<type>.md (breaking, added, perf, fixed); see changelog.d/README.md.
+Internal-only: say so here and ask for the no-changelog label. Do not edit CHANGELOG.md. -->
+
 **Important**:
 - Ensure you are assigned to the linked issue before submitting this PR
 - This PR should strictly implement what the linked issue describes

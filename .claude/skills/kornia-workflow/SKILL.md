@@ -55,6 +55,8 @@ Without pixi: `cargo test --features ci`, `cargo test -p kornia-imgproc`,
    the sole responsible author of every line.
 5. Perf-sensitive change ⇒ before/after bench numbers (`kornia-code-review`).
 6. Changed a fact the skills describe ⇒ update them (`kornia-curation`).
+   User-visible change ⇒ add `changelog.d/<PR>.<type>.md` (see
+   `changelog.d/README.md`); never edit `CHANGELOG.md` outside a release PR.
 7. Reference the existing library implementation (OpenCV, a Rust crate) when
    porting an algorithm; state deliberate departures from it in the rustdoc.
 8. Conventional Commits: `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`.

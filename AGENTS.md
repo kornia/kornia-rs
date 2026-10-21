@@ -240,6 +240,7 @@ Err(KorniaError::SizeMismatch {
    - Any breaking changes
    - Benchmarks or profiling data for performance-sensitive changes (before/after, see `kornia-code-review`)
    - AI disclosure: agent + version, model, effort level, skills applied, human vs AI part
+   - A `changelog.d/<PR>.<type>.md` fragment for user-visible changes (see `changelog.d/README.md`); never edit `CHANGELOG.md` outside a release PR
    - What use case does this pr address which you use yourself
 
 ### Contributing to Documentation

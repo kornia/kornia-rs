@@ -21,6 +21,7 @@ cross-checks it.
 | Paths cited in skills | the tree | yes, backticked paths under `crates/`, `scripts/`, `kornia-py/`, `kornia-cpp/`, `docs/`, `.github/` |
 | Review eval cases | `kornia-code-review/evals/` | yes, files present and `patch.diff` applies |
 | Features | each crate's `Cargo.toml` | summarised |
+| Release notes | `changelog.d/` fragments; `CHANGELOG.md` only in release PRs | `scripts/changelog.py check` in CI |
 | SIMD rules | `crates/kornia-imgproc/SIMD.md` | link only |
 
 ## Rules
