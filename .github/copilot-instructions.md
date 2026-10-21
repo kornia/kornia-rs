@@ -4,7 +4,7 @@ This file provides instructions for GitHub Copilot when working with code in thi
 
 ## Skills
 
-Before any task, read the relevant skill in [`.claude/skills/`](../.claude/skills) (see the table in [AGENTS.md](../AGENTS.md#required-skills)). Reviewers should flag PRs that violate them. `pixi run pr-check` is the pre-PR gate.
+Before any task, read the relevant skill in [`.claude/skills/`](../.claude/skills) (see the table in [AGENTS.md](../AGENTS.md#required-skills)). When reviewing, follow `kornia-code-review` (out-of-scope changes and missing benchmarks are blocking). When a change touches a fact the skills describe, follow `kornia-curation`. `pixi run pr-check` is the pre-PR gate.
 
 ## Coding Standards
 

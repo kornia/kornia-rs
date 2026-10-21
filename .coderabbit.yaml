@@ -124,3 +124,5 @@ knowledge_base:
       - "AI_POLICY.md"
       - "best_practices.md"
       - "crates/kornia-imgproc/SIMD.md"
+      - ".claude/skills/kornia-code-review/SKILL.md"
+      - ".claude/skills/kornia-coding-style/SKILL.md"

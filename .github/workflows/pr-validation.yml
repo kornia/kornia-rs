@@ -73,15 +73,23 @@ jobs:
               }
             }
 
-            // Template hygiene checks (warnings only)
-            if (!/pixi run rust-test|cargo test|pytest/i.test(prBody)) {
-              warnings.push('⚠️ **Missing proof of verification**: Please paste your local test logs (`pixi run rust-test`, `cargo test` or `pytest`).');
+            // Disclosure presence checks (warnings only). They check that fields are
+            // filled in, not that what they say is true; review does that.
+            const ticked = [...prBody.matchAll(/\[[xX]\]\s*(🟢|🟡|🔴)/g)].map(m => m[1]);
+            if (ticked.length !== 1) {
+              warnings.push(`⚠️ **AI usage disclosure**: tick exactly one option (found ${ticked.length}). See AI_POLICY.md.`);
             }
-            if (!/🟢|🟡|🔴/.test(prBody) || !/\[[xX]\]\s*(🟢|🟡|🔴)/.test(prBody)) {
-              warnings.push('⚠️ **Missing AI usage disclosure**: Please check exactly one option in the AI Usage Disclosure section (see AI_POLICY.md).');
-            }
-            if (!/\[[xX]\][^\n]*\.claude\/skills/.test(prBody)) {
-              warnings.push('⚠️ **Skills not acknowledged**: Please read the relevant skills in `.claude/skills/` (see AGENTS.md), run `pixi run pr-check`, and tick the checklist item.');
+            if (ticked.some(t => t !== '🟢')) {
+              const body = prBody.replace(/<!--[\s\S]*?-->/g, '');
+              const fields = ['Agent + version', 'Model', 'Effort level', 'Skills applied', 'Human vs AI part'];
+              const missing = fields.filter(f => {
+                const esc = f.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                const m = body.match(new RegExp(`\\*\\*${esc}:\\*\\*[ \\t]*([^\\n]*)`));
+                return !m || m[1].replace(/^\([^)]*\)$/, '').trim() === '';
+              });
+              if (missing.length > 0) {
+                warnings.push(`⚠️ **AI disclosure incomplete**: fill in ${missing.map(f => `**${f}**`).join(', ')} (see the PR template).`);
+              }
             }
 
             // Post comment if there are warnings

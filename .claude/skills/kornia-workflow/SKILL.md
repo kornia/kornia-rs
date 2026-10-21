@@ -36,20 +36,24 @@ Conditional gates:
 Without pixi: `cargo test --features ci`, `cargo test -p kornia-imgproc`,
 `cargo clippy --workspace --no-deps --all-targets --features ci -- -D warnings`.
 
-## PR rules (enforced by `pr-validation.yml` and review)
+## PR rules (checked in review; `pr-validation.yml` only warns on missing fields)
 
 1. Linked, approved issue assigned to you: `Fixes #123` / `Closes #123`.
-2. One concern per PR; no scope creep beyond the issue.
-3. Paste local test logs (`pixi run rust-test` / `cargo test` / `pytest`).
-4. Fill in the AI usage disclosure (see `AI_POLICY.md`). You are the sole
-   responsible author of every line.
-5. Reference the existing library implementation (OpenCV, a Rust crate) when
+2. Small, one concern, only what the issue asks. Out-of-scope hunks block
+   review (`kornia-code-review`); split them into their own PRs.
+3. Paste the commands you actually ran and their output, including failures
+   and what you did not run.
+4. Fill in the AI usage disclosure (see `AI_POLICY.md`): agent + version,
+   model, effort level, skills applied, and which part a human did. You are
+   the sole responsible author of every line.
+5. Perf-sensitive change ⇒ before/after bench numbers (`kornia-code-review`).
+6. Changed a fact the skills describe ⇒ update them (`kornia-curation`).
+7. Reference the existing library implementation (OpenCV, a Rust crate) when
    porting an algorithm.
-6. Conventional Commits: `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`.
-7. New/changed public API needs doc comments; bug fixes need a regression test.
+8. Conventional Commits: `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`.
+9. New/changed public API needs doc comments; bug fixes need a regression test.
 
 ## Debugging CI
 
 Reproduce with the exact job command from `.github/workflows/rust_lint.yml`
-or `rust_test.yml`. Clippy warnings are errors. Benchmarks: use `cargo bench`
-before/after changes to core algorithms.
+or `rust_test.yml`. Clippy warnings are errors.

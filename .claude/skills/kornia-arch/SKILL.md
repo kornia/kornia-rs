@@ -31,8 +31,8 @@ PyO3/Maturin Python bindings and C++ bindings.
 | `kornia-apriltag`, `kornia-bow`, `kornia-vlm` | detection, bag of words, VLM (candle) |
 | `kornia` | umbrella crate that re-exports the others |
 
-Only the crates listed in `PUBLISH_ORDER` in `scripts/release_rust.sh` are
-published; the umbrella, VLM and AprilTag crates are intentionally excluded.
+The publish set is `PUBLISH_ORDER` / `NOT_PUBLISHED` in `scripts/release_rust.sh`
+(crates with `publish = false` are skipped). Read it there; do not restate it.
 
 ## Feature flags
 

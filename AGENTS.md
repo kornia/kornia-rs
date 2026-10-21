@@ -12,8 +12,10 @@ Guidance for AI AGENTS and human contributors working in this repository.
 
 Skills live in `.claude/skills/` (also exposed at `.agents/skills/`). **Read the
 relevant skill before starting a task; this is mandatory for contributors and
-agents.** CI (`skills_check.yml`) validates them and `pixi run pr-check` is the
-pre-PR gate.
+agents.** `pixi run skills-check` (CI: `skills_check.yml`) validates their
+structure and the facts they restate (MSRV, pixi tasks, crates, publish set,
+cited paths); it cannot check that a skill was applied — review does that.
+`pixi run pr-check` is the pre-PR gate.
 
 | Skill | Read when |
 |---|---|
@@ -21,6 +23,8 @@ pre-PR gate.
 | `kornia-workflow` | before committing/PR; build, lint, test, PR rules |
 | `kornia-coding-style` | any Rust edit |
 | `kornia-api-flavor` | designing new public API |
+| `kornia-code-review` | reviewing or self-reviewing a PR: scope, copies, latency, benchmarks |
+| `kornia-curation` | changing a fact the guidance describes; editing skills |
 | `kornia-simd` | SIMD / performance work in `kornia-imgproc` |
 | `kornia-bindings` | Python / C++ binding changes |
 | `release` | cutting a release |
@@ -215,7 +219,7 @@ Err(KorniaError::SizeMismatch {
 
 ### Pull Requests
 
-1. **Keep PRs focused** — one concern per PR. Multiple features → multiple PRs.
+1. **Keep PRs small and in scope** — one concern per PR, only what the linked issue asks. Out-of-scope hunks are a blocking review finding (`kornia-code-review`).
 2. **Test locally first** — `pixi run pr-check` must pass, plus:
 
    ```bash
@@ -232,7 +236,8 @@ Err(KorniaError::SizeMismatch {
 5. **PR description** — include:
    - What changed and why
    - Any breaking changes
-   - Benchmarks or profiling data for performance-sensitive changes
+   - Benchmarks or profiling data for performance-sensitive changes (before/after, see `kornia-code-review`)
+   - AI disclosure: agent + version, model, effort level, skills applied, human vs AI part
    - What use case does this pr address which you use yourself
 
 ### Contributing to Documentation

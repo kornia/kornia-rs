@@ -20,10 +20,10 @@ repos:
   - repo: local
     hooks:
     - id: check-skills
-      name: agent skills are valid and referenced in AGENTS.md
+      name: agent skills are valid and match the facts they restate
       entry: python3 scripts/check_skills.py
       language: system
-      files: ^(\.claude/skills/|AGENTS\.md$|pixi\.toml$)
+      files: ^(\.claude/skills/|AGENTS\.md$|CONTRIBUTING\.md$|pixi\.toml$|Cargo\.toml$|crates/[^/]+/Cargo\.toml$|scripts/(release_rust\.sh|check_skills\.py)$|\.github/)
       pass_filenames: false
     - id: check-version-pins
       name: workspace dependency pins match workspace.package.version

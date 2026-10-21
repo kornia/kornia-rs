@@ -22,6 +22,12 @@
 - [ ] **Manual Verification:** (Describe the steps you took)
 - [ ] **Performance/Edge Cases:** (How does this handle nulls, large data, etc.?)
 
+<!-- Paste the commands you ran and their output. Say what failed or was not run.
+Perf-sensitive change: before/after `cargo bench` numbers (see kornia-code-review). -->
+```text
+$ pixi run pr-check
+```
+
 ---
 
 ## 🕵️ AI Usage Disclosure
@@ -30,10 +36,18 @@
 - [ ] 🟡 **AI-assisted:** I used AI for boilerplate/refactoring but have manually reviewed and tested every line.
 - [ ] 🔴 **AI-generated:** (Note: These PRs may be subject to stricter scrutiny or immediate closure if the logic is not explained).
 
+If AI was used, fill in every line (exact names, e.g. `Claude Code 2.x`, `claude-opus-5-5`, `high`):
+- **Agent + version:**
+- **Model:**
+- **Effort level:**
+- **Skills applied:** (names from `.claude/skills/`)
+- **Human vs AI part:** (what the human did, what the agent did)
+
 ---
 
 ## 🚦 Checklist
-- [ ] I read the relevant skills in `.claude/skills/` (see AGENTS.md) and `pixi run pr-check` passes
+- [ ] I followed the relevant skills in `.claude/skills/` (see AGENTS.md), self-reviewed with `kornia-code-review`, and `pixi run pr-check` passes
+- [ ] Every change is required by the linked issue; nothing out of scope
 - [ ] I am assigned to the linked issue (required before PR submission)
 - [ ] The linked issue has been approved by a maintainer
 - [ ] This PR strictly implements what the linked issue describes (no scope creep)

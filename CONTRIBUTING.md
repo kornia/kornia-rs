@@ -215,7 +215,7 @@ This section provides comprehensive guidance for contributing to kornia-rs, with
 
 ## Development Workflow
 
-0. **Read the Skills First**: Project skills in [`.claude/skills/`](.claude/skills) (architecture, workflow, coding style, API design, SIMD, bindings) are mandatory reading for contributors and AI agents. Start with `kornia-arch` and `kornia-workflow`; see [AGENTS.md](AGENTS.md#required-skills). CI validates them (`skills_check.yml`).
+0. **Read the Skills First**: Project skills in [`.claude/skills/`](.claude/skills) (architecture, workflow, coding style, API design, code review, curation, SIMD, bindings) are mandatory reading for contributors and AI agents. Start with `kornia-arch` and `kornia-workflow`; see [AGENTS.md](AGENTS.md#required-skills). `skills_check.yml` checks their structure and the facts they restate; it does not check that they were applied.
 
 1. **Keep PRs Focused**: Each PR should address a single concern. If you're working on multiple features, create separate PRs for each.
 
