@@ -11,8 +11,15 @@ toolchain matches CI.
 ## Mandatory pre-PR gate
 
 ```bash
-pixi run pr-check       # skills-check + rust-fmt-check + rust-clippy + rust-test
+pixi run pr-check       # skills-check + rust-fmt-check + rust-clippy + rust-check + rust-test
 ```
+
+Then self-review: run `kornia-code-review` on `git diff main...HEAD`, fix what
+it finds, and paste its final output (with `Verdict:` and `Skill gaps:`) in
+the PR's **Self-review** section. Then write the **Author walkthrough**
+yourself, without AI: each changed file, why the issue needs it, the riskiest
+part and how you checked it. Reviewers will question specific lines.
+`pr-validation.yml` fails while either section is empty.
 
 Equivalent pieces:
 

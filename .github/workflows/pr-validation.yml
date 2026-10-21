@@ -2,7 +2,7 @@ name: PR Validation
 
 on:
   pull_request_target:
-    types: [opened, synchronize]
+    types: [opened, edited, synchronize]
 
 permissions:
   pull-requests: write
@@ -92,6 +92,26 @@ jobs:
               }
             }
 
+            // Self-review and author walkthrough are required: fail the job (make it a
+            // required check to block merge). This proves the sections are filled in,
+            // not that the review was good or the author understands the change;
+            // reviewers check that (kornia-code-review section 6).
+            const failures = [];
+            const sr = prBody.replace(/<!--[\s\S]*?-->/g, '').match(/##[^\n]*Self-review[^\n]*\n([\s\S]*?)(?=\n## |$)/i);
+            const verdict = sr && /Verdict:[ \t]*(approve|request changes|comment)\b/i.test(sr[1]);
+            if (!verdict || !/Skill gaps:/i.test(sr[1])) {
+              failures.push('❌ **Self-review missing**: run the `kornia-code-review` skill on your diff and paste its output (with `Verdict:` and `Skill gaps:`) in the Self-review section. See `.claude/skills/kornia-code-review/SKILL.md`.');
+            }
+            const wt = prBody.replace(/<!--[\s\S]*?-->/g, '').match(/##[^\n]*Author walkthrough[^\n]*\n([\s\S]*?)(?=\n## |$)/i);
+            const wtField = f => {
+              const m = wt && wt[1].match(new RegExp(`\\*\\*${f}:\\*\\*[ \\t]*([\\s\\S]*?)(?=\\n- \\*\\*|\\n---|$)`));
+              return m ? m[1].trim() : '';
+            };
+            if (!wtField('Per file') || !wtField('Riskiest part and how I checked it')) {
+              failures.push('❌ **Author walkthrough missing**: in your own words, explain each changed file and the riskiest part of the change (Author walkthrough section). Reviewers will ask about specific lines.');
+            }
+            warnings.unshift(...failures);
+
             // Post comment if there are warnings
             if (warnings.length > 0) {
               const commentBody = '## ⚠️ PR Validation Warnings\n\n' +
@@ -146,4 +166,8 @@ jobs:
                   comment_id: botComment.id
                 });
               }
+            }
+
+            if (failures.length > 0) {
+              core.setFailed('Required PR sections missing: ' + failures.length);
             }

@@ -221,11 +221,9 @@ This section provides comprehensive guidance for contributing to kornia-rs, with
 
 2. **Test Locally First**: Always run all relevant tests locally before submitting (see [Pull Request](#pull-request) for requirements):
    ```bash
-   pixi run pr-check     # Mandatory gate: skills + fmt-check + clippy + tests
-   pixi run rust-lint    # Check formatting and linting
-   pixi run rust-test    # Run all tests
-   pixi run rust-check   # Verify compilation
+   pixi run pr-check     # Gate: skills + fmt-check + clippy + check + tests
    ```
+   Then run the `kornia-code-review` skill on your diff (`git diff main...HEAD`) and paste its output in the PR's **Self-review** section. Then write the **Author walkthrough** yourself, without AI: each changed file, why the issue needs it, the riskiest part and how you checked it. Both are required: the PR check fails without them, and reviewers will ask you about specific lines.
 
 3. **Update Documentation**: When adding new features or changing behavior, update rustdoc comments for public APIs (see [Coding Standards](#coding-standards) and [Rust-Specific Best Practices](#rust-specific-best-practices) for documentation guidelines).
 

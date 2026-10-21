@@ -30,6 +30,31 @@ $ pixi run pr-check
 
 ---
 
+## 🔍 Self-review (required)
+
+<!-- Run the kornia-code-review skill on `git diff main...HEAD` before opening the PR
+(e.g. tell your agent: "self-review my diff with .claude/skills/kornia-code-review"),
+fix what it finds, and paste its final output here. The PR check fails while this
+section has no verdict. -->
+```text
+Verdict:
+
+Skill gaps:
+```
+
+---
+
+## 🧠 Author walkthrough (required, written by you, not by AI)
+
+<!-- In your own words: for each changed file, what the change does and why the issue
+needs it. Then the riskiest part and how you checked it. Reviewers will ask about
+specific lines; if you cannot explain a line, remove it. The PR check fails while
+these lines are empty. -->
+- **Per file:**
+- **Riskiest part and how I checked it:**
+
+---
+
 ## 🕵️ AI Usage Disclosure
 *Check one of the following:*
 - [ ] 🟢 **No AI used.**
@@ -46,8 +71,9 @@ If AI was used, fill in every line (exact names, e.g. `Claude Code 2.x`, `claude
 ---
 
 ## 🚦 Checklist
-- [ ] I followed the relevant skills in `.claude/skills/` (see AGENTS.md), self-reviewed with `kornia-code-review`, and `pixi run pr-check` passes
+- [ ] I followed the relevant skills in `.claude/skills/` (see AGENTS.md), pasted the `kornia-code-review` self-review above, and `pixi run pr-check` passes
 - [ ] Every change is required by the linked issue; nothing out of scope
+- [ ] I reviewed every line myself and can explain each change without AI (see AI_POLICY.md: you are the sole responsible author)
 - [ ] I am assigned to the linked issue (required before PR submission)
 - [ ] The linked issue has been approved by a maintainer
 - [ ] This PR strictly implements what the linked issue describes (no scope creep)

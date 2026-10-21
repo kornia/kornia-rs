@@ -19,8 +19,9 @@ The authoritative guide is `crates/kornia-imgproc/SIMD.md`; read it first.
 
 - Always keep a scalar fallback; SIMD output must match scalar (assert in tests).
 - Every `unsafe` intrinsic block has `// SAFETY:`; gate with
-  `#[cfg(target_arch = ...)]` and runtime detection where needed
-  (`is_x86_feature_detected!` is compile-time-sensitive — see SIMD.md).
+  `#[cfg(target_arch = ...)]`; runtime dispatch reads
+  `crate::simd::cpu_features()`, never `is_x86_feature_detected!` directly
+  (it is compile-time-sensitive under `-Ctarget-cpu`, see SIMD.md).
 - Test cross-arch with qemu/binfmt as described in SIMD.md or
   `pixi run rust-cross-test-aarch64`.
 - Benchmark before and after (`cargo bench`, best-of-N rounds). Report numbers

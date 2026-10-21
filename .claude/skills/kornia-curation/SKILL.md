@@ -13,12 +13,13 @@ cross-checks it.
 
 | Fact | Source | Restated in skills? |
 |---|---|---|
-| MSRV | root `Cargo.toml` `rust-version` | yes, checked |
-| Publish set / order | `scripts/release_rust.sh` (`PUBLISH_ORDER`, `NOT_PUBLISHED`) | no — link only; a crate named as excluded while in `PUBLISH_ORDER` fails the check |
-| pixi tasks | `pixi.toml` | yes, every `pixi run <task>` is checked |
+| MSRV | root `Cargo.toml` `rust-version` | yes, in skills, AGENTS.md, CONTRIBUTING.md, Copilot instructions |
+| Publish set / order | `scripts/release_rust.sh` (`PUBLISH_ORDER`, `NOT_PUBLISHED`) | no — link only; a sentence calling a `PUBLISH_ORDER` crate (`kornia-x` or short name) excluded / not published fails the check |
+| pixi tasks | `pixi.toml` `[tasks]` / `[feature.*.tasks]` | yes, every `pixi run [-e env] <task>` is checked |
 | CI commands | `.github/workflows/*.yml` | summarised; workflow file wins |
 | Crates | `crates/*` | yes, names in `kornia-arch` are checked |
-| Paths cited in skills | the tree | yes, checked |
+| Paths cited in skills | the tree | yes, backticked paths under `crates/`, `scripts/`, `kornia-py/`, `kornia-cpp/`, `docs/`, `.github/` |
+| Review eval cases | `kornia-code-review/evals/` | yes, files present and `patch.diff` applies |
 | Features | each crate's `Cargo.toml` | summarised |
 | SIMD rules | `crates/kornia-imgproc/SIMD.md` | link only |
 
@@ -33,9 +34,14 @@ cross-checks it.
 3. **Record traps.** A non-obvious failure hit during a task (silent skip,
    wrong default, misleading error) becomes one line in the owning skill: the
    invariant and how to detect it. No narratives, no dates.
-4. **Delete what is wrong.** Remove or fix stale lines; never add a
+4. **Reviews feed skills.** Every `kornia-code-review` run ends with a
+   "Skill gaps" section. Each gap becomes a one-line rule in the owning skill;
+   each defect a review missed becomes a case in
+   `.claude/skills/kornia-code-review/evals/`. A skill edit is done only when
+   all eval cases still pass.
+5. **Delete what is wrong.** Remove or fix stale lines; never add a
    contradicting line next to them.
-5. **New skill**: directory name == frontmatter `name`, description starts with
+6. **New skill**: directory name == frontmatter `name`, description starts with
    "Use " and says when to trigger, row added to the AGENTS.md table, and
    `REQUIRED` in `scripts/check_skills.py` if contributors must read it.
-6. **Short.** A skill is a checklist, not a tutorial. Cut before you add.
+7. **Short.** A skill is a checklist, not a tutorial. Cut before you add.

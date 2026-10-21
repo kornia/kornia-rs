@@ -1,0 +1,45 @@
+diff --git a/.claude/skills/kornia-arch/SKILL.md b/.claude/skills/kornia-arch/SKILL.md
+index f114e51..d2946f1 100644
+--- a/.claude/skills/kornia-arch/SKILL.md
++++ b/.claude/skills/kornia-arch/SKILL.md
+@@ -31,8 +31,8 @@ PyO3/Maturin Python bindings and C++ bindings.
+ | `kornia-apriltag`, `kornia-bow`, `kornia-vlm` | detection, bag of words, VLM (candle) |
+ | `kornia` | umbrella crate that re-exports the others |
+ 
+-The publish set is `PUBLISH_ORDER` / `NOT_PUBLISHED` in `scripts/release_rust.sh`
+-(crates with `publish = false` are skipped). Read it there; do not restate it.
++Only the crates listed in `PUBLISH_ORDER` in `scripts/release_rust.sh` are
++published; the umbrella, VLM and AprilTag crates are intentionally excluded.
+ 
+ ## Feature flags
+ 
+diff --git a/scripts/check_skills.py b/scripts/check_skills.py
+index f792460..fa3e842 100644
+--- a/scripts/check_skills.py
++++ b/scripts/check_skills.py
+@@ -95,20 +95,11 @@ def main() -> int:
+         for task in sorted(set(re.findall(r"pixi run (?:-e \S+ )?([a-z0-9-]+)", text))):
+             if task not in tasks:
+                 errors.append(f"{skill.name}: unknown pixi task: {task}")
+-        # Per sentence (table rows on their own); a crate may be named `kornia-x`
+-        # or by its short name ("AprilTag").
+-        units = []
+-        for block in re.split(r"\n\s*\n", text):
+-            rows = [r for r in block.splitlines() if r.lstrip().startswith("|")]
+-            units += rows
+-            prose = " ".join(r for r in block.splitlines() if not r.lstrip().startswith("|"))
+-            units += re.split(r"(?<=[.!?])\s+", prose)
+-        for para in (u.replace("crates.io", "") for u in units):
+-            if re.search(r"exclud|not published|never published|skipp?ed", para, re.I) and re.search(r"publish|crates", para, re.I):
+-                for crate in sorted(published):
+-                    short = crate.removeprefix("kornia-")
+-                    if re.search(rf"\b{re.escape(crate)}\b|\b{re.escape(short)}\b", para, re.I):
+-                        errors.append(f"{skill.name}: says {crate} is excluded from publishing, but it is in PUBLISH_ORDER")
++        # Simpler: flag lines that name a crate as excluded from publishing.
++        for line in text.splitlines():
++            if "exclud" in line and "publish" in line:
++                for crate in sorted(published & set(re.findall(r"`(kornia-[a-z0-9-]+)`", line))):
++                    errors.append(f"{skill.name}: says {crate} is excluded from publishing, but it is in PUBLISH_ORDER")
+ 
+     # Crate table rows look like "| `kornia-x`, `kornia-y` | purpose |".
+     table = set()

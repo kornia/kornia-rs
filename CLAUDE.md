@@ -1,1 +1,1 @@
-Read [AGENTS.md](AGENTS.md) first, then the relevant skills in `.claude/skills/` before starting any task. Run `pixi run pr-check` before opening a PR.
+Read [AGENTS.md](AGENTS.md) first, then the relevant skills in `.claude/skills/` before starting any task. Before opening a PR: run `pixi run pr-check`, then self-review with `.claude/skills/kornia-code-review` and paste its output in the PR's Self-review section. Never write the Author walkthrough: the human author writes it.

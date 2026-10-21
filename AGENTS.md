@@ -23,7 +23,7 @@ cited paths); it cannot check that a skill was applied — review does that.
 | `kornia-workflow` | before committing/PR; build, lint, test, PR rules |
 | `kornia-coding-style` | any Rust edit |
 | `kornia-api-flavor` | designing new public API |
-| `kornia-code-review` | reviewing or self-reviewing a PR: scope, copies, latency, benchmarks |
+| `kornia-code-review` | mandatory self-review before every PR; reviewing a PR: scope, copies, latency, benchmarks |
 | `kornia-curation` | changing a fact the guidance describes; editing skills |
 | `kornia-simd` | SIMD / performance work in `kornia-imgproc` |
 | `kornia-bindings` | Python / C++ binding changes |
@@ -223,11 +223,11 @@ Err(KorniaError::SizeMismatch {
 2. **Test locally first** — `pixi run pr-check` must pass, plus:
 
    ```bash
-   pixi run rust-lint   # formatting + clippy
-   pixi run rust-test   # full test suite
    pixi run py-test     # Python binding tests (if py code changed)
    pixi run cpp-test    # C++ binding tests (if C++ code changed)
    ```
+
+   Then self-review with `kornia-code-review` and paste its output in the PR's Self-review section. The human author then writes the Author walkthrough in their own words (each file, why, riskiest part). Both are required; the PR check fails without them. Agents must not write the walkthrough.
 
 3. **Update documentation** — any new or changed public API must have updated doc comments. New features need an entry in the relevant crate's `README.md` or module-level doc.
 
