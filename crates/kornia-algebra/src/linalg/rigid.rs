@@ -29,6 +29,24 @@ pub enum UmeyamaError {
     /// Weights must be finite, non-negative, and have a positive sum
     #[error("Weights must be finite, non-negative, and have a positive sum")]
     InvalidWeights,
+    /// Robust-fit Huber threshold must be finite and positive.
+    #[error("Robust Umeyama delta must be finite and positive, got {delta}")]
+    InvalidDelta {
+        /// The invalid Huber threshold.
+        delta: f64,
+    },
+    /// Robust-fit iteration cap must be non-zero.
+    #[error("Robust Umeyama max_iters must be greater than zero, got {max_iters}")]
+    InvalidMaxIters {
+        /// The invalid iteration cap.
+        max_iters: usize,
+    },
+    /// Robust-fit convergence tolerance must be finite and positive.
+    #[error("Robust Umeyama tol must be finite and positive, got {tol}")]
+    InvalidTol {
+        /// The invalid convergence tolerance.
+        tol: f64,
+    },
 }
 
 /// Result type alias for Umeyama.
@@ -258,6 +276,225 @@ pub fn umeyama_f64(
     Ok((r, t, scale))
 }
 
+/// σ̂ = MAD / Φ⁻¹(3/4): the MAD → pseudo-σ consistency factor for Gaussian
+/// residuals (`Φ⁻¹(3/4) = 0.6744897501960817…`, so the factor is
+/// `1.4826022185056018…`). Distribution-dependent for non-Gaussian data.
+const MAD_TO_SIGMA: f64 = 1.0 / 0.674_489_750_196_081_7;
+
+/// Hard-rejection threshold in units of the MAD pseudo-σ: residuals farther
+/// than this from the median residual are dropped before the final refit.
+const OUTLIER_SIGMA_MULT: f64 = 3.5;
+
+/// Median of a slice: sorts a copy with [`f64::total_cmp`] (NaN gets a
+/// deterministic position); empty input yields `0.0`.
+fn median(values: &[f64]) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable_by(f64::total_cmp);
+    let m = sorted.len() / 2;
+    if sorted.len() % 2 == 1 {
+        sorted[m]
+    } else {
+        0.5 * (sorted[m - 1] + sorted[m])
+    }
+}
+
+/// Configuration for the robust weighted Sim3 fit.
+#[derive(Debug, Clone, Copy)]
+pub struct RobustUmeyamaConfig {
+    /// Huber threshold in the residual's units: residuals below `delta` keep
+    /// full weight, above it are down-weighted as `delta / residual`.
+    pub delta: f64,
+    /// Maximum number of IRLS iterations.
+    pub max_iters: usize,
+    /// Convergence tolerance on the maximum relative change of scale,
+    /// rotation and translation between iterations.
+    pub tol: f64,
+}
+
+impl Default for RobustUmeyamaConfig {
+    fn default() -> Self {
+        Self {
+            delta: 1.0,
+            max_iters: 20,
+            tol: 1e-6,
+        }
+    }
+}
+
+impl RobustUmeyamaConfig {
+    /// Validates the config fields, one specific error variant per field.
+    fn validate(&self) -> Result<(), UmeyamaError> {
+        if !self.delta.is_finite() || self.delta <= 0.0 {
+            return Err(UmeyamaError::InvalidDelta { delta: self.delta });
+        }
+        if self.max_iters == 0 {
+            return Err(UmeyamaError::InvalidMaxIters {
+                max_iters: self.max_iters,
+            });
+        }
+        if !self.tol.is_finite() || self.tol <= 0.0 {
+            return Err(UmeyamaError::InvalidTol { tol: self.tol });
+        }
+        Ok(())
+    }
+}
+
+/// Huber-weighted IRLS Sim3 fit with a MAD hard-rejection pass (f64).
+///
+/// Solves `(R, t, s)` minimizing `Σ ρ(‖dstᵢ − (s·R·srcᵢ + t)‖)` where `ρ` is
+/// the Huber loss, by iteratively reweighted least squares over
+/// [`umeyama_f64`] solves. After convergence, the residual scale is estimated
+/// robustly as `σ̂ = MAD / Φ⁻¹(3/4) ≈ 1.4826 · MAD` of the residuals around
+/// their median, and correspondences whose residual deviates from the median
+/// by more than `3.5 · σ̂` are dropped before a final unweighted fit on the
+/// survivors. Returns `(R, t, s)` with scale always estimated.
+///
+/// The rejection window is centered on the median residual: it tracks a
+/// biased intermediate fit and always keeps at least half of the
+/// correspondences for finite inputs, so a heavy outlier cluster cannot
+/// empty the inlier set. The fit is deterministic (no randomness, no
+/// parallelism).
+///
+/// Point coordinates are assumed finite; non-finite coordinates propagate to
+/// the result, as in [`umeyama_f64`].
+///
+/// # Arguments
+///
+/// * `src` - Source points. Must have the same length as `dst`.
+/// * `dst` - Destination points. Must have the same length as `src`.
+/// * `config` - Robust-fit configuration (Huber threshold, iteration cap,
+///   convergence tolerance). Invalid field values are rejected before the
+///   input is inspected.
+///
+/// # Returns
+///
+/// `Ok((R, t, s))` on success, where `R` is a proper rotation matrix
+/// (`det(R) = 1`), `t` is the translation, and `s` is the estimated scale.
+///
+/// # Errors
+///
+/// Returns [`UmeyamaError::InvalidDelta`], [`UmeyamaError::InvalidMaxIters`],
+/// or [`UmeyamaError::InvalidTol`] if the corresponding config field is
+/// invalid. Config validation runs before the input checks below, so it
+/// takes precedence over them.
+/// Returns [`UmeyamaError::MismatchedInputLengths`] if `src` and `dst`
+/// differ in length, and [`UmeyamaError::EmptyInput`] if both are empty.
+///
+/// # Example
+///
+/// ```rust
+/// use kornia_algebra::linalg::rigid::{umeyama_f64_robust, RobustUmeyamaConfig};
+/// use kornia_algebra::Vec3F64;
+///
+/// let src = [
+///     Vec3F64::new(0.0, 0.0, 0.0),
+///     Vec3F64::new(1.0, 0.0, 0.0),
+///     Vec3F64::new(0.0, 1.0, 0.0),
+///     Vec3F64::new(1.0, 1.0, 0.0),
+///     Vec3F64::new(0.5, 0.5, 1.0),
+///     Vec3F64::new(1.0, 0.5, 0.5),
+/// ];
+/// // True transform (scale 2, translation (1, 2, 3)), one corrupted corner.
+/// let mut dst: Vec<Vec3F64> = src
+///     .iter()
+///     .map(|p| *p * 2.0 + Vec3F64::new(1.0, 2.0, 3.0))
+///     .collect();
+/// dst[0] = Vec3F64::new(-50.0, 50.0, 50.0);
+///
+/// let (r, t, s) = umeyama_f64_robust(&src, &dst, &RobustUmeyamaConfig::default())?;
+/// // The corrupted corner keeps a large residual while the good corners map tightly.
+/// let bad_res = ((r * src[0]) * s + t - dst[0]).length();
+/// let good_res = ((r * src[1]) * s + t - dst[1]).length();
+/// assert!(good_res < 0.5 && bad_res > 20.0 && (s - 2.0).abs() < 0.5);
+/// # Ok::<(), kornia_algebra::linalg::rigid::UmeyamaError>(())
+/// ```
+pub fn umeyama_f64_robust(
+    src: &[Vec3F64],
+    dst: &[Vec3F64],
+    config: &RobustUmeyamaConfig,
+) -> UmeyamaResultF64 {
+    config.validate()?;
+
+    let n = src.len();
+    let mut weights = vec![1.0_f64; n];
+
+    // Initial unweighted fit; also enforces the length/empty checks.
+    let mut fit = umeyama_f64(src, dst, Some(&weights), true)?;
+
+    // r_i = |(s·R·src_i + t) - dst_i| for the current fit.
+    let residuals_for = |fit: &UmeyamaOutputF64, out: &mut [f64]| {
+        for (i, (p, d)) in src.iter().zip(dst).enumerate() {
+            let mapped = (fit.0 * *p) * fit.2 + fit.1;
+            out[i] = (mapped - *d).length();
+        }
+    };
+
+    let mut residuals = vec![0.0_f64; n];
+    for _ in 0..config.max_iters {
+        residuals_for(&fit, &mut residuals);
+        // Huber weights: full weight below `delta`, `delta / r` above.
+        for i in 0..n {
+            let r = residuals[i];
+            weights[i] = if r > 0.0 {
+                (config.delta / r).min(1.0)
+            } else {
+                1.0
+            };
+        }
+        let new_fit = umeyama_f64(src, dst, Some(&weights), true)?;
+
+        // Convergence: maximum relative change of scale, rotation columns
+        // and translation between the two fits.
+        let eps = f64::EPSILON;
+        let scale_rel = ((new_fit.2 - fit.2) / fit.2.max(eps)).abs();
+        let rot_rel = (0..3)
+            .map(|c| (new_fit.0.col(c) - fit.0.col(c)).length() / fit.0.col(c).length().max(eps))
+            .fold(0.0_f64, f64::max);
+        let t_rel = (new_fit.1 - fit.1).length() / fit.1.length().max(eps);
+
+        fit = new_fit;
+        if scale_rel.max(rot_rel).max(t_rel) < config.tol {
+            break;
+        }
+    }
+
+    // Residuals under the converged fit.
+    residuals_for(&fit, &mut residuals);
+
+    // MAD hard rejection around the median residual:
+    // σ̂ = MAD / Φ⁻¹(3/4) ≈ 1.4826 · MAD.
+    // Outliers: |r_i - med| > 3.5 · σ̂. The centered window (unlike a raw
+    // residual threshold anchored at zero) tracks a biased intermediate
+    // fit, so a heavy outlier cluster cannot empty the inlier set.
+    let med = median(&residuals);
+    let mut abs_dev = vec![0.0_f64; n];
+    for i in 0..n {
+        abs_dev[i] = (residuals[i] - med).abs();
+    }
+    let mad = median(&abs_dev);
+    let sigma = MAD_TO_SIGMA * mad;
+
+    if sigma > f64::EPSILON {
+        let thr = OUTLIER_SIGMA_MULT * sigma;
+        let inliers: Vec<usize> = (0..n)
+            .filter(|&i| (residuals[i] - med).abs() <= thr)
+            .collect();
+        // The centered window keeps at least half the residuals by
+        // construction (half of all |r - med| are <= MAD < thr), so the
+        // inlier set is never empty for finite inputs.
+        if inliers.len() < n {
+            let src_in: Vec<Vec3F64> = inliers.iter().map(|&i| src[i]).collect();
+            let dst_in: Vec<Vec3F64> = inliers.iter().map(|&i| dst[i]).collect();
+            fit = umeyama_f64(&src_in, &dst_in, None, true)?;
+        }
+    }
+
+    Ok(fit)
+}
+
 /// Accumulated first- and second-order statistics of the two point sets.
 #[derive(Debug)]
 struct Moments {
@@ -362,6 +599,7 @@ fn moments(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::{rngs::StdRng, RngExt, SeedableRng};
 
     /// 90° rotation about Z, column-major (`[[0, -1, 0], [1, 0, 0], [0, 0, 1]]`).
     fn rot_z90() -> Mat3F64 {
@@ -1123,6 +1361,354 @@ mod tests {
             "single weighted point not reproduced: {mapped:?} vs {:?}",
             dst[2]
         );
+        Ok(())
+    }
+
+    /// `n` seeded-random points in `[-half, half]^3` (deterministic per seed).
+    fn random_points(seed: u64, n: usize, half: f64) -> Vec<Vec3F64> {
+        let mut rng = StdRng::seed_from_u64(seed);
+        (0..n)
+            .map(|_| {
+                Vec3F64::new(
+                    (rng.random::<f64>() * 2.0 - 1.0) * half,
+                    (rng.random::<f64>() * 2.0 - 1.0) * half,
+                    (rng.random::<f64>() * 2.0 - 1.0) * half,
+                )
+            })
+            .collect()
+    }
+
+    /// Adds seeded uniform noise in `[-amp, amp]^3` to each point.
+    fn add_noise(seed: u64, points: &mut [Vec3F64], amp: f64) {
+        let mut rng = StdRng::seed_from_u64(seed);
+        for p in points {
+            *p += Vec3F64::new(
+                (rng.random::<f64>() * 2.0 - 1.0) * amp,
+                (rng.random::<f64>() * 2.0 - 1.0) * amp,
+                (rng.random::<f64>() * 2.0 - 1.0) * amp,
+            );
+        }
+    }
+
+    #[test]
+    fn test_umeyama_f64_robust_invalid_config() {
+        let src = [
+            Vec3F64::new(0.0, 0.0, 0.0),
+            Vec3F64::new(1.0, 0.0, 0.0),
+            Vec3F64::new(0.0, 1.0, 0.0),
+        ];
+        let dst: Vec<Vec3F64> = src.to_vec();
+        let default = RobustUmeyamaConfig::default();
+
+        let err = umeyama_f64_robust(
+            &src,
+            &dst,
+            &RobustUmeyamaConfig {
+                delta: 0.0,
+                ..default
+            },
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, UmeyamaError::InvalidDelta { delta: 0.0 }),
+            "got {err:?}"
+        );
+
+        let err = umeyama_f64_robust(
+            &src,
+            &dst,
+            &RobustUmeyamaConfig {
+                delta: -1.0,
+                ..default
+            },
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, UmeyamaError::InvalidDelta { .. }),
+            "got {err:?}"
+        );
+
+        let err = umeyama_f64_robust(
+            &src,
+            &dst,
+            &RobustUmeyamaConfig {
+                delta: f64::NAN,
+                ..default
+            },
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, UmeyamaError::InvalidDelta { delta } if delta.is_nan()),
+            "got {err:?}"
+        );
+
+        let err = umeyama_f64_robust(
+            &src,
+            &dst,
+            &RobustUmeyamaConfig {
+                max_iters: 0,
+                ..default
+            },
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, UmeyamaError::InvalidMaxIters { max_iters: 0 }),
+            "got {err:?}"
+        );
+
+        let err = umeyama_f64_robust(
+            &src,
+            &dst,
+            &RobustUmeyamaConfig {
+                tol: 0.0,
+                ..default
+            },
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, UmeyamaError::InvalidTol { tol: 0.0 }),
+            "got {err:?}"
+        );
+
+        let err = umeyama_f64_robust(
+            &src,
+            &dst,
+            &RobustUmeyamaConfig {
+                tol: f64::INFINITY,
+                ..default
+            },
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, UmeyamaError::InvalidTol { .. }),
+            "got {err:?}"
+        );
+
+        // Config validation takes precedence over the input-shape checks.
+        let err = umeyama_f64_robust(
+            &src,
+            &dst[..2],
+            &RobustUmeyamaConfig {
+                delta: 0.0,
+                ..default
+            },
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, UmeyamaError::InvalidDelta { .. }),
+            "got {err:?}"
+        );
+
+        // With a valid config, the core's errors surface unchanged.
+        let err = umeyama_f64_robust(&src, &dst[..2], &default).unwrap_err();
+        assert!(
+            matches!(err, UmeyamaError::MismatchedInputLengths),
+            "got {err:?}"
+        );
+        let err = umeyama_f64_robust(&[], &[], &default).unwrap_err();
+        assert!(matches!(err, UmeyamaError::EmptyInput), "got {err:?}");
+    }
+
+    #[test]
+    fn test_umeyama_f64_robust_exact_recovery_equals_unweighted() -> Result<(), UmeyamaError> {
+        let src = random_points(0x9e37_79b9_7f4a_7c15, 12, 2.0);
+        let r_true = rot_z90();
+        let t_true = Vec3F64::new(0.5, -0.3, 2.0);
+        let s_true = 1.7;
+        let dst: Vec<Vec3F64> = src
+            .iter()
+            .map(|p| (r_true * *p) * s_true + t_true)
+            .collect();
+
+        let got = umeyama_f64_robust(&src, &dst, &RobustUmeyamaConfig::default())?;
+        assert_matches_true(&got, &r_true, &t_true, s_true, 1e-9);
+
+        // The IRLS loop converges in one iteration (residuals sit at the SVD
+        // error floor, so every Huber weight stays exactly 1). The MAD pass
+        // may still refit on those SVD-noise-level residuals, so the robust
+        // fit agrees with the plain unweighted fit only to the module's
+        // ~1e-9 recovery precision, not bit-for-bit.
+        let plain = umeyama_f64(&src, &dst, None, true)?;
+        assert_outputs_close(&got, &plain, 1e-9);
+        Ok(())
+    }
+
+    #[test]
+    fn test_umeyama_f64_robust_clean_data_is_stable_across_iteration_budgets(
+    ) -> Result<(), UmeyamaError> {
+        let src = random_points(0x5eed_5eed_5eed_5eed, 10, 2.0);
+        let r_true = rot_z90();
+        let t_true = Vec3F64::new(0.5, -0.3, 2.0);
+        let s_true = 1.7;
+        let dst: Vec<Vec3F64> = src
+            .iter()
+            .map(|p| (r_true * *p) * s_true + t_true)
+            .collect();
+
+        // The fit on clean data must not depend on the iteration budget.
+        // (The early exit is not observable through the public API; the IRLS
+        // loop itself is guarded by the heavy-outlier test below.)
+        let full = umeyama_f64_robust(&src, &dst, &RobustUmeyamaConfig::default())?;
+        let cfg_one = RobustUmeyamaConfig {
+            max_iters: 1,
+            ..RobustUmeyamaConfig::default()
+        };
+        let one = umeyama_f64_robust(&src, &dst, &cfg_one)?;
+        assert_outputs_close(&full, &one, 1e-12);
+        Ok(())
+    }
+
+    #[test]
+    fn test_umeyama_f64_robust_coplanar_corners() -> Result<(), UmeyamaError> {
+        // Eight tag-like corners on the z = 0 plane (rank-deficient
+        // covariance; the crate's `svd3_f64` must carry the fit, no
+        // conditioning hacks).
+        let src = [
+            Vec3F64::new(0.0, 0.0, 0.0),
+            Vec3F64::new(1.0, 0.0, 0.0),
+            Vec3F64::new(1.0, 1.0, 0.0),
+            Vec3F64::new(0.0, 1.0, 0.0),
+            Vec3F64::new(0.5, 0.0, 0.0),
+            Vec3F64::new(1.0, 0.5, 0.0),
+            Vec3F64::new(0.5, 1.0, 0.0),
+            Vec3F64::new(0.0, 0.5, 0.0),
+        ];
+        let r_true = rot_z90();
+        let t_true = Vec3F64::new(0.5, -0.3, 2.0);
+        let s_true = 1.3;
+        let dst: Vec<Vec3F64> = src
+            .iter()
+            .map(|p| (r_true * *p) * s_true + t_true)
+            .collect();
+
+        let got = umeyama_f64_robust(&src, &dst, &RobustUmeyamaConfig::default())?;
+        assert_matches_true(&got, &r_true, &t_true, s_true, 1e-9);
+        Ok(())
+    }
+
+    #[test]
+    fn test_umeyama_f64_robust_rejects_gross_outliers() -> Result<(), UmeyamaError> {
+        let mut src = random_points(0x1001, 20, 2.0);
+        let r_true = rot_z90();
+        let t_true = Vec3F64::new(0.5, -0.3, 2.0);
+        let s_true = 1.7;
+
+        // Realistic inlier noise so the MAD pass has a positive scale to
+        // work with (on exactly-noiseless inliers MAD is 0 and the pass is
+        // a designed no-op; IRLS alone then carries the fit).
+        add_noise(0x1002, &mut src, 5e-4);
+        let mut dst: Vec<Vec3F64> = src
+            .iter()
+            .map(|p| (r_true * *p) * s_true + t_true)
+            .collect();
+        add_noise(0x1003, &mut dst, 5e-4);
+
+        // 10% gross outliers: displace 2 of 20 by 40-60 units.
+        dst[3] += Vec3F64::new(50.0, 0.0, 0.0);
+        dst[17] += Vec3F64::new(0.0, -40.0, 30.0);
+
+        let got = umeyama_f64_robust(&src, &dst, &RobustUmeyamaConfig::default())?;
+        assert_matches_true(&got, &r_true, &t_true, s_true, 5e-3);
+
+        // Good points keep tiny residuals; the corrupted ones keep large ones
+        // (proof of down-weighting and rejection).
+        let mut max_good = 0.0_f64;
+        for (i, (p, d)) in src.iter().zip(&dst).enumerate() {
+            let r = ((got.0 * *p) * got.2 + got.1 - *d).length();
+            if i == 3 || i == 17 {
+                assert!(r > 20.0, "outlier {i} residual too small: {r}");
+            } else {
+                max_good = max_good.max(r);
+            }
+        }
+        assert!(max_good < 5e-3, "good-point residual too large: {max_good}");
+        Ok(())
+    }
+
+    #[test]
+    fn test_umeyama_f64_robust_is_order_invariant() -> Result<(), UmeyamaError> {
+        let mut src = random_points(0x2001, 24, 2.0);
+        let r_true = rot_z90();
+        let t_true = Vec3F64::new(0.5, -0.3, 2.0);
+        let s_true = 1.7;
+        // Noisy inliers and outliers so the MAD refit path is order-checked too.
+        add_noise(0x2002, &mut src, 5e-4);
+        let mut dst: Vec<Vec3F64> = src
+            .iter()
+            .map(|p| (r_true * *p) * s_true + t_true)
+            .collect();
+        add_noise(0x2003, &mut dst, 5e-4);
+        for i in [2usize, 11, 20] {
+            dst[i] += Vec3F64::new(45.0, -45.0, 45.0);
+        }
+
+        let a = umeyama_f64_robust(&src, &dst, &RobustUmeyamaConfig::default())?;
+
+        // Identical permutation of both sets: the fit is a symmetric function
+        // of the correspondences, so only floating-point reassociation differs.
+        let mut perm: Vec<usize> = (0..src.len()).collect();
+        perm.reverse();
+        perm.rotate_left(5);
+        let src_b: Vec<Vec3F64> = perm.iter().map(|&i| src[i]).collect();
+        let dst_b: Vec<Vec3F64> = perm.iter().map(|&i| dst[i]).collect();
+        let b = umeyama_f64_robust(&src_b, &dst_b, &RobustUmeyamaConfig::default())?;
+
+        assert_outputs_close(&a, &b, 1e-9);
+        Ok(())
+    }
+
+    #[test]
+    fn test_umeyama_f64_robust_is_deterministic() -> Result<(), UmeyamaError> {
+        let mut src = random_points(0x3001, 16, 2.0);
+        let r_true = rot_z90();
+        let t_true = Vec3F64::new(0.5, -0.3, 2.0);
+        let s_true = 1.7;
+        add_noise(0x3002, &mut src, 5e-4);
+        let mut dst: Vec<Vec3F64> = src
+            .iter()
+            .map(|p| (r_true * *p) * s_true + t_true)
+            .collect();
+        add_noise(0x3003, &mut dst, 5e-4);
+        dst[7] += Vec3F64::new(0.0, 60.0, -30.0);
+
+        let a = umeyama_f64_robust(&src, &dst, &RobustUmeyamaConfig::default())?;
+        let b = umeyama_f64_robust(&src, &dst, &RobustUmeyamaConfig::default())?;
+
+        let ar: [f64; 9] = a.0.into();
+        let br: [f64; 9] = b.0.into();
+        assert_eq!(ar, br, "R must be bit-for-bit identical");
+        assert_eq!(a.1, b.1, "t must be bit-for-bit identical");
+        assert_eq!(a.2, b.2, "s must be bit-for-bit identical");
+        Ok(())
+    }
+
+    #[test]
+    fn test_umeyama_f64_robust_mad_refit_rejects_heavy_outliers() -> Result<(), UmeyamaError> {
+        // 40% gross outliers: the IRLS-only Huber fixpoint stays visibly
+        // biased (bias ~ delta * outlier fraction), so passing the tight
+        // tolerance below proves the centered MAD pass fired and the
+        // unweighted refit on survivors landed on the clean inliers. The
+        // centered window is what makes this work: at the biased fixpoint
+        // the inlier residuals sit ~bias away from zero, where a raw
+        // residual threshold would reject them too. This case also requires
+        // the IRLS loop: with the loop disabled, the unweighted seed fit is
+        // too biased for the MAD pass to recover (verified during review).
+        let mut src = random_points(0x4001, 20, 2.0);
+        let r_true = rot_z90();
+        let t_true = Vec3F64::new(0.5, -0.3, 2.0);
+        let s_true = 1.7;
+        add_noise(0x4002, &mut src, 5e-4);
+        let mut dst: Vec<Vec3F64> = src
+            .iter()
+            .map(|p| (r_true * *p) * s_true + t_true)
+            .collect();
+        add_noise(0x4003, &mut dst, 5e-4);
+        for i in [1usize, 4, 7, 9, 12, 14, 16, 19] {
+            dst[i] += Vec3F64::new(30.0, 40.0, -50.0);
+        }
+
+        let got = umeyama_f64_robust(&src, &dst, &RobustUmeyamaConfig::default())?;
+        assert_matches_true(&got, &r_true, &t_true, s_true, 5e-3);
         Ok(())
     }
 }
