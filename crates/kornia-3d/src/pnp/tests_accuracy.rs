@@ -3,9 +3,7 @@
 use super::{
     solve_pnp, solve_pnp_ransac, EPnPParams, LMRefineParams, PnPMethod, PnPResult, RansacParams,
 };
-use crate::test_utils::{
-    k_default, rotation_error_deg, translation_error, Scene, SceneConfig, SceneError,
-};
+use crate::test_utils::{k_default, rotation_error_deg, translation_error, Scene, SceneConfig};
 use kornia_algebra::{Mat3AF32, Vec2F32, Vec3AF32};
 use rand::{rngs::StdRng, SeedableRng};
 
@@ -68,15 +66,15 @@ fn evaluate(
     row: &Row,
     seed: u64,
     solve: impl Fn(&[Vec3AF32], &[Vec2F32], &Mat3AF32) -> Option<PnPResult>,
-) -> Result<Accuracy, SceneError> {
+) -> Accuracy {
     let k = k_default();
     let mut rng = StdRng::seed_from_u64(seed);
     let mut rot = Vec::new();
     let mut trans = Vec::new();
     let mut failures = 0;
     for _ in 0..TRIALS {
-        let mut scene = Scene::generate(&mut rng, k, &row.config)?;
-        scene.add_outliers(&mut rng, row.outliers)?;
+        let mut scene = Scene::generate(&mut rng, k, &row.config);
+        scene.add_outliers(&mut rng, row.outliers);
         let Some(pose) = solve(&scene.world, &scene.image, &k) else {
             failures += 1;
             continue;
@@ -91,11 +89,11 @@ fn evaluate(
                 / scene.translation.length(),
         );
     }
-    Ok(Accuracy {
+    Accuracy {
         rotation_deg: median(rot),
         translation_pct: median(trans),
         failure_pct: 100.0 * failures as f64 / TRIALS as f64,
-    })
+    }
 }
 
 /// Prints one Markdown table: a row per `rows` entry, three columns per method. With `ransac`
@@ -107,7 +105,7 @@ fn print_table(
     ransac: Option<&RansacParams>,
     rows: &[Row],
     seed: u64,
-) -> Result<(), SceneError> {
+) {
     println!("\n### {title}\n");
     print!("| {column} |");
     for Method { name, .. } in methods {
@@ -127,7 +125,7 @@ fn print_table(
                 Some(params) => solve_pnp_ransac(w, img, k, None, method.clone(), params)
                     .ok()
                     .map(|result| result.pose),
-            })?;
+            });
             print!(
                 " {:.3} | {:.3} | {:.1} |",
                 a.rotation_deg, a.translation_pct, a.failure_pct
@@ -135,7 +133,6 @@ fn print_table(
         }
         println!();
     }
-    Ok(())
 }
 
 /// Prints the accuracy tables in `crates/kornia-3d/benchmarks.md`. Run it in release:
@@ -145,7 +142,7 @@ fn print_table(
 /// ```
 #[test]
 #[ignore = "measurement, not an assertion; run explicitly in release"]
-fn pnp_accuracy_report() -> Result<(), SceneError> {
+fn pnp_accuracy_report() {
     let method = |name, method| Method { name, method };
     let solvers = [
         method("EPnP", PnPMethod::EPnPDefault),
@@ -180,7 +177,7 @@ fn pnp_accuracy_report() -> Result<(), SceneError> {
         &[4, 6, 10, 20, 50, 100, 500]
             .map(|n| Row::new(n.to_string(), SceneConfig::cube(n, 6.0, 1.0))),
         1000,
-    )?;
+    );
     print_table(
         "Pixel noise (20 points in a 2 m cube 6 m away)",
         "noise px",
@@ -189,7 +186,7 @@ fn pnp_accuracy_report() -> Result<(), SceneError> {
         &[0.0, 0.5, 1.0, 2.0, 5.0]
             .map(|noise| Row::new(format!("{noise}"), SceneConfig::cube(20, 6.0, noise))),
         1000,
-    )?;
+    );
     print_table(
         "Harder configurations (1 px noise)",
         "case",
@@ -214,7 +211,7 @@ fn pnp_accuracy_report() -> Result<(), SceneError> {
             ),
         ],
         1000,
-    )?;
+    );
     print_table(
         "Inside solve_pnp_ransac (50 inliers with 1 px noise, plus random outliers)",
         "case",
@@ -231,6 +228,5 @@ fn pnp_accuracy_report() -> Result<(), SceneError> {
             .with_outliers(17),
         ],
         2000,
-    )?;
-    Ok(())
+    );
 }

@@ -1,3 +1,5 @@
+use core::f64;
+
 use kiddo::immutable::float::kdtree::ImmutableKdTree;
 
 use super::ops::{find_correspondences, fit_transformation, update_transformation};

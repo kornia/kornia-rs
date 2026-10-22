@@ -7,8 +7,6 @@ pub use impl_f64::{
     sort_singular_values as sort_singular_values_f64, svd3 as svd3_f64, SVD3Set as SVD3SetF64,
 };
 
-pub(crate) use impl_f64::{nearest_rotation as nearest_rotation_f64, try_svd3 as try_svd3_f64};
-
 mod impl_f32 {
     use super::*;
 
@@ -498,90 +496,6 @@ mod impl_f32 {
 
 mod impl_f64 {
     use super::*;
-
-    /// Iteration cap for the nalgebra backend; finite inputs normally need only a few steps.
-    const MAX_SVD_ITERATIONS: usize = 1000;
-
-    /// A decomposition of `matrix / scale`; scale stays separate when only rotations are needed.
-    struct ScaledSvd3 {
-        u: Mat3F64,
-        singular_values: Vec3F64,
-        v: Mat3F64,
-        scale: f64,
-    }
-
-    fn scaled_svd3(matrix: &Mat3F64) -> Option<ScaledSvd3> {
-        if !matrix.is_finite() {
-            return None;
-        }
-        let view = nalgebra::MatrixView3::from(matrix);
-        let scale = view.amax();
-        if scale == 0.0 {
-            return Some(ScaledSvd3 {
-                u: Mat3F64::IDENTITY,
-                singular_values: Vec3F64::ZERO,
-                v: Mat3F64::IDENTITY,
-                scale,
-            });
-        }
-        let svd = (view / scale).try_svd(true, true, f64::EPSILON, MAX_SVD_ITERATIONS)?;
-        Some(ScaledSvd3 {
-            u: Mat3F64::from(svd.u?),
-            singular_values: svd.singular_values.into(),
-            v: Mat3F64::from(svd.v_t?.transpose()),
-            scale,
-        })
-    }
-
-    /// Project onto SO(3) without rescaling singular values or normalizing the input twice.
-    ///
-    /// # Arguments
-    ///
-    /// * `matrix` - Matrix to project, borrowed without an intermediate array.
-    ///
-    /// # Returns
-    ///
-    /// The nearest proper rotation in Frobenius norm; identity for a zero matrix.
-    ///
-    /// # Errors
-    ///
-    /// Returns `None` for non-finite input or SVD non-convergence.
-    pub(crate) fn nearest_rotation(matrix: &Mat3F64) -> Option<Mat3F64> {
-        let svd = scaled_svd3(matrix)?;
-        let mut u = svd.u;
-        let v_t = svd.v.transpose();
-        // Values are sorted descending, so column 2 is the least-cost reflection correction.
-        if u.determinant() * v_t.determinant() < 0.0 {
-            u.z_axis = -u.z_axis;
-        }
-        Some(u * v_t)
-    }
-
-    /// Compute a rescaled, bounded SVD through the nalgebra backend.
-    ///
-    /// # Arguments
-    ///
-    /// * `matrix` - Finite matrix, borrowed through a column-major view.
-    ///
-    /// # Returns
-    ///
-    /// Kornia's `U`, diagonal `S`, and `V` matrices, with decreasing singular values.
-    ///
-    /// # Errors
-    ///
-    /// Returns `None` for non-finite input, overflowing singular values or non-convergence.
-    pub(crate) fn try_svd3(matrix: &Mat3F64) -> Option<SVD3Set> {
-        let svd = scaled_svd3(matrix)?;
-        let singular_values = svd.singular_values * svd.scale;
-        if !singular_values.to_array().into_iter().all(f64::is_finite) {
-            return None;
-        }
-        Some(SVD3Set {
-            u: svd.u,
-            s: Mat3F64::from_diagonal(singular_values),
-            v: svd.v,
-        })
-    }
 
     const EPSILON: f64 = 1e-15;
     const JACOBI_TOLERANCE: f64 = 1e-12;

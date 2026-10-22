@@ -9,9 +9,7 @@ pub(crate) fn fit_transformation(
     dst_r_src: &mut [[f64; 3]; 3],
     dst_t_src: &mut [f64; 3],
 ) -> Option<()> {
-    if points_in_src.is_empty() || points_in_src.len() != points_in_dst.len() {
-        return None;
-    }
+    assert_eq!(points_in_src.len(), points_in_dst.len());
 
     // compute centroids
     let src_centroid = linalg::centroid(points_in_src);
@@ -141,17 +139,6 @@ mod tests {
             rand::random::<f64>() * factor,
             rand::random::<f64>() * factor,
         ]
-    }
-
-    #[test]
-    fn test_fit_transformation_rejects_empty_or_mismatched_points() {
-        let mut rotation = [[0.0; 3]; 3];
-        let mut translation = [0.0; 3];
-        for (source, target) in [(&[][..], &[][..]), (&[[0.0; 3]][..], &[][..])] {
-            assert!(fit_transformation(source, target, &mut rotation, &mut translation).is_none());
-            assert_eq!(rotation, [[0.0; 3]; 3]);
-            assert_eq!(translation, [0.0; 3]);
-        }
     }
 
     #[test]

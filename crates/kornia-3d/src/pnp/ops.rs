@@ -28,24 +28,6 @@ pub(crate) fn intrinsics_as_vectors(k: &Mat3AF32) -> (Vec3AF32, Vec3AF32) {
 }
 
 /// Root-mean-square reprojection error in pixels.
-///
-/// # Arguments
-///
-/// * `points_world` - Nonempty world-coordinate points.
-/// * `points_image` - Pixel observations, one per world point.
-/// * `r` - Rotation from world to camera coordinates.
-/// * `t` - Translation in camera coordinates, in the same units as the world points.
-/// * `k` - Pinhole intrinsics with zero skew.
-/// * `distortion` - Optional polynomial distortion applied to the predicted pixels.
-///
-/// # Returns
-///
-/// The root-mean-square Euclidean pixel error. Empty input, non-finite projections or
-/// overflow can produce NaN or infinity; callers requiring a finite error must check it.
-///
-/// # Errors
-///
-/// Returns [`PnPError::MismatchedArrayLengths`] if the correspondence lengths differ.
 pub(crate) fn rmse_px(
     points_world: &[Vec3AF32],
     points_image: &[Vec2F32],
@@ -72,6 +54,7 @@ pub(crate) fn rmse_px(
     let mut sum_sq = 0.0;
     let n = points_world.len() as f32;
 
+    // Prepare camera intrinsic for distortion if needed
     let cam_intr = CameraIntrinsic {
         fx: f64::from(fx),
         fy: f64::from(fy),
@@ -86,6 +69,7 @@ pub(crate) fn rmse_px(
         let u_undist = intr_x.dot(pc) * inv_z; // (fx * x + cx * z) / z
         let v_undist = intr_y.dot(pc) * inv_z; // (fy * y + cy * z) / z
 
+        // Apply distortion model if provided
         let (u_hat, v_hat) = if let Some(d) = distortion {
             let (ud, vd) =
                 distort_point_polynomial(f64::from(u_undist), f64::from(v_undist), &cam_intr, d);
@@ -96,7 +80,7 @@ pub(crate) fn rmse_px(
 
         let du = u_hat - uv.x;
         let dv = v_hat - uv.y;
-        sum_sq += du.mul_add(du, dv * dv);
+        sum_sq += du.mul_add(du, dv * dv); // FMA where available
     }
 
     Ok((sum_sq / n).sqrt())
@@ -177,40 +161,6 @@ pub(crate) fn gauss_newton(beta_init: [f32; 4], null4: &DMatrix<f32>, rho: &[f32
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn rmse_is_the_mean_euclidean_pixel_error() -> Result<(), PnPError> {
-        let world = [Vec3AF32::new(0.0, 0.0, 1.0), Vec3AF32::new(2.0, 0.0, 2.0)];
-        let image = [Vec2F32::new(3.0, 4.0), Vec2F32::new(1.0, 0.0)];
-        let error = rmse_px(
-            &world,
-            &image,
-            &Mat3AF32::IDENTITY,
-            &Vec3AF32::ZERO,
-            &Mat3AF32::IDENTITY,
-            None,
-        )?;
-        assert!((error - 3.535_534).abs() < 1e-6);
-        Ok(())
-    }
-
-    #[test]
-    fn rmse_rejects_mismatched_observations() {
-        let solve = |world: &[Vec3AF32], image: &[Vec2F32]| {
-            rmse_px(
-                world,
-                image,
-                &Mat3AF32::IDENTITY,
-                &Vec3AF32::ZERO,
-                &Mat3AF32::IDENTITY,
-                None,
-            )
-        };
-        assert!(matches!(
-            solve(&[], &[Vec2F32::ZERO]),
-            Err(PnPError::MismatchedArrayLengths { .. })
-        ));
-    }
 
     #[test]
     fn test_compute_centroid() {

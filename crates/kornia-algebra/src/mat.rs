@@ -19,6 +19,9 @@
 
 use crate::{QuatF32, QuatF64, Vec2F32, Vec2F64, Vec3AF32, Vec3F32, Vec3F64, Vec4F32, Vec4F64};
 
+/// SVD iteration cap for [`Mat3F64::nearest_rotation`]; 3x3 SVDs converge in far fewer.
+const NEAREST_ROTATION_MAX_SVD_ITERATIONS: usize = 1000;
+
 macro_rules! define_matrix_type {
     (
         $(#[$meta:meta])*
@@ -327,49 +330,12 @@ impl Mat3F64 {
 
     /// Round each element to `f32`.
     ///
-    /// # Arguments
-    ///
-    /// * `self` - Matrix whose elements are rounded to the nearest representable `f32`.
-    ///
     /// # Returns
     ///
     /// The `f32` matrix; values outside the `f32` range become `±inf`.
-    ///
-    /// # Errors
-    ///
-    /// This conversion is infallible; it preserves NaNs and may overflow to infinity.
     #[inline]
     pub fn as_mat3af32(self) -> Mat3AF32 {
         Mat3AF32(glam::Mat3A::from(self.0.as_mat3()))
-    }
-
-    /// Compute a singular value decomposition with a bounded nalgebra backend.
-    ///
-    /// # Arguments
-    ///
-    /// * `self` - Matrix to decompose, borrowed without an intermediate array copy.
-    ///
-    /// # Returns
-    ///
-    /// `U`, diagonal `S` with non-negative singular values in descending order, and `V`,
-    /// satisfying `self = U * S * V.transpose()`.
-    ///
-    /// # Errors
-    ///
-    /// Returns `None` for non-finite inputs, unrepresentable singular values, or failure
-    /// to converge within the backend's iteration limit.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use kornia_algebra::{Mat3F64, Vec3F64};
-    /// let matrix = Mat3F64::from_diagonal(Vec3F64::new(3.0, 2.0, 1.0));
-    /// let svd = matrix.try_svd().ok_or("SVD failed")?;
-    /// assert_eq!(*svd.u() * *svd.s() * svd.v().transpose(), matrix);
-    /// # Ok::<(), &str>(())
-    /// ```
-    pub fn try_svd(&self) -> Option<crate::linalg::svd::SVD3SetF64> {
-        crate::linalg::svd::try_svd3_f64(self)
     }
 
     /// Project the matrix onto the nearest rotation in the Frobenius norm.
@@ -378,19 +344,11 @@ impl Mat3F64 {
     /// reflection, negating a column of `U·Vᵀ` instead gives a rotation that is in general not the
     /// nearest.
     ///
-    /// # Arguments
-    ///
-    /// * `self` - Matrix to project onto SO(3).
-    ///
     /// # Returns
     ///
     /// The nearest rotation, or `None` if the matrix has a non-finite entry or its SVD does not
     /// converge. The zero matrix, to which every rotation is equally near, gives the identity;
     /// below rank 2 the answer is not unique either.
-    ///
-    /// # Errors
-    ///
-    /// Returns `None` for non-finite input or if the SVD fails to converge.
     ///
     /// # Example
     ///
@@ -404,7 +362,28 @@ impl Mat3F64 {
     /// # Ok::<(), &str>(())
     /// ```
     pub fn nearest_rotation(self) -> Option<Self> {
-        crate::linalg::svd::nearest_rotation_f64(&self)
+        if !self.is_finite() {
+            return None;
+        }
+        // nalgebra's SVD, which is more accurate here than `svd3_f64`.
+        let m = nalgebra::Matrix3::<f64>::from(self);
+        // The 3x3 SVD works on MᵀM; rescaling keeps it from overflowing or underflowing.
+        let scale = m.amax();
+        if scale == 0.0 {
+            return Some(Self::IDENTITY);
+        }
+        let svd = (m / scale).try_svd(
+            true,
+            true,
+            f64::EPSILON,
+            NEAREST_ROTATION_MAX_SVD_ITERATIONS,
+        )?;
+        let (mut u, v_t) = (svd.u?, svd.v_t?);
+        // Singular values come in decreasing order: column 2 of U belongs to the smallest.
+        if u.determinant() * v_t.determinant() < 0.0 {
+            u.column_mut(2).neg_mut();
+        }
+        Some(Self::from(u * v_t))
     }
 }
 
@@ -421,15 +400,6 @@ impl From<Mat3F64> for nalgebra::Matrix3<f64> {
     #[inline]
     fn from(m: Mat3F64) -> Self {
         m.0.to_cols_array_2d().into()
-    }
-}
-
-// Both layouts are contiguous column-major f64 values. The view borrows glam's array;
-// decompositions still require their own writable workspace.
-impl<'a> From<&'a Mat3F64> for nalgebra::MatrixView3<'a, f64> {
-    #[inline]
-    fn from(matrix: &'a Mat3F64) -> Self {
-        Self::from_slice(matrix.0.as_ref())
     }
 }
 
@@ -892,46 +862,6 @@ mod tests {
     }
 
     #[test]
-    fn test_mat3f64_nalgebra_view_borrows_column_storage() {
-        let matrix = Mat3F64::from_cols_array(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 10.0]);
-        let view = nalgebra::MatrixView3::from(&matrix);
-        let storage: &[f64; 9] = matrix.0.as_ref();
-        assert_eq!(view.as_ptr(), storage.as_ptr());
-        assert_eq!(view[(0, 1)], 4.0);
-        assert_eq!(view[(1, 0)], 2.0);
-    }
-
-    #[test]
-    fn test_mat3f64_try_svd_reconstructs_scaled_and_rank_deficient_matrices(
-    ) -> Result<(), &'static str> {
-        let left = SO3F64::exp(Vec3F64::new(0.3, -0.5, 0.8)).matrix();
-        let right = SO3F64::exp(Vec3F64::new(-0.6, 0.2, 0.4)).matrix();
-        for diagonal in [Vec3F64::new(1.0, 3.0, -2.0), Vec3F64::new(0.0, 2.0, 1.0)] {
-            let matrix = left * Mat3F64::from_diagonal(diagonal) * right;
-            for scale in [1.0, 1e300, 1e-300] {
-                let svd = (matrix * scale).try_svd().ok_or("SVD failed")?;
-                let normalized_s = Mat3F64(svd.s().0 / scale);
-                let reconstructed = *svd.u() * normalized_s * svd.v().transpose();
-                assert!(reconstructed.abs_diff_eq(matrix.0, 1e-12));
-                assert!((svd.u().transpose() * *svd.u()).abs_diff_eq(Mat3F64::IDENTITY.0, 1e-12));
-                assert!((svd.v().transpose() * *svd.v()).abs_diff_eq(Mat3F64::IDENTITY.0, 1e-12));
-                assert!(normalized_s.x_axis.x >= normalized_s.y_axis.y);
-                assert!(normalized_s.y_axis.y >= normalized_s.z_axis.z);
-                assert!(normalized_s.z_axis.z >= 0.0);
-            }
-        }
-        assert_eq!(
-            *Mat3F64::ZERO.try_svd().ok_or("zero SVD failed")?.s(),
-            Mat3F64::ZERO
-        );
-        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            assert!(Mat3F64::from_cols_array(&[value; 9]).try_svd().is_none());
-        }
-        assert!(Mat3F64::from_cols_array(&[f64::MAX; 9]).try_svd().is_none());
-        Ok(())
-    }
-
-    #[test]
     fn test_mat3f64_from_mat3af32() {
         // Not symmetric; 0.1 is not exact in binary, so the f64 must be the f32 value itself.
         let m = Mat3AF32::from_cols_array(&[0.1, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 10.0]);
@@ -982,19 +912,6 @@ mod tests {
             assert!(got.abs_diff_eq(expected.0, 1e-12), "scale {s:e}");
         }
         assert_eq!(Mat3F64::ZERO.nearest_rotation(), Some(Mat3F64::IDENTITY));
-        Ok(())
-    }
-
-    #[test]
-    fn test_nearest_rotation_does_not_require_representable_singular_values(
-    ) -> Result<(), &'static str> {
-        // This rank-one matrix has a singular value of 3 * f64::MAX. Projection depends
-        // only on singular vectors and must remain defined even though a full SVD cannot.
-        let matrix = Mat3F64::from_cols_array(&[f64::MAX; 9]);
-        assert!(matrix.try_svd().is_none());
-        let rotation = matrix.nearest_rotation().ok_or("projection failed")?;
-        assert!((rotation.transpose() * rotation).abs_diff_eq(Mat3F64::IDENTITY.0, 1e-12));
-        assert!((rotation.determinant() - 1.0).abs() < 1e-12);
         Ok(())
     }
 

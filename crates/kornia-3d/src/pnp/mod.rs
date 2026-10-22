@@ -58,18 +58,9 @@ pub enum PnPError {
     #[error("SVD computation failed: {0}")]
     SvdFailed(String),
 
-    /// The camera matrix `K` is singular, non-finite, or unsupported by the selected solver.
-    #[error("Camera matrix K is invalid or unsupported by the selected solver")]
+    /// The camera matrix `K` is singular or has a non-finite entry.
+    #[error("Camera matrix K is singular or not finite")]
     InvalidCameraMatrix,
-
-    /// A solver parameter is outside its documented range.
-    #[error("Invalid solver parameter {name}: {reason}")]
-    InvalidParameter {
-        /// Name of the invalid parameter.
-        name: &'static str,
-        /// Required range or constraint.
-        reason: &'static str,
-    },
 
     /// An input point or a value computed from the inputs is not finite.
     #[error("Non-finite value: {0}")]

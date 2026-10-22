@@ -43,6 +43,5 @@ pub mod stereo;
 /// 3D transforms algorithms.
 pub mod transforms;
 
-#[cfg(any(test, feature = "test-utils"))]
-#[doc(hidden)]
-pub mod test_utils;
+#[cfg(test)]
+pub(crate) mod test_utils;

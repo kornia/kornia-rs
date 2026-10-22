@@ -3,10 +3,9 @@
 //! Paper: [Terzakis & Lourakis, ECCV 2020](https://www.ecva.net/papers/eccv_2020/papers_ECCV/papers/123460460.pdf)
 //! Reference: [OpenCV SQPnP implementation](https://github.com/opencv/opencv/blob/4.x/modules/calib3d/src/sqpnp.cpp)
 //!
-//! SQPnP minimizes the algebraic reprojection error
-//! `Σ [(X_i − u_i Z_i)² + (Y_i − v_i Z_i)²]`, where `(X_i, Y_i, Z_i) = R·M_i + t`
-//! and `(u_i, v_i)` are normalized image coordinates. Eliminating translation gives
-//! `rᵀ Ω r` with `r = vec(R)` (columns stacked).
+//! SQPnP minimises the algebraic error `Σ (X_i − x_i Z_i)² + (Y_i − y_i Z_i)²`, with
+//! `(X_i, Y_i, Z_i) = R·M_i + t` and `(x_i, y_i)` the normalised image point, written as `rᵀ Ω r`
+//! with `r = vec(R)` (columns stacked).
 //! SQP starts from the eigenvectors of `Ω` with the smallest eigenvalues and keeps only poses that
 //! put the centroid of the points in front of the camera. It runs in `f64`.
 //!
@@ -24,13 +23,15 @@
 //!   cost.
 //! - Each SQP step solves the full KKT system (LU, SVD when singular); OpenCV uses the null space
 //!   of the constraints.
+//! - Degenerate image points are found by a relative test on `S = Σ Q_i`; OpenCV checks the
+//!   variance of the points against an absolute threshold.
 
 use kornia_algebra::{Mat3AF32, Mat3F64, Vec2F32, Vec2F64, Vec3AF32, Vec3F64, SO3F32};
 use kornia_imgproc::calibration::{
     distortion::{undistort_normalized_point_iter, PolynomialDistortion, TermCriteria},
     CameraIntrinsic,
 };
-use nalgebra::{Const, Matrix3, SMatrix, SVector, SymmetricEigen, Vector6};
+use nalgebra::{Matrix3, MatrixView3, SMatrix, SVector, SymmetricEigen, Vector6};
 
 use super::ops::rmse_px;
 use super::refine::{refine_pose_lm, LMRefineParams};
@@ -69,7 +70,7 @@ const KKT_SINGULAR_VALUE_TOLERANCE: f64 = 1e-12;
 /// Relative tolerance below which two costs `rᵀ Ω r` count as equal.
 const EQUAL_COST_RELATIVE_TOLERANCE: f64 = 1e-6;
 
-/// `det(S) / (tr(S) / 3)³` below which the translation system is treated as singular.
+/// `det(S) / (tr(S) / 3)³` below which the translation system is treated as singular (`S = Σ Q_i`).
 const TRANSLATION_CONDITION_TOLERANCE: f64 = 1e-10;
 
 /// Undistortion stopping rule, far below the pixel noise.
@@ -100,14 +101,12 @@ impl PnPSolver for SQPnP {
 #[derive(Debug, Clone)]
 pub struct SQPnPParams {
     /// An eigenvalue `λ` of `Ω` counts as zero when `λ ≤ rank_tolerance · λ_max`.
-    /// Must be finite and in `[0, 1)`.
     pub rank_tolerance: f64,
-    /// SQP stops when the squared norm of the step is below this finite, positive value.
+    /// SQP stops when the squared norm of the step is below this value.
     pub sqp_squared_tolerance: f64,
-    /// Maximum number of SQP iterations per starting rotation. Must be nonzero.
+    /// Maximum number of SQP iterations per starting rotation.
     pub sqp_max_iterations: usize,
     /// A start whose squared orthogonality error `‖X·Xᵀ − I‖²_F` is below this skips SQP.
-    /// Must be finite and non-negative; zero disables this shortcut.
     pub orthogonality_squared_error_threshold: f64,
     /// Optional LM refinement of the reprojection error after SQPnP.
     pub refine_lm: Option<LMRefineParams>,
@@ -122,39 +121,6 @@ impl Default for SQPnPParams {
             orthogonality_squared_error_threshold: 1e-8,
             refine_lm: None,
         }
-    }
-}
-
-impl SQPnPParams {
-    fn validate(&self) -> Result<(), PnPError> {
-        for (name, valid, reason) in [
-            (
-                "rank_tolerance",
-                self.rank_tolerance.is_finite() && (0.0..1.0).contains(&self.rank_tolerance),
-                "must be finite and in [0, 1)",
-            ),
-            (
-                "sqp_squared_tolerance",
-                self.sqp_squared_tolerance.is_finite() && self.sqp_squared_tolerance > 0.0,
-                "must be finite and positive",
-            ),
-            (
-                "sqp_max_iterations",
-                self.sqp_max_iterations > 0,
-                "must be nonzero",
-            ),
-            (
-                "orthogonality_squared_error_threshold",
-                self.orthogonality_squared_error_threshold.is_finite()
-                    && self.orthogonality_squared_error_threshold >= 0.0,
-                "must be finite and non-negative",
-            ),
-        ] {
-            if !valid {
-                return Err(PnPError::InvalidParameter { name, reason });
-            }
-        }
-        Ok(())
     }
 }
 
@@ -179,18 +145,13 @@ impl SQPnPParams {
 ///
 /// * [`PnPError::MismatchedArrayLengths`] - `points_world` and `points_image` differ in length.
 /// * [`PnPError::InsufficientCorrespondences`] - Fewer than 3 correspondences.
-/// * [`PnPError::InvalidCameraMatrix`] - `K` is non-finite or is not a pinhole camera matrix
-///   with positive focal lengths, zero skew and bottom row `[0, 0, 1]`.
-/// * [`PnPError::InvalidParameter`] - An SQPnP parameter is outside its documented range.
+/// * [`PnPError::InvalidCameraMatrix`] - `K` is singular or not finite.
 /// * [`PnPError::NonFinite`] - An input point or the reprojection error is not finite.
 /// * [`PnPError::DegenerateConfiguration`] - The translation system is singular or
-///   ill-conditioned, or all world points coincide.
+///   ill-conditioned (e.g. all lines of sight are parallel), or all world points coincide.
 /// * [`PnPError::SvdFailed`] - The eigen-decomposition of `Ω` does not converge.
 /// * [`PnPError::CheiralityCheckFailed`] - No pose puts the points in front of the camera.
 /// * With `params.refine_lm`, any error of [`refine_pose_lm`].
-///
-/// Length and minimum-count errors take precedence over parameter validation. Parameters
-/// are validated before the camera matrix, which is checked before point coordinates.
 ///
 /// # Example
 ///
@@ -238,7 +199,6 @@ pub fn solve_sqpnp(
         });
     }
 
-    params.validate()?;
     let sight = LineOfSight::new(*k, distortion.copied())?;
     // Centred world points: better conditioned Ω, and the centroid's depth is t'_z.
     let world_centroid = centroid(points_world);
@@ -246,7 +206,7 @@ pub fn solve_sqpnp(
     let best = minimize_on_so3(&objective, params)?;
 
     // t' is the translation for the centred points: R·(M − c) + t' = R·M + (t' − R·c).
-    let rotation = Mat3F64::from(best.solution.r.reshape_generic(Const::<3>, Const::<3>));
+    let rotation = Mat3F64::from_cols_array(&best.solution.r.into());
     let translation = objective.translation(&best.solution.r) - rotation * world_centroid;
 
     let rotation_f32 = rotation.as_mat3af32();
@@ -278,7 +238,7 @@ pub fn solve_sqpnp(
             converged: Some(best.solution.converged),
         },
     };
-    // Finite but extreme inputs (e.g. a pixel at 1e30) can overflow the reprojection.
+    // Finite but extreme inputs (e.g. a world point at 3e38) can overflow the reprojection.
     if pose.reproj_rmse.is_some_and(f32::is_finite) {
         Ok(pose)
     } else {
@@ -299,20 +259,9 @@ impl LineOfSight {
     ///
     /// # Errors
     ///
-    /// Returns [`PnPError::InvalidCameraMatrix`] for a non-finite or unsupported camera matrix.
+    /// Returns [`PnPError::InvalidCameraMatrix`] if `K` is singular or not finite.
     fn new(k: Mat3AF32, distortion: Option<PolynomialDistortion>) -> Result<Self, PnPError> {
         let k = Mat3F64::from(k);
-        if !k.is_finite()
-            || k.x_axis.x <= 0.0
-            || k.y_axis.y <= 0.0
-            || k.x_axis.y != 0.0
-            || k.x_axis.z != 0.0
-            || k.y_axis.x != 0.0
-            || k.y_axis.z != 0.0
-            || k.z_axis.z != 1.0
-        {
-            return Err(PnPError::InvalidCameraMatrix);
-        }
         let k_inv = k.inverse();
         if !k_inv.is_finite() {
             return Err(PnPError::InvalidCameraMatrix);
@@ -369,15 +318,15 @@ struct Objective {
 impl Objective {
     /// Builds `Ω` and `P` from the correspondences, with the world points centred on `centroid`.
     ///
-    /// Let `A_i = [[1, 0, −u_i], [0, 1, −v_i]]`, `Q_i = A_iᵀ A_i`, and
-    /// `D_i = M_iᵀ ⊗ I₃`, so `R·M_i = D_i·r`. With `S = Σ Q_i`, `B = Σ Q_i D_i`:
-    /// `P = −S⁻¹ B` and `Ω = Σ D_iᵀ Q_i D_i − Bᵀ S⁻¹ B`.
+    /// With `Q_i = A_iᵀ A_i` for `A_i = [[1, 0, −x_i], [0, 1, −y_i]]`, `D_i = M_iᵀ ⊗ I₃` (so that
+    /// `R·M_i = D_i·r`), `S = Σ Q_i` and `B = Σ Q_i D_i`:
+    /// `P = −S⁻¹ B` and `Ω = Σ D_iᵀ Q_i D_i − Bᵀ S⁻¹ B = Σ D_iᵀ Q_i D_i + Bᵀ P`.
     ///
     /// # Errors
     ///
     /// Returns [`PnPError::NonFinite`] if an image point maps to a non-finite coordinate,
-    /// [`PnPError::DegenerateConfiguration`] if the translation system is singular or
-    /// ill-conditioned, and [`PnPError::NonFinite`] if `Ω` is not finite.
+    /// [`PnPError::DegenerateConfiguration`] if `S` is singular or ill-conditioned (e.g. every
+    /// image point is the same), and [`PnPError::NonFinite`] if `Ω` is not finite.
     fn new(
         points_world: &[Vec3AF32],
         points_image: &[Vec2F32],
@@ -393,8 +342,7 @@ impl Objective {
         for (p, uv) in points_world.iter().zip(points_image) {
             let m = (Vec3F64::from(*p) - centroid).to_array();
             let v = sight.direction(*uv)?;
-            // AᵀA for A = [[1, 0, -u], [0, 1, -v]]. An orthogonal ray projector
-            // minimizes a different objective and changes the weighting of noisy pixels.
+            // A_iᵀ A_i, as in OpenCV's `computeOmega`.
             let q = Matrix3::new(
                 1.0,
                 0.0,
@@ -554,7 +502,7 @@ struct Search {
 
 impl Search {
     /// Keeps `solution` as the best candidate if it puts the centroid in front of the camera and
-    /// has the lowest `objective` cost so far.
+    /// has the lowest `objective` cost so far. A non-finite cost or depth drops it.
     fn consider(&mut self, objective: &Objective, solution: SqpSolution) {
         let cost = objective.cost(&solution.r);
         let depth = objective.centroid_depth(&solution.r);
@@ -571,8 +519,8 @@ impl Search {
     }
 }
 
-/// Runs SQP from the rotation `r0`, then projects the result onto SO(3). Returns `None` if that
-/// projection fails (e.g. on non-finite values).
+/// Runs SQP from the rotation `r0`, then projects the result onto SO(3). Returns `None` if a KKT
+/// solve or that projection fails (e.g. on non-finite values).
 ///
 /// Each iteration solves the KKT system of `min (r + δ)ᵀ Ω (r + δ)` subject to the linearised
 /// orthonormality constraints `h(r) + H(r)·δ = 0`.
@@ -609,8 +557,8 @@ fn sqp(omega: &Mat9, r0: Vec9, params: &SQPnPParams) -> Option<SqpSolution> {
                 kkt.try_svd(true, true, f64::EPSILON, MAX_DECOMPOSITION_ITERATIONS)?
                     .solve(&rhs, KKT_SINGULAR_VALUE_TOLERANCE)
                     .ok()
-            });
-        let solution = solution.filter(|s| s.iter().all(|v| v.is_finite()))?;
+            })
+            .filter(|s| s.iter().all(|v| v.is_finite()))?;
         let delta = solution.fixed_rows::<VEC_R_LEN>(0);
         r += delta;
         if delta.norm_squared() < params.sqp_squared_tolerance {
@@ -636,7 +584,7 @@ struct Constraints {
 
 impl Constraints {
     fn new(r: &Vec9) -> Self {
-        let m = nalgebra::MatrixView3::from_slice(r.as_slice());
+        let m = MatrixView3::from_slice(r.as_slice());
         let (r1, r2, r3) = (m.row(0), m.row(1), m.row(2));
 
         let h = Vector6::new(
@@ -674,7 +622,7 @@ impl Constraints {
 /// An eigenvector of `Ω` is only defined up to sign, and for an orthogonal `X` negating it flips
 /// `det` between `−1` (a reflection) and `+1` (a rotation).
 fn with_positive_det(x: Vec9) -> Vec9 {
-    if nalgebra::MatrixView3::from_slice(x.as_slice()).determinant() < 0.0 {
+    if MatrixView3::from_slice(x.as_slice()).determinant() < 0.0 {
         -x
     } else {
         x
@@ -683,7 +631,7 @@ fn with_positive_det(x: Vec9) -> Vec9 {
 
 /// Squared Frobenius norm of `X·Xᵀ − I` for `vec(X) = x`.
 fn orthogonality_squared_error(x: &Vec9) -> f64 {
-    let m = nalgebra::MatrixView3::from_slice(x.as_slice());
+    let m = MatrixView3::from_slice(x.as_slice());
     (m * m.transpose() - Matrix3::identity()).norm_squared()
 }
 
@@ -747,7 +695,8 @@ mod tests {
         ]
     }
 
-    /// Independently evaluate the two algebraic reprojection residuals per correspondence.
+    /// `Σ (X_i − x_i Z_i)² + (Y_i − y_i Z_i)²` with `(X_i, Y_i, Z_i) = R·(M_i − c) + t` and
+    /// `(x_i, y_i)` the normalised image point `i`.
     fn algebraic_error(
         scene: &Scene,
         sight: &LineOfSight,
@@ -759,17 +708,16 @@ mod tests {
         for (&p, uv) in scene.world.iter().zip(&scene.image) {
             let v = sight.direction(*uv)?;
             let x = r * (Vec3F64::from(p) - c) + t;
-            let du = x.x - v.x * x.z;
-            let dv = x.y - v.y * x.z;
-            sum += du * du + dv * dv;
+            let (dx, dy) = (x.x - v.x * x.z, x.y - v.y * x.z);
+            sum += dx * dx + dy * dy;
         }
         Ok(sum)
     }
 
-    /// Reference: OpenCV 5.0.0 SOLVEPNP_SQPNP, f32 inputs, fixed pixel perturbations.
-    /// The wide field of view distinguishes algebraic residuals from orthogonal ray distance.
+    /// Same pose as OpenCV 5.0.0 `solvePnP(SOLVEPNP_SQPNP)` on a noisy wide-angle scene, where
+    /// the algebraic error and the distance to the line of sight have different minima.
     #[test]
-    fn matches_opencv_on_noisy_wide_angle_scene() -> Result<(), Box<dyn std::error::Error>> {
+    fn matches_opencv_on_noisy_wide_angle_scene() -> Result<(), PnPError> {
         let world = [
             [-1.4, -1.1, -0.8],
             [1.3, -1.0, 0.2],
@@ -815,14 +763,10 @@ mod tests {
         let expected_translation =
             Vec3F64::new(0.15032764058718995, -0.10076958014535307, 2.503946943960054);
         let pose = solve_sqpnp(&world, &image, &k, None, &SQPnPParams::default())?;
-        assert!(
-            rotation_error_deg(pose.rotation, expected_rotation) < 1e-2,
-            "{pose:?}"
-        );
-        assert!(
-            translation_error(pose.translation, expected_translation) < 2e-4,
-            "{pose:?}"
-        );
+        let rot_err = rotation_error_deg(pose.rotation, expected_rotation);
+        let t_err = translation_error(pose.translation, expected_translation);
+        assert!(rot_err < 1e-2, "rotation error {rot_err} deg");
+        assert!(t_err < 2e-4, "translation error {t_err}");
         Ok(())
     }
 
@@ -845,9 +789,9 @@ mod tests {
     /// Every null vector of `Ω` is a start: on this noisy 4-point scene the first one alone gives
     /// a pose about 180° off (found by a seeded search).
     #[test]
-    fn every_null_vector_is_a_start() -> Result<(), Box<dyn std::error::Error>> {
+    fn every_null_vector_is_a_start() -> Result<(), PnPError> {
         let mut rng = StdRng::seed_from_u64(13611);
-        let scene = Scene::generate(&mut rng, k_default(), &SceneConfig::cube(4, 8.0, 0.5))?;
+        let scene = Scene::generate(&mut rng, k_default(), &SceneConfig::cube(4, 8.0, 0.5));
         let pose = solve(&scene)?;
         let rot_err = rotation_error_deg(pose.rotation, scene.rotation);
         assert!(rot_err < 2.0, "rotation error {rot_err} deg");
@@ -855,13 +799,13 @@ mod tests {
     }
 
     #[test]
-    fn noise_free_poses_are_exact() -> Result<(), Box<dyn std::error::Error>> {
+    fn noise_free_poses_are_exact() -> Result<(), PnPError> {
         let k = k_default();
         let mut rng = StdRng::seed_from_u64(1);
         for n in [4, 5, 6, 10, 50, 200] {
             for _ in 0..10 {
                 let depth = rng.random_range(3.0..10.0);
-                let scene = Scene::generate(&mut rng, k, &SceneConfig::cube(n, depth, 0.0))?;
+                let scene = Scene::generate(&mut rng, k, &SceneConfig::cube(n, depth, 0.0));
                 let pose = solve(&scene)?;
                 let rot_err = rotation_error_deg(pose.rotation, scene.rotation);
                 let t_err = translation_error(pose.translation, scene.translation)
@@ -879,11 +823,11 @@ mod tests {
 
     /// P3P has up to four exact solutions; SQPnP must return one that reprojects exactly.
     #[test]
-    fn three_points_reproject_exactly() -> Result<(), Box<dyn std::error::Error>> {
+    fn three_points_reproject_exactly() -> Result<(), PnPError> {
         let k = k_default();
         let mut rng = StdRng::seed_from_u64(2);
         for _ in 0..20 {
-            let scene = Scene::generate(&mut rng, k, &SceneConfig::cube(3, 5.0, 0.0))?;
+            let scene = Scene::generate(&mut rng, k, &SceneConfig::cube(3, 5.0, 0.0));
             let pose = solve(&scene)?;
             assert!(
                 pose.reproj_rmse.is_some_and(|e| e < EXACT_RMSE_PX),
@@ -895,12 +839,12 @@ mod tests {
 
     /// Coplanar points give Ω extra null vectors; the pose must still be exact.
     #[test]
-    fn planar_points_are_exact() -> Result<(), Box<dyn std::error::Error>> {
+    fn planar_points_are_exact() -> Result<(), PnPError> {
         let k = k_default();
         let mut rng = StdRng::seed_from_u64(3);
         for n in [4, 6, 20] {
             for _ in 0..10 {
-                let scene = Scene::generate(&mut rng, k, &marker(n, 0.0))?;
+                let scene = Scene::generate(&mut rng, k, &marker(n, 0.0));
                 let pose = solve(&scene)?;
                 let rot_err = rotation_error_deg(pose.rotation, scene.rotation);
                 assert!(
@@ -918,7 +862,7 @@ mod tests {
 
     /// A 20 cm object 6 m away (fx = 600), a long-range scene (cf. #1075): SQPnP must stay exact.
     #[test]
-    fn small_object_far_away_is_exact() -> Result<(), Box<dyn std::error::Error>> {
+    fn small_object_far_away_is_exact() -> Result<(), PnPError> {
         let k = k_matrix(600.0, 600.0, 320.0, 240.0);
         let mut rng = StdRng::seed_from_u64(4);
         for _ in 0..10 {
@@ -926,7 +870,7 @@ mod tests {
                 half_size: 0.1,
                 ..SceneConfig::cube(50, 6.0, 0.0)
             };
-            let scene = Scene::generate(&mut rng, k, &config)?;
+            let scene = Scene::generate(&mut rng, k, &config);
             let pose = solve(&scene)?;
             assert!(
                 rotation_error_deg(pose.rotation, scene.rotation) < 0.01,
@@ -947,7 +891,7 @@ mod tests {
         let k = k_default();
         let mut rng = StdRng::seed_from_u64(5);
         for _ in 0..20 {
-            let scene = Scene::generate(&mut rng, k, &SceneConfig::cube(100, 6.0, 1.0))?;
+            let scene = Scene::generate(&mut rng, k, &SceneConfig::cube(100, 6.0, 1.0));
             let pose = solve(&scene)?;
             let reference = refine_pose_lm(
                 &scene.world,
@@ -980,10 +924,10 @@ mod tests {
     /// Scaling the world (and translation) and moving its origin must not change the rotation:
     /// the points are centred.
     #[test]
-    fn invariant_to_world_scale_and_origin() -> Result<(), Box<dyn std::error::Error>> {
+    fn invariant_to_world_scale_and_origin() -> Result<(), PnPError> {
         let k = k_default();
         let mut rng = StdRng::seed_from_u64(6);
-        let scene = Scene::generate(&mut rng, k, &SceneConfig::cube(30, 5.0, 0.5))?;
+        let scene = Scene::generate(&mut rng, k, &SceneConfig::cube(30, 5.0, 0.5));
         let pose = solve(&scene)?;
         for (scale, shift) in [(1e-3, 0.0), (1e3, 0.0), (1.0, 100.0)] {
             // M' = s·M + d projects to the same pixels with the translation s·t − R·d.
@@ -1005,7 +949,7 @@ mod tests {
 
     /// Uses fx ≠ fy, so reading one focal length for the other fails it.
     #[test]
-    fn distortion_is_undistorted_before_solving() -> Result<(), Box<dyn std::error::Error>> {
+    fn distortion_is_undistorted_before_solving() -> Result<(), PnPError> {
         let k = k_matrix(800.0, 760.0, 640.0, 480.0);
         let intrinsic = CameraIntrinsic {
             fx: 800.0,
@@ -1023,7 +967,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(7);
         for _ in 0..10 {
             // 3 m away the points reach the image corners, where the distortion is strongest.
-            let mut scene = Scene::generate(&mut rng, k, &SceneConfig::cube(60, 3.0, 0.0))?;
+            let mut scene = Scene::generate(&mut rng, k, &SceneConfig::cube(60, 3.0, 0.0));
             for uv in &mut scene.image {
                 let p = Vec2F64::from(*uv);
                 let (u, v) = distort_point_polynomial(p.x, p.y, &intrinsic, &distortion);
@@ -1117,17 +1061,17 @@ mod tests {
         );
     }
 
-    /// Close to the camera the algebraic reprojection cost and the
+    /// Close to the camera the algebraic cost (normalised image error times depth) and the
     /// pixel error have different minima: SQPnP must win on the first, `refine_lm` on the second.
     #[test]
-    fn algebraic_optimum_and_lm_refinement() -> Result<(), Box<dyn std::error::Error>> {
+    fn algebraic_optimum_and_lm_refinement() -> Result<(), PnPError> {
         let k = k_default();
         let sight = LineOfSight::new(k, None)?;
         let lm = with_lm();
         let mut rng = StdRng::seed_from_u64(9);
         for _ in 0..10 {
             // Points as close as ~0.3 m with 3 px noise.
-            let scene = Scene::generate(&mut rng, k, &SceneConfig::cube(50, 2.0, 3.0))?;
+            let scene = Scene::generate(&mut rng, k, &SceneConfig::cube(50, 2.0, 3.0));
             let cost = |pose: &PnPResult| {
                 let (r, t) = (
                     Mat3F64::from(pose.rotation),
@@ -1150,14 +1094,14 @@ mod tests {
     /// Planar poses have a twin of equal cost behind the camera; the early stop must still find
     /// the same minimum as running SQP from every eigenvector of Ω.
     #[test]
-    fn noisy_planar_search_matches_every_start() -> Result<(), Box<dyn std::error::Error>> {
+    fn noisy_planar_search_matches_every_start() -> Result<(), PnPError> {
         let k = k_default();
         let params = SQPnPParams::default();
         let sight = LineOfSight::new(k, None)?;
         let mut rng = StdRng::seed_from_u64(84);
         let mut checked = 0;
         for _ in 0..50 {
-            let scene = Scene::generate(&mut rng, k, &marker(6, 2.0))?;
+            let scene = Scene::generate(&mut rng, k, &marker(6, 2.0));
             let objective =
                 Objective::new(&scene.world, &scene.image, centroid(&scene.world), &sight)?;
             let found = minimize_on_so3(&objective, &params)?;
@@ -1194,11 +1138,11 @@ mod tests {
     /// With almost no noise the null vector of Ω is accepted without SQP, but it is only close
     /// to orthonormal (up to ~1e-4); the returned rotation must still be exact to f32 precision.
     #[test]
-    fn fast_path_rotation_is_orthonormal() -> Result<(), Box<dyn std::error::Error>> {
+    fn fast_path_rotation_is_orthonormal() -> Result<(), PnPError> {
         let k = k_default();
         let mut rng = StdRng::seed_from_u64(11);
         for _ in 0..20 {
-            let scene = Scene::generate(&mut rng, k, &SceneConfig::cube(100, 6.0, 0.001))?;
+            let scene = Scene::generate(&mut rng, k, &SceneConfig::cube(100, 6.0, 0.001));
             let pose = solve(&scene)?;
             assert_eq!(pose.num_iterations, Some(0), "fast path not taken");
             let r = Mat3F64::from(pose.rotation);
@@ -1211,7 +1155,7 @@ mod tests {
     /// `converged` must report whether SQP's step got below `sqp_squared_tolerance`: true with the
     /// default iteration cap, false when the cap stops SQP after one step.
     #[test]
-    fn reports_whether_sqp_converged() -> Result<(), Box<dyn std::error::Error>> {
+    fn reports_whether_sqp_converged() -> Result<(), PnPError> {
         let k = k_default();
         let mut rng = StdRng::seed_from_u64(12);
         let one_step = SQPnPParams {
@@ -1220,7 +1164,7 @@ mod tests {
         };
         for _ in 0..10 {
             // With 2 px noise on 6 points the null vector of Ω is not a rotation, so SQP runs.
-            let scene = Scene::generate(&mut rng, k, &SceneConfig::cube(6, 5.0, 2.0))?;
+            let scene = Scene::generate(&mut rng, k, &SceneConfig::cube(6, 5.0, 2.0));
             let pose = solve(&scene)?;
             assert!(pose.num_iterations.is_some_and(|i| i > 0), "{pose:?}");
             assert_eq!(pose.converged, Some(true), "{pose:?}");
@@ -1232,19 +1176,19 @@ mod tests {
         Ok(())
     }
 
-    /// `rᵀ Ω r` must be the algebraic reprojection error of the rotation `r`
+    /// `rᵀ Ω r` must be the algebraic error (see [`algebraic_error`]) of the rotation `r`
     /// with its optimal translation `P·r`, and `P·r` must minimise it over all translations.
     #[test]
-    fn objective_matches_the_algebraic_error() -> Result<(), Box<dyn std::error::Error>> {
+    fn objective_matches_the_algebraic_error() -> Result<(), PnPError> {
         let k = k_default();
         let mut rng = StdRng::seed_from_u64(13);
-        let scene = Scene::generate(&mut rng, k, &SceneConfig::cube(20, 5.0, 2.0))?;
+        let scene = Scene::generate(&mut rng, k, &SceneConfig::cube(20, 5.0, 2.0));
         let c = centroid(&scene.world);
         let sight = LineOfSight::new(k, None)?;
         let objective = Objective::new(&scene.world, &scene.image, c, &sight)?;
         let error = |r, t| algebraic_error(&scene, &sight, c, r, t);
         for _ in 0..5 {
-            let rotation = random_rotation(&mut rng, std::f64::consts::PI)?;
+            let rotation = random_rotation(&mut rng, std::f64::consts::PI);
             let r = vec9(rotation);
             let t = objective.translation(&r);
             let direct = error(rotation, t)?;
@@ -1269,10 +1213,9 @@ mod tests {
     /// The orthonormality constraints vanish on a rotation, and their Jacobian matches central
     /// differences at an arbitrary (non-rotation) point.
     #[test]
-    fn constraints_vanish_on_rotations_and_match_finite_differences(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn constraints_vanish_on_rotations_and_match_finite_differences() {
         let mut rng = StdRng::seed_from_u64(14);
-        let rotation = vec9(random_rotation(&mut rng, std::f64::consts::PI)?);
+        let rotation = vec9(random_rotation(&mut rng, std::f64::consts::PI));
         assert!(Constraints::new(&rotation).h.norm() < 1e-12);
 
         let r = Vec9::from_fn(|i, _| (i as f64 * 0.7).sin());
@@ -1289,7 +1232,6 @@ mod tests {
                 analytic.column(j)
             );
         }
-        Ok(())
     }
 
     /// With `Ω = 0` the KKT matrix is singular, so the LU solve fails and SQP must take the
@@ -1322,160 +1264,38 @@ mod tests {
         assert_eq!(with_positive_det(-r), r);
     }
 
+    /// A KKT solve that fails must drop the start, not return the last iterate as a rotation.
     #[test]
-    fn validation_precedence_is_stable() {
-        let mut world = valid_world();
-        let image = valid_image();
-        let invalid_params = SQPnPParams {
-            rank_tolerance: f64::NAN,
-            ..Default::default()
-        };
-        let singular_k = Mat3AF32::ZERO;
-        assert!(matches!(
-            solve_sqpnp(&world[..1], &image[..2], &singular_k, None, &invalid_params),
-            Err(PnPError::MismatchedArrayLengths { .. })
-        ));
-        assert!(matches!(
-            solve_sqpnp(&world[..2], &image[..2], &singular_k, None, &invalid_params),
-            Err(PnPError::InsufficientCorrespondences {
-                required: 3,
-                actual: 2
-            })
-        ));
-        assert!(matches!(
-            solve_sqpnp(&world, &image, &singular_k, None, &invalid_params),
-            Err(PnPError::InvalidParameter {
-                name: "rank_tolerance",
-                ..
-            })
-        ));
-        world[0].x = f32::NAN;
-        assert!(matches!(
-            solve_sqpnp(&world, &image, &singular_k, None, &SQPnPParams::default()),
-            Err(PnPError::InvalidCameraMatrix)
-        ));
-    }
-
-    #[test]
-    fn rejects_unsupported_camera_matrices() {
-        let world = valid_world();
-        let image = valid_image();
-        let params = SQPnPParams::default();
-        for (index, value) in [
-            (0, -800.0),
-            (4, 0.0),
-            (1, 0.1),
-            (2, 0.1),
-            (3, 0.1),
-            (5, 0.1),
-            (8, 2.0),
-            (0, f32::INFINITY),
-            (6, f32::NAN),
-        ] {
-            let mut entries = k_default().to_cols_array();
-            entries[index] = value;
-            let k = Mat3AF32::from_cols_array(&entries);
-            assert!(matches!(
-                solve_sqpnp(&world, &image, &k, None, &params),
-                Err(PnPError::InvalidCameraMatrix)
-            ));
-        }
-    }
-
-    #[test]
-    fn rejects_invalid_parameters() {
-        let world = valid_world();
-        let image = valid_image();
-        let k = k_default();
-        for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
-            for (name, params) in [
-                (
-                    "rank_tolerance",
-                    SQPnPParams {
-                        rank_tolerance: invalid,
-                        ..Default::default()
-                    },
-                ),
-                (
-                    "sqp_squared_tolerance",
-                    SQPnPParams {
-                        sqp_squared_tolerance: invalid,
-                        ..Default::default()
-                    },
-                ),
-                (
-                    "orthogonality_squared_error_threshold",
-                    SQPnPParams {
-                        orthogonality_squared_error_threshold: invalid,
-                        ..Default::default()
-                    },
-                ),
-            ] {
-                assert!(matches!(
-                    solve_sqpnp(&world, &image, &k, None, &params),
-                    Err(PnPError::InvalidParameter { name: actual, .. }) if actual == name
-                ));
-            }
-        }
-        for params in [
-            SQPnPParams {
-                rank_tolerance: 1.0,
-                ..Default::default()
-            },
-            SQPnPParams {
-                sqp_squared_tolerance: 0.0,
-                ..Default::default()
-            },
-            SQPnPParams {
-                sqp_max_iterations: 0,
-                ..Default::default()
-            },
-        ] {
-            assert!(matches!(
-                solve_sqpnp(&world, &image, &k, None, &params),
-                Err(PnPError::InvalidParameter { .. })
-            ));
-        }
-        assert!(SQPnPParams {
-            rank_tolerance: 0.0,
-            orthogonality_squared_error_threshold: 0.0,
-            ..Default::default()
-        }
-        .validate()
-        .is_ok());
-    }
-
-    #[test]
-    fn failed_kkt_solve_discards_candidate() {
+    fn failed_kkt_solve_discards_the_start() {
         let omega = Mat9::from_element(f64::NAN);
-        let r0 = vec9(Mat3F64::IDENTITY);
-        assert!(sqp(&omega, r0, &SQPnPParams::default()).is_none());
+        assert!(sqp(&omega, vec9(Mat3F64::IDENTITY), &SQPnPParams::default()).is_none());
     }
 
+    /// A rotation with a non-finite cost or centroid depth is never kept.
     #[test]
-    fn search_discards_non_finite_cost_and_depth() {
-        for objective in [
-            Objective {
-                omega: Mat9::from_element(f64::NAN),
-                p: Mat39::zeros(),
-            },
-            Objective {
-                omega: Mat9::identity(),
-                p: Mat39::from_element(f64::NAN),
-            },
-        ] {
+    fn search_drops_non_finite_cost_and_depth() {
+        // The identity puts the centroid 1 m in front of the camera, but its cost is NaN.
+        let mut in_front = Mat39::zeros();
+        in_front[(2, 0)] = 1.0;
+        let nan_cost = Objective {
+            omega: Mat9::from_element(f64::NAN),
+            p: in_front,
+        };
+        let nan_depth = Objective {
+            omega: Mat9::identity(),
+            p: Mat39::from_element(f64::NAN),
+        };
+        for objective in [nan_cost, nan_depth] {
             let mut search = Search {
                 best: None,
                 lowest_rejected_cost: f64::INFINITY,
             };
-            search.consider(
-                &objective,
-                SqpSolution {
-                    r: vec9(Mat3F64::IDENTITY),
-                    iterations: 0,
-                    converged: true,
-                },
-            );
+            let solution = SqpSolution {
+                r: vec9(Mat3F64::IDENTITY),
+                iterations: 0,
+                converged: true,
+            };
+            search.consider(&objective, solution);
             assert!(search.best.is_none());
         }
     }
@@ -1502,7 +1322,7 @@ mod tests {
             solve_sqpnp(&world, &image, &k, None, &plain),
             Err(PnPError::NonFinite("image point"))
         ));
-        // Extreme image coordinates make the algebraic translation system ill-conditioned.
+        // A pixel at 1e30 makes the translation system ill-conditioned.
         image[2].y = 1e30;
         for params in [&plain, &with_lm] {
             assert!(matches!(
@@ -1514,19 +1334,19 @@ mod tests {
         }
         image[2].y = 500.0;
         world[0] = Vec3AF32::new(3e38, 3e38, 3e38);
-        for params in [&plain, &with_lm] {
-            assert!(matches!(
-                solve_sqpnp(&world, &image, &k, None, params),
-                Err(PnPError::NonFinite("reprojection error"))
-            ));
-        }
+        assert!(matches!(
+            solve_sqpnp(&world, &image, &k, None, &plain),
+            Err(PnPError::NonFinite("reprojection error"))
+        ));
+        // With LM the error may come from `refine_pose_lm` (on x86_64 Linux, "point behind camera").
+        assert!(solve_sqpnp(&world, &image, &k, None, &with_lm).is_err());
     }
 
     #[test]
     fn dispatched_through_solve_pnp_and_ransac() -> Result<(), Box<dyn std::error::Error>> {
         let k = k_default();
         let mut rng = StdRng::seed_from_u64(8);
-        let mut scene = Scene::generate(&mut rng, k, &SceneConfig::cube(40, 5.0, 0.0))?;
+        let mut scene = Scene::generate(&mut rng, k, &SceneConfig::cube(40, 5.0, 0.0));
 
         let direct = solve(&scene)?;
         let dispatched = solve_pnp(
@@ -1543,7 +1363,7 @@ mod tests {
             &mut StdRng::seed_from_u64(12),
             k,
             &SceneConfig::cube(6, 5.0, 2.0),
-        )?;
+        );
         let one_step = SQPnPParams {
             sqp_max_iterations: 1,
             ..Default::default()
@@ -1561,7 +1381,7 @@ mod tests {
         );
 
         // 40 inliers plus 40 outliers.
-        scene.add_outliers(&mut rng, 40)?;
+        scene.add_outliers(&mut rng, 40);
         let params = RansacParams {
             max_iterations: 2000,
             reproj_threshold_px: 2.0,

@@ -13,26 +13,25 @@ changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre korn
 
 ## [Unreleased]
 
-**SQPnP pose solver in `kornia-3d`** (#1183): `pnp::sqpnp::solve_sqpnp`, also available as
-`PnPMethod::SQPnP` / `PnPMethod::SQPnPDefault` in `solve_pnp` and `solve_pnp_ransac`. It uses
-sequential quadratic programming to minimize the algebraic reprojection objective of Terzakis &
-Lourakis (ECCV 2020), with optional LM refinement for pixel reprojection error. The public PnP
-interface remains `f32`; optimization uses `f64` without allocating converted input arrays.
-Invalid SQPnP settings and unsupported camera matrices return descriptive errors. Three-point
-solutions can be ambiguous; use at least four correspondences when possible. SQPnP inside RANSAC
-requires undistorted observations and `distortion = None`, because RANSAC scoring is pinhole-only;
-the direct solver supports distortion. Benchmarks and
-measurement conditions are recorded in `crates/kornia-3d/benchmarks.md`; this addition does not
-change the EPnP refit used after AP3P RANSAC or establish a kornia-slam accuracy improvement.
-**Breaking:** `PnPMethod` has two new variants and `PnPError` four (`InvalidCameraMatrix`,
-`InvalidParameter`, `NonFinite`, `DegenerateConfiguration`), requiring new exhaustive match arms.
+**SQPnP pose solver in `kornia-3d`** (#1183): `kornia_3d::pnp::sqpnp::solve_sqpnp`, also as
+`PnPMethod::SQPnP` / `PnPMethod::SQPnPDefault` in `solve_pnp` and `solve_pnp_ransac` (Terzakis &
+Lourakis, ECCV 2020; Rust only for now, the Python bindings still offer EPnP and AP3P). It minimises
+the algebraic reprojection error over rotations, as OpenCV's `SOLVEPNP_SQPNP`, for planar and
+non-planar points, and `SQPnPParams::refine_lm` can polish the pose on the reprojection error.
+With 1 px noise it failed (rotation error above 5°) on 0 of 200 20-point planar scenes and 1 of 200
+4-point scenes; EPnP with LM failed on 49 and 23 (EPnP still has #1181). Tables in
+`crates/kornia-3d/benchmarks.md`. Inside `solve_pnp_ransac`, which scores pinhole residuals,
+an SQPnP kernel needs undistorted points and `distortion = None`, like AP3P.
+**Breaking:** `PnPMethod` has two new variants and
+`PnPError` three (`InvalidCameraMatrix`, `NonFinite`, `DegenerateConfiguration`), so exhaustive
+`match`es need new arms.
 
-**`kornia-algebra` rotation projection and SVD:** `Mat3F64::try_svd` provides a bounded,
-rescaled nalgebra backend through Kornia's existing SVD result type. `Mat3F64::nearest_rotation`
-and `SO3F64::from_matrix_nearest` project matrices onto SO(3), correcting reflections in the
-singular-vector basis. Added owned matrix/vector conversions, a borrowed nalgebra matrix view,
-exact `f32 → f64` conversions and explicit rounding back to `f32`. ICP's rigid fit uses the
-shared projection and accumulates covariance without per-point allocations.
+**`kornia-algebra`: `Mat3F64::nearest_rotation`** and `SO3F64::from_matrix_nearest`, the rotation
+nearest to a 3x3 matrix, plus `From` conversions between `Mat3F64` / `Vec3F64` and nalgebra's
+`Matrix3<f64>` / `Vector3<f64>`, exact `f32 → f64` `From` for `Mat3AF32`, `Vec3AF32` and
+`Vec2F32`, and the rounding `Mat3F64::as_mat3af32` / `Vec3F64::as_vec3af32`. ICP's rigid fit
+now uses it: the same result up to rounding, no warning for a reflection, and no per-point
+allocation.
 
 **Breaking: `kornia_3d::pnp::solve_pnp_ransac` rejects an invalid `confidence`** (#1169).
 `RansacParams::confidence` must be finite and strictly between 0 and 1. Any other value now returns

@@ -412,20 +412,6 @@ impl SO3F64 {
     /// # Returns
     ///
     /// The rotation, or `None` if `mat` is not finite or its SVD does not converge.
-    ///
-    /// # Errors
-    ///
-    /// Returns `None` for non-finite input or failure to converge in the SVD backend.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use kornia_algebra::{Mat3F64, SO3F64, Vec3F64};
-    /// let stretched = Mat3F64::from_diagonal(Vec3F64::new(3.0, 2.0, 1.0));
-    /// let rotation = SO3F64::from_matrix_nearest(&stretched).ok_or("projection failed")?;
-    /// assert!((rotation.matrix().determinant() - 1.0).abs() < 1e-12);
-    /// # Ok::<(), &str>(())
-    /// ```
     pub fn from_matrix_nearest(mat: &Mat3F64) -> Option<Self> {
         mat.nearest_rotation().map(|r| Self::from_matrix(&r))
     }
