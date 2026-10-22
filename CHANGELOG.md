@@ -41,12 +41,13 @@ agrees to within floating-point rounding.
 `UmeyamaError` gained the variants `MismatchedWeightsLength`, `InvalidWeights`,
 and `EmptyInput`, so exhaustive downstream `match`es need new arms.
 
-**Robust Sim3 alignment (`kornia-algebra`).** `umeyama_f64_robust` fits
+**Robust Umeyama alignment (`kornia-algebra`).** `umeyama_f64_robust` fits
 `(R, t, s)` to point sets contaminated by gross outliers: a Huber-weighted
 IRLS loop over `umeyama_f64` down-weights large residuals, and a MAD
 hard-rejection pass (`3.5 · 1.4826 · MAD` around the median residual) drops
 them before a final unweighted refit on the survivors. The fit is
-deterministic and always estimates scale; `RobustUmeyamaConfig` controls the
+deterministic; `with_scale` selects Sim3 (estimated scale) or rigid
+(`s = 1.0`) alignment; `RobustUmeyamaConfig` controls the
 Huber threshold, iteration cap, and convergence tolerance. **Breaking:**
 `UmeyamaError` gains `InvalidDelta`, `InvalidMaxIters`, and `InvalidTol`
 (reported for invalid `RobustUmeyamaConfig` fields); it is not
