@@ -285,19 +285,26 @@ const MAD_TO_SIGMA: f64 = 1.0 / 0.674_489_750_196_081_7;
 /// than this from the median residual are dropped before the final refit.
 const OUTLIER_SIGMA_MULT: f64 = 3.5;
 
-/// Median of a slice: sorts a copy with [`f64::total_cmp`] (NaN gets a
-/// deterministic position); empty input yields `0.0`.
+/// Median of a slice: a copy is partially ordered with [`f64::total_cmp`]
+/// (positive NaN sorts above `+∞`, negative NaN below `-∞`) using selection
+/// instead of a full sort; empty input yields `0.0`.
 fn median(values: &[f64]) -> f64 {
     if values.is_empty() {
         return 0.0;
     }
-    let mut sorted = values.to_vec();
-    sorted.sort_unstable_by(f64::total_cmp);
-    let m = sorted.len() / 2;
-    if sorted.len() % 2 == 1 {
-        sorted[m]
+    let mut buf = values.to_vec();
+    let m = buf.len() / 2;
+    if buf.len() % 2 == 1 {
+        buf.select_nth_unstable_by(m, f64::total_cmp);
+        buf[m]
     } else {
-        0.5 * (sorted[m - 1] + sorted[m])
+        buf.select_nth_unstable_by(m - 1, f64::total_cmp);
+        let lower = buf[m - 1];
+        // The tail is non-empty (`m >= 1`); select its total_cmp-minimum, the
+        // m-th order statistic, without disturbing `lower`.
+        buf[m..].select_nth_unstable_by(0, f64::total_cmp);
+        let upper = buf[m];
+        0.5 * (lower + upper)
     }
 }
 
@@ -441,15 +448,24 @@ pub fn umeyama_f64_robust(
     };
 
     let mut residuals = vec![0.0_f64; n];
-    for _ in 0..config.max_iters {
+    for iter in 0..config.max_iters {
         write_residuals(&fit, &mut residuals);
         // Huber weights: full weight below `delta`, `delta / r` above.
+        let mut all_full = true;
         for (w, &r) in weights.iter_mut().zip(&residuals) {
             *w = if r > 0.0 {
                 (config.delta / r).min(1.0)
             } else {
                 1.0
             };
+            all_full &= *w == 1.0;
+        }
+        // Only the first iteration's `fit` was produced by these all-ones
+        // weights, so only there would the reweighted solve reproduce it
+        // bit-for-bit. Later iterations must re-solve: their `fit` may come
+        // from down-weighted weights, where all-ones is a different fit.
+        if iter == 0 && all_full {
+            break;
         }
         let new_fit = umeyama_f64(src, dst, Some(&weights), with_scale)?;
 
@@ -478,15 +494,18 @@ pub fn umeyama_f64_robust(
     // residual threshold anchored at zero) tracks a biased intermediate
     // fit, so a heavy outlier cluster cannot empty the inlier set.
     let med = median(&residuals);
-    let abs_dev: Vec<f64> = residuals.iter().map(|&r| (r - med).abs()).collect();
-    let mad = median(&abs_dev);
+    // Residuals are dead after MAD, and the inlier test needs exactly
+    // |r_i - med|, so overwrite the buffer instead of allocating.
+    for r in &mut residuals {
+        *r = (*r - med).abs();
+    }
+    let abs_dev = &residuals;
+    let mad = median(abs_dev);
     let sigma = MAD_TO_SIGMA * mad;
 
     if sigma > f64::EPSILON {
         let thr = OUTLIER_SIGMA_MULT * sigma;
-        let inliers: Vec<usize> = (0..n)
-            .filter(|&i| (residuals[i] - med).abs() <= thr)
-            .collect();
+        let inliers: Vec<usize> = (0..n).filter(|&i| abs_dev[i] <= thr).collect();
         // The centered window keeps at least half the residuals by
         // construction (half of all |r - med| are <= MAD < thr), so the
         // inlier set is never empty for finite inputs.
@@ -1393,6 +1412,21 @@ mod tests {
                 (rng.random::<f64>() * 2.0 - 1.0) * amp,
             );
         }
+    }
+
+    #[test]
+    fn test_median() {
+        assert_eq!(median(&[]), 0.0);
+        assert_eq!(median(&[3.0]), 3.0);
+        assert_eq!(median(&[1.0, 3.0, 2.0]), 2.0);
+        assert_eq!(median(&[4.0, 1.0, 3.0, 2.0]), 2.5);
+        // Selection is permutation-invariant.
+        assert_eq!(median(&[1.0, 2.0, 3.0]), median(&[3.0, 1.0, 2.0]));
+        // `total_cmp` places positive NaN above +∞ and negative NaN below -∞.
+        assert_eq!(median(&[f64::NAN, 1.0, 2.0]), 2.0);
+        assert!(median(&[f64::NAN, f64::NAN, 1.0]).is_nan());
+        assert_eq!(median(&[-f64::NAN, 1.0, 2.0]), 1.0);
+        assert_eq!(median(&[f64::INFINITY, 1.0, 2.0]), 2.0);
     }
 
     #[test]
