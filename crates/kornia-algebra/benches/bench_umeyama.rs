@@ -76,8 +76,8 @@ fn bench_umeyama_robust(c: &mut Criterion) {
                 std::hint::black_box(umeyama_f64_robust(
                     std::hint::black_box(&src),
                     std::hint::black_box(&dst),
-                    &cfg,
-                    true,
+                    std::hint::black_box(&cfg),
+                    std::hint::black_box(true),
                 ))
             });
         });
@@ -101,8 +101,8 @@ fn bench_umeyama_robust(c: &mut Criterion) {
                 std::hint::black_box(umeyama_f64_robust(
                     std::hint::black_box(&src),
                     std::hint::black_box(&dst),
-                    &cfg,
-                    true,
+                    std::hint::black_box(&cfg),
+                    std::hint::black_box(true),
                 ))
             });
         });
@@ -126,8 +126,8 @@ fn bench_umeyama_robust(c: &mut Criterion) {
                 std::hint::black_box(umeyama_f64_robust(
                     std::hint::black_box(&src),
                     std::hint::black_box(&dst),
-                    &cfg,
-                    true,
+                    std::hint::black_box(&cfg),
+                    std::hint::black_box(true),
                 ))
             });
         });

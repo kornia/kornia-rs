@@ -45,9 +45,10 @@ and `EmptyInput`, so exhaustive downstream `match`es need new arms.
 `(R, t, s)` to point sets contaminated by gross outliers: a Huber-weighted
 IRLS loop over `umeyama_f64` down-weights large residuals, and a MAD
 hard-rejection pass (`3.5 · MAD / Φ⁻¹(3/4)`, i.e. ≈ `5.19 · MAD`, around the
-median residual) drops
-them before a final unweighted refit on the survivors. The fit is
-deterministic; `with_scale` selects Sim3 (estimated scale) or rigid
+median residual) drops them before a final unweighted refit on the survivors.
+When the MAD is exactly zero (noiseless inliers), exact-zero-deviation
+correspondences are kept, so noise-free data with outliers recovers exactly.
+The fit is deterministic; `with_scale` selects Sim3 (estimated scale) or rigid
 (`s = 1.0`) alignment; `RobustUmeyamaConfig` controls the
 Huber threshold, iteration cap, and convergence tolerance. **Breaking:**
 `UmeyamaError` gains `InvalidDelta`, `InvalidMaxIters`, and `InvalidTol`
