@@ -433,7 +433,7 @@ pub fn umeyama_f64_robust(
     let mut fit = umeyama_f64(src, dst, Some(&weights), with_scale)?;
 
     // r_i = |(s·R·src_i + t) - dst_i| for the current fit.
-    let residuals_for = |fit: &UmeyamaOutputF64, out: &mut [f64]| {
+    let write_residuals = |fit: &UmeyamaOutputF64, out: &mut [f64]| {
         for (i, (p, d)) in src.iter().zip(dst).enumerate() {
             let mapped = (fit.0 * *p) * fit.2 + fit.1;
             out[i] = (mapped - *d).length();
@@ -442,11 +442,10 @@ pub fn umeyama_f64_robust(
 
     let mut residuals = vec![0.0_f64; n];
     for _ in 0..config.max_iters {
-        residuals_for(&fit, &mut residuals);
+        write_residuals(&fit, &mut residuals);
         // Huber weights: full weight below `delta`, `delta / r` above.
-        for i in 0..n {
-            let r = residuals[i];
-            weights[i] = if r > 0.0 {
+        for (w, &r) in weights.iter_mut().zip(&residuals) {
+            *w = if r > 0.0 {
                 (config.delta / r).min(1.0)
             } else {
                 1.0
@@ -471,7 +470,7 @@ pub fn umeyama_f64_robust(
     }
 
     // Residuals under the converged fit.
-    residuals_for(&fit, &mut residuals);
+    write_residuals(&fit, &mut residuals);
 
     // MAD hard rejection around the median residual:
     // σ̂ = MAD / Φ⁻¹(3/4) ≈ 1.4826 · MAD.
@@ -479,10 +478,7 @@ pub fn umeyama_f64_robust(
     // residual threshold anchored at zero) tracks a biased intermediate
     // fit, so a heavy outlier cluster cannot empty the inlier set.
     let med = median(&residuals);
-    let mut abs_dev = vec![0.0_f64; n];
-    for i in 0..n {
-        abs_dev[i] = (residuals[i] - med).abs();
-    }
+    let abs_dev: Vec<f64> = residuals.iter().map(|&r| (r - med).abs()).collect();
     let mad = median(&abs_dev);
     let sigma = MAD_TO_SIGMA * mad;
 
@@ -1609,9 +1605,9 @@ mod tests {
         let t_true = Vec3F64::new(0.5, -0.3, 2.0);
         let s_true = 1.7;
 
-        // Realistic inlier noise so the MAD pass has a positive scale to
-        // work with (on exactly-noiseless inliers MAD is 0 and the pass is
-        // a designed no-op; IRLS alone then carries the fit).
+        // Realistic inlier noise so the MAD pass has a meaningful positive
+        // scale to work with (on noiseless synthetic inliers the scale sits
+        // at the SVD error floor, where rejection adds little).
         add_noise(0x1002, &mut src, 5e-4);
         let mut dst: Vec<Vec3F64> = src
             .iter()
