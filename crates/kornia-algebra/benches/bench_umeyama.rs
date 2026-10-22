@@ -1,4 +1,5 @@
-//! End-to-end `umeyama_f64` benchmark over point counts and weight modes.
+//! End-to-end `umeyama_f64` / `umeyama_f64_robust` benchmarks over point
+//! counts, weight modes, and outlier fractions.
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use kornia_algebra::linalg::rigid::{umeyama_f64, umeyama_f64_robust, RobustUmeyamaConfig};
