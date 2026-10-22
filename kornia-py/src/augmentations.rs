@@ -46,12 +46,18 @@ pub fn set_seed(seed: Option<u64>) {
 
 /// Extract a required key from a params dict.
 ///
-/// Panics on missing key to match the previous `unwrap()` behavior at each call site.
-fn dict_get<'py, T>(d: &Bound<'py, PyDict>, key: &str) -> PyResult<T>
+/// Returns a `ValueError` that names `transform` and `key` if the key is missing.
+fn dict_get<'py, T>(d: &Bound<'py, PyDict>, transform: &str, key: &str) -> PyResult<T>
 where
     T: for<'a> FromPyObject<'a, 'py, Error = PyErr>,
 {
-    d.get_item(key)?.unwrap().extract::<T>()
+    d.get_item(key)?
+        .ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                "{transform}: params is missing required key '{key}'"
+            ))
+        })?
+        .extract::<T>()
 }
 
 /// Build a one-key `dict` (the common `last_params` shape).
@@ -567,11 +573,11 @@ impl PyColorJitter {
     }
 
     fn dict_to_params(d: &Bound<'_, PyDict>) -> PyResult<JitterParams> {
-        let b: f64 = dict_get(d, "brightness")?;
-        let c: f64 = dict_get(d, "contrast")?;
-        let s: f64 = dict_get(d, "saturation")?;
-        let h: f64 = dict_get(d, "hue")?;
-        let order_list: Vec<u8> = dict_get(d, "order")?;
+        let b: f64 = dict_get(d, "ColorJitter", "brightness")?;
+        let c: f64 = dict_get(d, "ColorJitter", "contrast")?;
+        let s: f64 = dict_get(d, "ColorJitter", "saturation")?;
+        let h: f64 = dict_get(d, "ColorJitter", "hue")?;
+        let order_list: Vec<u8> = dict_get(d, "ColorJitter", "order")?;
         let factors = [b, c, s, h];
         let order: Vec<(u8, f64)> = order_list
             .iter()
@@ -621,7 +627,7 @@ impl PyRandomHorizontalFlip {
         params: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<Py<PyImageApi>> {
         let flip = match params {
-            Some(p) => dict_get::<bool>(p, "flip")?,
+            Some(p) => dict_get::<bool>(p, "RandomHorizontalFlip", "flip")?,
             None => with_rng(|rng| rng.random::<f64>() < self.p),
         };
 
@@ -679,7 +685,7 @@ impl PyRandomVerticalFlip {
         params: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<Py<PyImageApi>> {
         let flip = match params {
-            Some(p) => dict_get::<bool>(p, "flip")?,
+            Some(p) => dict_get::<bool>(p, "RandomVerticalFlip", "flip")?,
             None => with_rng(|rng| rng.random::<f64>() < self.p),
         };
 
@@ -741,7 +747,10 @@ impl PyRandomCrop {
         params: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<PyImageApi> {
         let (x, y) = match params {
-            Some(p) => (dict_get::<usize>(p, "x")?, dict_get::<usize>(p, "y")?),
+            Some(p) => (
+                dict_get::<usize>(p, "RandomCrop", "x")?,
+                dict_get::<usize>(p, "RandomCrop", "y")?,
+            ),
             None => self.sample_pos(img.width(), img.height())?,
         };
 
@@ -819,7 +828,7 @@ impl PyRandomRotation {
         params: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<PyImageApi> {
         let angle = match params {
-            Some(p) => dict_get::<f64>(p, "angle")?,
+            Some(p) => dict_get::<f64>(p, "RandomRotation", "angle")?,
             None => with_rng(|rng| rng.random_range(self.degrees.0..=self.degrees.1)),
         };
 
