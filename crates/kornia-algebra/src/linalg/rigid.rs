@@ -362,8 +362,10 @@ impl RobustUmeyamaConfig {
 /// The rejection window is centered on the median residual: it tracks a
 /// biased intermediate fit and always keeps at least half of the
 /// correspondences for finite inputs, so a heavy outlier cluster cannot
-/// empty the inlier set. The fit is deterministic (no randomness, no
-/// parallelism).
+/// empty the inlier set. When the MAD is exactly zero (noiseless inlier
+/// residuals), the exact-zero-deviation correspondences form the consensus
+/// and are kept, so noise-free data with outliers still recovers exactly.
+/// The fit is deterministic (no randomness, no parallelism).
 ///
 /// With `with_scale = false` the estimator assumes the true scale is `1.0`:
 /// a genuine scale mismatch surfaces as inflated inlier residuals, which
@@ -447,6 +449,17 @@ pub fn umeyama_f64_robust(
         }
     };
 
+    // Scene extent: max centered destination distance. It scales the
+    // translation convergence check so a near-zero translation cannot clamp
+    // the denominator to EPSILON and disable the early exit.
+    let eps = f64::EPSILON;
+    let dst_mean = dst.iter().fold(Vec3F64::ZERO, |sum, d| sum + *d) / n as f64;
+    let extent = dst
+        .iter()
+        .map(|d| (*d - dst_mean).length())
+        .fold(0.0_f64, f64::max)
+        .max(eps);
+
     let mut residuals = vec![0.0_f64; n];
     for iter in 0..config.max_iters {
         write_residuals(&fit, &mut residuals);
@@ -471,13 +484,13 @@ pub fn umeyama_f64_robust(
 
         // Convergence: maximum relative change of scale, rotation columns
         // and translation between the two fits. `scale_rel` is 0 in rigid
-        // mode, so those fits converge on R/t alone.
-        let eps = f64::EPSILON;
+        // mode, so those fits converge on R/t alone. `t_rel` falls back to
+        // the scene extent when the translation is near zero.
         let scale_rel = ((new_fit.2 - fit.2) / fit.2.max(eps)).abs();
         let rot_rel = (0..3)
             .map(|c| (new_fit.0.col(c) - fit.0.col(c)).length() / fit.0.col(c).length().max(eps))
             .fold(0.0_f64, f64::max);
-        let t_rel = (new_fit.1 - fit.1).length() / fit.1.length().max(eps);
+        let t_rel = (new_fit.1 - fit.1).length() / fit.1.length().max(extent);
 
         fit = new_fit;
         if scale_rel.max(rot_rel).max(t_rel) < config.tol {
@@ -503,13 +516,28 @@ pub fn umeyama_f64_robust(
     let mad = median(abs_dev);
     let sigma = MAD_TO_SIGMA * mad;
 
-    if sigma > f64::EPSILON {
+    // Inlier set: centered window |r_i - med| <= 3.5·σ̂. When MAD is exactly
+    // 0, at least half the residuals are exactly equal, so σ̂ is 0 and no
+    // spread-based threshold exists — but the consensus is still identifiable:
+    // exact-zero deviations are the inliers. This makes noise-free data with
+    // outliers recover exactly instead of keeping the Huber bias
+    // (~delta × outlier fraction).
+    let inliers: Option<Vec<usize>> = if mad == 0.0 {
+        Some((0..n).filter(|&i| abs_dev[i] == 0.0).collect())
+    } else if sigma > f64::EPSILON {
         let thr = OUTLIER_SIGMA_MULT * sigma;
-        let inliers: Vec<usize> = (0..n).filter(|&i| abs_dev[i] <= thr).collect();
-        // The centered window keeps at least half the residuals by
-        // construction (half of all |r - med| are <= MAD < thr), so the
-        // inlier set is never empty for finite inputs.
-        if inliers.len() < n {
+        Some((0..n).filter(|&i| abs_dev[i] <= thr).collect())
+    } else {
+        // Genuine near-zero noise: keep the existing no-refit behavior.
+        None
+    };
+
+    if let Some(inliers) = inliers {
+        // Both branches keep at least half the residuals: half of all
+        // |r - med| are <= MAD, and a zero MAD forces at least half of them
+        // to be exactly 0. Require three survivors so the refit is not an
+        // underdetermined one- or two-point fit.
+        if inliers.len() < n && inliers.len() >= 3 {
             let src_in: Vec<Vec3F64> = inliers.iter().map(|&i| src[i]).collect();
             let dst_in: Vec<Vec3F64> = inliers.iter().map(|&i| dst[i]).collect();
             fit = umeyama_f64(&src_in, &dst_in, None, with_scale)?;
@@ -1789,6 +1817,63 @@ mod tests {
             }
         }
         assert!(max_good < 5e-3, "good-point residual too large: {max_good}");
+        Ok(())
+    }
+
+    #[test]
+    fn test_umeyama_f64_robust_zero_mad_exact_inliers_reject_outlier() -> Result<(), UmeyamaError> {
+        // Six ±e basis points; only +e_x is displaced in dst. Exact inliers
+        // make MAD exactly 0, which must still select the zero-deviation
+        // consensus and refit — otherwise the fit keeps the Huber bias.
+        let src = [
+            Vec3F64::new(1.0, 0.0, 0.0),
+            Vec3F64::new(-1.0, 0.0, 0.0),
+            Vec3F64::new(0.0, 1.0, 0.0),
+            Vec3F64::new(0.0, -1.0, 0.0),
+            Vec3F64::new(0.0, 0.0, 1.0),
+            Vec3F64::new(0.0, 0.0, -1.0),
+        ];
+        let mut dst: Vec<Vec3F64> = src.to_vec();
+        dst[0] += Vec3F64::new(100.0, 0.0, 0.0);
+        let cfg = RobustUmeyamaConfig {
+            delta: 30.0,
+            ..RobustUmeyamaConfig::default()
+        };
+
+        let (r, t, s) = umeyama_f64_robust(&src, &dst, &cfg, false)?;
+        assert_eq!(s, 1.0);
+        // The bias must be gone: the five untouched correspondences are
+        // reproduced exactly (identity is one valid rotation here).
+        assert!(t.length() < 1e-9, "biased translation kept: {t:?}");
+        for (p, d) in src.iter().zip(&dst).skip(1) {
+            assert!((r * *p + t - *d).length() < 1e-9);
+        }
+        // The outlier keeps its large residual.
+        assert!((r * src[0] + t - dst[0]).length() > 90.0);
+        Ok(())
+    }
+
+    #[test]
+    fn test_umeyama_f64_robust_near_zero_translation_converges() -> Result<(), UmeyamaError> {
+        // Near-zero true translation: a translation-relative convergence
+        // denominator would clamp to EPSILON and disable the early exit, so
+        // this guards the scene-extent floor. The returned fit is the same
+        // fixed point either way; the observable guarantee is tight recovery.
+        let mut src = random_points(0x6001, 20, 2.0);
+        let r_true = rot_z90();
+        let t_true = Vec3F64::new(0.0, 0.0, 0.0);
+        let s_true = 1.7;
+        add_noise(0x6002, &mut src, 5e-4);
+        let mut dst: Vec<Vec3F64> = src
+            .iter()
+            .map(|p| (r_true * *p) * s_true + t_true)
+            .collect();
+        add_noise(0x6003, &mut dst, 5e-4);
+        // One gross outlier so at least one correspondence is down-weighted.
+        dst[5] += Vec3F64::new(50.0, -40.0, 30.0);
+
+        let got = umeyama_f64_robust(&src, &dst, &RobustUmeyamaConfig::default(), true)?;
+        assert_matches_true(&got, &r_true, &t_true, s_true, 5e-3);
         Ok(())
     }
 }
