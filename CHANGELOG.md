@@ -47,7 +47,8 @@ IRLS loop over `umeyama_f64` down-weights large residuals, and a MAD
 hard-rejection pass (`3.5 · MAD / Φ⁻¹(3/4)`, i.e. ≈ `5.19 · MAD`, around the
 median residual) drops them before a final unweighted refit on the survivors.
 When the MAD is exactly zero (noiseless inliers), exact-zero-deviation
-correspondences are kept, so noise-free data with outliers recovers exactly.
+correspondences are kept, so noise-free data with outliers recovers exactly;
+the refit needs at least three survivors.
 The fit is deterministic; `with_scale` selects Sim3 (estimated scale) or rigid
 (`s = 1.0`) alignment; `RobustUmeyamaConfig` controls the
 Huber threshold, iteration cap, and convergence tolerance. **Breaking:**

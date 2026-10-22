@@ -1,4 +1,5 @@
-//! Rigid alignment utilities (Kabsch / Umeyama), with optional per-point weights.
+//! Rigid alignment utilities (Kabsch / Umeyama), with optional per-point
+//! weights and a deterministic outlier-robust fit (Huber IRLS + MAD rejection).
 
 use crate::linalg::svd::svd3_f64;
 use crate::{Mat3AF32, Mat3F32, Mat3F64, Vec3AF32, Vec3F32, Vec3F64};
@@ -314,7 +315,9 @@ pub struct RobustUmeyamaConfig {
     /// Huber threshold in the residual's units: residuals below `delta` keep
     /// full weight, above it are down-weighted as `delta / residual`.
     pub delta: f64,
-    /// Maximum number of IRLS iterations.
+    /// Maximum number of IRLS iterations. The loop stops earlier on
+    /// convergence, and on clean data it may exit before performing any
+    /// reweighted solve.
     pub max_iters: usize,
     /// Convergence tolerance on the maximum relative change of scale,
     /// rotation and translation between iterations.
@@ -365,6 +368,8 @@ impl RobustUmeyamaConfig {
 /// empty the inlier set. When the MAD is exactly zero (noiseless inlier
 /// residuals), the exact-zero-deviation correspondences form the consensus
 /// and are kept, so noise-free data with outliers still recovers exactly.
+/// The refit requires at least three survivors; with fewer, the converged
+/// IRLS fit is returned unchanged.
 /// The fit is deterministic (no randomness, no parallelism).
 ///
 /// With `with_scale = false` the estimator assumes the true scale is `1.0`:
@@ -451,13 +456,19 @@ pub fn umeyama_f64_robust(
 
     // Scene extent: max centered destination distance. It scales the
     // translation convergence check so a near-zero translation cannot clamp
-    // the denominator to EPSILON and disable the early exit.
+    // the denominator to EPSILON and disable the early exit. The destination
+    // cloud may contain outliers, so this is a coarse scene scale used only
+    // as a floor.
     let eps = f64::EPSILON;
     let dst_mean = dst.iter().fold(Vec3F64::ZERO, |sum, d| sum + *d) / n as f64;
     let extent = dst
         .iter()
-        .map(|d| (*d - dst_mean).length())
+        .map(|d| {
+            let offset = *d - dst_mean;
+            offset.dot(offset)
+        })
         .fold(0.0_f64, f64::max)
+        .sqrt()
         .max(eps);
 
     let mut residuals = vec![0.0_f64; n];
