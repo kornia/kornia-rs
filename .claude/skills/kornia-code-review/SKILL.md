@@ -35,7 +35,10 @@ Every finding, scope findings included, is one line:
   change), **minor** (worth changing), **nit** (optional). Any blocking ⇒
   verdict is request changes. Severity is per finding, as the section
   that raises it says; never lower one because other blockers already decide
-  the verdict.
+  the verdict. One problem per line: never merge findings of different
+  severities into one.
+- Always blocking: no linked issue or an unreadable one, an out-of-scope
+  hunk, a needed split, a missing Self-review or Author walkthrough.
 - **Measured** = you ran a command and quote its output, in the finding or in
   the `Reuse searches` block it cites (a reuse finding filed under another
   section is still measured). **Inferred** = from reading code only. Inferred is enough to block on scope and on correctness the

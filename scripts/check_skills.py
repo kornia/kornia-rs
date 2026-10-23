@@ -11,6 +11,8 @@ Cargo.toml `rust-version`; every `pixi run <task>` exists in
 pixi.toml; the kornia-arch crate table matches crates/*; no skill names a crate
 from PUBLISH_ORDER in scripts/release_rust.sh as excluded from publishing;
 review eval cases (`<skill>/evals/<case>/`) are complete and their patch applies.
+The publish check first runs on PUBLISH_PROBES; a change that stops it rejecting
+one fails here, not silently.
 
 This cannot check that guidance is complete or that it was applied.
 """
@@ -62,8 +64,49 @@ def publish_order() -> set:
     return set(m.group(1).split()) if m else set()
 
 
+def publish_claims(text: str, published: set) -> set:
+    """Crates from `published` that `text` calls excluded from publishing."""
+    # Per sentence (table rows on their own); a crate may be named `kornia-x`
+    # or by its short name ("AprilTag").
+    units = []
+    for block in re.split(r"\n\s*\n", text):
+        rows = [r for r in block.splitlines() if r.lstrip().startswith("|")]
+        units += rows
+        prose = " ".join(r for r in block.splitlines() if not r.lstrip().startswith("|"))
+        units += re.split(r"(?<=[.!?])\s+", prose)
+    found = set()
+    for unit in (u.replace("crates.io", "") for u in units):
+        if re.search(r"exclud|not published|never published|skipp?ed", unit, re.I) and re.search(r"publish|crates", unit, re.I):
+            for crate in published:
+                short = crate.removeprefix("kornia-")
+                if re.search(rf"\b{re.escape(crate)}\b|\b{re.escape(short)}\b", unit, re.I):
+                    found.add(crate)
+    return found
+
+
+# (text, flagged?) for a PUBLISH_ORDER of {kornia-apriltag}. Add the phrasing
+# of every stale claim that slipped through; never delete one to pass.
+PUBLISH_PROBES = [
+    ("Only `PUBLISH_ORDER` crates are\npublished; the umbrella, VLM and AprilTag crates are intentionally excluded.", True),
+    ("The `kornia-apriltag` crate is excluded from publishing.", True),
+    ("The `kornia-apriltag` crate is excluded\nfrom publishing.", True),
+    ("Crates excluded from crates.io:\n`kornia-apriltag`.", True),
+    ("kornia-apriltag is not published to crates.io.", True),
+    ("AprilTag is never published.", True),
+    ("Excluded from Publishing: `kornia-apriltag`.", True),
+    ("The apriltag crate is skipped when publishing.", True),
+    ("| `kornia-apriltag` | detection, not published |", True),
+    ("The `kornia-vlm` crate is not published.", False),
+    ("The publish set is `PUBLISH_ORDER` in `scripts/release_rust.sh`. Read it there.", False),
+    ("`kornia-apriltag` detects tags. Crates with `publish = false` are skipped.", False),
+]
+
+
 def main() -> int:
     errors = []
+    for probe, flagged in PUBLISH_PROBES:
+        if bool(publish_claims(probe, {"kornia-apriltag"})) != flagged:
+            errors.append(f"publish check self-test: {'missed' if flagged else 'false positive on'} probe {probe!r}")
     m = re.search(r'^rust-version\s*=\s*"([^"]+)"', (ROOT / "Cargo.toml").read_text(encoding="utf-8"), re.M)
     msrv = m.group(1) if m else None
     if not msrv:
@@ -95,20 +138,8 @@ def main() -> int:
         for task in sorted(set(re.findall(r"pixi run (?:-e \S+ )?([a-z0-9-]+)", text))):
             if task not in tasks:
                 errors.append(f"{skill.name}: unknown pixi task: {task}")
-        # Per sentence (table rows on their own); a crate may be named `kornia-x`
-        # or by its short name ("AprilTag").
-        units = []
-        for block in re.split(r"\n\s*\n", text):
-            rows = [r for r in block.splitlines() if r.lstrip().startswith("|")]
-            units += rows
-            prose = " ".join(r for r in block.splitlines() if not r.lstrip().startswith("|"))
-            units += re.split(r"(?<=[.!?])\s+", prose)
-        for para in (u.replace("crates.io", "") for u in units):
-            if re.search(r"exclud|not published|never published|skipp?ed", para, re.I) and re.search(r"publish|crates", para, re.I):
-                for crate in sorted(published):
-                    short = crate.removeprefix("kornia-")
-                    if re.search(rf"\b{re.escape(crate)}\b|\b{re.escape(short)}\b", para, re.I):
-                        errors.append(f"{skill.name}: says {crate} is excluded from publishing, but it is in PUBLISH_ORDER")
+        for crate in sorted(publish_claims(text, published)):
+            errors.append(f"{skill.name}: says {crate} is excluded from publishing, but it is in PUBLISH_ORDER")
 
     # Crate table rows look like "| `kornia-x`, `kornia-y` | purpose |".
     table = set()
