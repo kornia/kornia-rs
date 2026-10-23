@@ -219,7 +219,10 @@ or claims (validator, CI step, lint, hook):
   and new passes ⇒ blocking.
 - A deleted entry in a check's own probes or tests (e.g. `PUBLISH_PROBES`)
   ⇒ blocking, unless the PR shows the probe was wrong. Run each deleted probe
-  through the new check.
+  through the new check. Self-tests run against the real source of truth
+  (e.g. `PUBLISH_ORDER`), not a one-item fixture that hides false positives.
+- A check that is new in the PR has no old version on `main`: compare it with
+  its first commit in the PR, and run it on the original bug text from `main`.
 - Check what the docs claim the check covers against what it actually matches.
 - Workflows: note which ref they run from (`pull_request_target` runs from
   `main`, so a PR cannot show its own new logic working).
@@ -229,7 +232,9 @@ or claims (validator, CI step, lint, hook):
 Check the diff against `kornia-coding-style` (naming, `thiserror`, no
 `unwrap` in library code, `// SAFETY:`, rustdoc) and `kornia-api-flavor`.
 Cite the rule; don't restate it here. If the PR changes the skills
-themselves, review against the skills on `main` and call out the self-reference.
+themselves, review against the skills on `main` and call out the self-reference;
+where a skill is new in the PR, say so and don't hold the PR to it as if it
+were already policy.
 
 ## 6. PR hygiene
 
@@ -250,7 +255,8 @@ themselves, review against the skills on `main` and call out the self-reference.
     hunk is removed.
 - AI disclosure filled with agent + version, model, effort and skills applied
   (see `kornia-workflow`). Verification section quotes real commands and
-  output; no checklist box ticked for something not run.
+  output from the PR head (re-run after each commit that touches what they
+  test); no checklist box ticked for something not run.
 - If the PR changes a fact a skill states, the skill is updated in the same PR
   (see `kornia-curation`).
 - User-visible change ⇒ `changelog.d/<PR>.<type>.md` whose type and text match
