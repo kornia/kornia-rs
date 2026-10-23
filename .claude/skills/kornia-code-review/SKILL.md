@@ -58,10 +58,11 @@ code:
 1. Read the linked issue (`gh issue view <n> -R kornia/kornia-rs`). No linked
    issue ⇒ blocking, including maintainer-requested work: open an issue, it
    is cheap. Issue unreadable (no access, no network) ⇒ blocking until it
-   can be read: step 2 is impossible without it, and a quote in the PR body
-   is not the issue. Still finish the review: steps 3–5 don't need the issue
-   and keep their own severities, and quoted issue text that breaks a skill
-   rule still gets the push-back below.
+   can be read; a quote in the PR body does not lift it. Still finish the
+   review: do step 2 against the quoted text and the PR's stated purpose (a
+   hunk outside even those is out of scope, blocking), steps 3–5 keep their
+   own severities, and quoted text that breaks a skill rule gets the
+   push-back below.
 2. Map every changed file/hunk to the issue. Any hunk that does not serve it
    (drive-by refactors, renames, formatting of untouched code, unrelated deps,
    extra features, "while I was here" fixes) ⇒ blocking: out of scope — not
