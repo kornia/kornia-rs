@@ -99,7 +99,8 @@ Reuse searches:
   <hit lines, path:line: text — or "no hits">
 ```
 
-Every 0b finding names its search entry and is tagged `[measured]`. A reuse
+Every 0b finding is its own line (separate from a section 4 finding on the
+same hunk), names its search entry and is tagged `[measured]`. A reuse
 finding, or a claim that nothing existing fits, without a pasted search is
 incomplete: run it before writing the finding. Reading the code is enough to
 *suspect* a duplicate; the pasted hit is what reports it.
@@ -216,6 +217,9 @@ or claims (validator, CI step, lint, hook):
   did not shrink: run the **old and new** check on the same negative probes,
   including any text the PR itself edits that the check guards. Old rejects
   and new passes ⇒ blocking.
+- A deleted entry in a check's own probes or tests (e.g. `PUBLISH_PROBES`)
+  ⇒ blocking, unless the PR shows the probe was wrong. Run each deleted probe
+  through the new check.
 - Check what the docs claim the check covers against what it actually matches.
 - Workflows: note which ref they run from (`pull_request_target` runs from
   `main`, so a PR cannot show its own new logic working).

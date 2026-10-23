@@ -8,3 +8,5 @@ A passing review reports all of:
 6. §0b — a `Reuse searches` block with a pasted search that finds `check_size`; the reuse part of item 2 is tagged measured.
 
 Validated 2026-10-21: 5/5 on the first skill draft, and 5/5 on the revised skill (scope first, missing Self-review and walkthrough flagged).
+
+2026-10-23 (section 0b added; Opus 5.5 and Sonnet 5.5, 6 rounds): items 1-5 found every run. Item 6: Opus 6/6; Sonnet 4/6, misses were a reuse finding merged into the section 4 line and tagged inferred. Open: Sonnet still varies where it puts the measured reuse finding.
