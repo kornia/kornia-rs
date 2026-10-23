@@ -1,0 +1,88 @@
+diff --git a/crates/kornia-imgproc/src/threshold.rs b/crates/kornia-imgproc/src/threshold.rs
+index be81b91..f189833 100644
+--- a/crates/kornia-imgproc/src/threshold.rs
++++ b/crates/kornia-imgproc/src/threshold.rs
+@@ -365,7 +365,66 @@ where
+     Ok(())
+ }
+ 
+-// TODO: otsu, triangle
++/// Thresholds a grayscale image with Otsu's method and returns the chosen threshold.
++///
++/// The threshold maximises the between-class variance of the intensity histogram.
++/// Pixels above the threshold are set to `max_value`, the rest to 0.
++///
++/// # Arguments
++///
++/// * `src` - The input grayscale image.
++/// * `dst` - The output image, same size as `src`.
++/// * `max_value` - The value written for pixels above the threshold.
++pub fn threshold_otsu(
++    src: &Image<u8, 1>,
++    dst: &mut Image<u8, 1>,
++    max_value: u8,
++) -> Result<u8, ImageError> {
++    if src.size() != dst.size() {
++        return Err(ImageError::InvalidImageSize(
++            src.cols(),
++            src.rows(),
++            dst.cols(),
++            dst.rows(),
++        ));
++    }
++
++    let mut hist = [0usize; 256];
++    for &v in src.as_slice() {
++        hist[v as usize] += 1;
++    }
++
++    let total = src.as_slice().len() as f64;
++    let sum_all: f64 = hist.iter().enumerate().map(|(i, &h)| i as f64 * h as f64).sum();
++
++    let mut sum_bg = 0.0;
++    let mut weight_bg = 0.0;
++    let mut best_var = 0.0;
++    let mut best_t = 0u8;
++    for (t, &h) in hist.iter().enumerate() {
++        weight_bg += h as f64;
++        if weight_bg == 0.0 {
++            continue;
++        }
++        let weight_fg = total - weight_bg;
++        if weight_fg == 0.0 {
++            break;
++        }
++        sum_bg += t as f64 * h as f64;
++        let mean_bg = sum_bg / weight_bg;
++        let mean_fg = (sum_all - sum_bg) / weight_fg;
++        let var = weight_bg * weight_fg * (mean_bg - mean_fg) * (mean_bg - mean_fg);
++        if var > best_var {
++            best_var = var;
++            best_t = t as u8;
++        }
++    }
++
++    threshold_binary(src, dst, best_t, max_value)?;
++    Ok(best_t)
++}
++
++// TODO: triangle
+ 
+ #[cfg(test)]
+ mod tests {
+@@ -546,4 +605,15 @@ mod tests {
+ 
+         Ok(())
+     }
++
++    #[test]
++    fn threshold_otsu_bimodal() -> Result<(), ImageError> {
++        let data = vec![10u8, 12, 11, 200, 210, 205];
++        let image = Image::<_, 1>::new(ImageSize { width: 3, height: 2 }, data)?;
++        let mut thresholded = Image::<_, 1>::from_size_val(image.size(), 0)?;
++        let t = super::threshold_otsu(&image, &mut thresholded, 255)?;
++        assert!(t >= 12 && t < 200);
++        assert_eq!(thresholded.as_slice(), &[0, 0, 0, 255, 255, 255]);
++        Ok(())
++    }
+ }
