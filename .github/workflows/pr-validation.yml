@@ -105,7 +105,9 @@ jobs:
             const wt = prBody.replace(/<!--[\s\S]*?-->/g, '').match(/##[^\n]*Author walkthrough[^\n]*\n([\s\S]*?)(?=\n## |$)/i);
             const wtField = f => {
               const m = wt && wt[1].match(new RegExp(`\\*\\*${f}:\\*\\*[ \\t]*([\\s\\S]*?)(?=\\n- \\*\\*|\\n---|$)`));
-              return m ? m[1].trim() : '';
+              const v = m ? m[1].trim() : '';
+              // Template or agent placeholders ("_to be written…_", TODO) count as empty.
+              return /^_[\s\S]*_$|to be written|^(TODO|TBD)\b/i.test(v) ? '' : v;
             };
             if (!wtField('Per file') || !wtField('Riskiest part and how I checked it')) {
               failures.push('❌ **Author walkthrough missing**: in your own words, explain each changed file and the riskiest part of the change (Author walkthrough section). Reviewers will ask about specific lines.');

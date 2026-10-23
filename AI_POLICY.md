@@ -18,7 +18,7 @@ AI tools frequently write code that looks correct but fails execution. Therefore
 
 **Failure Condition:** If a PR lacks execution proof and contains complex logic, it will be flagged as **Unverified**.
 
-**Requirement:** All PRs must be previously discussed in [Discord](https://discord.gg/HfnywwpBnD) or via a [GitHub issue](https://github.com/kornia/kornia-rs/issues) before implementation. The PR must reference the discussion or issue.
+**Requirement:** Every PR links a [GitHub issue](https://github.com/kornia/kornia-rs/issues) that it implements, opened before implementation (a [Discord](https://discord.gg/HfnywwpBnD) discussion can lead to one, but does not replace it).
 
 **Requirement:** Implementations must be based on an existing library reference (e.g., Rust crates from crates.io, OpenCV, existing Rust CV libraries, etc.) that must be provided in the PR description for verification. This reference serves as proof that the implementation follows established algorithms and is not hallucinated.
 

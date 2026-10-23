@@ -9,7 +9,7 @@ This project is part of the Kornia ecosystem. Join the community on [Discord](ht
 - **AI Policy & Authorship**: See [AI_POLICY.md](AI_POLICY.md) for the complete policy. Summary:
     - Kornia-rs accepts AI-assisted code but strictly rejects AI-generated contributions where the submitter acts as a proxy.
     - **Proof of Verification**: PRs must include local test logs proving execution (e.g., `pixi run rust-test` or `cargo test`).
-    - **Pre-Discussion**: All PRs must be discussed in Discord or via a GitHub issue before implementation.
+    - **Linked issue**: Every PR links a GitHub issue opened before implementation (Discord can lead to one, not replace it).
     - **Library References**: Implementations must be based on existing library references (Rust crates, OpenCV, etc.).
     - **Hallucination & Redundancy Ban**: Use existing `kornia-rs` utilities and never reinvent the wheel, except when the utility is not available.
     - **The "Explain It" Standard**: You must be able to explain any code you submit.
@@ -205,7 +205,7 @@ This section provides comprehensive guidance for contributing to kornia-rs, with
 
 ## Before You Start
 
-1. **Discuss First**: Always discuss your proposed changes in Discord or via a GitHub issue before starting implementation (see [Policies and Guidelines](#policies-and-guidelines)). This ensures your work aligns with project goals and avoids duplicate effort.
+1. **Open an issue first**: Every PR needs a linked GitHub issue opened before implementation (discuss in Discord first if you like) (see [Policies and Guidelines](#policies-and-guidelines)). This ensures your work aligns with project goals and avoids duplicate effort.
 
 2. **Start Small**: If you're new to the project, start with small bug fixes or documentation improvements to familiarize yourself with the codebase and contribution process.
 

@@ -64,30 +64,38 @@ def publish_order() -> set:
     return set(m.group(1).split()) if m else set()
 
 
+# Short names that are ordinary words ("image io") are only matched as `kornia-x`.
+COMMON_SHORT = {"3d", "algebra", "bow", "image", "io", "tensor"}
+EXCLUDED = r"exclud|skipp?ed|unpublished|not (?:be )?published|never published|(?:not|n't) publish|not on crates\.io|not released"
+
+
 def publish_claims(text: str, published: set) -> set:
     """Crates from `published` that `text` calls excluded from publishing."""
-    # Per sentence (table rows on their own); a crate may be named `kornia-x`
-    # or by its short name ("AprilTag").
+    # Table rows stand alone. In prose, the exclusion word and the crate share a
+    # sentence, but "publish" may sit elsewhere in the paragraph ("…skips
+    # already-published versions. Excludes `kornia-apriltag`.").
     units = []
     for block in re.split(r"\n\s*\n", text):
         rows = [r for r in block.splitlines() if r.lstrip().startswith("|")]
-        units += rows
+        units += [(r, r) for r in rows]
         prose = " ".join(r for r in block.splitlines() if not r.lstrip().startswith("|"))
-        units += re.split(r"(?<=[.!?])\s+", prose)
+        units += [(sent, prose) for sent in re.split(r"(?<=[.!?])\s+", prose)]
     found = set()
-    for unit in (u.replace("crates.io", "") for u in units):
-        if re.search(r"exclud|not published|never published|skipp?ed", unit, re.I) and re.search(r"publish|crates", unit, re.I):
+    for unit, context in units:
+        if re.search(EXCLUDED, unit, re.I) and re.search(r"publish|crates|release", context, re.I):
             for crate in published:
                 short = crate.removeprefix("kornia-")
-                if re.search(rf"\b{re.escape(crate)}\b|\b{re.escape(short)}\b", unit, re.I):
+                names = [crate] if short in COMMON_SHORT else [crate, short]
+                if any(re.search(rf"\b{re.escape(n)}\b", unit, re.I) for n in names):
                     found.add(crate)
     return found
 
 
-# (text, flagged?) for a PUBLISH_ORDER of {kornia-apriltag}. Add the phrasing
-# of every stale claim that slipped through; never delete one to pass.
+# (text, flagged?) against the real PUBLISH_ORDER. Add the phrasing of every
+# stale claim that slipped through; never delete one to pass.
 PUBLISH_PROBES = [
     ("Only `PUBLISH_ORDER` crates are\npublished; the umbrella, VLM and AprilTag crates are intentionally excluded.", True),
+    ("Publish script: `scripts/release_rust.sh`, topological, idempotent, skips\n  already-published versions. Excludes `kornia`, `kornia-vlm`, `kornia-apriltag`.", True),
     ("The `kornia-apriltag` crate is excluded from publishing.", True),
     ("The `kornia-apriltag` crate is excluded\nfrom publishing.", True),
     ("Crates excluded from crates.io:\n`kornia-apriltag`.", True),
@@ -96,7 +104,12 @@ PUBLISH_PROBES = [
     ("Excluded from Publishing: `kornia-apriltag`.", True),
     ("The apriltag crate is skipped when publishing.", True),
     ("| `kornia-apriltag` | detection, not published |", True),
+    ("kornia-apriltag is unpublished.", True),
+    ("We do not publish kornia-apriltag.", True),
+    ("`kornia-apriltag` is not on crates.io.", True),
+    ("`kornia-apriltag` is excluded from the release.", True),
     ("The `kornia-vlm` crate is not published.", False),
+    ("The `kornia-vlm` crate is not published; it does no image io.", False),
     ("The publish set is `PUBLISH_ORDER` in `scripts/release_rust.sh`. Read it there.", False),
     ("`kornia-apriltag` detects tags. Crates with `publish = false` are skipped.", False),
 ]
@@ -104,8 +117,9 @@ PUBLISH_PROBES = [
 
 def main() -> int:
     errors = []
+    published = publish_order()
     for probe, flagged in PUBLISH_PROBES:
-        if bool(publish_claims(probe, {"kornia-apriltag"})) != flagged:
+        if bool(publish_claims(probe, published)) != flagged:
             errors.append(f"publish check self-test: {'missed' if flagged else 'false positive on'} probe {probe!r}")
     m = re.search(r'^rust-version\s*=\s*"([^"]+)"', (ROOT / "Cargo.toml").read_text(encoding="utf-8"), re.M)
     msrv = m.group(1) if m else None
@@ -113,7 +127,6 @@ def main() -> int:
         errors.append("could not read rust-version from Cargo.toml")
     tasks = pixi_tasks()
     crates = {p.name for p in (ROOT / "crates").iterdir() if (p / "Cargo.toml").is_file()}
-    published = publish_order()
     if not published:
         errors.append("could not parse PUBLISH_ORDER from scripts/release_rust.sh")
 
@@ -135,7 +148,7 @@ def main() -> int:
         for ref in re.findall(PATH_REF, text):
             if not (ROOT / ref.rstrip("/")).exists():
                 errors.append(f"{skill.name}: referenced path does not exist: {ref}")
-        for task in sorted(set(re.findall(r"pixi run (?:-e \S+ )?([a-z0-9-]+)", text))):
+        for task in sorted(set(re.findall(r"pixi run (?:(?:-e|--environment) \S+ )?([A-Za-z0-9_-]+)", text))):
             if task not in tasks:
                 errors.append(f"{skill.name}: unknown pixi task: {task}")
         for crate in sorted(publish_claims(text, published)):
