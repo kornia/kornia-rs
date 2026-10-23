@@ -12,9 +12,10 @@ directory with:
 
 ## Run
 
-Work on a copy of the tree (`rsync -a --exclude target --exclude .git`), apply
-`patch.diff` with `patch -p1`. In that copy, `check_skills.py` reports the
-case's own patch as "no longer applies"; that line is expected, ignore it.
+Work on a copy of the tree (`rsync -a --exclude target --exclude .git --exclude .pixi`),
+apply `patch.diff` with `patch -p1`, and delete the case directories in the
+copy, keeping `evals/README.md` (the skill points at it). This hides the keys
+and keeps `check_skills.py` output free of eval-harness errors.
 
 Give a fresh agent, with no other context, only `../SKILL.md`, the repo,
 `pr.md` and `patch.diff`, and ask for a review in the skill's format. Grade

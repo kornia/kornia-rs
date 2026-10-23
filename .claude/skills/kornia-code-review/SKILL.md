@@ -22,6 +22,7 @@ defect whoever wrote it.
 ```
 Verdict: approve | request changes | comment
 <findings, blocking first>
+Reuse searches: <section 0b search log; library-code PRs only>
 Skill gaps: <section 7>
 ```
 
@@ -32,9 +33,12 @@ Every finding, scope findings included, is one line:
   lines). Findings about the PR description use `PR body`.
 - Severity: **blocking** (must change before merge), **major** (should
   change), **minor** (worth changing), **nit** (optional). Any blocking ⇒
-  verdict is request changes.
-- **Measured** = you ran a command and quote its output. **Inferred** = from
-  reading code. Inferred is enough to block on scope and on correctness the
+  verdict is request changes. Severity is per finding, as the section
+  that raises it says; never lower one because other blockers already decide
+  the verdict.
+- **Measured** = you ran a command and quote its output, in the finding or in
+  the `Reuse searches` block it cites (a reuse finding filed under another
+  section is still measured). **Inferred** = from reading code only. Inferred is enough to block on scope and on correctness the
   code shows conclusively. Perf claims need the author's measurement; the
   burden is on the PR, not the reviewer. Run a bench or test yourself when it
   is cheap and settles a disagreement.
@@ -50,7 +54,11 @@ code:
 
 1. Read the linked issue (`gh issue view <n> -R kornia/kornia-rs`). No linked
    issue ⇒ blocking, including maintainer-requested work: open an issue, it
-   is cheap. Issue unreadable ⇒ say so and state what you used instead.
+   is cheap. Issue unreadable (no access, no network) ⇒ blocking until it
+   can be read: step 2 is impossible without it, and a quote in the PR body
+   is not the issue. Still finish the review: steps 3–5 don't need the issue
+   and keep their own severities, and quoted issue text that breaks a skill
+   rule still gets the push-back below.
 2. Map every changed file/hunk to the issue. Any hunk that does not serve it
    (drive-by refactors, renames, formatting of untouched code, unrelated deps,
    extra features, "while I was here" fixes) ⇒ blocking: out of scope — not
@@ -68,8 +76,57 @@ Being in scope does not make a change acceptable. If the issue itself asks
 for something that breaks a skill rule (e.g. reimplementing an existing
 helper), push back on the issue instead of approving it.
 
-Sections 1–4 apply to library code (`crates/`, `kornia-py/src`,
+Sections 0b–4 apply to library code (`crates/`, `kornia-py/src`,
 `kornia-cpp/src`). For tooling, CI or docs PRs, skip them and do section 4b.
+
+## 0b. Reuse, duplication and novelty (library code)
+
+Do this before section 1. For every new function, type or kernel the diff
+adds (private helpers included), and every inlined block that replaces a call
+to an existing helper, answer in order.
+
+**Reuse is always measured, never inferred.** For each new item, run the
+searches and paste them in the `Reuse searches` block of the output:
+
+```
+Reuse searches:
+- <new item> (<job in one line>)
+  $ rg -n "<pattern>" crates/
+  <hit lines, path:line: text — or "no hits">
+```
+
+Every 0b finding names its search entry and is tagged `[measured]`. A reuse
+finding, or a claim that nothing existing fits, without a pasted search is
+incomplete: run it before writing the finding. Reading the code is enough to
+*suspect* a duplicate; the pasted hit is what reports it.
+
+1. **Does kornia already have it?** Name the job in one line (e.g. "pad an
+   image with reflected borders", "rotate a vector by a quaternion"), then
+   search by verb, by math and by signature, not only by the new name:
+   `rg -n "fn \w*<verb>\w*" crates/`, `rg -n "<InputType>.*-> .*<OutputType>" crates/`,
+   and the owning crate from the `kornia-arch` table. Check `pub(crate)` and
+   private items in the same crate too. A match ⇒ major or blocking.
+2. **Is it a near-copy?** A second routine doing the same job under another
+   name, threshold or loop shape ⇒ major: keep one definition, the other
+   delegates. If the copies **disagree** (epsilon, rounding, border or error
+   behaviour), show an input where they differ ⇒ blocking. Code transcribed
+   from another library (imageproc, Open3D, OpenCV…) ⇒ blocking:
+   re-implement from the reference.
+3. **Can it be composed from kornia primitives?** Write the call chain that
+   gives the same output. If one exists, the PR uses it or shows a bench
+   where the new code wins (section 3).
+4. **If it is new:**
+   - The rustdoc names the reference (paper, OpenCV function, crate).
+   - At least one test pins values from that reference (OpenCV,
+     scikit-image, numpy), saying how they were generated. Self-consistency
+     or range checks alone ⇒ major.
+   - Perf claims are benched against the fastest existing implementation.
+   - A general primitive lands first in its owning crate, as its own PR with
+     a bench; then the feature uses it.
+5. **No new dependency** (ndarray, nalgebra, faer, image, glam directly, a
+   SIMD crate for one function) for something kornia covers, unless the PR
+   measures why kornia's path is not enough. Linear-algebra backend: see
+   `kornia-arch`.
 
 ## 1. Copies and allocations (most common regression)
 
@@ -125,6 +182,9 @@ filters, features, SIMD, CUDA, tensor ops):
 - SIMD path matches the scalar path in a test (see `kornia-simd`); tail
   elements handled.
 - Bug fix ⇒ regression test that fails on `main`.
+- A test whose input makes the new code a no-op (axis-aligned points,
+  identity transform, already-diagonal matrix, all-equal pixels) is no
+  evidence for it. Name the branch or loop the test input actually exercises.
 - Port of a reference (OpenCV, a crate): match it, not its bugs. Every
   deliberate departure (e.g. strict vs `>=` maxima) is stated in the rustdoc.
 - Closing an issue: `grep -rnE "#NNNN|issues/NNNN" crates/ kornia-py/ kornia-cpp/`
@@ -145,7 +205,8 @@ or claims (validator, CI step, lint, hook):
 
 - Re-run the PR's own negative probes, then try the exact bug the PR says it
   fixes, plus a rephrasing of it. A check that passes the original bug ⇒
-  blocking. Work on a copy (`git archive HEAD | tar -x -C <tmp>`), never with
+  blocking. Work on a copy (`git archive HEAD | tar -x -C <tmp>`; without git,
+  `patch -R -p1 < pr.diff` on a copy gives the base), never with
   `git checkout --` on a tree with uncommitted work.
 - A PR that changes a check (refactor, "simplify") must show its coverage
   did not shrink: run the **old and new** check on the same negative probes,
@@ -165,7 +226,10 @@ themselves, review against the skills on `main` and call out the self-reference.
 ## 6. PR hygiene
 
 - **Self-review** section has the pasted output of this skill. Missing,
-  empty or placeholder ⇒ blocking.
+  empty or placeholder ⇒ blocking. Placeholder = no result per applicable
+  section (0–6, or 0 and 4b for tooling), or, for library code, no
+  `Reuse searches` block. `Verdict: approve` + `Skill gaps: none` alone is a
+  placeholder.
 - **Author walkthrough** shows the contributor reviewed and understands the
   change. It must be the human's own words: in self-review, an agent never
   writes it; it reports it as missing and leaves it to the human. Reviewers:

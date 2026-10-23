@@ -48,5 +48,6 @@ why it is sound. Prefer `bytemuck`/`zerocopy` over raw pointers. No
 - Pre-allocated `&mut` outputs, no allocation in hot paths, iterators over
   index loops, match on enums rather than strings.
 - Tests live in `#[cfg(test)]` modules, deterministic and focused.
-- Reuse existing kornia-rs utilities instead of reimplementing them.
+- Reuse existing kornia-rs utilities instead of reimplementing them
+  (procedure: `kornia-code-review` section 0b).
 - New dependencies: minimal, mind build time and binary size.

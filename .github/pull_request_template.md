@@ -42,6 +42,8 @@ section has no verdict. -->
 ```text
 Verdict:
 
+Reuse searches: (library code only)
+
 Skill gaps:
 ```
 

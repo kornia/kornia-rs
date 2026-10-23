@@ -48,5 +48,9 @@ by the lint workflow.
 - I/O entry points live in `kornia::io::functional`.
 - Calibration thresholds (`max_reprojection_error`, `robust_scale_sq`) are in
   **normalized image coordinates**, not pixels.
+- Linear algebra in new code (kornia-rs#542): vector/matrix types from
+  `kornia-algebra` (glam-backed), decompositions from
+  `crates/kornia-algebra/src/linalg/` (SVD, Cholesky, rigid), other solvers
+  on nalgebra. No hand-rolled inverses, eigen-solvers or `dot`/`cross` helpers.
 
 See also: `kornia-workflow`, `kornia-coding-style`, `kornia-api-flavor`.
