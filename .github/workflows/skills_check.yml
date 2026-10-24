@@ -1,0 +1,26 @@
+name: Skills Check
+
+# Checks .claude/skills structure and the facts they restate (MSRV, pixi tasks,
+# crates, publish set, cited paths) against their sources. It cannot check that
+# a skill was applied. Blocking only once added to branch protection.
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  skills:
+    name: Validate skills
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Validate skills
+        run: python3 scripts/check_skills.py

@@ -1,0 +1,42 @@
+diff --git a/crates/kornia-imgproc/src/color/gray/mod.rs b/crates/kornia-imgproc/src/color/gray/mod.rs
+index 35c10ea..028cb18 100644
+--- a/crates/kornia-imgproc/src/color/gray/mod.rs
++++ b/crates/kornia-imgproc/src/color/gray/mod.rs
+@@ -24,8 +24,17 @@ pub trait GrayFromRgb: sealed::Sealed + Sized {
+ 
+ impl GrayFromRgb for u8 {
+     fn gray_from_rgb_impl(src: &Image<u8, 3>, dst: &mut Image<u8, 1>) -> Result<(), ImageError> {
+-        check_size(src, dst)?;
+-        kernels::gray_from_rgb_u8(src.as_slice(), dst.as_slice_mut(), src.rows() * src.cols());
++        let npixels = src.rows() * src.cols();
++        if npixels != dst.rows() * dst.cols() {
++            return Err(ImageError::InvalidImageSize(
++                src.cols(),
++                src.rows(),
++                dst.cols(),
++                dst.rows(),
++            ));
++        }
++        let src_buf = src.as_slice().to_vec();
++        kernels::gray_from_rgb_u8(&src_buf, dst.as_slice_mut(), npixels);
+         Ok(())
+     }
+ }
+diff --git a/crates/kornia-imgproc/src/flip.rs b/crates/kornia-imgproc/src/flip.rs
+index 5630eaa..35cbe45 100644
+--- a/crates/kornia-imgproc/src/flip.rs
++++ b/crates/kornia-imgproc/src/flip.rs
+@@ -123,10 +123,10 @@ where
+ 
+ /// Portable scalar RGB u8 horizontal flip — fallback when SIMD isn't available.
+ #[allow(dead_code)]
+-fn hflip_rgb_u8_scalar(src: &[u8], dst: &mut [u8], cols: usize) {
+-    for x in 0..cols {
++fn hflip_rgb_u8_scalar(src: &[u8], dst: &mut [u8], width: usize) {
++    for x in 0..width {
+         let s = x * 3;
+-        let d = (cols - 1 - x) * 3;
++        let d = (width - 1 - x) * 3;
+         dst[d] = src[s];
+         dst[d + 1] = src[s + 1];
+         dst[d + 2] = src[s + 2];

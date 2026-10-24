@@ -1,0 +1,6 @@
+diff --git a/changelog.d/746.fixed.md b/changelog.d/746.fixed.md
+new file mode 100644
+--- /dev/null
++++ b/changelog.d/746.fixed.md
+@@ -0,0 +1 @@
++`SO3F32`, `RxSO3F32`, `SE3F32` and `Sim3F32` derive `PartialEq`, so `kornia-algebra` builds with `--all-features`.

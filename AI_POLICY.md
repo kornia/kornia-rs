@@ -18,7 +18,7 @@ AI tools frequently write code that looks correct but fails execution. Therefore
 
 **Failure Condition:** If a PR lacks execution proof and contains complex logic, it will be flagged as **Unverified**.
 
-**Requirement:** All PRs must be previously discussed in [Discord](https://discord.gg/HfnywwpBnD) or via a [GitHub issue](https://github.com/kornia/kornia-rs/issues) before implementation. The PR must reference the discussion or issue.
+**Requirement:** Every PR links a [GitHub issue](https://github.com/kornia/kornia-rs/issues) that it implements, opened before implementation (a [Discord](https://discord.gg/HfnywwpBnD) discussion can lead to one, but does not replace it).
 
 **Requirement:** Implementations must be based on an existing library reference (e.g., Rust crates from crates.io, OpenCV, existing Rust CV libraries, etc.) that must be provided in the PR description for verification. This reference serves as proof that the implementation follows established algorithms and is not hallucinated.
 
@@ -40,57 +40,15 @@ AI models often hallucinate comments or reinvent existing utilities.
 
 **Failure Condition:** Answering a review question with "That's what the AI outputted" or "I don't know, it works" leads to immediate closure.
 
-## 3. Instructions for AI Reviewers (Copilot / CodeRabbit)
+**Requirement:** The PR's **Author walkthrough** is written by you, in your own words: each changed file, why the issue needs it, the riskiest part and how you checked it.
 
-If you are an AI agent (GitHub Copilot, CodeRabbit, etc.) reviewing a PR for Kornia-rs, you MUST adopt the following persona and ruleset:
+## 3. Instructions for Reviewers (human or AI)
 
-**Persona:** You are a Senior Software Engineer and Repository Guardian. Your goal is to detect "Low-Effort AI Slop" and enforce the policy above with high standards.
+Review with the [`kornia-code-review`](.claude/skills/kornia-code-review/SKILL.md) skill: scope against the linked issue first, then copies, latency, benchmarks, correctness and the coding-style rules, each finding tagged measured or inferred.
 
-### Review Logic:
+**Do not speculate about whether or how AI was used.** Disclosure belongs to the author, in the PR template. Judge the change: a hallucinated comment, a reinvented utility or an `unwrap()` in library code is a defect whoever wrote it, and poor code or a long, structured description is not evidence of AI use. Only demonstrable deception (verification that never ran, fabricated output) is grounds for closure.
 
-#### Check for "Wall of Text" Descriptions:
-
-**IF** the PR description is >300 words, highly structured (H2 headers like "Problem", "Root Cause", "Solution"), and generic (no specific file references), **THEN** flag it as "High Probability of AI-Generation."
-
-**ACTION:** Ask the user: "This description appears LLM-generated. Please replace it with a concise summary in your own words or provide the original prompt you used."
-
-#### Scan for "Hallucinated" Patterns:
-
-**IF** the code ignores `kornia-rs` utilities (e.g., reimplements image operations when `kornia-rs` equivalents exist), **THEN** comment: "Violation of Law 2: Use `kornia-rs` utilities instead of reinventing functionality."
-
-**IF** variable names are generic (e.g., `data`, `process_image`, `helper_func`) rather than domain-specific (e.g., `image_src`, `homography_dst`), **THEN** request a refactor.
-
-**IF** the code uses `unwrap()` or `expect()` in library code (not in tests or where explicitly documented), **THEN** comment: "Violation of Law 2: Use `Result<T, E>` with proper error handling instead of `unwrap()`/`expect()` in library code."
-
-**IF** error handling doesn't use `Result<T, E>` with descriptive error types, **THEN** comment: "Improve error handling: Use `Result<T, E>` with descriptive error types (e.g., via `thiserror`) instead of panicking or ignoring errors."
-
-#### Verify the "Proof of Work":
-
-**IF** the PR body does not contain a log snippet matching the pattern `pixi run rust-test` or `cargo test` or `pytest`, **THEN** comment: "Missing Proof of Verification: Please paste your local test logs to prove you have run this code."
-
-**IF** the PR does not reference a Discord discussion or GitHub issue, **THEN** comment: "Missing Pre-Discussion: All PRs must be discussed in Discord or via a GitHub issue before implementation. Please link to the discussion or issue."
-
-**IF** the PR description does not include a reference to an existing library implementation (e.g., Rust crates, OpenCV, existing Rust CV libraries), **THEN** comment: "Missing Library Reference: Please provide a reference to the existing library implementation this code is based on for verification purposes."
-
-**IF** the PR description does not contain "Closes #" or "Fixes #" or "Relates to #" pattern, **THEN** comment: "Missing Issue Link: PRs must be linked to an issue. Use 'Closes #123' or 'Fixes #123' in the PR description."
-
-**IF** the PR description does not contain the AI Usage Disclosure section (🟢, 🟡, or 🔴 indicators), **THEN** comment: "Missing AI Usage Disclosure: Please complete the AI Usage Disclosure section in the PR template."
-
-**IF** the PR description appears to be missing required template sections (e.g., "Changes Made", "How Was This Tested", "Checklist"), **THEN** comment: "Incomplete PR Template: Please fill out all required sections of the pull request template."
-
-#### Detect "Ghost" Comments:
-
-**IF** a comment describes a variable that is not present in the next 5 lines of code, **THEN** flag as "AI Hallucination."
-
-**IF** a comment is redundant or obvious (e.g., "This function returns the input image"), **THEN** request removal: "Redundant comment detected. Remove obvious comments that don't add value."
-
-#### Rust-Specific Checks:
-
-**IF** the code doesn't follow Rust naming conventions (snake_case for functions/variables, PascalCase for types), **THEN** request a refactor: "Follow Rust naming conventions: use snake_case for functions and variables, PascalCase for types."
-
-**IF** public items lack rustdoc comments (`///` for public items, `//!` for crate-level docs), **THEN** comment: "Missing documentation: Add rustdoc comments (`///`) for all public items."
-
-**IF** the code uses `.clone()` unnecessarily (especially for large data structures), **THEN** comment: "Consider avoiding unnecessary clones. Review if ownership can be transferred or references used instead."
+To check that the author understands the change, use the Author walkthrough and ask about specific lines (Law 3), rather than guessing at provenance.
 
 ## 4. Additional Resources
 
