@@ -734,6 +734,40 @@ impl CudaKernel {
         fn_names: &[&str],
     ) -> Result<Vec<Self>, CudaError> {
         let module = Self::load_module(ctx, src)?;
+        Self::functions(&module, fn_names)
+    }
+
+    /// Load precompiled PTX **once** and return one [`CudaKernel`] per entry in
+    /// `fn_names`, in order. The driver JITs the PTX for `ctx`'s device, so PTX
+    /// targeting an older `sm_XY` runs on newer GPUs.
+    ///
+    /// # Arguments
+    ///
+    /// * `ctx`      — CUDA context to load the module on.
+    /// * `ptx`      — PTX assembly text.
+    /// * `fn_names` — names of the `.entry` functions to load.
+    ///
+    /// # Returns
+    ///
+    /// One kernel per name, in the order of `fn_names`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CudaError::Driver`] if the driver rejects the PTX (e.g. its
+    /// `.version` is newer than the driver supports) or an entry is missing.
+    pub fn load_ptx_many(
+        ctx: &Arc<CudaContext>,
+        ptx: &str,
+        fn_names: &[&str],
+    ) -> Result<Vec<Self>, CudaError> {
+        let module = ctx
+            .load_module(cudarc::nvrtc::Ptx::from_src(ptx))
+            .map_err(|e| CudaError::Driver(e.to_string()))?;
+        Self::functions(&module, fn_names)
+    }
+
+    /// One [`CudaKernel`] per name in `fn_names`, loaded from `module`, in order.
+    fn functions(module: &Arc<CudaModule>, fn_names: &[&str]) -> Result<Vec<Self>, CudaError> {
         fn_names
             .iter()
             .map(|name| {
@@ -1499,6 +1533,26 @@ where
 mod tests {
     use super::*;
     use crate::Tensor;
+
+    /// `load_ptx_many` loads entries by name, in order, and returns
+    /// `CudaError::Driver` for PTX the driver rejects and for a missing entry.
+    #[test]
+    fn load_ptx_many_entries_and_errors() {
+        const PTX: &str = ".version 6.3\n.target sm_75\n.address_size 64\n\
+                           .visible .entry a()\n{\n\tret;\n}\n\
+                           .visible .entry b()\n{\n\tret;\n}\n";
+        let ctx = CudaContext::new(0).unwrap();
+        let kernels = CudaKernel::load_ptx_many(&ctx, PTX, &["b", "a"]).unwrap();
+        assert_eq!(kernels.len(), 2);
+        assert!(matches!(
+            CudaKernel::load_ptx_many(&ctx, PTX, &["a", "missing"]),
+            Err(CudaError::Driver(_))
+        ));
+        assert!(matches!(
+            CudaKernel::load_ptx_many(&ctx, "not ptx", &["a"]),
+            Err(CudaError::Driver(_))
+        ));
+    }
 
     /// Device round-trip: host → GPU → host, bytes must match exactly.
     /// Also verifies domain is Device and as_cudaslice is Some.

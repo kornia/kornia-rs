@@ -6,6 +6,11 @@ license = "Apache-2.0"
 edition = "2021"
 publish = false
 
+[[bin]]
+name = "cuda-camera-sift"
+path = "src/main.rs"
+required-features = ["cuda"]
+
 [dependencies]
 argh = { workspace = true }
 cudarc = { version = "0.19", default-features = false, features = [
@@ -17,6 +22,11 @@ cudarc = { version = "0.19", default-features = false, features = [
   "std",
 ] }
 kornia-image = { path = "../../crates/kornia-image", features = ["cuda"] }
-kornia-imgproc = { path = "../../crates/kornia-imgproc", features = ["cuda"] }
+kornia-imgproc = { path = "../../crates/kornia-imgproc" }
 kornia-io = { path = "../../crates/kornia-io", features = ["v4l"] }
 kornia-tensor = { path = "../../crates/kornia-tensor", features = ["cuda"] }
+
+# kornia-imgproc's `cuda` builds Rust CUDA kernels and needs the cuda-oxide
+# toolchain (docs/cuda-oxide.md), so workspace-wide builds skip this example.
+[features]
+cuda = ["kornia-imgproc/cuda"]

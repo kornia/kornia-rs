@@ -193,6 +193,8 @@ sysroot_linux-aarch64 = "*"
 scripts = ["scripts/activate-cuda.sh"]
 
 [feature.cuda.tasks]
+# `cuda` builds the Rust CUDA kernels: run scripts/cuda-oxide/install-toolchain.sh
+# once and source its env.sh first (docs/cuda-oxide.md).
 rust-build-cuda = { cmd = "cargo build --features cuda", description = "Build Rust with CUDA support" }
 rust-test-cuda = { cmd = "cargo test --features cuda", description = "Run Rust tests with CUDA support" }
 rust-clippy-cuda = { cmd = "cargo clippy --features cuda --all-targets -- -D warnings", description = "Run clippy with CUDA support" }

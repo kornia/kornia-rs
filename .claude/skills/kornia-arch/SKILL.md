@@ -24,6 +24,7 @@ PyO3/Maturin Python bindings and C++ bindings.
 | `kornia-tensor-ops` | Tensor operations |
 | `kornia-image` | `Image<T, C, Alloc>` built on tensors (`ImageError`) |
 | `kornia-imgproc` | resize, color, filters, warp, features, SIMD kernels |
+| `kornia-oxide-kernels` | CUDA kernels written in Rust (cuda-oxide), built to PTX; `ptx` feature, see `docs/cuda-oxide.md` |
 | `kornia-io` | image/video I/O (turbojpeg, gstreamer, v4l) |
 | `kornia-3d` | ICP, point clouds, stereo |
 | `kornia-algebra` | linear algebra |
@@ -37,7 +38,7 @@ The publish set is `PUBLISH_ORDER` / `NOT_PUBLISHED` in `scripts/release_rust.sh
 ## Feature flags
 
 `ci` = `arrow`, `bincode`, `gstreamer`, `serde`, `turbojpeg` (needs `nasm`),
-`v4l` (needs `clang`). `cuda` is **not** in `ci` (needs hardware). OpenCV
+`v4l` (needs `clang`). `cuda` is **not** in `ci`: it needs hardware to run and the cuda-oxide toolchain to build (`docs/cuda-oxide.md`). OpenCV
 comparison code in `kornia-imgproc` is behind `opencv_bench` and is not built
 by the lint workflow.
 
