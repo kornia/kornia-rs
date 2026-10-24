@@ -110,7 +110,11 @@ jobs:
           cargo clippy -p cuda-fusion -p cuda-camera-sift -p cuda-camera-preprocess --features cuda -- -D warnings
 
       - name: docs.rs build (stub PTX, no toolchain)
-        run: DOCS_RS=1 cargo doc -p kornia-imgproc -p kornia-oxide-kernels --features kornia-imgproc/cuda --no-deps
+        # The toolchain is installed by now: poison the backend path, so this
+        # fails if DOCS_RS stopped forcing the stub.
+        run: |
+          CUDA_OXIDE_BACKEND=/nonexistent DOCS_RS=1 \
+            cargo doc -p kornia-imgproc -p kornia-oxide-kernels --features kornia-imgproc/cuda --no-deps
 
   cross-platform-check-macos:
     name: Check - macOS

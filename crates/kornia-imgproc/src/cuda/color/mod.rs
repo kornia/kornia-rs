@@ -28,7 +28,7 @@
 
 use std::sync::{Arc, OnceLock};
 
-use cudarc::driver::CudaStream;
+use cudarc::driver::{CudaStream, DevicePtr};
 use kornia_tensor::CudaKernel;
 
 pub mod bayer;
@@ -149,6 +149,16 @@ pub enum CudaColorError {
         /// Minimum required length.
         need: usize,
     },
+    /// A word-vectorized kernel got a device pointer that is not 4-byte aligned
+    /// (e.g. a DLPack alias at an odd `byte_offset`); launching it would fault
+    /// with a sticky `CUDA_ERROR_MISALIGNED_ADDRESS`.
+    #[error("{what} device pointer {addr:#x} is not 4-byte aligned")]
+    Misaligned {
+        /// Which operand is misaligned ("src" or "dst").
+        what: &'static str,
+        /// The device address.
+        addr: u64,
+    },
 }
 
 impl From<CudaColorError> for kornia_image::ImageError {
@@ -266,6 +276,11 @@ where
     if elems == 0 {
         return Ok(());
     }
+    if let PxPerThread::Four = px_per_thread {
+        // The four-pixel kernels load and store whole u32 words.
+        check_aligned("src", src.device_ptr(stream).0)?;
+        check_aligned("dst", dst.device_ptr(stream).0)?;
+    }
     let n = npixels as u32;
     let threads = match px_per_thread {
         PxPerThread::One => n,
@@ -292,6 +307,14 @@ pub(crate) fn config_2d(width: u32, height: u32) -> cudarc::driver::LaunchConfig
         grid_dim: (width.div_ceil(BLOCK_W), height.div_ceil(BLOCK_H), 1),
         shared_mem_bytes: 0,
     }
+}
+
+/// Validate that a device address is 4-byte aligned.
+fn check_aligned(what: &'static str, addr: u64) -> Result<(), CudaColorError> {
+    if !addr.is_multiple_of(4) {
+        return Err(CudaColorError::Misaligned { what, addr });
+    }
+    Ok(())
 }
 
 /// Validate that a device slice holds at least `need` elements.

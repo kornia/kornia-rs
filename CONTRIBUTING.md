@@ -121,7 +121,10 @@ We're all volunteers. These policies help us focus on high-impact work.
    pixi run cpp-fmt           # Format C++ code
    pixi run cpp-clean         # Clean C++ build artifacts
 
-   # CUDA development (requires cuda environment)
+   # CUDA development (requires cuda environment). `cuda` also builds the
+   # Rust CUDA kernels, so install the cuda-oxide toolchain once and source it
+   # (docs/cuda-oxide.md):
+   scripts/cuda-oxide/install-toolchain.sh && . ~/.cargo/cuda-oxide/env.sh
    pixi run -e cuda rust-build-cuda  # Build Rust with CUDA support
    pixi run -e cuda rust-test-cuda   # Run Rust tests with CUDA support
 

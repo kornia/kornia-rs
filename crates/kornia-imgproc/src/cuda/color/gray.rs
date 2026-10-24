@@ -105,9 +105,10 @@ static RGB_FROM_GRAY_F32: KernelCell = KernelCell::new();
 ///
 /// # Errors
 ///
-/// Returns [`CudaColorError::SliceTooSmall`] if a buffer is short, or
-/// [`CudaColorError::Cuda`] if the kernel module fails to load, `3 * npixels`
-/// exceeds `u32::MAX`, or the launch fails.
+/// Returns [`CudaColorError::SliceTooSmall`] if a buffer is short,
+/// [`CudaColorError::Misaligned`] if `src` or `dst` is not 4-byte aligned (an
+/// alias at an odd offset), or [`CudaColorError::Cuda`] if the kernel module
+/// fails to load, `3 * npixels` exceeds `u32::MAX`, or the launch fails.
 pub fn launch_gray_from_rgb_u8(
     stream: &Arc<CudaStream>,
     src: &CudaSlice<u8>,
@@ -119,7 +120,7 @@ pub fn launch_gray_from_rgb_u8(
         return Ok(());
     }
     let kernel = oxide::kernel(stream, oxide::entry::GRAY_FROM_RGB_U8)?;
-    launch_map(kernel, stream, src, dst, npixels, 3, 1, PxPerThread::Four)
+    launch_map(&kernel, stream, src, dst, npixels, 3, 1, PxPerThread::Four)
 }
 
 /// Launch RGB f32 → Gray f32 with BT.601 weights (0.299, 0.587, 0.114).
@@ -288,6 +289,32 @@ mod tests {
                 "n={n} must be rejected"
             );
         }
+    }
+
+    /// A slice aliasing an allocation at an odd offset (as `from_dlpack` builds
+    /// for a sliced tensor) is rejected before the word loads would fault.
+    #[test]
+    fn gray_from_rgb_u8_misaligned_alias() {
+        use cudarc::driver::DevicePtr;
+        let stream = default_stream();
+        let d_src = stream.clone_htod(&[7u8; 64]).unwrap();
+        let d_dst = stream.clone_htod(&[0u8; 32]).unwrap();
+        let src_base = d_src.device_ptr(&stream).0;
+        let dst_base = d_dst.device_ptr(&stream).0;
+        for (src_off, dst_off, what) in [(9, 0, "src"), (0, 1, "dst")] {
+            // SAFETY: both aliases stay inside the live allocations above and
+            // are leaked below, so they never free memory they do not own.
+            let src = unsafe { stream.upgrade_device_ptr::<u8>(src_base + src_off, 48) };
+            let mut dst = unsafe { stream.upgrade_device_ptr::<u8>(dst_base + dst_off, 16) };
+            let r = launch_gray_from_rgb_u8(&stream, &src, &mut dst, 16);
+            src.leak();
+            dst.leak();
+            assert!(
+                matches!(r, Err(CudaColorError::Misaligned { what: w, .. }) if w == what),
+                "{what} offset: {r:?}"
+            );
+        }
+        stream.synchronize().unwrap();
     }
 
     #[test]

@@ -734,15 +734,7 @@ impl CudaKernel {
         fn_names: &[&str],
     ) -> Result<Vec<Self>, CudaError> {
         let module = Self::load_module(ctx, src)?;
-        fn_names
-            .iter()
-            .map(|name| {
-                module
-                    .load_function(name)
-                    .map(|func| CudaKernel { func })
-                    .map_err(|e| CudaError::Driver(e.to_string()))
-            })
-            .collect()
+        Self::functions(&module, fn_names)
     }
 
     /// Load precompiled PTX **once** and return one [`CudaKernel`] per entry in
@@ -771,6 +763,11 @@ impl CudaKernel {
         let module = ctx
             .load_module(cudarc::nvrtc::Ptx::from_src(ptx))
             .map_err(|e| CudaError::Driver(e.to_string()))?;
+        Self::functions(&module, fn_names)
+    }
+
+    /// One [`CudaKernel`] per name in `fn_names`, loaded from `module`, in order.
+    fn functions(module: &Arc<CudaModule>, fn_names: &[&str]) -> Result<Vec<Self>, CudaError> {
         fn_names
             .iter()
             .map(|name| {
