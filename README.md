@@ -474,6 +474,53 @@ Run Python tests:
 pixi run py-test
 ```
 
+### 🤖 Developing with AI agents
+
+The repository ships its own agent guidance; an agent that does not load it
+works without the project's rules.
+
+**Setup (once):**
+
+1. Start the agent from the **repository root**. Claude Code reads `CLAUDE.md`
+   (which imports `AGENTS.md`) and the skills in `.claude/skills/`; other
+   agents read `AGENTS.md` and `.agents/skills/` (a symlink to
+   `.claude/skills/`; on Windows clone with `git clone -c core.symlinks=true`).
+   GitHub Copilot reads `.github/copilot-instructions.md`.
+2. Check the guidance is intact and matches the code:
+   ```bash
+   pixi run skills-check
+   ```
+3. Ask the agent which skills it has loaded; it should list the
+   `kornia-*` skills from the table in `AGENTS.md`.
+
+**Every change:**
+
+1. Link an issue first (required). Tell the agent the issue number and which
+   skills apply (`AGENTS.md` lists when to read each).
+2. Before opening the PR run `pixi run pr-check`, then have the agent self-review:
+   "self-review my diff with `.claude/skills/kornia-code-review`". Fix what it
+   finds and paste its final output in the PR's **Self-review** section.
+3. Write the **Author walkthrough** yourself; agents must not write it.
+   Fill in the AI disclosure (agent + version, model, effort, skills applied).
+4. User-visible change: add `changelog.d/<PR>.<type>.md`.
+
+**Changing the skills:** follow `kornia-curation`, run `pixi run skills-check`,
+and re-run the review evals:
+
+```bash
+# Claude Code >= 2.1.269, logged in or with ANTHROPIC_API_KEY set.
+# Linux sandbox: apt install bubblewrap socat (Ubuntu 24.04 also needs
+#   sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0).
+pixi run skills-eval --model opus --judge-model sonnet --runs 3 --json results-opus.json
+python3 scripts/skill_evals.py report results-opus.json
+```
+
+Every case must pass with the skill on Opus; see
+[`.claude/skills/kornia-code-review/evals/README.md`](.claude/skills/kornia-code-review/evals/README.md)
+for the cases, other models and judge calibration. If a run fails with
+"examining the PATH directories took longer than 5s", shorten `PATH`; on small
+machines run one case at a time with `--case <name>`.
+
 ## 💜 Contributing
 
 We welcome contributions! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for:
