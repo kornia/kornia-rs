@@ -403,6 +403,19 @@ impl SO3F64 {
         }
     }
 
+    /// Create from the rotation nearest to `mat` ([`Mat3F64::nearest_rotation`]).
+    ///
+    /// # Arguments
+    ///
+    /// * `mat` - Any 3x3 matrix, e.g. a noisy rotation.
+    ///
+    /// # Returns
+    ///
+    /// The rotation, or `None` if `mat` is not finite or its SVD does not converge.
+    pub fn from_matrix_nearest(mat: &Mat3F64) -> Option<Self> {
+        mat.nearest_rotation().map(|r| Self::from_matrix(&r))
+    }
+
     /// Create from the rotation block of a 4x4 homogeneous matrix.
     pub fn from_matrix4(mat: &Mat4F64) -> Self {
         Self {
@@ -1101,6 +1114,21 @@ mod tests_f64 {
     use super::*;
 
     const EPS: f64 = 1e-12;
+
+    /// `from_matrix_nearest` is `Mat3F64::nearest_rotation` as an `SO3F64`.
+    #[test]
+    fn from_matrix_nearest_is_the_nearest_rotation() -> Result<(), &'static str> {
+        // `A·diag(3, 2, −1)·B` (A, B rotations) is nearest to the rotation `A·B`.
+        let a = SO3F64::exp(Vec3F64::new(0.3, -0.5, 0.8)).matrix();
+        let b = SO3F64::exp(Vec3F64::new(-0.6, 0.2, 0.4)).matrix();
+        let m = a * Mat3F64::from_diagonal(Vec3F64::new(3.0, 2.0, -1.0)) * b;
+        let nearest = SO3F64::from_matrix_nearest(&m).ok_or("no rotation")?;
+        assert_mat_eq(&nearest.matrix(), &(a * b), 1e-9);
+        let mut not_finite = Mat3F64::IDENTITY;
+        not_finite.x_axis.y = f64::NAN;
+        assert!(SO3F64::from_matrix_nearest(&not_finite).is_none());
+        Ok(())
+    }
 
     fn assert_mat_eq(a: &Mat3F64, b: &Mat3F64, tol: f64) {
         for i in 0..3 {

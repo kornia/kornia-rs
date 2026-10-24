@@ -1,5 +1,6 @@
 use crate::linalg;
 use kiddo::immutable::float::kdtree::ImmutableKdTree;
+use kornia_algebra::{Mat3F64, Vec3F64};
 
 /// Compute the transformation between two point clouds.
 pub(crate) fn fit_transformation(
@@ -11,82 +12,27 @@ pub(crate) fn fit_transformation(
     assert_eq!(points_in_src.len(), points_in_dst.len());
 
     // compute centroids
-    let (src_centroid, dst_centroid) = compute_centroids(points_in_src, points_in_dst);
+    let src_centroid = linalg::centroid(points_in_src);
+    let dst_centroid = linalg::centroid(points_in_dst);
 
     // compute covariance matrix
-    let mut hh = faer::Mat::<f64>::zeros(3, 3);
+    let mut hh = Mat3F64::ZERO;
     for (p_in_src, p_in_dst) in points_in_src.iter().zip(points_in_dst.iter()) {
-        let p_src = faer::col![p_in_src[0], p_in_src[1], p_in_src[2]] - &src_centroid;
-        let p_dst = faer::col![p_in_dst[0], p_in_dst[1], p_in_dst[2]] - &dst_centroid;
-        hh += p_src * p_dst.transpose();
+        let p_src = Vec3F64::from(*p_in_src) - src_centroid;
+        let p_dst = Vec3F64::from(*p_in_dst) - dst_centroid;
+        hh += Mat3F64::from_cols(p_dst * p_src.x, p_dst * p_src.y, p_dst * p_src.z);
     }
 
-    // solve the linear system H * x = 0 to find the rotation
-    let svd = hh.svd().ok()?;
-    let (u_t, v) = (svd.U().transpose(), svd.V());
-
-    // compute rotation matrix R = V * U^T
-    let mut rr = v * u_t;
-
-    // fix the determinant of R in case it is negative as it's a reflection matrix
-    if rr.determinant() < 0.0 {
-        log::warn!("WARNING: det(R) < 0.0, fixing it...");
-        let v_neg = {
-            let mut v_neg = v.to_owned();
-            v_neg.col_mut(2).copy_from(-v.col(2));
-            v_neg
-        };
-        // TODO: improve performance by using matmul33
-        faer::linalg::matmul::matmul(
-            &mut rr,
-            faer::Accum::Replace,
-            &v_neg,
-            u_t,
-            1.0_f64,
-            faer::Par::Seq,
-        );
-    }
+    // compute rotation matrix: the rotation nearest to H, which also fixes a reflection
+    let rr = hh.nearest_rotation()?;
 
     // compute translation vector t = C_dst - R * C_src
-    let t = dst_centroid - &rr * src_centroid;
+    let t = dst_centroid - rr * src_centroid;
 
-    // copy results back to output
-    #[allow(clippy::needless_range_loop)]
-    for i in 0..3 {
-        for j in 0..3 {
-            dst_r_src[i][j] = rr[(i, j)];
-        }
-        dst_t_src[i] = t[i];
-    }
+    // copy results back to output (`dst_r_src` is row-major)
+    *dst_r_src = rr.transpose().to_cols_array_2d();
+    *dst_t_src = t.into();
     Some(())
-}
-
-/// Compute the centroids of two sets of points.
-///
-/// # Arguments
-///
-/// * `points1` - A set of points.
-/// * `points2` - Another set of points.
-///
-/// # Returns
-///
-/// The centroids of the two sets of points.
-pub(crate) fn compute_centroids(
-    points1: &[[f64; 3]],
-    points2: &[[f64; 3]],
-) -> (faer::Col<f64>, faer::Col<f64>) {
-    let mut centroid1 = faer::Col::zeros(3);
-    let mut centroid2 = faer::Col::zeros(3);
-
-    for (p1, p2) in points1.iter().zip(points2.iter()) {
-        centroid1 += faer::col![p1[0], p1[1], p1[2]];
-        centroid2 += faer::col![p2[0], p2[1], p2[2]];
-    }
-
-    centroid1 /= points1.len() as f64;
-    centroid2 /= points2.len() as f64;
-
-    (centroid1, centroid2)
 }
 
 pub(crate) fn find_correspondences(
@@ -193,17 +139,6 @@ mod tests {
             rand::random::<f64>() * factor,
             rand::random::<f64>() * factor,
         ]
-    }
-
-    #[test]
-    fn test_compute_centroids() {
-        let points1 = vec![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]];
-        let points2 = vec![[7.0, 8.0, 9.0], [10.0, 11.0, 12.0]];
-        let (centroid1, centroid2) = compute_centroids(&points1, &points2);
-        let c1: Vec<f64> = centroid1.as_ref().iter().copied().collect();
-        let c2: Vec<f64> = centroid2.as_ref().iter().copied().collect();
-        assert_eq!(c1, vec![2.5, 3.5, 4.5]);
-        assert_eq!(c2, vec![8.5, 9.5, 10.5]);
     }
 
     #[test]

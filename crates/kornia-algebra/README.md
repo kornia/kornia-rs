@@ -16,6 +16,7 @@
 *   **Manifold Operations:** Exp/Log maps, adjoints, and tangent space operations.
 *   **Optimization Ready:** Analytical Jacobians for all group operations.
 *   **Linear Algebra:** Typed vectors and matrices (`Vec3F32`, `Mat4F32`) with SIMD acceleration (via `glam`).
+*   **Rotation projection:** `Mat3F64::nearest_rotation` / `SO3F64::from_matrix_nearest` give the rotation nearest to a 3x3 matrix in the Frobenius norm (SVD).
 *   **Quaternions:** Robust unit quaternion support for 3D rotations.
 
 ## 📦 Installation

@@ -16,7 +16,7 @@ use thiserror::Error;
 
 const MIN_CORRESPONDENCES: usize = 4; // Minimum 2D-3D pairs required by EPnP (and by any refit)
 const AP3P_SAMPLE_SIZE: usize = 3; // AP3P is an exact 3-point solver: it rejects any other count
-const EPNP_MIN_SAMPLE_SIZE: usize = 5; // Minimal sample size for EPnP (unless only 4 points available)
+const PNP_MIN_SAMPLE_SIZE: usize = 5; // EPnP and SQPnP sample size (4 if only 4 points exist)
 
 const DEFAULT_MAX_ITERATIONS: usize = 100;
 const DEFAULT_REPROJ_THRESHOLD_PX: f32 = 8.0;
@@ -44,14 +44,15 @@ pub enum PnPRansacError {
         actual: usize,
     },
 
-    /// The AP3P sampling kernel was combined with a lens-distortion model.
+    /// The AP3P or SQPnP sampling kernel was combined with a lens-distortion model.
     ///
     /// AP3P consumes bearing vectors obtained by inverting `K` alone, so a distortion model
     /// cannot be honoured while generating hypotheses. Silently ignoring it would score the
     /// consensus set under an ideal-pinhole model and then refit it under a distorted one —
-    /// two different camera models for one answer. Undistort the image points up front and
-    /// pass `distortion = None`, or use an EPnP kernel.
-    #[error("AP3P inside RANSAC cannot honour a distortion model: undistort the image points first and pass `distortion = None`, or use an EPnP kernel")]
+    /// two different camera models for one answer. SQPnP would solve under the distortion model
+    /// while the scoring stays pinhole. Undistort the image points up front and pass
+    /// `distortion = None`, or use an EPnP kernel.
+    #[error("AP3P or SQPnP inside RANSAC cannot honour a distortion model: undistort the image points first and pass `distortion = None`, or use an EPnP kernel")]
     DistortionUnsupportedByKernel,
 
     /// The requested confidence is outside the open unit interval.
@@ -185,12 +186,13 @@ pub struct PnPRansacResult {
 
 /// Solve PnP robustly using a legacy RANSAC loop around a base PnP method (e.g., EPnP).
 ///
-/// - Minimal sample size follows the KERNEL: 3 for AP3P (an exact P3P solver), 5 for EPnP (4 when
-///   only 4 points are available). This is what makes a P3P kernel worth using here: a sample is
-///   outlier-free with probability `w^k` at inlier ratio `w`, so `k = 3` rather than `5` DRAWS a
-///   clean sample `w^-2` times as often (16x at `w = 0.25`). That is a probability ratio, not a
-///   measured speedup — each AP3P iteration now scores up to four hypotheses instead of one, which
-///   the cheaper hypothesis generation has to pay for.
+/// - Minimal sample size follows the KERNEL: 3 for AP3P (an exact P3P solver), 5 for EPnP and
+///   SQPnP (4 when only 4 points are available). The smaller AP3P sample is what makes a P3P
+///   kernel worth using here: a sample is outlier-free with probability `w^k` at inlier ratio
+///   `w`, so `k = 3` rather than `5` DRAWS a clean sample `w^-2` times as often (16x at
+///   `w = 0.25`). That is a probability ratio, not a measured speedup — each AP3P iteration now
+///   scores up to four hypotheses instead of one, which the cheaper hypothesis generation has to
+///   pay for.
 ///
 ///   `w^k` is itself the with-replacement approximation; this loop samples WITHOUT replacement, so
 ///   the exact figure is the hypergeometric product and `w^k` overstates it, most at small `n`.
@@ -200,7 +202,7 @@ pub struct PnPRansacResult {
 ///   them is not merely an accuracy improvement: `N = log(1-p)/log(1-w^k)` below assumes a trial
 ///   yields the correct model with probability `w^k`, which holds only if every root is tried.
 ///   Scoring one root would leave the true probability at `w^k / roots` while the loop kept
-///   planning against `w^k`, and stop early. EPnP returns one solution and keeps its
+///   planning against `w^k`, and stop early. EPnP and SQPnP return one solution and keep the
 ///   single-hypothesis path.
 /// - Scoring counts strict inliers, Euclidean pixel reprojection error `< reproj_threshold_px`;
 ///   points behind the camera are outliers. A pose replaces the best one only with more inliers.
@@ -222,7 +224,8 @@ pub struct PnPRansacResult {
 ///   an AP3P request was answered by an EPnP fit rather than having to infer it. The returned
 ///   [`PnPRansacResult::inliers`] are the minimal-sample pose's either way.
 /// - Minimum correspondence count is kernel- and refine-aware: AP3P with `refine: false` needs
-///   only 3, everything else needs 4 because the EPnP refit does.
+///   only 3; everything else needs 4, because the EPnP and SQPnP kernels sample at least 4 points
+///   and the EPnP refit after an AP3P kernel needs 4.
 ///
 /// # Arguments
 ///
@@ -230,9 +233,9 @@ pub struct PnPRansacResult {
 /// * `image` - Pixel observations of `world`, one per point.
 /// * `k` - Pinhole intrinsics.
 /// * `distortion` - Lens distortion of `image`, or `None` for undistorted points. Must be `None`
-///   with an AP3P kernel (see `# Errors`).
-/// * `base` - Kernel for the minimal samples (EPnP or AP3P). An EPnP `base` also configures the
-///   final refit.
+///   with an AP3P or SQPnP kernel (see `# Errors`).
+/// * `base` - Kernel for the minimal samples (EPnP, SQPnP or AP3P). An EPnP or SQPnP `base` also
+///   configures the final refit.
 /// * `params` - RANSAC parameters; `params.confidence` must be finite and strictly between zero
 ///   and one.
 ///
@@ -249,9 +252,10 @@ pub struct PnPRansacResult {
 /// fewer inliers than the minimum correspondence count, and [`PnPRansacError::Base`] for
 /// mismatched or too few correspondences.
 ///
-/// Returns [`PnPRansacError::DistortionUnsupportedByKernel`] when an AP3P kernel is combined with
-/// `distortion = Some(..)`: AP3P inverts `K` alone and cannot consume a distortion model, so it
-/// would generate hypotheses from distorted pixels treated as ideal.
+/// Returns [`PnPRansacError::DistortionUnsupportedByKernel`] when an AP3P or SQPnP kernel is
+/// combined with `distortion = Some(..)`: AP3P inverts `K` alone and cannot consume a distortion
+/// model, so it would generate hypotheses from distorted pixels treated as ideal; SQPnP would
+/// solve under the distortion model while the scoring below stays pinhole.
 ///
 /// Rejecting is a stopgap, not the reference design. OpenCV and COLMAP both UNDISTORT the
 /// correspondences before sampling and then work in a pure pinhole downstream; this crate has no
@@ -285,11 +289,12 @@ pub fn solve_pnp_ransac(
         return Err(PnPRansacError::InvalidConfidence { confidence });
     }
     let is_ap3p = matches!(base, PnPMethod::AP3P(_) | PnPMethod::AP3PDefault);
+    let is_sqpnp = matches!(base, PnPMethod::SQPnP(_) | PnPMethod::SQPnPDefault);
 
     // AP3P consumes bearing vectors from K alone; it has nowhere to put a distortion model.
     // Accepting one would score hypotheses under an ideal pinhole and then refit the very same
     // consensus set under a distorted model. Reject rather than silently mis-model.
-    if is_ap3p && distortion.is_some() {
+    if (is_ap3p || is_sqpnp) && distortion.is_some() {
         return Err(PnPRansacError::DistortionUnsupportedByKernel);
     }
 
@@ -309,16 +314,16 @@ pub fn solve_pnp_ransac(
     }
 
     // Minimal set size is a property of the KERNEL: AP3P is an exact 3-point solver (it rejects
-    // any other count), while EPnP samples 5 (unless only 4 points exist). Using the kernel's
-    // true minimal size is not merely a fix — it is the point of a P3P kernel inside RANSAC: at
-    // inlier ratio w a sample is outlier-free with probability w^k, so k=3 vs k=5 draws a clean
-    // sample w^-2 times as often (16x at w=0.25).
+    // any other count), while EPnP and SQPnP sample 5 (unless only 4 points exist). Using the
+    // kernel's true minimal size is not merely a fix — it is the point of a P3P kernel inside
+    // RANSAC: at inlier ratio w a sample is outlier-free with probability w^k, so k=3 vs k=5 draws
+    // a clean sample w^-2 times as often (16x at w=0.25).
     let sample_size: usize = if is_ap3p {
         AP3P_SAMPLE_SIZE
     } else if n == MIN_CORRESPONDENCES {
         MIN_CORRESPONDENCES
     } else {
-        EPNP_MIN_SAMPLE_SIZE
+        PNP_MIN_SAMPLE_SIZE
     };
 
     // Precompute intrinsics vectors
@@ -457,7 +462,7 @@ struct PnpProblem<'a> {
     i_min: Vec<Vec2F32>,
     /// Minimal fits so far, i.e. the current draw (every draw is fitted).
     draws: usize,
-    /// Its poses: up to four for AP3P, one for EPnP.
+    /// Its poses: up to four for AP3P, one for EPnP or SQPnP.
     candidates: Vec<PnPResult>,
 }
 
@@ -492,7 +497,7 @@ impl Problem for PnpProblem<'_> {
 
     /// AP3P is a polynomial solver returning up to 4 real roots; scoring only
     /// the first cheirality-passing one throws away most clean samples, so
-    /// every root is kept. EPnP returns one pose.
+    /// every root is kept. EPnP and SQPnP return one pose.
     fn fit_minimal(&mut self, sample: &[usize]) {
         self.draws += 1;
         self.w_min.clear();
@@ -516,7 +521,10 @@ impl Problem for PnpProblem<'_> {
                 self.base.clone(),
             ) {
                 Ok(pose) => self.candidates.push(pose),
-                Err(_e) => log::debug!("EPnP failed on minimal set at iteration {}", self.draws),
+                Err(_e) => log::debug!(
+                    "Base solver failed on minimal set at iteration {}",
+                    self.draws
+                ),
             }
         }
     }
@@ -528,7 +536,7 @@ impl Problem for PnpProblem<'_> {
 
     /// Cheirality on the minimal set. Redundant for AP3P -- `solve_ap3p_multi`
     /// already filters its roots by positive depth over these same 3 points, in
-    /// f64 -- but EPnP does not.
+    /// f64 -- but EPnP and SQPnP do not.
     #[inline]
     fn check_model(&self, sample: &[usize], pose: &PnPResult) -> bool {
         let passed =
@@ -708,6 +716,7 @@ impl<'a, T, R> Schedule<PnpProblem<'a>, ReprojectionScorer, T, R> for PnpRefit {
 mod tests {
     use super::super::ap3p::AP3PParams;
     use super::super::epnp::EPnPParams;
+    use super::super::sqpnp::SQPnPParams;
     use super::*;
     use crate::ransac::engine::NoSchedule;
 
@@ -1230,7 +1239,7 @@ mod tests {
     /// while generating hypotheses. The combination is rejected instead of silently scoring the
     /// consensus under an ideal pinhole and then refitting it under a distorted model.
     #[test]
-    fn ap3p_ransac_rejects_a_distortion_model() {
+    fn ap3p_and_sqpnp_ransac_reject_a_distortion_model() {
         let (r_gt, t_gt) = pose_gt();
         let world = scene_non_planar();
         let image = project_exact(&world, &r_gt, &t_gt);
@@ -1249,6 +1258,8 @@ mod tests {
         for base in [
             PnPMethod::AP3PDefault,
             PnPMethod::AP3P(AP3PParams::default()),
+            PnPMethod::SQPnPDefault,
+            PnPMethod::SQPnP(SQPnPParams::default()),
         ] {
             let err = solve_pnp_ransac(
                 &world,
@@ -1258,7 +1269,7 @@ mod tests {
                 base,
                 &RansacParams::default(),
             )
-            .expect_err("AP3P + distortion must be rejected");
+            .expect_err("AP3P or SQPnP + distortion must be rejected");
             assert!(
                 matches!(err, PnPRansacError::DistortionUnsupportedByKernel),
                 "unexpected error: {err}"
