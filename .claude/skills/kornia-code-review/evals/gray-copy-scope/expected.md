@@ -10,3 +10,7 @@ A passing review reports all of:
 Validated 2026-10-21: 5/5 on the first skill draft, and 5/5 on the revised skill (scope first, missing Self-review and walkthrough flagged).
 
 2026-10-23 (section 0b added; Opus 5.5 and Sonnet 5.5, 6 rounds): items 1-5 found every run. Item 6: Opus 6/6; Sonnet 4/6, misses were a reuse finding merged into the section 4 line and tagged inferred. After 0b findings were made their own line: round 7 Opus 6/6, Sonnet 6/6. Watch Sonnet's placement of the reuse finding. 2026-10-24, after the kornia-workflow step 6 and kornia-curation rule 3 edits: Opus 6/6, Sonnet 6/6.
+
+2026-10-24, automated run 1 (`claude plugin eval`, one run per arm, judge Opus, or Sonnet for Opus): Opus pass / W/OUT pass; Sonnet pass / W/OUT fail (bench, copy, reuse-measured, scope-flip, shape-check); Haiku pass / W/OUT fail (bench, reuse-measured, scope-flip).
+
+2026-10-24, automated run 2 (eval files hidden from the reviewed tree): Opus pass / W/OUT fail (reuse-measured); Sonnet pass / W/OUT fail (bench, copy, reuse-measured, scope-flip, shape-check, verdict); Haiku pass / W/OUT fail (bench, copy, reuse-measured, scope-flip, shape-check).

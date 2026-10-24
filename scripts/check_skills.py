@@ -10,12 +10,15 @@ MSRV (skills, AGENTS.md, CONTRIBUTING.md, copilot instructions) == root
 Cargo.toml `rust-version`; every `pixi run <task>` exists in
 pixi.toml; the kornia-arch crate table matches crates/*; no skill names a crate
 from PUBLISH_ORDER in scripts/release_rust.sh as excluded from publishing;
-review eval cases (`<skill>/evals/<case>/`) are complete and their patch applies.
+review eval cases (`<skill>/evals/<case>/`) are complete, runnable by
+`claude plugin eval`, and their patch applies; no eval key names a
+backtick term the skill under test also names.
 The publish check first runs on PUBLISH_PROBES; a change that stops it rejecting
 one fails here, not silently.
 
 This cannot check that guidance is complete or that it was applied.
 """
+import os
 import re
 import subprocess
 import sys
@@ -65,6 +68,8 @@ def publish_order() -> set:
 
 
 # Short names that are ordinary words ("image io") are only matched as `kornia-x`.
+# Skill vocabulary that eval keys may name without leaking an answer.
+KEY_TERMS_ALLOWED = {"Reuse searches", "kornia-arch", "pub(crate)", "width", "cuda"}
 COMMON_SHORT = {"3d", "algebra", "bow", "image", "io", "tensor"}
 EXCLUDED = r"exclud|skipp?ed|unpublished|not (?:be )?published|never published|(?:not|n't) publish|not on crates\.io|not released"
 
@@ -173,15 +178,42 @@ def main() -> int:
                 errors.append(f"{where}: MSRV {v} != Cargo.toml rust-version {msrv}")
 
     # Review eval cases must be complete and still apply to the tree.
-    for case in sorted(p for p in SKILLS.glob("*/evals/*") if p.is_dir()):
-        for f in ("patch.diff", "pr.md", "expected.md"):
+    # `claude plugin eval` needs prompt.md, case.yaml, an executable scaffold.sh
+    # and at least one grader; results/ is its local output.
+    for case in sorted(p for p in SKILLS.glob("*/evals/*") if p.is_dir() and p.name not in ("results", "heldout", "calibration")):
+        for f in ("patch.diff", "pr.md", "expected.md", "prompt.md", "case.yaml", "scaffold.sh"):
             if not (case / f).is_file():
                 errors.append(f"eval {case.name}: missing {f}")
+        if (case / "scaffold.sh").is_file() and not os.access(case / "scaffold.sh", os.X_OK):
+            errors.append(f"eval {case.name}: scaffold.sh is not executable")
+        if not list(case.glob("graders/*.md")):
+            errors.append(f"eval {case.name}: no graders/*.md")
         patch = case / "patch.diff"
         if patch.is_file():
             r = subprocess.run(["git", "apply", "--check", str(patch)], cwd=ROOT, capture_output=True, text=True)
             if r.returncode != 0:
                 errors.append(f"eval {case.name}: patch.diff no longer applies: {r.stderr.strip()}")
+        merged = case / "merged.diff"
+        if merged.is_file():
+            r = subprocess.run(["git", "apply", "-R", "--check", str(merged)], cwd=ROOT, capture_output=True, text=True)
+            if r.returncode != 0:
+                errors.append(f"eval {case.name}: merged.diff is no longer in the tree: {r.stderr.strip()}")
+    sys.dont_write_bytecode = True
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from skill_evals import stale_precision
+    for name in stale_precision():
+        errors.append(f"eval {name}: graders/precision.md is stale; run `python3 scripts/skill_evals.py sync`")
+
+    # An eval key must not leak into the skill it grades: a name backticked in an
+    # expected.md that the skill also uses (backticked, or bare for identifiers
+    # such as `check_size`) turns a case into a recall test of the skill text.
+    for skill_md in SKILLS.glob("*/SKILL.md"):
+        text = skill_md.read_text(encoding="utf-8")
+        for key in sorted(skill_md.parent.glob("evals/*/expected.md")):
+            for tok in sorted(set(re.findall(r"`([^`\n]{4,})`", key.read_text(encoding="utf-8"))) - KEY_TERMS_ALLOWED):
+                ident = re.fullmatch(r"[A-Za-z_][\w:]*_[\w:]*", tok)
+                if f"`{tok}`" in text or (ident and re.search(rf"(?<![\w:]){re.escape(tok)}(?![\w:])", text)):
+                    errors.append(f"{skill_md.parent.name}/SKILL.md names `{tok}` from eval key {key.parent.name}/expected.md")
 
     agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
     for name in REQUIRED:

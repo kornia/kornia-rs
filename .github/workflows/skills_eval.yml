@@ -1,0 +1,78 @@
+name: Skills Eval
+
+# Runs the kornia-code-review eval cases with `claude plugin eval`
+# (evals/README.md). It spends API credits: it runs on demand, or on every push
+# to a PR while a maintainer keeps the `run-skill-evals` label on it (one run at a
+# time per PR). Fork PRs get no secret and skip.
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: Reviewer model
+        default: sonnet
+      judge_model:
+        description: Grader model (use a different one from the reviewer)
+        default: opus
+      runs:
+        description: Runs per case
+        default: "1"
+  pull_request:
+    branches:
+      - main
+    types: [labeled, synchronize]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: skills-eval-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  eval:
+    name: Review skill evals
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-skill-evals')
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      HAS_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Skip without a key
+        if: env.HAS_KEY != 'true'
+        run: echo "::notice::ANTHROPIC_API_KEY is not set; skipping the eval run"
+
+      # The eval sandbox confines the reviewer's Bash; it needs bubblewrap and
+      # socat, and Ubuntu 24.04 blocks the unprivileged user namespaces it uses.
+      - name: Install Claude Code and its sandbox
+        if: env.HAS_KEY == 'true'
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap socat
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          npm install -g @anthropic-ai/claude-code@2.1.306
+
+      - name: Run evals
+        if: env.HAS_KEY == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          MODEL: ${{ inputs.model || 'sonnet' }}
+          JUDGE: ${{ inputs.judge_model || 'opus' }}
+          RUNS: ${{ inputs.runs || '1' }}
+        run: |
+          claude plugin eval .claude/skills/kornia-code-review --scaffold --trust-plugin \
+            --no-publish --allow-tools Bash --model "$MODEL" --judge-model "$JUDGE" \
+            --runs "$RUNS" --max-cost-usd 40 --json eval-results.json \
+            --report eval-report.html
+
+      - name: Summary
+        if: always() && env.HAS_KEY == 'true'
+        run: python3 scripts/skill_evals.py report eval-results.json >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always() && env.HAS_KEY == 'true'
+        with:
+          name: skills-eval
+          path: |
+            eval-results.json
+            eval-report.html

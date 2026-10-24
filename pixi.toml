@@ -66,6 +66,7 @@ rust-lint = { depends-on = [
 ], description = "Run all Rust lints" }
 rust-test = { cmd = "cargo test --features ci", description = "Run Rust tests" }
 skills-check = { cmd = "python3 scripts/check_skills.py", description = "Validate agent skills in .claude/skills" }
+skills-eval = { cmd = "claude plugin eval .claude/skills/kornia-code-review --scaffold --trust-plugin --no-publish --allow-tools Bash --max-cost-usd 40", description = "Run the kornia-code-review eval cases with and without the skill; pass --model and a different --judge-model (needs Claude Code >= 2.1.269 and its sandbox; costs API credits)" }
 changelog-preview = { cmd = "python3 scripts/changelog.py preview", description = "Print pending release notes from changelog.d/ (changes nothing)" }
 pr-check = { depends-on = [
   "skills-check",

@@ -4,5 +4,10 @@ A passing review reports all of:
 2. blocking, §0: restoring the `kornia-arch` wording is not required by the issue (scope). It also reintroduces a false fact.
 3. The "still flags any skill" claim is contradicted by measurement, and "skills OK" is not accepted as evidence that the check works.
 4. No §0b finding and no demand for a `Reuse searches` block: this is a tooling PR.
+5. blocking, §0.1: the linked issue cannot be read (no network, no `gh`, no `ISSUE.md`); the quote in the PR body does not lift it. This is the one case without `issue.md`, so it keeps that rule tested.
 
 Origin: PR #1206. The Copilot author and the first review-fix pass both shipped the line-based check. The self-review of #1206 caught it on 2026-10-21. Validated 2026-10-21: 3/3, with a measured old-vs-new probe table (7/7 vs 1/7). 2026-10-23: plant rebuilt for the `PUBLISH_PROBES` self-test (the PR must now delete probes to stay green). Rebuilt plant, final skill: 4/4 on Opus 5.5 and Sonnet 5.5; earlier Sonnet runs softened the scope/split finding to major until section 0.1 said to map scope against the quoted issue text. Plant rebuilt again on the paragraph-context check (18 probes; plant deletes 13): round 7 Opus 4/4, Sonnet 4/4. 2026-10-24, after the kornia-workflow step 6 and kornia-curation rule 3 edits: Opus 4/4, Sonnet 4/4.
+
+2026-10-24, automated run 1 (`claude plugin eval`, one run per arm, judge Opus, or Sonnet for Opus): Opus pass / W/OUT pass; Sonnet fail (claim-contradicted, measured-regression) / W/OUT fail (claim-contradicted, measured-regression, scope, unreadable-issue); Haiku fail (claim-contradicted, measured-regression, unreadable-issue) / W/OUT fail (claim-contradicted, measured-regression, scope, unreadable-issue).
+
+2026-10-24, automated run 2 (eval files hidden from the reviewed tree): Opus pass / W/OUT fail (claim-contradicted, measured-regression, scope, unreadable-issue); Sonnet fail (claim-contradicted, measured-regression) / W/OUT fail (claim-contradicted, measured-regression, scope, unreadable-issue, verdict); Haiku fail (scope) / W/OUT fail (measured-regression, scope, unreadable-issue).

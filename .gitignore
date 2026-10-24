@@ -15,3 +15,9 @@ target
 
 # PR descriptions drafted by agents are never committed
 /PR.md
+
+# Local output of `pixi run skills-eval`
+.claude/skills/*/evals/results/
+# Cases mined from history by `skill_evals.py mine --make` (held out, never committed)
+.claude/skills/*/evals/heldout/
+__pycache__/

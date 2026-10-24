@@ -38,13 +38,17 @@ Every finding, scope findings included, is one line:
   the verdict. One problem per line: never merge findings of different
   severities into one.
 - Always blocking: no linked issue or an unreadable one, an out-of-scope
-  hunk, a needed split, a missing Self-review or Author walkthrough.
+  hunk, a needed split, a missing Self-review or Author walkthrough. A
+  finding whose fix is "split it out", "drop the hunk" or "move it to its own
+  PR" is one of these, so it is blocking.
 - **Measured** = you ran a command and quote its output, in the finding or in
   the `Reuse searches` block it cites (a reuse finding filed under another
-  section is still measured). **Inferred** = from reading code only. Inferred is enough to block on scope and on correctness the
-  code shows conclusively. Perf claims need the author's measurement; the
-  burden is on the PR, not the reviewer. Run a bench or test yourself when it
-  is cheap and settles a disagreement.
+  section is still measured). "I ran X and it returned Y" without the quoted
+  output is inferred. **Inferred** = from reading code only. Inferred is
+  enough to block on scope and on correctness the code shows conclusively.
+  Perf claims need the author's measurement; the burden is on the PR, not
+  the reviewer. Run a bench or test yourself when it is cheap and settles a
+  disagreement.
 - Never write "should be faster" or "tests pass" without output. "Tests
   pass" is no evidence for a path no test exercises: check one exists, and
   that it ran (name or count in the output). `#[ignore]`, unmet
@@ -110,7 +114,11 @@ incomplete: run it before writing the finding. Reading the code is enough to
    search by verb, by math and by signature, not only by the new name:
    `rg -n "fn \w*<verb>\w*" crates/`, `rg -n "<InputType>.*-> .*<OutputType>" crates/`,
    and the owning crate from the `kornia-arch` table. Check `pub(crate)` and
-   private items in the same crate too. A match ⇒ major or blocking.
+   private items in the same crate too. A helper on vectors, matrices or point
+   sets is searched as methods of the owning crate's types too
+   (`rg -n "pub fn (dot|cross|normalize|mean)" crates/kornia-algebra`). An entry
+   that says a place was not searched is incomplete: search it. A match ⇒
+   major or blocking.
 2. **Is it a near-copy?** A second routine doing the same job under another
    name, threshold or loop shape ⇒ major: keep one definition, the other
    delegates. If the copies **disagree** (epsilon, rounding, border or error
@@ -182,8 +190,8 @@ filters, features, SIMD, CUDA, tensor ops):
 
 - Size validation compares **shape** (width, height, channels), not pixel
   count, and runs before `dst` is written. A test with equal pixel count but
-  a different shape must expect `Err`; reuse the shared helper (e.g.
-  `check_size`) rather than inlining a check.
+  a different shape must expect `Err`; reuse the crate's shared size helper
+  (find it with a section 0b search) rather than inlining a check.
 - SIMD path matches the scalar path in a test (see `kornia-simd`); tail
   elements handled.
 - Bug fix ⇒ regression test that fails on `main`.
@@ -217,10 +225,10 @@ or claims (validator, CI step, lint, hook):
   did not shrink: run the **old and new** check on the same negative probes,
   including any text the PR itself edits that the check guards. Old rejects
   and new passes ⇒ blocking.
-- A deleted entry in a check's own probes or tests (e.g. `PUBLISH_PROBES`)
-  ⇒ blocking, unless the PR shows the probe was wrong. Run each deleted probe
-  through the new check. Self-tests run against the real source of truth
-  (e.g. `PUBLISH_ORDER`), not a one-item fixture that hides false positives.
+- A deleted entry in a check's own probes or tests ⇒ blocking, unless the
+  PR shows the probe was wrong. Run each deleted probe through the new check.
+  Self-tests run against the real source of truth (the file the fact comes
+  from), not a one-item fixture that hides false positives.
 - A check that is new in the PR has no old version on `main`: compare it with
   its first commit in the PR, and run it on the original bug text from `main`.
 - Check what the docs claim the check covers against what it actually matches.
@@ -248,11 +256,13 @@ were already policy.
   writes it; it reports it as missing and leaves it to the human. Reviewers:
   - Check it against the diff: every non-trivial file explained, the "why"
     tied to the issue, the risk named matches the real risk. Missing,
-    generic, or describing code that is not in the diff ⇒ blocking.
+    generic, or describing code that is not in the diff ⇒ blocking. Judge it
+    by that content only, never by whether it "reads as" AI-written.
   - Ask the author at least one concrete question about a non-obvious hunk
     (why this bound, what happens on empty input, why this copy). No answer,
     or an answer that contradicts the code ⇒ blocking until resolved or the
-    hunk is removed.
+    hunk is removed. The question goes under the walkthrough line; it is not
+    a finding of its own until it goes unanswered.
 - AI disclosure filled with agent + version, model, effort and skills applied
   (see `kornia-workflow`). Verification section quotes real commands and
   output from the PR head (re-run after each commit that touches what they

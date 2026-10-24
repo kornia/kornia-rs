@@ -1,0 +1,70 @@
+diff --git a/crates/kornia-algebra/src/lie/rxso3.rs b/crates/kornia-algebra/src/lie/rxso3.rs
+index d3a3ce78..56fef8d7 100644
+--- a/crates/kornia-algebra/src/lie/rxso3.rs
++++ b/crates/kornia-algebra/src/lie/rxso3.rs
+@@ -18,7 +18,12 @@ use super::so3::SO3F32;
+ /// and 3D rotations. Internally stored as a quaternion where:
+ /// - Rotation: normalized part of quaternion
+ /// - Scale: ||quaternion||²
+-#[derive(Debug, Clone, Copy)]
++///
++/// Note regarding `PartialEq`:
++///   Quaternions form a double cover for SO3, meaning `q` and `-q` represent the
++///   same rotation. However, `PartialEq` performs an exact, member-wise comparison
++///   and will return `false` for `q` and `-q`.
++#[derive(Debug, Clone, Copy, PartialEq)]
+ pub struct RxSO3F32 {
+     /// Quaternion representing rotation, scale = ||q||²
+     pub quaternion: QuatF32,
+diff --git a/crates/kornia-algebra/src/lie/se3.rs b/crates/kornia-algebra/src/lie/se3.rs
+index 3567c6bb..514c5314 100644
+--- a/crates/kornia-algebra/src/lie/se3.rs
++++ b/crates/kornia-algebra/src/lie/se3.rs
+@@ -7,7 +7,11 @@ use rand::Rng;
+ 
+ const SMALL_ANGLE_EPSILON: f32 = 1.0e-8;
+ 
+-#[derive(Debug, Clone, Copy)]
++/// Note regarding `PartialEq`:
++/// This struct derives `PartialEq` which performs an exact element-wise comparison.
++/// Because quaternions form a double cover for SO3 (`q` and `-q` represent the same rotation),
++/// this means that two `SE3F32` instances representing the same transformation may evaluate as not equal.
++#[derive(Debug, Clone, Copy, PartialEq)]
+ pub struct SE3F32 {
+     pub r: SO3F32,
+     pub t: Vec3AF32,
+diff --git a/crates/kornia-algebra/src/lie/sim3.rs b/crates/kornia-algebra/src/lie/sim3.rs
+index c95338f2..da671c07 100644
+--- a/crates/kornia-algebra/src/lie/sim3.rs
++++ b/crates/kornia-algebra/src/lie/sim3.rs
+@@ -26,7 +26,11 @@ use super::so3::SO3F32;
+ /// - R³ is the 3D Euclidean vector space (translation)
+ ///
+ /// 7 degrees of freedom: 3 for rotation, 1 for scale, 3 for translation
+-#[derive(Debug, Clone, Copy)]
++/// Note regarding `PartialEq`:
++/// This struct derives `PartialEq` which performs an exact element-wise comparison.
++/// Because quaternions form a double cover for SO3 (`q` and `-q` represent the same rotation),
++/// this means that two `Sim3F32` instances representing the same transformation may evaluate as not equal.
++#[derive(Debug, Clone, Copy, PartialEq)]
+ pub struct Sim3F32 {
+     /// Scaling and rotation component
+     pub rxso3: RxSO3F32,
+diff --git a/crates/kornia-algebra/src/lie/so3.rs b/crates/kornia-algebra/src/lie/so3.rs
+index 9b019de5..b6b9ca21 100644
+--- a/crates/kornia-algebra/src/lie/so3.rs
++++ b/crates/kornia-algebra/src/lie/so3.rs
+@@ -57,7 +57,12 @@ const SMALL_ANGLE_EPSILON: f32 = 1.0e-8;
+ ///   There is no globally continuous way to make this choice — discontinuities
+ ///   (quaternion sign flips) are unavoidable over the full rotation group.
+ /// - After repeated multiplications, call `q.normalize()` to prevent drift off S³.
+-#[derive(Debug, Clone, Copy)]
++///
++/// Note regarding `PartialEq`:
++///   Quaternions form a double cover for SO3, meaning `q` and `-q` represent the
++///   same rotation. However, `PartialEq` performs an exact, member-wise comparison
++///   and will return `false` for `q` and `-q`.
++#[derive(Debug, Clone, Copy, PartialEq)]
+ pub struct SO3F32 {
+     pub q: QuatF32,
+ }
