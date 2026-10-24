@@ -30,6 +30,10 @@ runs:
     - name: Install sccache
       if: inputs.with-sccache == 'true'
       uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+      # Unpinned, the action takes the newest sccache; v0.19.0 failed every
+      # compile with "invalid value: integer `13`, expected variant index".
+      with:
+        version: v0.18.0
     - name: Setup sccache environment
       if: inputs.with-sccache == 'true'
       shell: bash
