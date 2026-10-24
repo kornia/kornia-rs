@@ -18,7 +18,8 @@ Three kinds:
 
 - `patch.diff`: applied to the copied tree. `check_skills.py` runs
   `git apply --check`, so a case goes stale loudly when the code moves.
-  Whitespace hooks skip `evals/**.diff`; never let a formatter touch them.
+  Whitespace hooks skip `evals/**.diff` and the generated `precision.md`
+  graders (they embed the diff); never let a formatter touch them.
 - `merged.diff` (controls only): the PR's change, already in the tree
   (`check_skills.py` checks it still reverse-applies). The reviewer gets it and
   `patch.diff` as one `pr.diff`.

@@ -90,8 +90,8 @@ state:	OPEN
 author:	Aatman09
 labels:	bug, help wanted
 assignees:	Aatman09
-projects:	
-milestone:	
+projects:
+milestone:
 number:	1163
 --
 ### 🐛 Describe the bug
@@ -318,4 +318,4 @@ new file mode 100644
 +`DistanceTransformExecutor::execute` and `compute_histogram` return an empty result for zero-width or zero-height images instead of panicking.
 ```
 
-<!-- skill_evals.py sync: ada347cf8e3da690 -->
+<!-- skill_evals.py sync: 623ba32e7c4be090 -->

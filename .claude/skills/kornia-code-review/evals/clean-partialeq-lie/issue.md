@@ -3,8 +3,8 @@ state:	OPEN
 author:	namanguptagit
 labels:	bug, help wanted
 assignees:	namanguptagit
-projects:	
-milestone:	
+projects:
+milestone:
 number:	728
 --
 ### 🐛 Describe the bug
@@ -48,8 +48,8 @@ error[E0277]: can't compare `SO3F32` with `SO3F32`
 
 ```shell
 - kornia-rs version:main (v0.1.10-rc.5-121-gc317f04 approx)
-- Rust version (`rustc -V`):rustc 1.93.1 
-- Cargo version (`cargo -V`):cargo 1.93.1 
+- Rust version (`rustc -V`):rustc 1.93.1
+- Cargo version (`cargo -V`):cargo 1.93.1
 - OS (e.g., Linux, macOS, Windows): macOS
 - Target architecture (if cross-compiling):N/A
 - Python version (if using Python bindings):N/A

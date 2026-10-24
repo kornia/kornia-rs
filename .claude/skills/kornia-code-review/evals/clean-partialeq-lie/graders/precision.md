@@ -84,8 +84,8 @@ state:	OPEN
 author:	namanguptagit
 labels:	bug, help wanted
 assignees:	namanguptagit
-projects:	
-milestone:	
+projects:
+milestone:
 number:	728
 --
 ### 🐛 Describe the bug
@@ -129,8 +129,8 @@ error[E0277]: can't compare `SO3F32` with `SO3F32`
 
 ```shell
 - kornia-rs version:main (v0.1.10-rc.5-121-gc317f04 approx)
-- Rust version (`rustc -V`):rustc 1.93.1 
-- Cargo version (`cargo -V`):cargo 1.93.1 
+- Rust version (`rustc -V`):rustc 1.93.1
+- Cargo version (`cargo -V`):cargo 1.93.1
 - OS (e.g., Linux, macOS, Windows): macOS
 - Target architecture (if cross-compiling):N/A
 - Python version (if using Python bindings):N/A
@@ -233,4 +233,4 @@ new file mode 100644
 +`SO3F32`, `RxSO3F32`, `SE3F32` and `Sim3F32` derive `PartialEq`, so `kornia-algebra` builds with `--all-features`.
 ```
 
-<!-- skill_evals.py sync: 430f018c3a2f06a7 -->
+<!-- skill_evals.py sync: 05947cd4ebc286bc -->

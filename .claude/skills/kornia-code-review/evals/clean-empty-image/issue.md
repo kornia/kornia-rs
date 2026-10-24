@@ -3,8 +3,8 @@ state:	OPEN
 author:	Aatman09
 labels:	bug, help wanted
 assignees:	Aatman09
-projects:	
-milestone:	
+projects:
+milestone:
 number:	1163
 --
 ### 🐛 Describe the bug
