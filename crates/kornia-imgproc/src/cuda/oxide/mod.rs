@@ -36,7 +36,7 @@ pub(crate) enum OxideError {
 
 impl From<OxideError> for CudaColorError {
     fn from(e: OxideError) -> Self {
-        CudaColorError::Cuda(e.to_string())
+        CudaColorError::Compile(e.to_string())
     }
 }
 

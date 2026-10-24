@@ -29,7 +29,7 @@ loads, one u32 store, byte tail. Replaces main's NVRTC kernel of the same name.
   4099x1, 33x17, 255x3, 1025x1, 1919x1081, 4K) and
   `gray_from_rgb_u8_degenerate_npixels`. Changing one weight (4899 -> 4900)
   fails it at n = 1023.
-- **Throughput** (`benches/bench_cuda_oxide.rs`, 3 sittings; GPU kernel time, CPU = 6
+- **Throughput, 2026-10-14 sittings** (`benches/bench_cuda_oxide.rs`, 3 sittings; GPU kernel time, CPU = 6
   threads, NEON): 4K GPU 0.3467-0.3474 ms (95.6 GB/s, 1020 MHz, spread <=4.5%)
   vs CPU 1.45-1.71 ms; 1080p GPU 0.091 ms vs CPU 0.55-0.59 ms. 320x240 is
   launch-bound and the governor sits at 306 MHz for some sittings: do not quote.

@@ -30,6 +30,9 @@ jobs:
   # toolchain serves both).
   cuda-oxide-toolchain:
     runs-on: ubuntu-latest
+    env:
+      # Pinned by digest; the tag is in the cache key, so a bump rebuilds.
+      OXIDE_IMAGE: quay.io/pypa/manylinux2014_x86_64:2026.10.21-1@sha256:55df5597db86b0a03d5f21a03b060271efffc78ef97123c60ee9c7ce0f10ec31
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -40,13 +43,13 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .oxide-toolchain
-          key: cuda-oxide-manylinux2014-x86_64-${{ hashFiles('crates/kornia-oxide-kernels/device/rust-toolchain.toml', 'crates/kornia-oxide-kernels/device/Cargo.toml.in', 'scripts/cuda-oxide/install-toolchain.sh') }}
+          key: cuda-oxide-manylinux2014-x86_64-2026.10.21-1-${{ hashFiles('crates/kornia-oxide-kernels/device/rust-toolchain.toml', 'crates/kornia-oxide-kernels/device/Cargo.toml.in', 'scripts/cuda-oxide/install-toolchain.sh', '.cargo/config.toml') }}
       - if: steps.cache.outputs.cache-hit != 'true'
         run: |
           # The linker override neutralizes the repo's `.cargo/config.toml`, as
           # in the wheel job below (the backend builds under /io).
           docker run --rm -v "$PWD:/io" -w /io -e CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=cc \
-            quay.io/pypa/manylinux2014_x86_64 \
+            "$OXIDE_IMAGE" \
             bash -c 'CARGO_BUILD_JOBS=4 scripts/cuda-oxide/install-toolchain.sh /io/.oxide-toolchain'
           sudo chown -R "$(id -u):$(id -g)" .oxide-toolchain
       # Hand-off by artifact: a cache save can fail (rate limit, reservation
@@ -132,8 +135,14 @@ jobs:
           mkdir -p /tmp/wheel-check && unzip -q -o "$WHEEL" '*.so' -d /tmp/wheel-check
           SO=$(find /tmp/wheel-check -name 'kornia_rs*.so' | head -n1)
           [ -n "$SO" ] || { echo "no .so found in wheel"; exit 1; }
-          grep -aq '\.entry gray_from_rgb_u8' "$SO" || \
-            { echo "::error::cuda-oxide PTX missing from $SO"; exit 1; }
+          # Every `#[kernel]` in the device crate (own line or same line).
+          ENTRIES=$(sed -n 's/^#\[kernel\] *pub unsafe fn \([A-Za-z0-9_]*\).*/\1/p; /^#\[kernel\]$/{n; s/^pub unsafe fn \([A-Za-z0-9_]*\).*/\1/p}' \
+            crates/kornia-oxide-kernels/device/src/*.rs)
+          [ -n "$ENTRIES" ] || { echo "::error::no #[kernel] found in the device crate"; exit 1; }
+          for e in $ENTRIES; do
+            grep -aq "\.entry $e" "$SO" || \
+              { echo "::error::cuda-oxide PTX entry $e missing from $SO"; exit 1; }
+          done
       - name: Upload wheels
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

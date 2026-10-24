@@ -105,10 +105,11 @@ static RGB_FROM_GRAY_F32: KernelCell = KernelCell::new();
 ///
 /// # Errors
 ///
-/// Returns [`CudaColorError::SliceTooSmall`] if a buffer is short,
+/// Returns [`CudaColorError::Compile`] if the kernel module fails to load (or
+/// the build has stub PTX), [`CudaColorError::TooManyPixels`] if `3 * npixels`
+/// exceeds `u32::MAX`, [`CudaColorError::SliceTooSmall`] if a buffer is short,
 /// [`CudaColorError::Misaligned`] if `src` or `dst` is not 4-byte aligned (an
-/// alias at an odd offset), or [`CudaColorError::Cuda`] if the kernel module
-/// fails to load, `3 * npixels` exceeds `u32::MAX`, or the launch fails.
+/// alias at an odd offset), or [`CudaColorError::Cuda`] if the launch fails.
 pub fn launch_gray_from_rgb_u8(
     stream: &Arc<CudaStream>,
     src: &CudaSlice<u8>,
@@ -284,11 +285,21 @@ mod tests {
             assert!(
                 matches!(
                     launch_gray_from_rgb_u8(&stream, &d_src, &mut d_dst, n),
-                    Err(CudaColorError::Cuda(_))
+                    Err(CudaColorError::TooManyPixels { npixels }) if npixels == n
                 ),
                 "n={n} must be rejected"
             );
         }
+        // The inclusive edge (3 * n == u32::MAX) passes the range check and
+        // stops at the length check.
+        let n = u32::MAX as usize / 3;
+        assert!(
+            matches!(
+                launch_gray_from_rgb_u8(&stream, &d_src, &mut d_dst, n),
+                Err(CudaColorError::SliceTooSmall { what: "src", .. })
+            ),
+            "n={n} must reach the length check"
+        );
     }
 
     /// A slice aliasing an allocation at an odd offset (as `from_dlpack` builds

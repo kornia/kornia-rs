@@ -38,8 +38,7 @@ Before publishing wheels, confirm the GPU story:
 - Publish script: `scripts/release_rust.sh` — topological, idempotent, skips
   already-published versions. The publish set is its `PUBLISH_ORDER` /
   `NOT_PUBLISHED` arrays; `--check` fails if a publishable crate is in neither.
-  `kornia-oxide-kernels` (the cuda-oxide PTX crate) verifies with stub PTX, so
-  publishing needs no nightly.
+  For the cuda-oxide kernel crate's publish, see `docs/cuda-oxide.md`.
 - CI publish: `.github/workflows/rust_release.yml` (`workflow_dispatch`, guarded
   by typing `publish`) and `.github/workflows/python_release.yml` (wheels).
 - Wheel build matrix lives in `.github/workflows/python_wheels.yml`, shared by

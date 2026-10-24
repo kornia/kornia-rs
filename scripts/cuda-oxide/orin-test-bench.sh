@@ -46,7 +46,7 @@ if [[ -r "$DEVFREQ/cur_freq" ]]; then
 fi
 nvcc --version 2>/dev/null | tail -1 || true
 head -1 /proc/driver/nvidia/version 2>/dev/null || true
-git -C "$ROOT" log -1 --format='HEAD %h %s'
+git -C "$ROOT" log -1 --format='HEAD %H %s'
 
 echo "== tests"
 cd "$ROOT"
@@ -88,6 +88,10 @@ grep -A2 '^\[\[bench\]\]' "$manifest" | grep -q '^name = "bench_cuda_oxide"$' ||
   printf '\n[[bench]]\nharness = false\nname = "bench_cuda_oxide"\nrequired-features = ["cuda"]\n' >>"$manifest"
 base_bin="$(cd "$wt" && CARGO_TARGET_DIR="$TARGET-base" build_bench)"
 [[ -x "$base_bin" ]] || die "bench build at $base produced no executable"
+# Provenance (A/A trap): which commit and binary each arm runs.
+dirty="$(git -C "$ROOT" status --short --untracked-files=no | wc -l)"
+echo "head arm: $(git -C "$ROOT" rev-parse HEAD) (+$dirty modified files) $head_bin"
+echo "base arm: $(git -C "$wt" rev-parse HEAD) ($base) $base_bin"
 for ((c = 0; c < cycles; c++)); do
   order=(base head)
   ((c % 2)) && order=(head base)

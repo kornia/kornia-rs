@@ -36,10 +36,12 @@ enum OxideBuildError {
     Build(String),
     #[error("PTX gate failed ({path}):\n{reasons}")]
     Gate { path: String, reasons: String },
+    #[error("device/src: {0}")]
+    Scan(String),
     #[error("{0}")]
     Io(String),
 }
-use OxideBuildError::{Build, Gate, Io, Toolchain};
+use OxideBuildError::{Build, Gate, Io, Scan, Toolchain};
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
@@ -145,6 +147,13 @@ fn entries_rs(entries: &[String]) -> String {
 
 /// Names of `#[kernel] pub unsafe fn` items under `dir`, sorted; duplicates
 /// are an error (PTX entry names are flat).
+///
+/// The scan is textual, so it is strict: kernels are item-level `#[kernel]`
+/// (exactly that spelling, on its own line or before `pub unsafe fn` on the
+/// same line) in a file reachable through `mod`, never `#[cfg]`-gated. Any
+/// other `kernel` attribute spelling, a `#[cfg]` right before `#[kernel]`, or
+/// a `#[kernel]` without its `fn` is an error rather than a silently missing or
+/// phantom entry. Line and block comments are skipped.
 fn scan_entries(dir: &Path) -> Result<Vec<String>, OxideBuildError> {
     let mut names = Vec::new();
     let mut dirs = vec![dir.to_path_buf()];
@@ -159,37 +168,90 @@ fn scan_entries(dir: &Path) -> Result<Vec<String>, OxideBuildError> {
                 continue;
             }
             let text = read(&path)?;
-            let mut lines = text.lines().map(str::trim);
-            while let Some(line) = lines.next() {
-                if line != "#[kernel]" {
-                    continue;
-                }
-                let name = lines
-                    .next()
-                    .and_then(|l| l.strip_prefix("pub unsafe fn "))
-                    .map(|l| l.split(['(', '<']).next().unwrap_or("").trim())
-                    .filter(|n| !n.is_empty())
-                    .ok_or_else(|| {
-                        Io(format!(
-                            "{}: `#[kernel]` must be followed by `pub unsafe fn <name>(`",
-                            path.display()
-                        ))
-                    })?;
-                names.push(name.to_string());
-            }
+            names.extend(scan_file(&text).map_err(|e| Scan(format!("{}: {e}", path.display())))?);
         }
     }
     names.sort();
     if let Some(w) = names.windows(2).find(|w| w[0] == w[1]) {
-        return Err(Io(format!(
-            "kernel `{}` is defined twice in device/src",
-            w[0]
-        )));
+        return Err(Scan(format!("kernel `{}` is defined twice", w[0])));
     }
     if names.is_empty() {
-        return Err(Io("no `#[kernel]` in device/src".into()));
+        return Err(Scan("no `#[kernel]` found".into()));
     }
     Ok(names)
+}
+
+/// The `#[kernel]` names in one source file (see [`scan_entries`]).
+fn scan_file(text: &str) -> Result<Vec<String>, String> {
+    let mut names = Vec::new();
+    let mut in_block = false;
+    let mut prev = "";
+    let mut pending = false;
+    for (i, raw) in text.lines().enumerate() {
+        let mut line = raw.trim();
+        if in_block {
+            match line.split_once("*/") {
+                Some((_, rest)) => {
+                    in_block = false;
+                    line = rest.trim();
+                }
+                None => continue,
+            }
+        }
+        if let Some((code, rest)) = line.split_once("/*") {
+            in_block = !rest.contains("*/");
+            line = code.trim();
+        }
+        let line = line.split("//").next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        let at = i + 1;
+        if pending {
+            names.push(kernel_name(line).ok_or_else(|| {
+                format!("line {at}: `#[kernel]` must be followed by `pub unsafe fn <name>(`")
+            })?);
+            pending = false;
+        } else if let Some(rest) = line.strip_prefix("#[kernel]") {
+            if prev.starts_with("#[cfg") {
+                return Err(format!(
+                    "line {at}: `#[cfg]` before `#[kernel]` is not supported (the scan cannot evaluate it)"
+                ));
+            }
+            match rest.trim() {
+                "" => pending = true,
+                f => names.push(kernel_name(f).ok_or_else(|| {
+                    format!("line {at}: `#[kernel]` must be followed by `pub unsafe fn <name>(`")
+                })?),
+            }
+        } else if line.starts_with("#[")
+            && line
+                .trim_start_matches("#[")
+                .split(['(', ']'])
+                .next()
+                .is_some_and(|a| a == "kernel" || a.ends_with("::kernel"))
+        {
+            return Err(format!(
+                "line {at}: unsupported kernel attribute `{line}`; write `#[kernel]`"
+            ));
+        }
+        prev = line;
+    }
+    if pending {
+        return Err("`#[kernel]` at end of file".into());
+    }
+    Ok(names)
+}
+
+/// `name` from `pub unsafe fn name(` / `pub unsafe fn name<`, without `r#`.
+fn kernel_name(line: &str) -> Option<String> {
+    let name = line
+        .strip_prefix("pub unsafe fn ")?
+        .split(['(', '<'])
+        .next()?
+        .trim();
+    let name = name.strip_prefix("r#").unwrap_or(name);
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 /// Toolchain preflight, then the nested build. Returns the PTX path and text.
@@ -229,9 +291,22 @@ fn compile_ptx(source: &Path, out_dir: &Path) -> Result<(PathBuf, String), Oxide
     let dir = backend.parent().unwrap_or(Path::new("."));
     let stamp_path = dir.join(".backend");
     println!("cargo:rerun-if-changed={}", stamp_path.display());
-    let stamp = fs::read_to_string(&stamp_path)
-        .ok()
+    let stamp_text = fs::read_to_string(&stamp_path).ok();
+    let stamp = stamp_text
+        .as_deref()
         .and_then(|s| s.split_whitespace().next().map(str::to_string));
+    if let Some(built_with) = stamp_text
+        .as_deref()
+        .and_then(|s| s.split_whitespace().nth(1))
+    {
+        if built_with != toolchain {
+            return Err(Toolchain(format!(
+                "backend {} was built with {built_with}, device/ pins {toolchain}; re-run \
+                 scripts/cuda-oxide/install-toolchain.sh",
+                backend.display()
+            )));
+        }
+    }
     let src = dir.join("src");
     let head = src
         .join(".git")
@@ -246,7 +321,13 @@ fn compile_ptx(source: &Path, out_dir: &Path) -> Result<(PathBuf, String), Oxide
         })
         .flatten();
     let seen: Vec<&str> = stamp.iter().chain(&head).map(String::as_str).collect();
-    if !seen.is_empty() && !seen.contains(&pin.as_str()) {
+    if seen.is_empty() {
+        println!(
+            "cargo:warning=kornia-oxide-kernels: cannot tell which rev the backend at {} was \
+             built from (no .backend stamp, no src/ checkout); assuming {pin}",
+            backend.display()
+        );
+    } else if !seen.contains(&pin.as_str()) {
         return Err(Toolchain(format!(
             "backend {} was built at {}, device/ pins {pin}; re-run \
              scripts/cuda-oxide/install-toolchain.sh",
@@ -281,12 +362,40 @@ fn compile_ptx(source: &Path, out_dir: &Path) -> Result<(PathBuf, String), Oxide
     // -- nested build, on a staged copy (the source may be a read-only registry dir)
     let kernels = out_dir.join("device-src");
     stage(source, &kernels)?;
-    let target_dir = out_dir.join("device-target");
+    // The nested cargo fingerprints RUSTFLAGS, which carry only the backend's
+    // path: key the target dir on what else decides the PTX (the backend file,
+    // its stamp, ARCH), so a reinstalled backend or a new ARCH rebuilds.
+    let backend_meta = fs::metadata(&backend).map_err(|e| Io(e.to_string()))?;
+    let mtime = backend_meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_nanos());
+    let key = fnv1a(
+        format!(
+            "{ARCH} {} {mtime} {}",
+            backend_meta.len(),
+            stamp_text.as_deref().unwrap_or("")
+        )
+        .as_bytes(),
+    );
+    let target_name = format!("device-target-{key:016x}");
+    for old in fs::read_dir(out_dir)
+        .map_err(|e| Io(e.to_string()))?
+        .flatten()
+    {
+        let n = old.file_name();
+        let n = n.to_string_lossy();
+        if n.starts_with("device-target") && n != target_name.as_str() {
+            fs::remove_dir_all(old.path()).map_err(|e| Io(e.to_string()))?;
+        }
+    }
+    let target_dir = out_dir.join(&target_name);
     let ptx_dir = out_dir.join("device-ptx");
     let ptx = ptx_dir.join(PTX_NAME);
-    let jobs = env::var("CARGO_BUILD_JOBS")
-        .or_else(|_| env::var("NUM_JOBS"))
-        .unwrap_or_else(|_| "2".into());
+    // Cargo always sets NUM_JOBS (the outer -j). The nested cargo also joins the
+    // outer jobserver (CARGO_MAKEFLAGS is kept), so both builds share one budget.
+    let jobs = env::var("NUM_JOBS").map_err(|_| Io("cargo did not set NUM_JOBS".into()))?;
     let ld_path = match env::var("LD_LIBRARY_PATH") {
         Ok(p) if !p.is_empty() => format!("{sysroot}/lib:{p}"),
         _ => format!("{sysroot}/lib"),
@@ -314,6 +423,9 @@ fn compile_ptx(source: &Path, out_dir: &Path) -> Result<(PathBuf, String), Oxide
             .env("CUDA_OXIDE_NO_FMA", "1")
             .env("CUDA_OXIDE_PTX_DIR", &ptx_dir)
             .env("LD_LIBRARY_PATH", &ld_path)
+            // A user-level `build.rustc-wrapper` (sccache) must not wrap the
+            // nested rustc: it does not know the codegen backend.
+            .env("CARGO_BUILD_RUSTC_WRAPPER", "")
             .output()
             .map_err(|e| Toolchain(format!("cannot spawn rustup: {e}")))?;
         if out.status.success() {
@@ -387,10 +499,12 @@ fn stage(src: &Path, dst: &Path) -> Result<(), OxideBuildError> {
 }
 
 /// Strip what the outer cargo exports to build scripts, so the nested cargo
-/// resolves its own toolchain, flags, target dir and jobserver. Its config is
-/// still read from the directories above `OUT_DIR`, like the outer cargo's.
+/// resolves its own toolchain, flags and target dir; it keeps the outer
+/// jobserver (`CARGO_MAKEFLAGS`). Its config is still read from the
+/// directories above `OUT_DIR`, like the outer cargo's, so a repo
+/// `.cargo/config.toml` applies only when the target dir is inside the repo.
 fn scrub_cargo_env(cmd: &mut Command) {
-    const KEEP: &[&str] = &["CARGO_HOME", "CARGO_BUILD_JOBS"];
+    const KEEP: &[&str] = &["CARGO_HOME", "CARGO_BUILD_JOBS", "CARGO_MAKEFLAGS"];
     // The nested build links host binaries; an outer linker override for the
     // host (wheel CI: `cc` over the repo's `.cargo/config.toml`) must reach it.
     let host_linker = env::var("HOST")
@@ -411,6 +525,7 @@ fn scrub_cargo_env(cmd: &mut Command) {
         "RUSTFLAGS",
         "RUSTDOCFLAGS",
         "RUSTUP_TOOLCHAIN",
+        // An outer `make`'s; cargo's own jobserver is CARGO_MAKEFLAGS.
         "MAKEFLAGS",
         "MFLAGS",
         "OUT_DIR",
@@ -431,4 +546,12 @@ fn scrub_cargo_env(cmd: &mut Command) {
             cmd.env_remove(k);
         }
     }
+}
+
+/// 64-bit FNV-1a: a stable key for the nested target dir (std's hasher is not
+/// stable across releases).
+fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+    })
 }

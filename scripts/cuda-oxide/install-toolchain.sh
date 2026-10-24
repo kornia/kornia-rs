@@ -6,7 +6,7 @@
 #     toolkit or libclang (the device-only kernel crate has no cuda-bindings);
 #   - the codegen backend built at the rev pinned in device/Cargo.toml.in.
 # Pieces already in PREFIX at the right version are reused (cache PREFIX in CI).
-# Every download is pinned and sha256-checked, except rustup and the nightly.
+# Every download is pinned and sha256-checked, except the nightly (rustup checks it).
 #
 #   scripts/cuda-oxide/install-toolchain.sh [PREFIX]   # default ~/.cargo/cuda-oxide
 #   . PREFIX/env.sh                                    # then cargo build --features cuda
@@ -39,9 +39,18 @@ fetch_sha() {
 # -- rust: rustup + the pinned nightly -----------------------------------------
 if ! command -v rustup >/dev/null; then
   log "installing rustup"
-  fetch https://sh.rustup.rs "$PREFIX/rustup-init.sh"
-  sh "$PREFIX/rustup-init.sh" -y --profile minimal --default-toolchain none
-  rm -f "$PREFIX/rustup-init.sh"
+  # rustup-init 1.29.1; sha256 from static.rust-lang.org/rustup/archive/<ver>/<triple>/rustup-init.sha256.
+  RUSTUP_VER=1.29.1
+  case "$(uname -m)" in
+    x86_64) triple=x86_64-unknown-linux-gnu RUSTUP_SHA=dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71 ;;
+    aarch64) triple=aarch64-unknown-linux-gnu RUSTUP_SHA=15f6e4ce9f583b929c996c91562bad6d4454f3281de858b02cdfdef615fac433 ;;
+    *) die "no pinned rustup-init for $(uname -m); install rustup first" ;;
+  esac
+  fetch_sha "https://static.rust-lang.org/rustup/archive/$RUSTUP_VER/$triple/rustup-init" \
+    "$PREFIX/rustup-init" "$RUSTUP_SHA"
+  chmod +x "$PREFIX/rustup-init"
+  "$PREFIX/rustup-init" -y --profile minimal --default-toolchain none
+  rm -f "$PREFIX/rustup-init"
   # shellcheck disable=SC1091
   . "${CARGO_HOME:-$HOME/.cargo}/env"
 fi
@@ -67,7 +76,7 @@ else
   (
     cd "$PREFIX/src/cuda-oxide/crates/rustc-codegen-cuda"
     LIBRARY_PATH="$SYSROOT/lib" LD_LIBRARY_PATH="$SYSROOT/lib" \
-      rustup run "$TC" cargo build --jobs "$JOBS" --target-dir "$PREFIX/backend-target"
+      rustup run "$TC" cargo build --locked --jobs "$JOBS" --target-dir "$PREFIX/backend-target"
   )
   cp "$PREFIX/backend-target/debug/librustc_codegen_cuda.so" "$SO"
   rm -rf "$PREFIX/backend-target" "$PREFIX/src"

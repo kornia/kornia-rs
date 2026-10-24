@@ -1,5 +1,5 @@
 //! PTX gate for the cuda-oxide kernels. Shared by `build.rs` and
-//! `tests/oxide_ptx_gate.rs`.
+//! `tests/ptx_gate.rs`.
 
 /// PTX target: JITs on any Turing-or-newer GPU.
 pub const ARCH: &str = "sm_75";
@@ -9,11 +9,13 @@ pub const FMA_ALLOWED: &[&str] = &[];
 
 /// Gate the module and every function in it.
 ///
-/// Module: `.target` is `ARCH`, no `.extern` (no libdevice or other link-time
-/// calls), and the `.entry` set equals `scanned`. Per `.entry` and `.func`:
-/// every `ld`/`st` names a state space (generic access means address-space
-/// inference was lost), no libdevice call, and no `fma` or float `mad` unless
-/// it is an entry listed in `FMA_ALLOWED` (CPU byte parity).
+/// Module: `.target` is `ARCH`, no `.extern` other than `.extern .shared`
+/// (dynamic shared memory; anything else is a link-time symbol such as
+/// libdevice), and the `.entry` set equals `scanned`. Per `.entry` and `.func`:
+/// every `ld`/`ldu`/`st`/`atom`/`red` names a state space (generic access means
+/// address-space inference was lost), no `__nv_` (libdevice) symbol anywhere,
+/// and no `fma` or float `mad` unless it is an entry listed in `FMA_ALLOWED`
+/// (CPU byte parity).
 ///
 /// # Arguments
 ///
@@ -34,12 +36,17 @@ pub fn gate(ptx: &str, scanned: &[String]) -> Result<(), Vec<String>> {
     for line in ptx.lines() {
         let code = line.split("//").next().unwrap_or("").trim();
         if code.starts_with(".extern") {
-            errs.push(format!("gate: module: external symbol `{code}`"));
+            if code.split_whitespace().nth(1) != Some(".shared") {
+                errs.push(format!("gate: module: external symbol `{code}`"));
+            }
             continue;
         }
         if let Some((is_entry, name)) = header(code) {
             if name.is_empty() || name.starts_with(|c: char| c.is_ascii_digit()) {
                 errs.push(format!("gate: function name `{name}` is not an identifier"));
+            }
+            if name.starts_with("__nv_") {
+                errs.push(format!("gate: module: libdevice function `{name}`"));
             }
             if is_entry {
                 names.push(name.clone());
@@ -50,6 +57,11 @@ pub fn gate(ptx: &str, scanned: &[String]) -> Result<(), Vec<String>> {
         let Some((is_entry, name)) = &func else {
             continue;
         };
+        // Checked on every body line: a multi-line `call` puts the callee on a
+        // line of its own.
+        if code.contains("__nv_") {
+            errs.push(format!("gate: {name}: libdevice symbol `{code}`"));
+        }
         let mut toks = code.split_whitespace();
         let Some(op) = (match toks.next() {
             Some(t) if t.starts_with('@') => toks.next(),
@@ -57,9 +69,14 @@ pub fn gate(ptx: &str, scanned: &[String]) -> Result<(), Vec<String>> {
         }) else {
             continue;
         };
+        const MEM_OPS: &[&str] = &["ld", "ldu", "st", "atom", "red"];
         const SPACES: &[&str] = &["global", "param", "shared", "local", "const"];
-        if (op.starts_with("ld.") || op.starts_with("st."))
-            && !SPACES.contains(&op.split('.').nth(1).unwrap_or(""))
+        let mut parts = op.split('.');
+        // The space may follow other qualifiers (`ld.volatile.global`,
+        // `ld.relaxed.gpu.global`).
+        if parts.next().is_some_and(|o| MEM_OPS.contains(&o))
+            && op.contains('.')
+            && !parts.any(|q| SPACES.contains(&q))
         {
             errs.push(format!("gate: {name}: generic memory op `{op}`"));
         }
@@ -69,9 +86,6 @@ pub fn gate(ptx: &str, scanned: &[String]) -> Result<(), Vec<String>> {
             errs.push(format!(
                 "gate: {name}: contracted `{op}` (not an entry in FMA_ALLOWED)"
             ));
-        }
-        if op.starts_with("call") && code.contains("__nv_") {
-            errs.push(format!("gate: {name}: libdevice call `{code}`"));
         }
     }
     names.sort();

@@ -38,9 +38,50 @@ fn entry_violations() {
         "ld.u32 %r1, [%rd1];",
         "@%p1 st.b8 [%rd1], %rs1;",
         "call.uni __nv_expf, (%f1);",
+        "ldu.u32 %r1, [%rd1];",
+        "atom.add.u32 %r1, [%rd1], 1;",
+        "red.add.u32 [%rd1], 1;",
+        "ld.volatile.u8 %rs1, [%rd1];",
     ] {
         let ptx = format!("{HEAD}{}", entry("k", &format!("\t{op}\n")));
         assert!(gate(&ptx, &k()).is_err(), "`{op}` passed the gate");
+    }
+}
+
+/// Legitimate spellings must pass: a gate that rejects them blocks the next
+/// kernel with a misleading error.
+#[test]
+fn legitimate_ops_pass() {
+    for op in [
+        "ld.volatile.global.u8 %rs1, [%rd1];",
+        "ld.relaxed.gpu.global.u32 %r1, [%rd1];",
+        "ld.global.nc.u32 %r1, [%rd1];",
+        "atom.global.add.u32 %r1, [%rd1], 1;",
+        "red.shared.add.u32 [%rd1], 1;",
+        "mad.wide.u32 %rd2, %r1, 4, %rd1;",
+    ] {
+        let ptx = format!("{HEAD}{}", entry("k", &format!("\t{op}\n")));
+        assert_eq!(gate(&ptx, &k()), Ok(()), "`{op}`");
+    }
+    let dyn_smem = format!(
+        "{HEAD}.extern .shared .align 16 .b8 smem[];\n{}",
+        entry("k", "")
+    );
+    assert_eq!(gate(&dyn_smem, &k()), Ok(()));
+}
+
+/// libdevice is caught on a multi-line call and when it is linked in as a
+/// defined `.func` (no `.extern` then).
+#[test]
+fn libdevice_violations() {
+    let multi_line = entry("k", "\tcall.uni (retval0),\n\t__nv_expf,\n\t(param0);\n");
+    let defined = format!(
+        "{HEAD}.func  (.param .b32 r) __nv_expf(\n\t.param .b32 x\n)\n{{\n\tret;\n}}\n{}",
+        entry("k", "")
+    );
+    for ptx in [format!("{HEAD}{multi_line}"), defined] {
+        let errs = gate(&ptx, &k()).expect_err(&ptx);
+        assert!(errs.iter().any(|e| e.contains("libdevice")), "{errs:?}");
     }
 }
 

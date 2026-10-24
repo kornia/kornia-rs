@@ -54,13 +54,7 @@ __device__ __forceinline__ float clamp01(float v) {
     return fminf(fmaxf(v, 0.0f), 1.0f);
 }
 
-// BT.601 luma weights.
-// u8: OpenCV's Q14 fixed point — matches color/gray/kernels.rs
-// (4899*R + 9617*G + 1868*B + 8192) >> 14, byte-parity with cv2.
-#define GRAY_WR_Q14 4899u
-#define GRAY_WG_Q14 9617u
-#define GRAY_WB_Q14 1868u
-#define GRAY_Q14_HALF 8192u
+// BT.601 luma weights (the u8 Q14 kernel is cuda-oxide, see gray.rs).
 // f32 — matches color/gray/kernels.rs RW_F32/GW_F32/BW_F32.
 #define GRAY_WR_F 0.299f
 #define GRAY_WG_F 0.587f
@@ -133,8 +127,10 @@ __device__ __forceinline__ void store_c3_quad(
 /// Error type returned by the CUDA color-conversion launchers.
 #[derive(Debug, thiserror::Error)]
 pub enum CudaColorError {
-    /// NVRTC compilation failure (deterministic; cached and returned on every call).
-    #[error("CUDA color kernel compile error: {0}")]
+    /// The kernel is unavailable: NVRTC compilation failed, the cuda-oxide
+    /// module failed to load, or the build has stub PTX (deterministic; cached
+    /// and returned on every call).
+    #[error("CUDA color kernel unavailable: {0}")]
     Compile(String),
     /// CUDA driver / launch failure.
     #[error("CUDA color kernel launch error: {0}")]
@@ -148,6 +144,13 @@ pub enum CudaColorError {
         got: usize,
         /// Minimum required length.
         need: usize,
+    },
+    /// The element count (`npixels` × elements per pixel) does not fit the
+    /// kernels' 32-bit index.
+    #[error("{npixels} pixels exceed the 32-bit kernel index range")]
+    TooManyPixels {
+        /// Requested pixel count.
+        npixels: usize,
     },
     /// A word-vectorized kernel got a device pointer that is not 4-byte aligned
     /// (e.g. a DLPack alias at an odd `byte_offset`); launching it would fault
@@ -266,11 +269,7 @@ where
     let elems = npixels
         .checked_mul(src_mul.max(dst_mul))
         .filter(|&e| e <= u32::MAX as usize)
-        .ok_or_else(|| {
-            CudaColorError::Cuda(format!(
-                "{npixels} pixels exceed the 32-bit kernel index range"
-            ))
-        })?;
+        .ok_or(CudaColorError::TooManyPixels { npixels })?;
     check_len("src", src.len(), npixels * src_mul)?;
     check_len("dst", dst.len(), npixels * dst_mul)?;
     if elems == 0 {
