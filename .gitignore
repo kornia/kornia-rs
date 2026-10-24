@@ -21,3 +21,7 @@ target
 # Cases mined from history by `skill_evals.py mine --make` (held out, never committed)
 .claude/skills/*/evals/heldout/
 __pycache__/
+
+# cuda-oxide PTX is generated into OUT_DIR by kornia-oxide-kernels/build.rs, never committed
+*.ptx
+.oxide-toolchain/

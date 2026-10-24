@@ -67,6 +67,7 @@ kornia-calib = { path = "crates/kornia-calib", version = "0.2.0" }
 kornia-image = { path = "crates/kornia-image", version = "0.2.0" }
 kornia-imgproc = { path = "crates/kornia-imgproc", version = "0.2.0" }
 kornia-io = { path = "crates/kornia-io", version = "0.2.0" }
+kornia-oxide-kernels = { path = "crates/kornia-oxide-kernels", version = "0.2.0" }
 kornia-tensor = { path = "crates/kornia-tensor", version = "0.2.0" }
 kornia-tensor-ops = { path = "crates/kornia-tensor-ops", version = "0.2.0" }
 kornia-vlm = { path = "crates/kornia-vlm", version = "0.2.0" }
