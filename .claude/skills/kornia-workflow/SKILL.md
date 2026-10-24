@@ -54,7 +54,9 @@ Without pixi: `cargo test --features ci`, `cargo test -p kornia-imgproc`,
    model, effort level, skills applied, and which part a human did. You are
    the sole responsible author of every line.
 5. Perf-sensitive change ⇒ before/after bench numbers (`kornia-code-review`).
-6. Changed a fact the skills describe ⇒ update them (`kornia-curation`).
+6. Changed a fact the skills describe, hit a non-obvious trap, or found something
+   reusable (a helper, a measured number, a pattern) ⇒ one line in the owning
+   skill (`kornia-curation` §1, §3).
    User-visible change ⇒ add `changelog.d/<PR>.<type>.md` (see
    `changelog.d/README.md`); never edit `CHANGELOG.md` outside a release PR.
 7. Reference the existing library implementation (OpenCV, a Rust crate) when

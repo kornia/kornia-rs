@@ -8,3 +8,5 @@ A passing review reports all of:
 Items 1 and 4 are the pass bar; items 1-4 are full credit.
 
 2026-10-22 (Opus 5.5 and Sonnet 5.5, one run each per skill version): items 1-3 found in every run, with or without section 0b. Item 4: 0/2 without 0b, 2/2 with the `Reuse searches` block.
+
+2026-10-24 (same skill edit): Opus 5.5 4/4, Sonnet 5.5 4/4; both gave `1e-3·I` as the disagreeing input. Both put items 1 and 2 on one line.

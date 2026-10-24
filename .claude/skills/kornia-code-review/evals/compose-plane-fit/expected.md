@@ -7,3 +7,5 @@ A passing review reports all of:
 Items 1 and 3 are the pass bar. Bonus: the test uses an axis-aligned square whose covariance is already diagonal, so the Jacobi loop never rotates (the test does not reach the algorithm); degenerate input (collinear, coincident, non-finite) returns `Ok`.
 
 2026-10-22 (Opus 5.5 and Sonnet 5.5, one run each per skill version): items 1-2 found in every run, with or without section 0b; reviewers split between `svd3_f64` and nalgebra before `kornia-arch` named a backend. Item 3: 0/2 without 0b, 2/2 with the `Reuse searches` block.
+
+2026-10-24 (skill at the kornia-workflow step 6 / kornia-curation rule 3 edit): Opus 5.5 3/3 + bonus (no-op axis-aligned test, degenerate input) and Sonnet 5.5 3/3 + bonus; both reached `svd3_f64` and measured the degenerate outputs with a Python transcription.

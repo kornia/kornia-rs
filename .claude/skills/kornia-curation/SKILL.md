@@ -34,9 +34,11 @@ cross-checks it.
    must restate a fact, add its check to `scripts/check_skills.py` in the same PR.
    When rewording a restated fact, verify it against the source (e.g.
    `PUBLISH_ORDER`), not only against the check: the check can be wrong too.
-3. **Record traps.** A non-obvious failure hit during a task (silent skip,
-   wrong default, misleading error) becomes one line in the owning skill: the
-   invariant and how to detect it. No narratives, no dates.
+3. **Record traps and findings.** A non-obvious failure hit during a task
+   (silent skip, wrong default, misleading error) becomes one line in the
+   owning skill: the invariant and how to detect it. So does a reusable finding
+   (an existing helper to call, a measured cost, a pattern that worked), with
+   the file or command that shows it. No narratives, no dates.
 4. **Reviews feed skills.** Every `kornia-code-review` run ends with a
    "Skill gaps" section. Each gap becomes a one-line rule in the owning skill;
    each defect a review missed becomes a case in
