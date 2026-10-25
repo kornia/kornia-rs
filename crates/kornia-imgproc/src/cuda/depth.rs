@@ -1,10 +1,16 @@
 //! CUDA kernels for the valid-aware depth median, the flying-pixel mask and
-//! flagged-pixel removal — textual twins of `depth/kernels.rs`.
+//! flagged-pixel removal — twins of `depth/kernels.rs`.
 //!
-//! The sorting networks are code-generated from the same const arrays the
-//! CPU uses (`SORT9` / `SORT25`), the window gather uses the same replicate
-//! border and tap order, and the flying-pixel test is the same expression,
-//! so device and host results are bit-identical by construction.
+//! One launch per op. A block owns a `TILE_W × TILE_H` output tile: its
+//! threads first sort the `ksize`-sample columns of the tile plus a
+//! `ksize / 2` apron into shared memory (each column once, shared by the
+//! `ksize` windows that contain it), synchronize, then run the rank-selection
+//! network on `ksize` adjacent sorted columns. A warp whose windows are all
+//! fully valid takes the plain-median network instead (a warp-uniform
+//! branch, so no divergence). The networks are code-generated from the
+//! const arrays the CPU uses (`COL3` / `COL5`, `RANK9` / `RANK25`,
+//! `MED25`), keys and the flying-pixel test are the same expressions, and
+//! every selection is exact, so device and host results are bit-identical.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -13,7 +19,14 @@ use cudarc::driver::{CudaContext, CudaSlice, CudaStream, DeviceRepr, ValidAsZero
 use kornia_tensor::CudaKernel;
 
 use super::try_compile_with_l1;
-use crate::depth::kernels::{FLYING_KSIZE, MASK_FLAGGED, SORT25, SORT9};
+use crate::depth::kernels::{COL3, COL5, FLYING_KSIZE, MASK_FLAGGED, MED25, RANK25, RANK9};
+
+/// Output tile width; one warp per tile row (the warp-uniform fast path
+/// relies on it).
+const TILE_W: u32 = 32;
+
+/// Output tile height.
+const TILE_H: u32 = 8;
 
 super::define_cuda_error!(
     /// Error type for the CUDA depth launchers.
@@ -49,7 +62,7 @@ impl CudaDepthPixel for f32 {
     const PRELUDE: &'static str = r#"
 typedef float T;
 __device__ __forceinline__ bool is_valid(T v) { return !isnan(v); }
-__device__ __forceinline__ T to_key(T v) { return isnan(v) ? __int_as_float(0x7f800000) : v; }
+__device__ __forceinline__ T to_key(T v) { return isnan(v) ? __int_as_float(0x7f800000) : v + 0.0f; }
 __device__ __forceinline__ T from_key(T k) { return k; }
 __device__ __forceinline__ T invalid_value() { return __int_as_float(0x7fc00000); }
 __device__ __forceinline__ float abs_diff_f32(T a, T b) { return fabsf(a - b); }
@@ -57,45 +70,88 @@ __device__ __forceinline__ float abs_diff_f32(T a, T b) { return fabsf(a - b); }
 "#;
 }
 
-/// `median_valid(src, x, y, w, h, c, &n)`: valid-sample median key of the
-/// `ksize × ksize` replicate-border window, `n` = valid tap count.
+/// Straight-line compare-exchanges on array `v`.
+fn net_src(net: &[(usize, usize)], v: &str) -> String {
+    net.iter()
+        .map(|&(a, b)| format!("    CE({v}[{a}], {v}[{b}]);\n"))
+        .collect()
+}
+
+/// `median_tile(src, w, h, c, &n)`: the shared-memory two-pass median of
+/// the calling thread's pixel `(blockIdx.x * TILE_W + threadIdx.x,
+/// blockIdx.y * TILE_H + threadIdx.y)`, channel `c` of `channels`; returns
+/// the rank-`n / 2` key, `n` = valid tap count. Every thread of the block
+/// must call it (it synchronizes), including those outside the image.
 fn median_fn_src(ksize: usize, channels: usize) -> String {
     let taps = ksize * ksize;
     let r = ksize / 2;
-    let net: String = if ksize == 3 { &SORT9[..] } else { &SORT25[..] }
-        .iter()
-        .map(|&(a, b)| format!("    CE(v[{a}], v[{b}]);\n"))
-        .collect();
+    let half = taps / 2;
+    let span = TILE_W as usize + 2 * r;
+    let col_net = net_src(if ksize == 3 { COL3 } else { COL5 }, "v");
+    let rank_net = net_src(if ksize == 3 { RANK9 } else { RANK25 }, "v");
+    let median = if ksize == 3 {
+        // med3(max(lows), med3(mids), min(highs)) on sorted columns.
+        "        m = med3(max(max(v[0], v[3]), v[6]), med3(v[1], v[4], v[7]), min(min(v[2], v[5]), v[8]));\n".to_string()
+    } else {
+        format!("{}        m = v[{half}];\n", net_src(MED25, "v"))
+    };
     format!(
         r#"
-__device__ __forceinline__ T median_valid(
-    const T* __restrict__ src, int x, int y, int w, int h, int c, int* count
+__device__ __forceinline__ T med3(T a, T b, T c) {{
+    return max(min(a, b), min(max(a, b), c));
+}}
+
+__device__ __forceinline__ T median_tile(
+    const T* __restrict__ src, int w, int h, int c, int* count
 ) {{
-    T v[{taps}];
-    int n = 0;
-    int t = 0;
-    #pragma unroll
-    for (int dy = -{r}; dy <= {r}; ++dy) {{
-        int sy = min(max(y + dy, 0), h - 1);
+    __shared__ T sk[{tile_h}][{ksize}][{span}];
+    __shared__ unsigned char sn[{tile_h}][{span}];
+    int ty = threadIdx.y;
+    int x0 = blockIdx.x * {tile_w};
+    int y = min((int)(blockIdx.y * {tile_h}) + ty, h - 1);
+    for (int cx = threadIdx.x; cx < {span}; cx += {tile_w}) {{
+        int sx = min(max(x0 + cx - {r}, 0), w - 1);
+        T v[{ksize}];
+        int n = 0;
         #pragma unroll
-        for (int dx = -{r}; dx <= {r}; ++dx) {{
-            int sx = min(max(x + dx, 0), w - 1);
+        for (int i = 0; i < {ksize}; ++i) {{
+            int sy = min(max(y + i - {r}, 0), h - 1);
             T s = __ldg(&src[(sy * w + sx) * {channels} + c]);
             n += is_valid(s) ? 1 : 0;
-            v[t++] = to_key(s);
+            v[i] = to_key(s);
         }}
+{col_net}
+        #pragma unroll
+        for (int i = 0; i < {ksize}; ++i) sk[ty][i][cx] = v[i];
+        sn[ty][cx] = (unsigned char)n;
     }}
-{net}
-    int k = n / 2;
-    T m = v[0];
+    __syncthreads();
+    T v[{taps}];
+    int n = 0;
     #pragma unroll
-    for (int i = 1; i < {taps}; ++i) {{
-        if (i == k) m = v[i];
+    for (int dc = 0; dc < {ksize}; ++dc) {{
+        n += sn[ty][threadIdx.x + dc];
+        #pragma unroll
+        for (int i = 0; i < {ksize}; ++i) v[dc * {ksize} + i] = sk[ty][i][threadIdx.x + dc];
+    }}
+    __syncthreads();
+    T m;
+    if (__all_sync(0xffffffffu, n == {taps})) {{
+{median}    }} else {{
+{rank_net}
+        int k = n / 2;
+        m = v[0];
+        #pragma unroll
+        for (int i = 1; i <= {half}; ++i) {{
+            if (i == k) m = v[i];
+        }}
     }}
     *count = n;
     return from_key(m);
 }}
-"#
+"#,
+        tile_w = TILE_W,
+        tile_h = TILE_H,
     )
 }
 
@@ -120,12 +176,11 @@ extern "C" __global__ void {name}(
 ) {{
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
-    if (x >= w || y >= h) return;
-    #pragma unroll
+    // No early return: every thread takes part in the tile's barriers.
     for (int c = 0; c < {channels}; ++c) {{
         int n;
-        T m = median_valid(src, x, y, w, h, c, &n);
-        dst[(y * w + x) * {channels} + c] = n == 0 ? invalid_value() : m;
+        T m = median_tile(src, w, h, c, &n);
+        if (x < w && y < h) dst[(y * w + x) * {channels} + c] = n == 0 ? invalid_value() : m;
     }}
 }}
 "#
@@ -143,12 +198,13 @@ extern "C" __global__ void {name}(
 ) {{
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
+    // No early return: every thread takes part in the tile's barriers.
+    int n;
+    T m = median_tile(src, w, h, 0, &n);
     if (x >= w || y >= h) return;
     T d = src[y * w + x];
     unsigned char out = 0;
     if (is_valid(d)) {{
-        int n;
-        T m = median_valid(src, x, y, w, h, 0, &n);
         if (n < min_valid) {{
             out = {MASK_FLAGGED};
         }} else {{
@@ -242,7 +298,7 @@ pub(crate) fn launch_median_blur_depth<T: CudaDepthPixel>(
     CudaDepthError::check_slice("src", src.len(), width * height * channels)?;
     CudaDepthError::check_slice("dst", dst.len(), width * height * channels)?;
     let kernel = get_kernel::<T>(ctx, Kind::Median { ksize, channels })?;
-    let cfg = super::make_config(w as u32, h as u32, None);
+    let cfg = super::make_config(w as u32, h as u32, Some((TILE_W, TILE_H)));
     kernel
         .launch_builder(stream)
         .arg(src)
@@ -273,7 +329,7 @@ pub(crate) fn launch_flying_pixel_mask<T: CudaDepthPixel>(
     // Any value above the tap count flags every valid pixel, as on the CPU.
     let min_valid = i32::try_from(min_valid).unwrap_or(i32::MAX);
     let kernel = get_kernel::<T>(ctx, Kind::FlyingMask)?;
-    let cfg = super::make_config(w as u32, h as u32, None);
+    let cfg = super::make_config(w as u32, h as u32, Some((TILE_W, TILE_H)));
     kernel
         .launch_builder(stream)
         .arg(src)
