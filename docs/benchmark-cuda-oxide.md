@@ -5,17 +5,17 @@ One row per kernel (and arch), plus a short section. Method:
 
 | Kernel | Arch | Byte-exact vs CPU | GPU 4K (ms) | CPU 4K (ms) | vs main's NVRTC (4K) |
 |---|---|---|---:|---:|---:|
-| `gray_from_rgb_u8` | sm_87 (Orin), PTX sm_75 | yes | 0.346 | 1.24-2.29 | 0.997 min, 0.999 median (clocks unlocked) |
+| `gray_from_rgb_u8` | sm_87 (Orin), PTX sm_75 | yes | 0.346 | 1.24-2.29 | 0.999 min, 0.998 median (clocks locked) |
 
 ## System
 
 | | |
 |---|---|
-| Date | 2026-10-24 (A/B at the PR head); earlier sittings 2026-10-14/16 |
+| Date | 2026-10-25 (locked-clock A/B at the PR head); earlier sittings 2026-10-14/16/24 |
 | Machine | Jetson Orin Nano Engineering Reference Developer Kit Super (ga10b, sm_87) |
 | L4T / CUDA / driver | R36.4.3 / 12.6.68 / 540.4.0 |
 | Power mode | MAXN_SUPER (nvpmodel 2) |
-| GPU clocks | **not locked** (DVFS 306-1020 MHz; no sudo for `jetson_clocks`) |
+| GPU clocks | locked with `jetson_clocks` for the 2026-10-25 A/B (GPU 1020 MHz, CPU 1728 MHz); earlier sittings unlocked (DVFS 306-1020 MHz) |
 | rustc | 1.98.0 (kornia), nightly-2026-10-11 (kornia-oxide-kernels) |
 | cuda-oxide / llc | NVIDIA/cuda-rust `6d47ae4` / nightly llvm-tools LLVM 23.1.3 (the 2026-10-14 sitting: NVlabs `f819f23` / LLVM 21.1.8) |
 
@@ -33,15 +33,27 @@ loads, one u32 store, byte tail. Replaces main's NVRTC kernel of the same name.
   threads, NEON): 4K GPU 0.3467-0.3474 ms (95.6 GB/s, 1020 MHz, spread <=4.5%)
   vs CPU 1.45-1.71 ms; 1080p GPU 0.091 ms vs CPU 0.55-0.59 ms. 320x240 is
   launch-bound and the governor sits at 306 MHz for some sittings: do not quote.
-- **vs main's NVRTC kernel, at the PR head on the shipped pin**
-  (`orin-test-bench.sh --base origin/main --cycles 4`, 2026-10-24; head
+- **vs main's NVRTC kernel, clocks locked** (`orin-test-bench.sh --base
+  origin/main --cycles 4`, 2026-10-25, GPU 1020 MHz; head `593063b` vs main
+  `5dcada0`, separate target dirs, binaries alternated). Min / median of the 4
+  cycle minima, ms:
+
+  | | head | main | head/main |
+  |---|---:|---:|---:|
+  | 3840x2160 | 0.3461 / 0.3468 | 0.3464 / 0.3475 | 0.999 / 0.998 |
+  | 1920x1080 | 0.0908 / 0.0910 | 0.0909 / 0.0912 | 0.999 / 0.997 |
+  | 320x240 | 0.0054 / 0.0055 | 0.0055 / 0.0056 | launch-bound |
+
+  Per-run medians at 320x240: head 0.0057-0.0058, main 0.0056-0.0058. The run
+  before (`e401290`) had head 0.0075 there in all 4 cycles with equal minima:
+  `launch_map` called `device_ptr` twice more per launch for the alignment
+  check, and each call waits on and records cudarc sync events. `593063b` takes
+  each pointer once.
+- **Same, clocks unlocked** (2026-10-24; head
   arm = `b67222b` before a test-only `mut` fix and `% 4` -> `is_multiple_of`,
   vs main `5dcada0`; separate target dirs, binaries alternated): 4K min 0.3459 vs 0.3470 ms, median of the 4 cycle minima
   0.3471 vs 0.3475 ms (0.997 min, 0.999 median); per-cycle spread <=5.1%, clock 714-1020 MHz.
   1080p and 320x240 swing with the governor (306-1020 MHz): not quoted.
-  Clocks were **not locked** (no sudo for `jetson_clocks`), so the merge bar
-  in `cuda-oxide.md` (clocks locked) is not yet met; the unlocked A/B shows no
-  regression.
 - **First sitting** (2026-10-14, NVlabs `f819f23`, nightly-2026-04-03): 4K
   min 0.3464 vs 0.3469 ms (0.999).
 - **After the bump to `6d47ae4`** (device-only crate, `CUDA_OXIDE_NO_FMA=1`,
