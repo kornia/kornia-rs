@@ -131,18 +131,11 @@ jobs:
           WHEEL=$(ls dist/*-manylinux*.whl 2>/dev/null | head -n1)
           [ -n "$WHEEL" ] || { echo "no manylinux wheel found"; exit 1; }
           bash kornia-py/scripts/verify_simd_kernels.sh "$WHEEL"
-          # Real cuda-oxide PTX, not the KORNIA_OXIDE_STUB empty string.
+          # Real cuda-oxide PTX, not the stub; the build's gate already checks
+          # that the entries match the `#[kernel]` items.
           mkdir -p /tmp/wheel-check && unzip -q -o "$WHEEL" '*.so' -d /tmp/wheel-check
-          SO=$(find /tmp/wheel-check -name 'kornia_rs*.so' | head -n1)
-          [ -n "$SO" ] || { echo "no .so found in wheel"; exit 1; }
-          # Every `#[kernel]` in the device crate (own line or same line).
-          ENTRIES=$(sed -n 's/^#\[kernel\] *pub unsafe fn \([A-Za-z0-9_]*\).*/\1/p; /^#\[kernel\]$/{n; s/^pub unsafe fn \([A-Za-z0-9_]*\).*/\1/p}' \
-            crates/kornia-oxide-kernels/device/src/*.rs)
-          [ -n "$ENTRIES" ] || { echo "::error::no #[kernel] found in the device crate"; exit 1; }
-          for e in $ENTRIES; do
-            grep -aq "\.entry $e" "$SO" || \
-              { echo "::error::cuda-oxide PTX entry $e missing from $SO"; exit 1; }
-          done
+          grep -raq '\.visible \.entry ' /tmp/wheel-check || \
+            { echo "::error::no cuda-oxide PTX in $WHEEL"; exit 1; }
       - name: Upload wheels
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
