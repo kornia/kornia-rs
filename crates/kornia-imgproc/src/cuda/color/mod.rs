@@ -28,7 +28,7 @@
 
 use std::sync::{Arc, OnceLock};
 
-use cudarc::driver::{CudaStream, DevicePtr};
+use cudarc::driver::{CudaStream, DevicePtr, DevicePtrMut};
 use kornia_tensor::CudaKernel;
 
 pub mod bayer;
@@ -281,10 +281,15 @@ where
     if elems == 0 {
         return Ok(());
     }
+    // One device_ptr per slice: each call waits on and records cudarc's sync
+    // events, so the pointers checked are the ones launched, and the guards
+    // record after the launch as `.arg(slice)` would.
+    let (src_ptr, _src_sync) = src.device_ptr(stream);
+    let (dst_ptr, _dst_sync) = dst.device_ptr_mut(stream);
     if let PxPerThread::Four = px_per_thread {
         // The four-pixel kernels load and store whole u32 words.
-        check_aligned("src", src.device_ptr(stream).0)?;
-        check_aligned("dst", dst.device_ptr(stream).0)?;
+        check_aligned("src", src_ptr)?;
+        check_aligned("dst", dst_ptr)?;
     }
     let n = npixels as u32;
     let threads = match px_per_thread {
@@ -293,8 +298,8 @@ where
     };
     kernel
         .launch_builder(stream)
-        .arg(src)
-        .arg(dst)
+        .arg(&src_ptr)
+        .arg(&dst_ptr)
         .arg(&n)
         .launch_1d(threads)?;
     Ok(())
