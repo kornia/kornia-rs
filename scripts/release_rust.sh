@@ -48,8 +48,8 @@ done
 # Topological publish order. Every crate's kornia-* dependencies must
 # already be on crates.io (or appear earlier in this list).
 #
-# Tier 0 (no kornia-* deps):       kornia-algebra, kornia-bow, kornia-tensor,
-#                                  kornia-oxide-kernels (before kornia-imgproc)
+# Tier 0 (no kornia-* deps):       kornia-algebra, kornia-bow, kornia-oxide-kernels
+# Tier 0b (-> oxide-kernels, opt.): kornia-tensor (`cuda` loads its PTX)
 # Tier 1 (-> tensor):              kornia-tensor-ops, kornia-image
 # Tier 2 (-> image, tensor):       kornia-io
 # Tier 3 (-> algebra/image/tensor/io): kornia-imgproc
@@ -58,8 +58,8 @@ done
 PUBLISH_ORDER=(
   kornia-algebra
   kornia-bow
-  kornia-tensor
   kornia-oxide-kernels
+  kornia-tensor
   kornia-tensor-ops
   kornia-image
   kornia-io
@@ -77,7 +77,7 @@ declare -A NOT_PUBLISHED=(
 # Tier-0 leaves (no kornia-* deps) — can be `cargo publish --dry-run`'d
 # locally for verification because there's nothing to resolve from crates.io.
 # kornia-oxide-kernels verifies without its `ptx` feature: stub PTX, no nightly.
-TIER_0=(kornia-algebra kornia-bow kornia-tensor kornia-oxide-kernels)
+TIER_0=(kornia-algebra kornia-bow kornia-oxide-kernels)
 
 # Per-crate extra flags. We deliberately do NOT pass --all-features:
 # kornia-io's gstreamer feature requires glib/gobject dev headers, and

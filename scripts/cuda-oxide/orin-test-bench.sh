@@ -59,14 +59,20 @@ mapfile -t entries < <(sed -n 's/.*\.entry \([A-Za-z0-9_]*\).*/\1/p' "$ptx")
 ((${#entries[@]})) || die "no .entry in $ptx"
 echo "entries: ${entries[*]}"
 log="$(mktemp)"
-cargo test --release -p kornia-imgproc --features cuda --lib -- oxide "${entries[@]}" \
+cargo test --release -p kornia-imgproc --features cuda --lib -- "${entries[@]}" \
   --test-threads=1 2>&1 | tee "$log"
+# The loader lives in kornia-tensor; `ptx` makes its tests load the real PTX.
+cargo test --release -p kornia-tensor --features cuda,kornia-oxide-kernels/ptx --lib -- \
+  cuda::oxide 2>&1 | tee -a "$log"
 # cargo skips targets with unmet features silently: check names, not "ok".
-grep -q "^test cuda::oxide::tests::all_entries_load \.\.\. ok$" "$log" || die "all_entries_load did not pass"
+for t in all_entries_load concurrent_calls_share_one_module; do
+  grep -q "^test cuda::oxide::tests::$t \.\.\. ok$" "$log" || die "$t did not pass"
+done
 for e in "${entries[@]}"; do
   grep -Eq "^test .*::${e}[a-z0-9_]*bit_exact \.\.\. ok$" "$log" || die "no passing ${e}*bit_exact test"
 done
-grep -Eq "test result: ok\. [1-9][0-9]* passed; 0 failed" "$log" || die "tests failed or none ran"
+grep -q "test result: FAILED" "$log" && die "tests failed"
+grep -Eq "test result: ok\. [1-9][0-9]* passed; 0 failed" "$log" || die "no tests ran"
 rm -f "$log"
 echo "orin-test-bench: parity tests passed for ${#entries[@]} entries"
 

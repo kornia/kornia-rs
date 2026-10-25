@@ -10,16 +10,18 @@ its own pinned nightly. Kernels not yet ported stay NVRTC-compiled at runtime
 and keep working under the same feature. Roadmap:
 [#1135](https://github.com/kornia/kornia-rs/issues/1135).
 
-Two crates. `kornia-oxide-kernels` owns the kernels and the PTX build; it is
-host-only data (no cudarc). kornia-imgproc's `cuda` feature depends on it with
-its `ptx` feature on and owns the loader and the launchers.
+`kornia-oxide-kernels` owns the kernels and the PTX build; it is host-only data
+with no dependencies. kornia-tensor's `cuda` feature owns the loader
+(`kornia_tensor::cuda::oxide`), so every crate with kernels, kornia-tensor
+included, reaches it without a cycle. The PTX is real only when a crate in the
+build turns on `kornia-oxide-kernels/ptx`; kornia-imgproc's `cuda` does.
 
 | Path | Role |
 |---|---|
 | `crates/kornia-oxide-kernels/device/src/<family>.rs` | Kernel source, one module per family (`color`, `resize`, ...). Own `[workspace]`, pinned nightly, manifest shipped as `Cargo.toml.in` so `cargo package` keeps the directory. |
 | `crates/kornia-oxide-kernels/build.rs` | Scans `device/src` for `#[kernel]` items; with `ptx`, builds the PTX and gates it. Writes `$OUT_DIR/kernels.ptx` + `$OUT_DIR/entries.rs`. |
 | `crates/kornia-oxide-kernels/src/lib.rs` | `PTX`, `IS_STUB`, `ENTRIES` and `entry::<NAME>` (the PTX entry name). |
-| `crates/kornia-imgproc/src/cuda/oxide/mod.rs` | Loader only (crate-private): one module, `kernel(stream, entry::<NAME>)`. |
+| `crates/kornia-tensor/src/cuda/oxide.rs` | Loader: one module per device, `kernel(stream, entry::<NAME>) -> &'static CudaKernel`, lock-free after the first load. |
 | `crates/kornia-imgproc/src/cuda/<family>/` | The family's existing public launchers; only their kernel fetch changes. |
 | `crates/kornia-imgproc/benches/bench_cuda_oxide.rs` | Every oxide kernel vs its CPU path; one `CASES` row per op and size. |
 | `scripts/cuda-oxide/install-toolchain.sh` | Installs the toolchain below (local, CI and wheels share it). |
@@ -120,15 +122,18 @@ A second kernel PR (e.g. bicubic resize) does exactly this; nothing else:
    - backend gaps: `Ord::min` and `f32::min`/`max` work; `to_int_unchecked`
      does not compile (use `as`); no `__ldg` (a no-op on sm_87 anyway).
 2. **Launcher.** In the family's public launcher replace the NVRTC kernel fetch
-   with `oxide::kernel(stream, oxide::entry::<NAME>)?` (add
-   `From<OxideError>` for the family error if it lacks one) and **delete the NVRTC source** for that op. Validation and
+   with `oxide::kernel(stream, oxide::entry::<NAME>)?` (`use
+   kornia_tensor::cuda::oxide`; add `From<OxideError>` for the family error if
+   it lacks one; a crate other than kornia-imgproc also enables
+   `kornia-oxide-kernels/ptx` in its `cuda` feature) and **delete the NVRTC source** for that op. Validation and
    launch geometry stay; no new public API, no `_nvrtc` twin, no fallback.
 3. **Tests.** A family test named `<name>_bit_exact` on the public launcher,
    with the CPU path as the reference (never a test-written one): every tail
    length of the per-thread vector width, 1xN / Nx1 / odd sizes, at least one HD
    size, a sentinel-filled oversized `dst`, and the degenerate inputs (zero
    size, overflowing size -> `Err`). `orin-test-bench.sh` fails if an entry has
-   no passing `<name>*bit_exact` test, and `all_entries_load` must pass.
+   no passing `<name>*bit_exact` test, and kornia-tensor's `oxide` loader tests
+   must pass with real PTX.
 4. **Bench.** One `CASES` row per size in
    `crates/kornia-imgproc/benches/bench_cuda_oxide.rs`.
 5. **Numbers.** One row and a short section in `docs/benchmark-cuda-oxide.md`,

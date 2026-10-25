@@ -8,9 +8,9 @@
 use std::sync::Arc;
 
 use cudarc::driver::{CudaSlice, CudaStream};
+use kornia_tensor::cuda::oxide;
 
 use super::{get_kernel, launch_map, CudaColorError, KernelCell, PxPerThread};
-use crate::cuda::oxide;
 
 static GRAY_FROM_RGB_F32_SRC: &str = r#"
 extern "C" __global__ void gray_from_rgb_f32(

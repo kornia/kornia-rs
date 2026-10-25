@@ -53,6 +53,8 @@
 //! - `miri` cannot execute CUDA driver calls; device tests are guarded by
 //!   `#[cfg(all(test, feature = "cuda"))]` and run on the real Jetson Orin.
 
+pub mod oxide;
+
 use std::{
     any::Any,
     collections::HashMap,

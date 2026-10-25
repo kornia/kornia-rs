@@ -8160,6 +8160,7 @@ dependencies = [
  "criterion 0.8.2",
  "cudarc 0.19.9",
  "dlpack-rs",
+ "kornia-oxide-kernels",
  "num-traits",
  "rayon",
  "serde",
