@@ -140,11 +140,16 @@ fn run() -> Result<PathBuf, String> {
         backend.display(),
         device_src::RUSTFLAGS
     );
+    let manifest = staged.join("Cargo.toml");
     let nested = |args: &[&str]| -> Result<(), String> {
         let mut cmd = Command::new("rustup");
+        // cwd outside the repo: cargo reads `.cargo/config.toml` from the cwd
+        // up, and the repo's (host linker, target rustflags) is not for this.
         cmd.args(["run", &toolchain, "cargo"])
             .args(args)
-            .current_dir(&staged);
+            .arg("--manifest-path")
+            .arg(&manifest)
+            .current_dir(env::temp_dir());
         // Whatever the caller's cargo exported (sccache wrapper, RUSTFLAGS,
         // the outer target dir, cargo-run's CARGO_*) must not reach it.
         for (key, _) in env::vars_os() {

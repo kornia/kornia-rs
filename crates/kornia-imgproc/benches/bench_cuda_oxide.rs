@@ -7,6 +7,7 @@
 //! (kernel time, no transfers); the CPU arm times `ITERS` calls on the wall
 //! clock. Each cycle keeps its fastest round. Reported: min and median of the
 //! cycle minima, their spread, and the GPU clock seen after each round.
+//! End-to-end numbers (H2D + kernel + D2H) stay in `bench_cuda_imgproc`.
 //!
 //! ```text
 //! cargo bench -p kornia-imgproc --bench bench_cuda_oxide --features cuda

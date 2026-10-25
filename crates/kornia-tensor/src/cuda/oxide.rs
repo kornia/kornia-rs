@@ -42,6 +42,15 @@ pub enum OxideError {
 /// the module on first use there. A load failure is cached per device and
 /// returned on every call.
 ///
+/// # Arguments
+///
+/// * `stream` - Stream whose device the kernel is loaded on.
+/// * `name` - The entry name, an [`entry`] const.
+///
+/// # Returns
+///
+/// The kernel, valid for the life of the process.
+///
 /// # Errors
 ///
 /// [`OxideError::Stub`] without real PTX; [`OxideError::Load`] if the driver

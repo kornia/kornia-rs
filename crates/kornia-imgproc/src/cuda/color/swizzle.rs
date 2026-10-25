@@ -202,6 +202,13 @@ static STRIP_U8: KernelSuiteCell = KernelSuiteCell::new();
 
 /// Launch RGB8 ↔ BGR8 channel swap (symmetric — also BGR → RGB;
 /// word-vectorized 4 px/thread).
+///
+/// # Errors
+///
+/// [`CudaColorError::TooManyPixels`] if `3 * npixels` exceeds `u32::MAX`,
+/// [`CudaColorError::SliceTooSmall`] if a buffer is short,
+/// [`CudaColorError::Misaligned`] if `src` or `dst` is not 4-byte aligned (an
+/// alias at an odd offset), or a compile or launch error.
 pub fn launch_bgr_from_rgb_u8(
     stream: &Arc<CudaStream>,
     src: &CudaSlice<u8>,

@@ -84,6 +84,13 @@ static SEPIA_F32: KernelCell = KernelCell::new();
 
 /// Launch sepia tone on RGB8 (Q8 fixed point, bit-exact vs CPU;
 /// word-vectorized 4 px/thread).
+///
+/// # Errors
+///
+/// [`CudaColorError::TooManyPixels`] if `3 * npixels` exceeds `u32::MAX`,
+/// [`CudaColorError::SliceTooSmall`] if a buffer is short,
+/// [`CudaColorError::Misaligned`] if `src` or `dst` is not 4-byte aligned (an
+/// alias at an odd offset), or a compile or launch error.
 pub fn launch_sepia_from_rgb_u8(
     stream: &Arc<CudaStream>,
     src: &CudaSlice<u8>,
