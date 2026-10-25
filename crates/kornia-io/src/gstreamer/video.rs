@@ -527,6 +527,22 @@ impl VideoReader {
     /// Returns [`VideoReaderError::StreamCaptureError`] wrapping
     /// [`StreamCaptureError::InvalidImageFormat`] if the pipeline produces a different format,
     /// or any other error of [`StreamCapture::grab_gray8`].
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use kornia_io::gstreamer::video::{ImageFormat, VideoReader};
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut reader = VideoReader::new("input.mp4", ImageFormat::Mono8)?;
+    /// reader.start()?;
+    /// if let Some(frame) = reader.grab_gray8()? {
+    ///     println!("{}x{}", frame.width(), frame.height());
+    /// }
+    /// reader.close()?;
+    /// # Ok(())
+    /// # }
+    /// ```
     #[inline]
     pub fn grab_gray8(&mut self) -> Result<Option<Image<u8, 1>>, VideoReaderError> {
         self.0
