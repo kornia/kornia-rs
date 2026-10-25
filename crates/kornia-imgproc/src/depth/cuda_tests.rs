@@ -115,6 +115,55 @@ fn median_blur_depth_device_equals_host_f32() -> TestResult {
     Ok(())
 }
 
+/// Holes only in the left quarter: warps right of it see fully valid
+/// windows and take the plain-median network, warps left of it do not.
+fn holes_left_quarter_u16(w: usize, h: usize, seed: u64) -> Vec<u16> {
+    let mut data = depth_u16(w, h, 1, seed);
+    for (i, v) in data.iter_mut().enumerate() {
+        if i % w >= w / 4 {
+            *v = (*v).max(1);
+        }
+    }
+    data
+}
+
+#[test]
+fn median_blur_depth_device_equals_host_dense_tiles() -> TestResult {
+    let bits_u16: fn(&u16) -> u32 = |v| u32::from(*v);
+    let bits_f32: fn(&f32) -> u32 = |v| v.to_bits();
+    for (i, &(w, h)) in SIZES.iter().enumerate() {
+        for ksize in [3, 5] {
+            let data = holes_left_quarter_u16(w, h, 600 + i as u64);
+            let dense: Vec<u16> = data.iter().map(|&v| v.max(1)).collect();
+            check_median::<u16, 1>(data.clone(), w, h, ksize, bits_u16)?;
+            check_median::<u16, 1>(dense.clone(), w, h, ksize, bits_u16)?;
+            // f32: `-0.0` and `+inf` samples among the valid ones.
+            let to_f32 = |v: &u16| match v % 13 {
+                0 => -0.0,
+                1 => f32::INFINITY,
+                _ if *v == 0 => f32::NAN,
+                _ => f32::from(*v) * 1e-3,
+            };
+            check_median::<f32, 1>(data.iter().map(to_f32).collect(), w, h, ksize, bits_f32)?;
+            check_median::<f32, 1>(dense.iter().map(to_f32).collect(), w, h, ksize, bits_f32)?;
+        }
+        let data = holes_left_quarter_u16(w, h, 700 + i as u64);
+        let src = Image::<u16, 1>::new(sz(w, h), data)?;
+        let mut cpu = Image::<u8, 1>::from_size_val(src.size(), 0)?;
+        flying_pixel_mask(&src, &mut cpu, 30.0, 0.01, 6)?;
+        let stream = default_stream();
+        let d_src = src.to_cuda(&stream)?;
+        let mut d_mask = Image::<u8, 1>::zeros_cuda(src.size(), &stream)?;
+        flying_pixel_mask(&d_src, &mut d_mask, 30.0, 0.01, 6)?;
+        assert_eq!(
+            d_mask.to_host_owned()?.as_slice(),
+            cpu.as_slice(),
+            "{w}x{h}"
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn flying_pixel_mask_device_equals_host() -> TestResult {
     let stream = default_stream();

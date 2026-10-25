@@ -61,6 +61,8 @@ pub trait DepthPixel: sealed::Sealed + Copy + Send + Sync + 'static {
 ///   `n / 2` of the sorted valid samples) is returned, not the mean of the
 ///   two middle values: the output is always one of the input samples, so
 ///   the filter never invents a depth between two surfaces.
+/// * `f32` `-0.0` is read as `+0.0` (they compare equal), so the output
+///   bits do not depend on which of two equal samples is selected.
 ///
 /// The `u8` [`crate::filter::median_blur`] is unchanged by this op.
 ///
