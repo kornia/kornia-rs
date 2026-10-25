@@ -14,7 +14,11 @@ and keep working under the same feature. Roadmap:
 with no dependencies. kornia-tensor's `cuda` feature owns the loader
 (`kornia_tensor::cuda::oxide`), so every crate with kernels, kornia-tensor
 included, reaches it without a cycle. The PTX is real only when a crate in the
-build turns on `kornia-oxide-kernels/ptx`; kornia-imgproc's `cuda` does.
+build turns on `kornia-oxide-kernels/ptx`. Rule: a crate's `cuda` feature
+turns on `ptx` exactly when that crate ships oxide kernels (kornia-imgproc
+today; kornia-tensor's `cuda` joins when its `ops.rs` kernels migrate). Users
+only ever set `cuda`; crates using kornia-tensor for device memory alone stay
+on stable without the toolchain.
 
 | Path | Role |
 |---|---|
