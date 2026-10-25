@@ -282,7 +282,7 @@ impl StreamCapture {
 
         // A missing framerate means a variable or unknown rate, which GStreamer writes as 0/1.
         // Failing here would silently end the stream: errors in this callback never reach the
-        // caller, so every other check on the caps happens in `grab_rgb8`.
+        // caller, so every other check on the caps happens in `grab_image`.
         let fps = caps
             .structure(0)
             .and_then(|structure| structure.get::<gstreamer::Fraction>("framerate").ok())
