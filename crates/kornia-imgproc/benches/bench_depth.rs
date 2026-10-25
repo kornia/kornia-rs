@@ -1,5 +1,5 @@
-//! Depth ops: valid-aware median blur and the flying-pixel mask, u16 depth,
-//! CPU and (with `--features cuda`) device-resident CUDA.
+//! Depth ops: valid-aware median blur (u16 and f32) and the flying-pixel
+//! mask (u16), CPU and (with `--features cuda`) device-resident CUDA.
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use kornia_image::{Image, ImageSize};
@@ -27,6 +27,14 @@ fn depth_u16(w: usize, h: usize) -> Vec<u16> {
         .collect()
 }
 
+/// The u16 fixture in metres, holes as NaN.
+fn depth_f32(depth: &[u16]) -> Vec<f32> {
+    depth
+        .iter()
+        .map(|&d| if d == 0 { f32::NAN } else { f32::from(d) * 1e-3 })
+        .collect()
+}
+
 fn bench_depth(c: &mut Criterion) {
     let mut group = c.benchmark_group("Depth");
     for (w, h) in SIZES {
@@ -34,7 +42,9 @@ fn bench_depth(c: &mut Criterion) {
             width: w,
             height: h,
         };
-        let src = Image::<u16, 1>::new(size, depth_u16(w, h)).unwrap();
+        let depth = depth_u16(w, h);
+        let src_f32 = Image::<f32, 1>::new(size, depth_f32(&depth)).unwrap();
+        let src = Image::<u16, 1>::new(size, depth).unwrap();
         let id = format!("{w}x{h}");
 
         for ksize in [3usize, 5] {
@@ -42,6 +52,15 @@ fn bench_depth(c: &mut Criterion) {
             group.bench_function(
                 BenchmarkId::new(format!("median_u16_k{ksize}_cpu"), &id),
                 |b| b.iter(|| std::hint::black_box(median_blur_depth(&src, &mut dst, ksize))),
+            );
+            let mut dst_f32 = Image::<f32, 1>::from_size_val(size, 0.0).unwrap();
+            group.bench_function(
+                BenchmarkId::new(format!("median_f32_k{ksize}_cpu"), &id),
+                |b| {
+                    b.iter(|| {
+                        std::hint::black_box(median_blur_depth(&src_f32, &mut dst_f32, ksize))
+                    })
+                },
             );
         }
         let mut mask = Image::<u8, 1>::from_size_val(size, 0).unwrap();
@@ -54,6 +73,7 @@ fn bench_depth(c: &mut Criterion) {
             let ctx = cudarc::driver::CudaContext::new(0).unwrap();
             let stream = ctx.default_stream();
             let d_src = src.to_cuda(&stream).unwrap();
+            let d_src_f32 = src_f32.to_cuda(&stream).unwrap();
             // Kernel time only: images stay device-resident, the stream is
             // synchronized inside the timed loop so launches are not queued.
             for ksize in [3usize, 5] {
@@ -63,6 +83,16 @@ fn bench_depth(c: &mut Criterion) {
                     |b| {
                         b.iter(|| {
                             median_blur_depth(&d_src, &mut d_dst, ksize).unwrap();
+                            stream.synchronize().unwrap();
+                        })
+                    },
+                );
+                let mut d_dst_f32 = Image::<f32, 1>::zeros_cuda(size, &stream).unwrap();
+                group.bench_function(
+                    BenchmarkId::new(format!("median_f32_k{ksize}_cuda"), &id),
+                    |b| {
+                        b.iter(|| {
+                            median_blur_depth(&d_src_f32, &mut d_dst_f32, ksize).unwrap();
                             stream.synchronize().unwrap();
                         })
                     },
