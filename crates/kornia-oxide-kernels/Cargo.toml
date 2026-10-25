@@ -14,15 +14,15 @@ categories = { workspace = true }
 include = [
   "build.rs",
   "device_src.rs",
+  "device/Cargo.lock",
+  "device/Cargo.toml.in",
+  "device/rust-toolchain.toml",
+  "device/src/**",
+  "examples/**",
+  "kernels.ptx",
   "ptx_gate.rs",
   "src/**",
   "tests/**",
-  "examples/**",
-  "device/Cargo.toml.in",
-  "device/Cargo.lock",
-  "device/rust-toolchain.toml",
-  "device/src/**",
-  "kernels.ptx",
 ]
 publish = true
 
