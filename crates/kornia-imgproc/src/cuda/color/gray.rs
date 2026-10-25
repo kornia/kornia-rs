@@ -121,7 +121,7 @@ pub fn launch_gray_from_rgb_u8(
         return Ok(());
     }
     let kernel = oxide::kernel(stream, oxide::entry::GRAY_FROM_RGB_U8)?;
-    launch_map(&kernel, stream, src, dst, npixels, 3, 1, PxPerThread::Four)
+    launch_map(kernel, stream, src, dst, npixels, 3, 1, PxPerThread::Four)
 }
 
 /// Launch RGB f32 → Gray f32 with BT.601 weights (0.299, 0.587, 0.114).
