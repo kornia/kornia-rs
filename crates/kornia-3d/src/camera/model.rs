@@ -40,8 +40,10 @@ pub trait CameraModel {
     ///
     /// # Returns
     ///
-    /// The unit bearing of the ray, in the camera frame.
-    fn unproject(&self, pixel: &Vec2F64) -> Vec3F64;
+    /// The unit bearing of the ray, in the camera frame, or `None` when no ray
+    /// in the model's valid range images the pixel: it lies past the fold, where
+    /// the distortion turns back on itself, or the inversion did not converge.
+    fn unproject(&self, pixel: &Vec2F64) -> Option<Vec3F64>;
 }
 
 /// A camera whose model is chosen at runtime.
@@ -80,7 +82,7 @@ impl CameraModel for Camera {
         }
     }
 
-    fn unproject(&self, pixel: &Vec2F64) -> Vec3F64 {
+    fn unproject(&self, pixel: &Vec2F64) -> Option<Vec3F64> {
         match self {
             Self::Pinhole(camera) => camera.unproject(pixel),
             Self::Fisheye(camera) => camera.unproject(pixel),
@@ -144,7 +146,7 @@ mod tests {
     }
 
     fn assert_round_trips(camera: &impl CameraModel, p: Vec3F64, tolerance: f64) {
-        let bearing = camera.unproject(&camera.project(&p).unwrap());
+        let bearing = camera.unproject(&camera.project(&p).unwrap()).unwrap();
         assert!((bearing.length() - 1.0).abs() < 1e-12);
         assert!(
             (bearing - p.normalize()).length() < tolerance,
@@ -192,7 +194,7 @@ mod tests {
         let camera = radtan();
         for (u, v) in [(0.0, 0.0), (751.0, 0.0), (0.0, 479.0), (751.0, 479.0)] {
             let pixel = Vec2F64::new(u, v);
-            let back = camera.project(&camera.unproject(&pixel)).unwrap();
+            let back = camera.project(&camera.unproject(&pixel).unwrap()).unwrap();
             assert!(
                 (back - pixel).length() < 1e-6,
                 "{pixel:?} came back as {back:?}"

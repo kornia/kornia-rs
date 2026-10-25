@@ -201,7 +201,8 @@ pub struct TriangulatedPoint {
 ///
 /// For each pair of observations, computes a 3D point via midpoint triangulation
 /// of the rays `camera` unprojects and filters by depth, parallax, midpoint gap,
-/// and reprojection error. Accepted points are returned in world coordinates.
+/// and reprojection error. Pairs `camera` cannot unproject are skipped. Accepted
+/// points are returned in world coordinates.
 ///
 /// # Arguments
 ///
@@ -243,8 +244,9 @@ pub fn triangulate_matched_points<C: CameraModel + ?Sized>(
     let mut result = Vec::new();
 
     for (i, (p1, p2)) in pts1.iter().zip(pts2.iter()).enumerate() {
-        let ray1 = camera.unproject(p1);
-        let ray2 = camera.unproject(p2);
+        let (Some(ray1), Some(ray2)) = (camera.unproject(p1), camera.unproject(p2)) else {
+            continue;
+        };
 
         let Some((p_cam1, gap)) = triangulate_midpoint_known_pose(&ray1, &ray2, &r_rel, &t_rel)
         else {

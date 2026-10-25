@@ -89,32 +89,89 @@ impl PinholeCamera {
 
     /// Undistorts a pixel by inverting Brown-Conrady distortion with Newton iteration.
     ///
-    /// Returns the undistorted pixel `(u, v)` in the ideal pinhole image plane.
+    /// # Arguments
+    ///
+    /// * `col` - Column of the pixel in the raw image.
+    /// * `row` - Row of the pixel in the raw image.
+    ///
+    /// # Returns
+    ///
+    /// The pixel `(u, v)` in the ideal pinhole image. For a pixel the distortion
+    /// cannot produce (past the fold of the radial map) this is the inversion's
+    /// best estimate, not a true preimage; [`CameraModel::unproject`] returns
+    /// `None` there instead.
     pub fn undistort(&self, col: f64, row: f64) -> Vec2F64 {
-        let n = self.undistort_normalized((col - self.cx) / self.fx, (row - self.cy) / self.fy);
+        let (n, _) =
+            self.undistort_normalized((col - self.cx) / self.fx, (row - self.cy) / self.fy);
         Vec2F64::new(self.fx * n.x + self.cx, self.fy * n.y + self.cy)
     }
 
-    /// Inverts [`PinholeCamera::distort_normalized`] by Newton iteration.
+    /// Inverts [`PinholeCamera::distort_normalized`] by damped Newton iteration.
+    ///
+    /// Returns the last iterate and whether it is the true preimage: converged,
+    /// inside the fold radius, and with a positive Jacobian determinant. A root
+    /// past the fold has as small a residual as the true one but lies on the
+    /// wrong side of the optical axis, so convergence alone does not suffice.
     ///
     /// Without distortion the first residual is exactly zero, so the input is
     /// returned unchanged.
-    fn undistort_normalized(&self, xd: f64, yd: f64) -> Vec2F64 {
+    fn undistort_normalized(&self, xd: f64, yd: f64) -> (Vec2F64, bool) {
         let target = Vec2F64::new(xd, yd);
         let mut p = target;
+        let mut r = self.distort_normalized(p.x, p.y) - target;
+        let mut cost = r.dot(r);
         for _ in 0..UNDISTORT_MAX_ITER {
-            let r = self.distort_normalized(p.x, p.y) - target;
-            if r.dot(r) < UNDISTORT_TOL_SQ {
+            if cost < UNDISTORT_TOL_SQ {
                 break;
             }
             let [[a, b], [c, d]] = self.distortion_jacobian(p.x, p.y);
             let det = a * d - b * c;
             if det.abs() < UNDISTORT_MIN_DET {
-                break;
+                return (p, false);
             }
-            p -= Vec2F64::new(d * r.x - b * r.y, a * r.y - c * r.x) / det;
+            let step = Vec2F64::new(d * r.x - b * r.y, a * r.y - c * r.x) / det;
+            // Halve the step until the residual shrinks: near a flat stretch of
+            // the radial map a full Newton step overshoots the root.
+            let mut scale = 1.0;
+            loop {
+                let candidate = p - step * scale;
+                let r_candidate = self.distort_normalized(candidate.x, candidate.y) - target;
+                let cost_candidate = r_candidate.dot(r_candidate);
+                if cost_candidate < cost {
+                    (p, r, cost) = (candidate, r_candidate, cost_candidate);
+                    break;
+                }
+                scale *= 0.5;
+                if scale < UNDISTORT_MIN_STEP {
+                    return (p, false);
+                }
+            }
         }
-        p
+        let [[a, b], [c, d]] = self.distortion_jacobian(p.x, p.y);
+        let valid = cost < UNDISTORT_TOL_SQ
+            && p.dot(p) < self.fold_radius_sq()
+            && a * d - b * c > UNDISTORT_MIN_DET;
+        (p, valid)
+    }
+
+    /// Squared normalized radius at which the radial map `r ↦ r·(1 + k1·r² + k2·r⁴)`
+    /// stops increasing and folds back over the image: the first positive root
+    /// of `1 + 3·k1·s + 5·k2·s²` in `s = r²`, or infinity when it has none.
+    fn fold_radius_sq(&self) -> f64 {
+        let (a, b) = (5.0 * self.k2, 3.0 * self.k1);
+        if a == 0.0 {
+            return if b < 0.0 { -1.0 / b } else { f64::INFINITY };
+        }
+        let disc = b * b - 4.0 * a;
+        if disc < 0.0 {
+            return f64::INFINITY;
+        }
+        // Roots of a·s² + b·s + 1, written to avoid cancellation; their product is 1/a.
+        let q = -0.5 * (b + b.signum() * disc.sqrt());
+        [q / a, 1.0 / q]
+            .into_iter()
+            .filter(|s| *s > 0.0)
+            .fold(f64::INFINITY, f64::min)
     }
 
     /// Applies Brown-Conrady distortion to a point on the `z = 1` plane.
@@ -256,6 +313,8 @@ const UNDISTORT_MAX_ITER: usize = 20;
 const UNDISTORT_TOL_SQ: f64 = 1e-24;
 /// Below this Jacobian determinant the distortion is not invertible.
 const UNDISTORT_MIN_DET: f64 = 1e-12;
+/// Smallest fraction of a Newton step tried before undistortion gives up.
+const UNDISTORT_MIN_STEP: f64 = 1e-6;
 
 impl CameraModel for PinholeCamera {
     fn project(&self, p_cam: &Vec3F64) -> Option<Vec2F64> {
@@ -287,10 +346,10 @@ impl CameraModel for PinholeCamera {
         ))
     }
 
-    fn unproject(&self, pixel: &Vec2F64) -> Vec3F64 {
-        let n =
+    fn unproject(&self, pixel: &Vec2F64) -> Option<Vec3F64> {
+        let (n, valid) =
             self.undistort_normalized((pixel.x - self.cx) / self.fx, (pixel.y - self.cy) / self.fy);
-        Vec3F64::new(n.x, n.y, 1.0).normalize()
+        valid.then(|| Vec3F64::new(n.x, n.y, 1.0).normalize())
     }
 }
 
@@ -433,5 +492,80 @@ mod tests {
         let v = cam.fy * yn + cam.cy;
         let back = cam.normalize(Vec2F64::new(u, v));
         assert!((back.x - xn).abs() < 1e-9 && (back.y - yn).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_unproject_converges_on_a_flat_radial_map() {
+        // Monotonic but nearly flat around r = 0.8: plain Newton overshoots and
+        // stalls far from the unique preimage r ≈ 1.30926.
+        let cam = PinholeCamera {
+            fx: 500.0,
+            fy: 500.0,
+            cx: 0.0,
+            cy: 0.0,
+            k1: -1.0,
+            k2: 0.451,
+            p1: 0.0,
+            p2: 0.0,
+        };
+        let pixel = Vec2F64::new(400.0, 0.0);
+        let bearing = cam.unproject(&pixel).unwrap();
+        assert!((bearing.x / bearing.z - 1.30926).abs() < 1e-5);
+        assert!((cam.project(&bearing).unwrap() - pixel).length() < 1e-6);
+    }
+
+    #[test]
+    fn test_unproject_rejects_pixels_past_the_fold() {
+        // With k1 = -0.28 the distorted radius peaks at about 364 px, so the
+        // corners of a 752×480 image have no preimage. Undamped Newton finds a
+        // root there anyway, on the far side of the optical axis.
+        let cam = PinholeCamera {
+            fx: 500.0,
+            fy: 500.0,
+            cx: 376.0,
+            cy: 240.0,
+            k1: -0.28,
+            k2: 0.0,
+            p1: 0.0,
+            p2: 0.0,
+        };
+        assert!(cam.unproject(&Vec2F64::new(0.0, 0.0)).is_none());
+        assert!(cam.unproject(&Vec2F64::new(751.0, 479.0)).is_none());
+
+        let inside = Vec2F64::new(376.0 + 360.0, 240.0);
+        let bearing = cam.unproject(&inside).unwrap();
+        assert!(bearing.x > 0.0);
+        assert!((cam.project(&bearing).unwrap() - inside).length() < 1e-6);
+    }
+
+    #[test]
+    fn test_unproject_rejects_a_converged_root_past_the_fold() {
+        // Damped Newton converges here (residual below 1e-12) to the normalized
+        // point (1.12, 0.89), on the far side of the axis from the pixel and
+        // past the fold at r ≈ 0.62; the pixel itself has no preimage.
+        let cam = PinholeCamera {
+            fx: 500.0,
+            fy: 500.0,
+            cx: 0.0,
+            cy: 0.0,
+            k1: -0.8,
+            k2: -0.1,
+            p1: 0.0,
+            p2: 0.0,
+        };
+        assert!(cam.unproject(&Vec2F64::new(-595.0, -475.0)).is_none());
+    }
+
+    #[test]
+    fn test_fold_radius_sq() {
+        let cam = |k1, k2| PinholeCamera { k1, k2, ..camera() };
+        assert_eq!(cam(0.0, 0.0).fold_radius_sq(), f64::INFINITY);
+        assert_eq!(cam(0.1, 0.0).fold_radius_sq(), f64::INFINITY);
+        assert!((cam(-0.28, 0.0).fold_radius_sq() - 1.0 / 0.84).abs() < 1e-12);
+        // EuRoC cam0: 1 − 0.85·s + 0.37·s² has no real root.
+        assert_eq!(cam(-0.28340811, 0.07395907).fold_radius_sq(), f64::INFINITY);
+        // 1 − 3·s + 2·s² = (1 − s)(1 − 2s): the fold is the smaller root.
+        let s = cam(-1.0, 0.4).fold_radius_sq();
+        assert!((s - 0.5).abs() < 1e-12, "{s}");
     }
 }

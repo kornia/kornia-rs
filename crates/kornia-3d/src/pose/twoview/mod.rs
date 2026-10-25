@@ -633,8 +633,9 @@ impl TwoViewResult {
     /// Median parallax angle in degrees between inlier bearing vectors.
     ///
     /// Unprojects each inlier point pair to bearings through `camera`, then
-    /// computes the angle between them. Returns the
-    /// median of these angles, or 0.0 if there are no valid inliers.
+    /// computes the angle between them. Pairs `camera` cannot unproject are
+    /// skipped. Returns the median of these angles, or 0.0 if there are no
+    /// valid inliers.
     pub fn median_parallax_deg<C: crate::camera::CameraModel + ?Sized>(
         &self,
         x1: &[Vec2F64],
@@ -645,10 +646,10 @@ impl TwoViewResult {
             .inlier_indices
             .iter()
             .filter(|&&i| i < x1.len() && i < x2.len())
-            .map(|&i| {
-                let b1 = camera.unproject(&x1[i]);
-                let b2 = camera.unproject(&x2[i]);
-                b1.dot(b2).clamp(-1.0, 1.0).acos().to_degrees()
+            .filter_map(|&i| {
+                let b1 = camera.unproject(&x1[i])?;
+                let b2 = camera.unproject(&x2[i])?;
+                Some(b1.dot(b2).clamp(-1.0, 1.0).acos().to_degrees())
             })
             .collect();
         if angles.is_empty() {
