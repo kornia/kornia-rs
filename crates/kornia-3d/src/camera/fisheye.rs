@@ -45,8 +45,9 @@ pub struct FisheyeCamera {
     pub k4: f64,
 }
 
-/// Maximum number of Newton-Raphson iterations for unproject.
-const NEWTON_MAX_ITER: usize = 10;
+/// Maximum number of safeguarded Newton iterations for unproject; enough for
+/// the bisection fallback alone to reach `NEWTON_EPS` on `[0, π]`.
+const NEWTON_MAX_ITER: usize = 60;
 
 /// Convergence tolerance for Newton-Raphson in unproject.
 const NEWTON_EPS: f64 = 1e-12;
@@ -73,6 +74,31 @@ impl FisheyeCamera {
             + 7.0 * self.k3 * theta6
             + 9.0 * self.k4 * theta8;
         (theta_d, f_prime)
+    }
+
+    /// Incidence angle at which `theta_d(theta)` stops increasing and the image
+    /// folds back over itself, or `π` when it increases over the whole sphere.
+    ///
+    /// `theta_d'` is a quartic in `t = θ²`; its first root in `(0, π²]` is the fold.
+    fn fold_theta(&self) -> f64 {
+        let c = [
+            1.0,
+            3.0 * self.k1,
+            5.0 * self.k2,
+            7.0 * self.k3,
+            9.0 * self.k4,
+        ];
+        let t_max = std::f64::consts::PI * std::f64::consts::PI;
+        // Cheap sufficient test: `theta_d' ≥ 1 − Σ|cᵢ|·tⁱ`, so the lens cannot
+        // fold while that lower bound stays positive.
+        let bound = c[1..]
+            .iter()
+            .rev()
+            .fold(0.0, |acc, ci| (acc + ci.abs()) * t_max);
+        if bound < 1.0 {
+            return std::f64::consts::PI;
+        }
+        first_root(&c, 0.0, t_max).map_or(std::f64::consts::PI, f64::sqrt)
     }
 
     /// Projects a camera-frame 3D point and checks image bounds.
@@ -184,37 +210,149 @@ impl CameraModel for FisheyeCamera {
         ))
     }
 
-    fn unproject(&self, pixel: &Vec2F64) -> Vec3F64 {
+    /// `None` for a pixel past the image of the fold (see `fold_theta`), which
+    /// no incidence angle the model treats as valid projects to.
+    fn unproject(&self, pixel: &Vec2F64) -> Option<Vec3F64> {
         let mx = (pixel.x - self.cx) / self.fx;
         let my = (pixel.y - self.cy) / self.fy;
         let theta_d = (mx * mx + my * my).sqrt();
 
         // Pixel is at the principal point → on-axis ray.
         if theta_d < EPSILON {
-            return Vec3F64::new(0.0, 0.0, 1.0);
+            return Some(Vec3F64::new(0.0, 0.0, 1.0));
         }
 
-        // Newton-Raphson: solve f(theta) = theta + k1·θ³ + k2·θ⁵ + k3·θ⁷ + k4·θ⁹ - theta_d = 0
-        let mut theta = theta_d;
+        // theta_d(theta) increases on [0, fold], so a root exists there iff
+        // theta_d is in its range, and the bracket never loses it.
+        let fold = self.fold_theta();
+        if theta_d > self.distortion(fold).0 {
+            return None;
+        }
+        // Solve theta + k1·θ³ + k2·θ⁵ + k3·θ⁷ + k4·θ⁹ = theta_d by Newton steps,
+        // bisecting whenever a step would leave the bracket.
+        let (mut lo, mut hi) = (0.0, fold);
+        let mut theta = theta_d.min(fold);
+        let mut converged = false;
         for _ in 0..NEWTON_MAX_ITER {
             let (theta_d_calc, f_prime) = self.distortion(theta);
-            if f_prime.abs() < EPSILON {
-                break;
-            }
             let f = theta_d_calc - theta_d;
-            let delta = f / f_prime;
-            theta -= delta;
+            if f > 0.0 {
+                hi = theta;
+            } else {
+                lo = theta;
+            }
+            let newton = theta - f / f_prime;
+            let next = if newton > lo && newton < hi {
+                newton
+            } else {
+                0.5 * (lo + hi)
+            };
+            let delta = next - theta;
+            theta = next;
             if delta.abs() < NEWTON_EPS {
+                converged = true;
                 break;
             }
+        }
+        if !converged {
+            return None;
         }
 
         // Recover the bearing direction from the azimuthal angle phi.
         let phi = my.atan2(mx);
         let sin_theta = theta.sin();
 
-        Vec3F64::new(sin_theta * phi.cos(), sin_theta * phi.sin(), theta.cos())
+        Some(Vec3F64::new(
+            sin_theta * phi.cos(),
+            sin_theta * phi.sin(),
+            theta.cos(),
+        ))
     }
+}
+
+/// Coefficient capacity of [`first_root`]: polynomials up to degree 4.
+const MAX_COEFFS: usize = 5;
+
+/// Iteration cap for [`monotone_root`]; bisection alone halves the bracket each time.
+const ROOT_MAX_ITER: usize = 60;
+
+/// Smallest root in `(lo, hi]` of the polynomial `c[0] + c[1]·t + c[2]·t² + …`.
+///
+/// The derivative's roots split `[lo, hi]` into pieces on which the polynomial
+/// is monotonic and so has at most one root; recursing on the derivative finds
+/// them.
+fn first_root(c: &[f64], lo: f64, hi: f64) -> Option<f64> {
+    let mut roots = [0.0; MAX_COEFFS];
+    let count = roots_in(c, lo, hi, &mut roots);
+    roots[..count].first().copied()
+}
+
+/// Writes the roots of `c` in `(lo, hi]`, ascending, into `out` and returns
+/// how many there are.
+fn roots_in(c: &[f64], lo: f64, hi: f64, out: &mut [f64; MAX_COEFFS]) -> usize {
+    let degree = c.len() - 1;
+    if degree == 0 {
+        return 0;
+    }
+    let mut dc = [0.0; MAX_COEFFS];
+    for i in 1..=degree {
+        dc[i - 1] = i as f64 * c[i];
+    }
+    let dc = &dc[..degree];
+    let mut critical = [0.0; MAX_COEFFS];
+    let n_critical = roots_in(dc, lo, hi, &mut critical);
+
+    let mut count = 0;
+    let mut a = lo;
+    for b in critical[..n_critical].iter().copied().chain([hi]) {
+        if b > a {
+            if let Some(root) = monotone_root(c, dc, a, b) {
+                out[count] = root;
+                count += 1;
+            }
+        }
+        a = b;
+    }
+    count
+}
+
+/// Root in `(a, b]` of `c`, which is monotonic there, by Newton steps that fall
+/// back to bisection when they would leave the bracket.
+fn monotone_root(c: &[f64], dc: &[f64], a: f64, b: f64) -> Option<f64> {
+    let eval = |coeffs: &[f64], t: f64| coeffs.iter().rev().fold(0.0, |acc, ci| acc * t + ci);
+    let (fa, fb) = (eval(c, a), eval(c, b));
+    if fb == 0.0 {
+        return Some(b);
+    }
+    // A root at `a` itself belongs to the previous piece, or is excluded.
+    if fa == 0.0 || fa.signum() == fb.signum() {
+        return None;
+    }
+    // Keep `neg`/`pos` at the ends where the polynomial is negative/positive.
+    let (mut neg, mut pos) = if fa < 0.0 { (a, b) } else { (b, a) };
+    let mut t = 0.5 * (a + b);
+    for _ in 0..ROOT_MAX_ITER {
+        let f = eval(c, t);
+        if f == 0.0 {
+            return Some(t);
+        }
+        if f < 0.0 {
+            neg = t;
+        } else {
+            pos = t;
+        }
+        let newton = t - f / eval(dc, t);
+        let next = if newton > neg.min(pos) && newton < neg.max(pos) {
+            newton
+        } else {
+            0.5 * (neg + pos)
+        };
+        if (next - t).abs() <= NEWTON_EPS * t.abs().max(1.0) {
+            return Some(next);
+        }
+        t = next;
+    }
+    Some(t)
 }
 
 #[cfg(test)]
@@ -294,7 +432,7 @@ mod tests {
     fn test_fisheye_unproject_principal_point() {
         let cam = fisheye_camera_zero_distortion();
         // Principal point → on-axis bearing ray (0, 0, 1).
-        let ray = cam.unproject(&Vec2F64::new(cam.cx, cam.cy));
+        let ray = cam.unproject(&Vec2F64::new(cam.cx, cam.cy)).unwrap();
         assert!((ray.x).abs() < 1e-12);
         assert!((ray.y).abs() < 1e-12);
         assert!((ray.z - 1.0).abs() < 1e-12);
@@ -313,7 +451,7 @@ mod tests {
         ];
         for pt in &points {
             let pixel = cam.project(pt).unwrap();
-            let ray = cam.unproject(&pixel);
+            let ray = cam.unproject(&pixel).unwrap();
             // Recover the original direction (normalize the input point).
             let len = (pt.x * pt.x + pt.y * pt.y + pt.z * pt.z).sqrt();
             let dir = Vec3F64::new(pt.x / len, pt.y / len, pt.z / len);
@@ -347,7 +485,7 @@ mod tests {
         ];
         for pt in &points {
             let pixel = cam.project(pt).unwrap();
-            let ray = cam.unproject(&pixel);
+            let ray = cam.unproject(&pixel).unwrap();
             let len = (pt.x * pt.x + pt.y * pt.y + pt.z * pt.z).sqrt();
             let dir = Vec3F64::new(pt.x / len, pt.y / len, pt.z / len);
             assert!(
@@ -384,7 +522,7 @@ mod tests {
         // Point at ~80° from the optical axis.
         let p = Vec3F64::new(5.0, 0.0, 1.0);
         let pixel = cam.project(&p).unwrap();
-        let ray = cam.unproject(&pixel);
+        let ray = cam.unproject(&pixel).unwrap();
         let len = (p.x * p.x + p.y * p.y + p.z * p.z).sqrt();
         let dir = Vec3F64::new(p.x / len, p.y / len, p.z / len);
         assert!((ray.x - dir.x).abs() < 1e-6);
@@ -442,5 +580,64 @@ mod tests {
             cam.project_to_image(&p_out, size).unwrap_err(),
             ProjectionReject::OutOfImage
         );
+    }
+
+    /// Hilti 2026 `cam0`, whose model folds at about 113°.
+    fn hilti() -> FisheyeCamera {
+        FisheyeCamera {
+            fx: 461.64,
+            fy: 459.72,
+            cx: 732.95,
+            cy: 720.54,
+            k1: 0.0344,
+            k2: -0.0216,
+            k3: 0.0031,
+            k4: -0.0005,
+        }
+    }
+
+    #[test]
+    fn test_fold_theta() {
+        let fold = hilti().fold_theta();
+        assert!(fold > 1.9 && fold < 2.0, "{fold}");
+        assert!(hilti().distortion(fold).1.abs() < 1e-9);
+        assert_eq!(
+            fisheye_camera_zero_distortion().fold_theta(),
+            std::f64::consts::PI
+        );
+    }
+
+    #[test]
+    fn test_unproject_rejects_pixels_past_the_fold() {
+        let cam = hilti();
+        let theta_d_max = cam.distortion(cam.fold_theta()).0;
+        let past = Vec2F64::new(cam.cx + cam.fx * (theta_d_max + 0.01), cam.cy);
+        assert!(cam.unproject(&past).is_none());
+        let before = Vec2F64::new(cam.cx + cam.fx * (theta_d_max - 0.01), cam.cy);
+        assert!(cam.unproject(&before).is_some());
+    }
+
+    #[test]
+    fn test_unproject_returns_the_ray_before_the_fold() {
+        // Past the fold theta_d(150°) ≈ theta_d(17.3°), so the rear point and
+        // the front point share a pixel; unproject must return the front one.
+        let cam = hilti();
+        let rear = Vec3F64::new(0.5, 0.0, -0.866);
+        let ray = cam.unproject(&cam.project(&rear).unwrap()).unwrap();
+        assert!(ray.z > 0.9, "{ray:?}");
+        assert!(ray.z.acos().to_degrees() < 20.0);
+    }
+
+    #[test]
+    fn test_first_root() {
+        // (t − 1)(t − 2)(t − 3)
+        let c = [-6.0, 11.0, -6.0, 1.0];
+        assert!((first_root(&c, 0.0, 10.0).unwrap() - 1.0).abs() < 1e-12);
+        assert!((first_root(&c, 1.5, 10.0).unwrap() - 2.0).abs() < 1e-12);
+        assert!(first_root(&c, 3.5, 10.0).is_none());
+        // 1 + t² has no real root.
+        assert!(first_root(&[1.0, 0.0, 1.0], 0.0, 10.0).is_none());
+        // Trailing zero coefficients: 1 − t.
+        assert!((first_root(&[1.0, -1.0, 0.0, 0.0, 0.0], 0.0, 10.0).unwrap() - 1.0).abs() < 1e-12);
     }
 }
