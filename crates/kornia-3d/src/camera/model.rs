@@ -18,6 +18,10 @@ pub trait CameraModel {
     /// The pixel, or `None` when the model cannot image the point: for a
     /// pinhole, `z <= 1e-8`; for a fisheye, a point on the optical axis at or
     /// behind the camera.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible; points the model cannot image return `None`.
     fn project(&self, p_cam: &Vec3F64) -> Option<Vec2F64>;
 
     /// Like [`CameraModel::project`], also returning the 2×3 Jacobian.
@@ -30,6 +34,10 @@ pub trait CameraModel {
     ///
     /// The pixel and the Jacobian rows `[∂u/∂p_cam, ∂v/∂p_cam]`, in pixels per
     /// camera-frame unit; `None` exactly when [`CameraModel::project`] is.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible; points the model cannot image return `None`.
     fn project_with_jacobian(&self, p_cam: &Vec3F64) -> Option<(Vec2F64, [Vec3F64; 2])>;
 
     /// Unprojects a pixel to the ray it images.
@@ -43,6 +51,10 @@ pub trait CameraModel {
     /// The unit bearing of the ray, in the camera frame, or `None` when no ray
     /// in the model's valid range images the pixel: it lies past the fold, where
     /// the distortion turns back on itself, or the inversion did not converge.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible; pixels without a valid ray return `None`.
     fn unproject(&self, pixel: &Vec2F64) -> Option<Vec3F64>;
 }
 

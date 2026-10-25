@@ -100,6 +100,10 @@ impl PinholeCamera {
     /// cannot produce (past the fold of the radial map) this is the inversion's
     /// best estimate, not a true preimage; [`CameraModel::unproject`] returns
     /// `None` there instead.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible.
     pub fn undistort(&self, col: f64, row: f64) -> Vec2F64 {
         let (n, _) =
             self.undistort_normalized((col - self.cx) / self.fx, (row - self.cy) / self.fy);
