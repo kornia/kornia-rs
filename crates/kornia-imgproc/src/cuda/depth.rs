@@ -1,7 +1,7 @@
 //! CUDA kernels for the valid-aware depth median, the flying-pixel mask and
 //! flagged-pixel removal — twins of `depth/kernels.rs`.
 //!
-//! One launch per op. A block owns a `TILE_W × TILE_H` output tile: its
+//! One launch per op. A block owns a `tile_w(ksize) × TILE_H` output tile: its
 //! threads first sort the `ksize`-sample columns of the tile plus a
 //! `ksize / 2` apron into shared memory (each column once, shared by the
 //! `ksize` windows that contain it), synchronize, then run the rank-selection
@@ -15,15 +15,18 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use cudarc::driver::{CudaContext, CudaSlice, CudaStream, DeviceRepr, ValidAsZeroBits};
+use cudarc::driver::{
+    CudaContext, CudaSlice, CudaStream, DeviceRepr, LaunchConfig, ValidAsZeroBits,
+};
 use kornia_tensor::CudaKernel;
 
 use super::try_compile_with_l1;
 use crate::depth::kernels::{COL3, COL5, FLYING_KSIZE, MASK_FLAGGED, MED25, RANK25, RANK9};
 
-/// Output tile width; one warp per tile row (the warp-uniform fast path
-/// relies on it).
-const TILE_W: u32 = 32;
+/// Threads per tile row: one warp (the warp-uniform fast path relies on
+/// it). Each thread sorts exactly one column of the tile plus apron, so a
+/// tile is `WARP - 2 * (ksize / 2)` outputs wide.
+const WARP: u32 = 32;
 
 /// Output tile height.
 const TILE_H: u32 = 8;
@@ -70,6 +73,11 @@ __device__ __forceinline__ float abs_diff_f32(T a, T b) { return fabsf(a - b); }
 "#;
 }
 
+/// Output tile width for a `ksize` window: the warp minus the apron.
+fn tile_w(ksize: usize) -> u32 {
+    WARP - 2 * (ksize as u32 / 2)
+}
+
 /// Straight-line compare-exchanges on array `v`.
 fn net_src(net: &[(usize, usize)], v: &str) -> String {
     net.iter()
@@ -78,15 +86,18 @@ fn net_src(net: &[(usize, usize)], v: &str) -> String {
 }
 
 /// `median_tile(src, w, h, c, &n)`: the shared-memory two-pass median of
-/// the calling thread's pixel `(blockIdx.x * TILE_W + threadIdx.x,
+/// the calling thread's pixel `(blockIdx.x * tile_w + threadIdx.x,
 /// blockIdx.y * TILE_H + threadIdx.y)`, channel `c` of `channels`; returns
 /// the rank-`n / 2` key, `n` = valid tap count. Every thread of the block
-/// must call it (it synchronizes), including those outside the image.
+/// must call it (it synchronizes), including those outside the image and
+/// the apron threads `threadIdx.x >= tile_w` (whose result is discarded).
 fn median_fn_src(ksize: usize, channels: usize) -> String {
     let taps = ksize * ksize;
     let r = ksize / 2;
     let half = taps / 2;
-    let span = TILE_W as usize + 2 * r;
+    let span = WARP as usize;
+    let tile_w = tile_w(ksize);
+    let last = tile_w - 1;
     let col_net = net_src(if ksize == 3 { COL3 } else { COL5 }, "v");
     let rank_net = net_src(if ksize == 3 { RANK9 } else { RANK25 }, "v");
     let median = if ksize == 3 {
@@ -109,7 +120,8 @@ __device__ __forceinline__ T median_tile(
     int ty = threadIdx.y;
     int x0 = blockIdx.x * {tile_w};
     int y = min((int)(blockIdx.y * {tile_h}) + ty, h - 1);
-    for (int cx = threadIdx.x; cx < {span}; cx += {tile_w}) {{
+    {{
+        int cx = threadIdx.x;
         int sx = min(max(x0 + cx - {r}, 0), w - 1);
         T v[{ksize}];
         int n = 0;
@@ -128,11 +140,13 @@ __device__ __forceinline__ T median_tile(
     __syncthreads();
     T v[{taps}];
     int n = 0;
+    // Apron threads read the last output's window (discarded, in range).
+    int tx = min((int)threadIdx.x, {last});
     #pragma unroll
     for (int dc = 0; dc < {ksize}; ++dc) {{
-        n += sn[ty][threadIdx.x + dc];
+        n += sn[ty][tx + dc];
         #pragma unroll
-        for (int i = 0; i < {ksize}; ++i) v[dc * {ksize} + i] = sk[ty][i][threadIdx.x + dc];
+        for (int i = 0; i < {ksize}; ++i) v[dc * {ksize} + i] = sk[ty][i][tx + dc];
     }}
     __syncthreads();
     T m;
@@ -150,7 +164,6 @@ __device__ __forceinline__ T median_tile(
     return from_key(m);
 }}
 "#,
-        tile_w = TILE_W,
         tile_h = TILE_H,
     )
 }
@@ -169,18 +182,20 @@ fn kernel_src<T: CudaDepthPixel>(kind: Kind) -> (String, String) {
         Kind::Median { ksize, channels } => {
             let name = format!("median_depth_{tag}_{ksize}x{ksize}_c{channels}");
             let helper = median_fn_src(ksize, channels);
+            let tile_w = tile_w(ksize);
             let src = format!(
                 r#"{prelude}{helper}
 extern "C" __global__ void {name}(
     const T* __restrict__ src, T* __restrict__ dst, int w, int h
 ) {{
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int x = blockIdx.x * {tile_w} + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
+    bool out = threadIdx.x < {tile_w} && x < w && y < h;
     // No early return: every thread takes part in the tile's barriers.
     for (int c = 0; c < {channels}; ++c) {{
         int n;
         T m = median_tile(src, w, h, c, &n);
-        if (x < w && y < h) dst[(y * w + x) * {channels} + c] = n == 0 ? invalid_value() : m;
+        if (out) dst[(y * w + x) * {channels} + c] = n == 0 ? invalid_value() : m;
     }}
 }}
 "#
@@ -190,18 +205,19 @@ extern "C" __global__ void {name}(
         Kind::FlyingMask => {
             let name = format!("flying_pixel_mask_{tag}");
             let helper = median_fn_src(FLYING_KSIZE, 1);
+            let tile_w = tile_w(FLYING_KSIZE);
             let src = format!(
                 r#"{prelude}{helper}
 extern "C" __global__ void {name}(
     const T* __restrict__ src, unsigned char* __restrict__ mask, int w, int h,
     float abs_threshold, float rel_threshold, int min_valid
 ) {{
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int x = blockIdx.x * {tile_w} + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
     // No early return: every thread takes part in the tile's barriers.
     int n;
     T m = median_tile(src, w, h, 0, &n);
-    if (x >= w || y >= h) return;
+    if (threadIdx.x >= {tile_w} || x >= w || y >= h) return;
     T d = src[y * w + x];
     unsigned char out = 0;
     if (is_valid(d)) {{
@@ -254,13 +270,31 @@ fn get_kernel<T: CudaDepthPixel>(
     }
     // Build outside the lock (scoped-guard idiom, like the sibling caches).
     let (name, src) = kernel_src::<T>(kind);
-    let kernel = Arc::new(try_compile_with_l1(ctx, &src, &name).map_err(CudaDepthError::Cuda)?);
+    // The tile kernels use shared memory: leave the L1 / shared carveout to
+    // the driver. The elementwise kernel prefers L1.
+    let kernel = match kind {
+        Kind::RemoveFlagged => try_compile_with_l1(ctx, &src, &name),
+        Kind::Median { .. } | Kind::FlyingMask => CudaKernel::compile(ctx, &src, &name)
+            .map_err(|e| format!("failed to compile {name}: {e}")),
+    }
+    .map_err(CudaDepthError::Cuda)?;
+    let kernel = Arc::new(kernel);
     Ok(map
         .lock()
         .map_err(lock_err)?
         .entry(key)
         .or_insert(kernel)
         .clone())
+}
+
+/// Launch geometry of the tile kernels: `WARP × TILE_H` threads per
+/// `tile_w(ksize) × TILE_H` output tile.
+fn tile_config(width: u32, height: u32, ksize: usize) -> LaunchConfig {
+    LaunchConfig {
+        block_dim: (WARP, TILE_H, 1),
+        grid_dim: (width.div_ceil(tile_w(ksize)), height.div_ceil(TILE_H), 1),
+        shared_mem_bytes: 0,
+    }
 }
 
 /// Checked `i32` dimensions; rejects zero sizes.
@@ -298,7 +332,7 @@ pub(crate) fn launch_median_blur_depth<T: CudaDepthPixel>(
     CudaDepthError::check_slice("src", src.len(), width * height * channels)?;
     CudaDepthError::check_slice("dst", dst.len(), width * height * channels)?;
     let kernel = get_kernel::<T>(ctx, Kind::Median { ksize, channels })?;
-    let cfg = super::make_config(w as u32, h as u32, Some((TILE_W, TILE_H)));
+    let cfg = tile_config(w as u32, h as u32, ksize);
     kernel
         .launch_builder(stream)
         .arg(src)
@@ -329,7 +363,7 @@ pub(crate) fn launch_flying_pixel_mask<T: CudaDepthPixel>(
     // Any value above the tap count flags every valid pixel, as on the CPU.
     let min_valid = i32::try_from(min_valid).unwrap_or(i32::MAX);
     let kernel = get_kernel::<T>(ctx, Kind::FlyingMask)?;
-    let cfg = super::make_config(w as u32, h as u32, Some((TILE_W, TILE_H)));
+    let cfg = tile_config(w as u32, h as u32, FLYING_KSIZE);
     kernel
         .launch_builder(stream)
         .arg(src)
