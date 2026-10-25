@@ -45,15 +45,27 @@ fn probe(cmd: &mut Command) -> Option<String> {
         .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-/// First `key = "value"` in a TOML file (enough for the two pins we read).
+/// The one value of `key = "value"` in a TOML file (enough for the pins we
+/// read); differing values are an error, comment lines are skipped.
 fn toml_string(path: &Path, key: &str) -> Result<String, String> {
     let text = fs::read_to_string(path).map_err(|e| format!("reading {}: {e}", path.display()))?;
-    text.lines()
-        .find_map(|l| {
+    let mut vals = text
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .filter_map(|l| {
             let rest = l.split(key).nth(1)?.trim_start().strip_prefix('=')?;
             Some(rest.trim().split('"').nth(1)?.to_string())
-        })
-        .ok_or_else(|| format!("no `{key}` in {}", path.display()))
+        });
+    let first = vals
+        .next()
+        .ok_or_else(|| format!("no `{key}` in {}", path.display()))?;
+    match vals.find(|v| *v != first) {
+        Some(other) => Err(format!(
+            "`{key}` differs in {}: {first} vs {other}",
+            path.display()
+        )),
+        None => Ok(first),
+    }
 }
 
 fn run() -> Result<PathBuf, String> {
@@ -63,6 +75,9 @@ fn run() -> Result<PathBuf, String> {
         .nth(1)
         .map_or_else(|| crate_dir.join("kernels.ptx"), PathBuf::from);
     let entries = device_src::entries(&device)?;
+    // Hash the inputs before staging them: an edit during the build must not
+    // stamp the old PTX as current.
+    let stamp_line = device_src::stamp(&device)?;
 
     // -- toolchain: one actionable error per missing piece
     let toolchain = toml_string(&device.join("rust-toolchain.toml"), "channel")?;
@@ -187,7 +202,10 @@ fn run() -> Result<PathBuf, String> {
     let ptx = ptx_dir.join("kornia_kernels_oxide.ptx");
     let text = fs::read_to_string(&ptx).map_err(|e| format!("reading {}: {e}", ptx.display()))?;
     ptx_gate::gate(&text, &entries).map_err(|r| format!("PTX gate failed:\n{}", r.join("\n")))?;
-    let stamped = format!("{}\n{text}", device_src::stamp(&device)?);
+    if device_src::stamp(&device)? != stamp_line {
+        return Err("device/ changed during the build; re-run".into());
+    }
+    let stamped = format!("{stamp_line}\n{text}");
     fs::write(&out, stamped).map_err(|e| format!("writing {}: {e}", out.display()))?;
     Ok(out)
 }

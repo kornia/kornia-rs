@@ -32,6 +32,8 @@ pub unsafe fn gray_from_rgb_u8(src: *const u8, dst: *mut u8, npixels: u32) {
     }
 
     let p = q * 4;
+    // SAFETY: `p + 4 <= npixels` bounds the word path and `i < npixels` the
+    // byte tail, within the lengths and 4-byte alignment launch_map checks.
     unsafe {
         if p + 4 <= npixels {
             let s32 = src as *const u32;

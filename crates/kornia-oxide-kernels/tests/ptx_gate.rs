@@ -102,15 +102,16 @@ fn helper_violations() {
 
 #[test]
 fn module_violations() {
-    // Wrong target, extern symbol, entry set mismatch.
+    // Wrong target or ISA, extern symbol, entry set mismatch.
     let wrong_target = format!("{}{}", HEAD.replace("sm_75", "sm_80"), entry("k", ""));
+    let wrong_version = format!("{}{}", HEAD.replace("6.3", "8.0"), entry("k", ""));
     let extern_sym = format!(
         "{HEAD}.extern .func __nv_sinf(.param .b32 x);\n{}",
         entry("k", "")
     );
     let extra_entry = format!("{HEAD}{}{}", entry("k", ""), entry("j", ""));
     let commented = format!("{HEAD}// .visible .entry j(\n{}", entry("k", ""));
-    for ptx in [&wrong_target, &extern_sym, &extra_entry] {
+    for ptx in [&wrong_target, &wrong_version, &extern_sym, &extra_entry] {
         assert!(gate(ptx, &k()).is_err(), "{ptx}");
     }
     assert_eq!(gate(&commented, &k()), Ok(()));

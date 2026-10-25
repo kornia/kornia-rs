@@ -14,6 +14,8 @@ on:
       - kornia-py/**
       - scripts/cuda-oxide/**
       - crates/kornia-oxide-kernels/**
+      - crates/kornia-imgproc/Cargo.toml
+      - crates/kornia-tensor/Cargo.toml
       - .github/actions/cuda-oxide-ptx/**
   workflow_dispatch:
     inputs:

@@ -3,13 +3,15 @@
 
 /// PTX target: JITs on any Turing-or-newer GPU.
 pub const ARCH: &str = "sm_75";
+/// PTX ISA: a newer one fails to JIT on older drivers (CUDA 12.6 on JetPack 6).
+pub const PTX_VERSION: &str = "6.3";
 /// Entries allowed to emit `fma`: only kernels whose CPU twin uses an explicit
 /// `mul_add`/`fmaf`. Everything else must be contraction-free for byte parity.
 pub const FMA_ALLOWED: &[&str] = &[];
 
 /// Gate the module and every function in it.
 ///
-/// Module: `.target` is `ARCH`, no `.extern` other than `.extern .shared`
+/// Module: `.version` is `PTX_VERSION`, `.target` is `ARCH`, no `.extern` other than `.extern .shared`
 /// (dynamic shared memory; anything else is a link-time symbol such as
 /// libdevice), and the `.entry` set equals `scanned`. Per `.entry` and `.func`:
 /// every `ld`/`ldu`/`st`/`atom`/`red` names a state space (generic access means
@@ -29,6 +31,12 @@ pub fn gate(ptx: &str, scanned: &[String]) -> Result<(), Vec<String>> {
     let mut errs = Vec::new();
     if !ptx.lines().any(|l| l.trim() == format!(".target {ARCH}")) {
         errs.push(format!("gate: module: .target is not {ARCH}"));
+    }
+    if !ptx
+        .lines()
+        .any(|l| l.trim() == format!(".version {PTX_VERSION}"))
+    {
+        errs.push(format!("gate: module: .version is not {PTX_VERSION}"));
     }
     // (is_entry, name); `None` until the first function header.
     let mut func: Option<(bool, String)> = None;

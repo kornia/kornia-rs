@@ -44,7 +44,8 @@ on stable without the toolchain.
   2. stages `device/` under `target/kornia-oxide-kernels/` (as `Cargo.toml`;
      `device/` itself never holds one, or `cargo package` would drop it) and
      runs `cargo build --release --locked` there under the pinned nightly and
-     the backend, with the caller's `CARGO_*`/`RUSTC*`/`RUSTFLAGS` removed;
+     the backend, with the caller's `CARGO_*`/`RUSTC*`/`RUSTFLAGS` removed (home,
+     jobs and network settings kept);
   3. gates the PTX (below) and writes `crates/kornia-oxide-kernels/kernels.ptx`,
      whose first line is a stamp: an FNV-1a hash of `device/src`,
      `Cargo.toml.in`, `Cargo.lock`, `rust-toolchain.toml`, `sm_75` and the
@@ -62,14 +63,14 @@ on stable without the toolchain.
 - The PTX targets `sm_75` (PTX ISA 6.3): the driver JITs it for any
   Turing-or-newer GPU and any host CPU, so one file serves every wheel and
   platform. Maxwell/Pascal (Jetson Nano/TX2) cannot run ported ops.
-- Nothing in a plain workspace build enables `cuda`: the CUDA examples
+- Nothing in a plain workspace build enables kornia-imgproc's `cuda`: the CUDA examples
   (`cuda-fusion`, `cuda-camera-sift`, `cuda-camera-preprocess`) have their own
   `cuda` feature and build only with `--features cuda`.
 
 ### PTX gate (`kornia-oxide-kernels/ptx_gate.rs`, run by `build_ptx` and `build.rs`)
 
-- module: `.target sm_75`; no `.extern` symbols; the `.entry` set equals the
-  scanned `#[kernel]` set;
+- module: `.version 6.3`, `.target sm_75`; no `.extern` other than
+  `.extern .shared`; the `.entry` set equals the scanned `#[kernel]` set;
 - per `.entry` and per non-inlined `.func`: every `ld`/`st` names a state
   space (a generic access means address-space inference was lost); no
   `fma`/float `mad` unless it is an entry in `FMA_ALLOWED` (empty); no
@@ -83,8 +84,9 @@ covers it in the plain (non-CUDA) test suite.
 
 `scripts/cuda-oxide/install-toolchain.sh [PREFIX]` installs everything into
 `PREFIX` (default `~/.cargo/cuda-oxide`) and writes `PREFIX/env.sh`; source it
-before cargo. Pieces already in `PREFIX` at the right version are reused, so CI
-caches `PREFIX`. It needs rustup; the backend archive is pinned and
+before cargo when `PREFIX` is not the default. A backend already in `PREFIX` at
+the right rev is reused, so CI caches `PREFIX`; the nightly goes to rustup's
+`RUSTUP_HOME`. It needs rustup; the backend archive is pinned and
 sha256-checked. What it installs:
 
 1. the nightly pinned in `device/rust-toolchain.toml`

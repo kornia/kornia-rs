@@ -38,7 +38,7 @@ The publish set is `PUBLISH_ORDER` / `NOT_PUBLISHED` in `scripts/release_rust.sh
 ## Feature flags
 
 `ci` = `arrow`, `bincode`, `gstreamer`, `serde`, `turbojpeg` (needs `nasm`),
-`v4l` (needs `clang`). `cuda` is **not** in `ci`: it needs hardware to run, and in a checkout the cuda-oxide PTX built first (`docs/cuda-oxide.md`). OpenCV
+`v4l` (needs `clang`). `cuda` is **not** in `ci`: it needs hardware to run, and, in a checkout, needs the cuda-oxide PTX built first (`docs/cuda-oxide.md`). OpenCV
 comparison code in `kornia-imgproc` is behind `opencv_bench` and is not built
 by the lint workflow.
 

@@ -24,7 +24,7 @@ use super::CudaKernel;
 /// loaded it, so a module cached for device 0 cannot launch on device 1. After
 /// the first load a lookup is two atomic loads, no lock and no refcount.
 type Module = Result<Box<[CudaKernel]>, OxideError>;
-static MODULES: OnceLock<Box<[OnceLock<Module>]>> = OnceLock::new();
+static MODULES: OnceLock<Result<Box<[OnceLock<Module>]>, OxideError>> = OnceLock::new();
 
 /// Failure to get a cuda-oxide kernel.
 #[derive(Debug, Clone, thiserror::Error)]
@@ -52,10 +52,13 @@ pub fn kernel(stream: &Arc<CudaStream>, name: &str) -> Result<&'static CudaKerne
     }
     let ctx = stream.context();
     // A live stream means the driver is initialized, so the count is known.
-    let slots = MODULES.get_or_init(|| {
-        let n = CudaContext::device_count().unwrap_or(0).max(0) as usize;
-        (0..n).map(|_| OnceLock::new()).collect()
-    });
+    let slots = MODULES
+        .get_or_init(|| {
+            let n = CudaContext::device_count().map_err(|e| OxideError::Load(e.to_string()))?;
+            Ok((0..n.max(0)).map(|_| OnceLock::new()).collect())
+        })
+        .as_ref()
+        .map_err(Clone::clone)?;
     let slot = slots
         .get(ctx.ordinal())
         .ok_or_else(|| OxideError::Load(format!("device {} not enumerated", ctx.ordinal())))?;
