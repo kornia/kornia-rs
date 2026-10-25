@@ -50,6 +50,10 @@ jobs:
             pkg-config \
             libssl-dev
 
+      # kornia-oxide-kernels ships the PTX; the dry-run below verifies the
+      # packaged crate with `ptx`, so it fails if the file is missing or stale.
+      - uses: ./.github/actions/cuda-oxide-ptx
+
       - name: Show planned publish order (dry-run leaves)
         run: ./scripts/release_rust.sh
 

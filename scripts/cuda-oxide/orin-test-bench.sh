@@ -50,11 +50,9 @@ git -C "$ROOT" log -1 --format='HEAD %H %s'
 
 echo "== tests"
 cd "$ROOT"
-cargo test --release -p kornia-imgproc --features cuda --lib --no-run
-# Entry names come from the PTX the build just generated, never a typed list.
-ptx="$(find "$TARGET"/release/build -path '*/kornia-oxide-kernels-*/out/kernels.ptx' -printf '%T@ %p\n' |
-  sort -n | tail -1 | cut -d' ' -f2-)"
-[[ -s "$ptx" ]] || die "no generated kernels.ptx under $TARGET (stub build?)"
+cargo run -q -p kornia-oxide-kernels --example build_ptx
+ptx="$ROOT/crates/kornia-oxide-kernels/kernels.ptx"
+# Entry names come from the PTX just built, never a typed list.
 mapfile -t entries < <(sed -n 's/.*\.entry \([A-Za-z0-9_]*\).*/\1/p' "$ptx")
 ((${#entries[@]})) || die "no .entry in $ptx"
 echo "entries: ${entries[*]}"
@@ -88,6 +86,10 @@ fi
 wt="$(mktemp -d "$TARGET-base-src.XXXX")"
 trap 'git -C "$ROOT" worktree remove --force "$wt" 2>/dev/null || true' EXIT
 git -C "$ROOT" worktree add -q --detach "$wt" "$base"
+# A base with oxide kernels needs its own PTX (main's NVRTC kernels do not).
+if [[ -f "$wt/crates/kornia-oxide-kernels/examples/build_ptx.rs" ]]; then
+  (cd "$wt" && CARGO_TARGET_DIR="$TARGET-base" cargo run -q -p kornia-oxide-kernels --example build_ptx)
+fi
 cp "$ROOT/$BENCH" "$wt/$BENCH" # the bench calls only public launchers
 manifest="$wt/crates/kornia-imgproc/Cargo.toml"
 grep -A2 '^\[\[bench\]\]' "$manifest" | grep -q '^name = "bench_cuda_oxide"$' ||

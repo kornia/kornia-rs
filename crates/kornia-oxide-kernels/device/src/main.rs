@@ -1,9 +1,9 @@
 //! Rust-authored CUDA kernels for kornia.
 //!
 //! One module per kernel family (`color`, `resize`, ...). Every `#[kernel]`
-//! lands in ONE PTX module that kornia-oxide-kernels' `build.rs` compiles into
-//! its `OUT_DIR`; each entry is named after the Rust function, which keeps the name
-//! of the NVRTC kernel it replaces.
+//! lands in ONE PTX module, built by kornia-oxide-kernels'
+//! `examples/build_ptx.rs`; each entry is named after the Rust function, which
+//! keeps the name of the NVRTC kernel it replaces.
 
 mod color;
 

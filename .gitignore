@@ -22,6 +22,6 @@ target
 .claude/skills/*/evals/heldout/
 __pycache__/
 
-# cuda-oxide PTX is generated into OUT_DIR by kornia-oxide-kernels/build.rs, never committed
+# cuda-oxide PTX (crates/kornia-oxide-kernels/kernels.ptx) is built by its
+# examples/build_ptx.rs and shipped in the published crate, never committed
 *.ptx
-.oxide-toolchain/

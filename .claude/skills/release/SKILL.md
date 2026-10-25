@@ -26,8 +26,9 @@ Before publishing wheels, confirm the GPU story:
   `gray_from_rgb_u8`, ship as PTX and need an sm_75+ GPU), matching arch
   (x86_64 / aarch64 / Jetson Tegra). Without nvrtc the NVRTC kernels can't
   compile.
-- Building the wheels with `--features cuda` needs the cuda-oxide toolchain
-  (`scripts/cuda-oxide/install-toolchain.sh`); the wheel workflow builds it.
+- `--features cuda` needs kornia-oxide-kernels' PTX: the wheel and Rust
+  release workflows build it first (`.github/actions/cuda-oxide-ptx`), and
+  the published kornia-oxide-kernels crate ships it.
 - Verify on a GPU box before announcing: `bench_cuda_warp_affine --features
   gpu-cuda` (Rust) and `import kornia_rs; kornia_rs.cuda...` (Python).
 

@@ -1,12 +1,14 @@
 # CUDA kernels in Rust (cuda-oxide)
 
-kornia-imgproc's `cuda` feature compiles the CUDA kernels in
-`crates/kornia-oxide-kernels/device/` from Rust to PTX at build time with
-NVIDIA's [cuda-oxide](https://github.com/NVIDIA/cuda-rust) (the `cuda-oxide/`
-tree of NVIDIA/cuda-rust). No PTX is committed, and building it needs no CUDA
-toolkit, GPU or driver.
-kornia itself stays on stable Rust: the kernels live in a standalone crate with
-its own pinned nightly. Kernels not yet ported stay NVRTC-compiled at runtime
+The CUDA kernels in `crates/kornia-oxide-kernels/device/` are written in Rust
+and compiled to PTX with NVIDIA's [cuda-oxide](https://github.com/NVIDIA/cuda-rust)
+(the `cuda-oxide/` tree of NVIDIA/cuda-rust) ahead of time: the published
+`kornia-oxide-kernels` crate ships the PTX, so building kornia with `cuda` from
+crates.io needs only stable Rust. In a checkout the PTX is built by
+`cargo run -p kornia-oxide-kernels --example build_ptx` (the cuda-oxide
+toolchain below; no CUDA toolkit, GPU or driver). PTX is never committed. This
+is the pattern cuda-oxide suggests for library crates
+([NVIDIA/cuda-rust#1464](https://github.com/NVIDIA/cuda-rust/issues/1464)). Kernels not yet ported stay NVRTC-compiled at runtime
 and keep working under the same feature. Roadmap:
 [#1135](https://github.com/kornia/kornia-rs/issues/1135).
 
@@ -23,50 +25,48 @@ on stable without the toolchain.
 | Path | Role |
 |---|---|
 | `crates/kornia-oxide-kernels/device/src/<family>.rs` | Kernel source, one module per family (`color`, `resize`, ...). Own `[workspace]`, pinned nightly, manifest shipped as `Cargo.toml.in` so `cargo package` keeps the directory. |
-| `crates/kornia-oxide-kernels/build.rs` | Scans `device/src` for `#[kernel]` items; with `ptx`, builds the PTX and gates it. Writes `$OUT_DIR/kernels.ptx` + `$OUT_DIR/entries.rs`. |
+| `crates/kornia-oxide-kernels/examples/build_ptx.rs` | Builds `device/` with cuda-oxide, gates the PTX and writes the stamped `kernels.ptx` (gitignored; the published crate ships it). |
+| `crates/kornia-oxide-kernels/build.rs` | Scans `device/src` for `#[kernel]` items; with `ptx`, checks the stamp of `kernels.ptx` against `device/` and gates it. Writes `$OUT_DIR/kernels.ptx` + `$OUT_DIR/entries.rs`. Needs no toolchain. |
 | `crates/kornia-oxide-kernels/src/lib.rs` | `PTX`, `IS_STUB`, `ENTRIES` and `entry::<NAME>` (the PTX entry name). |
 | `crates/kornia-tensor/src/cuda/oxide.rs` | Loader: one module per device, `kernel(stream, entry::<NAME>) -> &'static CudaKernel`, lock-free after the first load. |
 | `crates/kornia-imgproc/src/cuda/<family>/` | The family's existing public launchers; only their kernel fetch changes. |
 | `crates/kornia-imgproc/benches/bench_cuda_oxide.rs` | Every oxide kernel vs its CPU path; one `CASES` row per op and size. |
-| `scripts/cuda-oxide/install-toolchain.sh` | Installs the toolchain below (local, CI and wheels share it). |
+| `scripts/cuda-oxide/install-toolchain.sh` | Installs the toolchain below (local and CI share it). |
+| `.github/actions/cuda-oxide-ptx` | CI: cached toolchain + `build_ptx`; used by the lint, wheel and Rust release workflows. |
 | `scripts/cuda-oxide/orin-test-bench.sh` | Jetson: parity tests (names derived from the PTX) + bench; `--base <ref>` A/B. |
 
 ## How it builds
 
-- `kornia-oxide-kernels/build.rs`:
-  1. scans `device/src/**/*.rs` for `#[kernel] pub unsafe fn <name>`
-     (sorted; a duplicate name is an error) and writes `entries.rs`:
-     `ENTRIES` plus `entry::<NAME>` name constants;
-  2. with `ptx` on (kornia-imgproc's `cuda`), copies `device/` to
-     `$OUT_DIR/device-src` (the source may be a
-     read-only registry checkout) and runs `cargo build --release --locked`
-     there under the pinned nightly and the codegen backend, in its own target
-     dir, with the outer cargo's environment scrubbed (`RUSTC*`, `RUSTFLAGS`,
-     the jobserver, every `CARGO_*` except `CARGO_HOME`, `CARGO_BUILD_JOBS`,
-     network settings and the host's `CARGO_TARGET_<HOST>_LINKER`), jobs from
-     `CARGO_BUILD_JOBS` or the outer `NUM_JOBS`. Like the outer cargo, it reads
-     the `.cargo/config.toml` files above `OUT_DIR`;
-  3. gates the PTX (below) and writes `kernels.ptx`.
-- Without `ptx` (a plain workspace build, docs.rs, the publish verify) the
-  PTX is empty and nothing needs the nightly. `cargo build -p kornia-imgproc`
-  without `cuda` does not build the crate at all.
-- It reruns when `device/{src,Cargo.toml.in,Cargo.lock,rust-toolchain.toml}`,
-  the backend `.so` or its `.backend` stamp, or one of `CUDA_OXIDE_LLC`, `CUDA_OXIDE_BACKEND`,
-  `CARGO_HOME`, `HOME`, `DOCS_RS`,
-  `KORNIA_OXIDE_STUB` changes. Cold nested build on an Orin at `-j2`: ~190 s;
-  after a kernel edit: ~4 s.
-- **Stub:** under docs.rs (`DOCS_RS`) or with `KORNIA_OXIDE_STUB=1` the PTX is
-  empty even with `ptx` on (a cargo warning says so); `IS_STUB` is true,
-  launchers compile, and fetching a kernel returns an error at runtime.
+- `examples/build_ptx.rs` (kernel authors, CI, the release):
+  1. checks the toolchain: the pinned nightly via rustup, the backend `.so`
+     and its `.backend` stamp (`<rev> <nightly>`, written by the install
+     script) against `device/`'s pins;
+  2. stages `device/` under `target/kornia-oxide-kernels/` (as `Cargo.toml`;
+     `device/` itself never holds one, or `cargo package` would drop it) and
+     runs `cargo build --release --locked` there under the pinned nightly and
+     the backend, with the caller's `CARGO_*`/`RUSTC*`/`RUSTFLAGS` removed;
+  3. gates the PTX (below) and writes `crates/kornia-oxide-kernels/kernels.ptx`,
+     whose first line is a stamp: an FNV-1a hash of `device/src`,
+     `Cargo.toml.in`, `Cargo.lock`, `rust-toolchain.toml`, `sm_75` and the
+     nested build's flags. Cold on an Orin at `-j2`: ~70 s; after a kernel
+     edit: ~2 s.
+- `build.rs` (every build): writes `entries.rs` from the `#[kernel]` scan
+  (sorted; a duplicate name is an error). Without `ptx` the PTX is empty
+  (`IS_STUB`). With `ptx` it reads `kernels.ptx` (or `$KORNIA_OXIDE_PTX`, e.g.
+  for a git dependency), fails if it is missing or its stamp does not match
+  `device/` (an edited kernel without a rebuilt PTX), and gates it again.
+- Release: the Rust release workflow builds the PTX, and
+  `scripts/release_rust.sh` publishes the crate with `--features ptx
+  --allow-dirty` (cargo counts the gitignored-but-included file as dirty), so
+  the verify build checks the stamp inside the packaged copy.
 - The PTX targets `sm_75` (PTX ISA 6.3): the driver JITs it for any
-  Turing-or-newer GPU. Maxwell/Pascal (Jetson Nano/TX2) cannot run ported ops.
-- A missing toolchain fails the build with one message naming the missing
-  piece; it never falls back to an empty PTX.
+  Turing-or-newer GPU and any host CPU, so one file serves every wheel and
+  platform. Maxwell/Pascal (Jetson Nano/TX2) cannot run ported ops.
 - Nothing in a plain workspace build enables `cuda`: the CUDA examples
   (`cuda-fusion`, `cuda-camera-sift`, `cuda-camera-preprocess`) have their own
   `cuda` feature and build only with `--features cuda`.
 
-### PTX gate (`kornia-oxide-kernels/ptx_gate.rs`, run by `build.rs`)
+### PTX gate (`kornia-oxide-kernels/ptx_gate.rs`, run by `build_ptx` and `build.rs`)
 
 - module: `.target sm_75`; no `.extern` symbols; the `.entry` set equals the
   scanned `#[kernel]` set;
@@ -84,18 +84,16 @@ covers it in the plain (non-CUDA) test suite.
 `scripts/cuda-oxide/install-toolchain.sh [PREFIX]` installs everything into
 `PREFIX` (default `~/.cargo/cuda-oxide`) and writes `PREFIX/env.sh`; source it
 before cargo. Pieces already in `PREFIX` at the right version are reused, so CI
-caches `PREFIX`. Every download except rustup and the nightly is pinned and
+caches `PREFIX`. It needs rustup; the backend archive is pinned and
 sha256-checked. What it installs:
 
 1. the nightly pinned in `device/rust-toolchain.toml`
    (`nightly-2026-10-11`, with `rust-src`, `rustc-dev`, `llvm-tools`). The
    backend runs the nightly's own `llc`/`opt` (LLVM 23), so no system LLVM;
-   `CUDA_OXIDE_LLC` or `llc-23`/`-22`/`-21` on `PATH` also work;
 2. the codegen backend `librustc_codegen_cuda.so`, built at the rev pinned in
    `device/Cargo.toml.in` (NVIDIA/cuda-rust `6d47ae4`; the script pins
-   the archive's sha256 too). `build.rs` refuses a backend whose `.backend`
-   stamp or `src/` git checkout names another rev; the script never deletes
-   such a checkout.
+   the archive's sha256 too). `build_ptx` refuses a backend whose `.backend`
+   stamp names another rev or nightly.
 
 The kernel crate is **device-only**: it depends on `cuda-device` and on
 `cuda-macros` with `default-features = false`, so `#[kernel]` emits no host
@@ -106,7 +104,7 @@ bench.
 
 **`CUDA_OXIDE_NO_FMA=1`.** This cuda-oxide contracts `fmul`+`fadd` into `fma`
 by default (like `nvcc --fmad=true`); the CPU twins round each op, so
-`build.rs` always sets it on the nested build (an outer value cannot change
+`build_ptx` always sets it on the nested build (an outer value cannot change
 it) and the gate still rejects any `fma`.
 
 ## Adding a kernel / migrating an NVRTC family
@@ -117,6 +115,8 @@ A second kernel PR (e.g. bicubic resize) does exactly this; nothing else:
    `crates/kornia-oxide-kernels/device/src/<family>.rs` (new family: add the
    file and `mod <family>;` to `main.rs`); `entry::<NAME>` appears by itself. `<name>` is the NVRTC entry it replaces, exactly; same
    parameters in the same order, so the existing launch code drives it.
+   Rebuild the PTX with `cargo run -p kornia-oxide-kernels --example
+   build_ptx`; until then any `ptx` build fails with a stale-stamp error.
    - raw pointers, not slices (slices lose the address space and add a bounds
      branch: 12-13% on resize upscale);
    - **all loads before the first store**: cuda-oxide emits `noalias` only for
@@ -177,4 +177,4 @@ Record power mode, CUDA/driver versions and whether clocks were locked
 - [ ] `scripts/cuda-oxide/orin-test-bench.sh --base origin/main` passes; paste the test lines and tables.
 - [ ] Row + section in `docs/benchmark-cuda-oxide.md`.
 - [ ] `cargo clippy --all-targets -p kornia-oxide-kernels --features ptx -- -D warnings`, the same for `-p kornia-imgproc --features cuda`, `cargo fmt --all --check`.
-- [ ] CI `Check - CUDA features` green (it builds and gates the PTX, and builds the docs.rs stub).
+- [ ] CI `Check - CUDA features` green (it builds and gates the PTX).

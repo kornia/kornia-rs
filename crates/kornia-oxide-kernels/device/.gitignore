@@ -1,5 +1,5 @@
 target/
-# Stray outputs of a manual build; kornia-oxide-kernels' build.rs builds a
-# staged copy in OUT_DIR instead.
+# Stray outputs of a manual build; examples/build_ptx.rs builds a staged copy
+# under target/ instead.
 *.ll
 *.ptx

@@ -1,5 +1,5 @@
 //! Loader for the CUDA kernels written in Rust in the `kornia-oxide-kernels`
-//! crate and compiled to PTX by its `build.rs` with
+//! crate, which ships them as PTX compiled by
 //! [cuda-oxide](https://github.com/NVIDIA/cuda-rust); see `docs/cuda-oxide.md`.
 //!
 //! This is a kernel source, not an op API: each op keeps its public launcher
@@ -32,9 +32,9 @@ pub enum OxideError {
     /// The driver rejected the PTX module, or an entry is missing from it.
     #[error("cuda-oxide module load: {0}")]
     Load(String),
-    /// Built with the stub PTX (no `kornia-oxide-kernels/ptx`, docs.rs, or
-    /// `KORNIA_OXIDE_STUB=1`).
-    #[error("cuda-oxide: built with stub PTX; rebuild with the cuda-oxide toolchain")]
+    /// Built with the stub PTX: no crate in the build enabled
+    /// `kornia-oxide-kernels/ptx`.
+    #[error("cuda-oxide: built with stub PTX; enable kornia-oxide-kernels/ptx (kornia-imgproc's `cuda` does)")]
     Stub,
 }
 

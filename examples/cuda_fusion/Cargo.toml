@@ -22,7 +22,7 @@ cudarc = { version = "0.19", default-features = false, features = [
 ] }
 kornia-imgproc = { path = "../../crates/kornia-imgproc" }
 
-# kornia-imgproc's `cuda` builds Rust CUDA kernels and needs the cuda-oxide
-# toolchain (docs/cuda-oxide.md), so workspace-wide builds skip this example.
+# kornia-imgproc's `cuda` needs kornia-oxide-kernels' PTX, which a checkout
+# builds with cuda-oxide (docs/cuda-oxide.md), so workspace builds skip this.
 [features]
 cuda = ["kornia-imgproc/cuda"]

@@ -8128,9 +8128,6 @@ dependencies = [
 [[package]]
 name = "kornia-oxide-kernels"
 version = "0.2.0"
-dependencies = [
- "thiserror 2.0.21",
-]
 
 [[package]]
 name = "kornia-py"

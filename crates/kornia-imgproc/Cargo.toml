@@ -161,9 +161,9 @@ rand = { workspace = true }
 
 [features]
 # CUDA device backend + custom CUDA kernels (via the cudarc crate). Enables the
-# `preprocess` and `cuda` modules. The kornia-oxide-kernels kernels are compiled
-# from Rust to PTX with cuda-oxide, which needs its pinned nightly toolchain
-# (docs/cuda-oxide.md); the rest are NVRTC-compiled at runtime.
+# `preprocess` and `cuda` modules. The kornia-oxide-kernels kernels ship as PTX
+# in that crate (a checkout builds it with cuda-oxide, docs/cuda-oxide.md); the
+# rest are NVRTC-compiled at runtime.
 cuda = [
   "dep:cudarc",
   "dep:half",

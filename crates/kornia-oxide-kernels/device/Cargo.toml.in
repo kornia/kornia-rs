@@ -8,9 +8,9 @@ publish = false
 
 # Standalone: this crate needs the pinned nightly + cuda-oxide codegen backend,
 # so the stable kornia-rs workspace must never build it. Named Cargo.toml.in so
-# `cargo package` ships this directory; kornia-oxide-kernels' build.rs stages a
-# copy as Cargo.toml in OUT_DIR and builds it to PTX (`ptx` feature). Cargo.lock
-# is committed: the nested build runs --locked on a pinned nightly.
+# `cargo package` ships this directory; kornia-oxide-kernels'
+# examples/build_ptx.rs stages a copy as Cargo.toml under target/ and builds it
+# to PTX. Cargo.lock is committed: that build runs --locked on a pinned nightly.
 [workspace]
 
 # Rev must match the codegen backend (librustc_codegen_cuda.so) that compiles

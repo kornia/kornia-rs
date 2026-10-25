@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
-# Install what kornia-imgproc's `cuda` feature needs to compile kornia's Rust
-# CUDA kernels (crates/kornia-oxide-kernels/device/) with cuda-oxide, into PREFIX:
+# Install what building kornia's Rust CUDA kernels
+# (crates/kornia-oxide-kernels/device/) to PTX with cuda-oxide needs, into PREFIX:
 #   - the nightly pinned in device/rust-toolchain.toml (via rustup);
 #     with llvm-tools: the backend runs that llc/opt, so no system LLVM, CUDA
 #     toolkit or libclang (the device-only kernel crate has no cuda-bindings);
 #   - the codegen backend built at the rev pinned in device/Cargo.toml.in.
 # Pieces already in PREFIX at the right version are reused (cache PREFIX in CI).
-# Every download is pinned and sha256-checked, except the nightly (rustup checks it).
+# The backend archive is pinned and sha256-checked; rustup checks the nightly.
+# Only kernel authors and CI need it: the published crate ships the PTX.
 #
 #   scripts/cuda-oxide/install-toolchain.sh [PREFIX]   # default ~/.cargo/cuda-oxide
-#   . PREFIX/env.sh                                    # then cargo build --features cuda
+#   . PREFIX/env.sh
+#   cargo run -p kornia-oxide-kernels --example build_ptx
 #
 # With $GITHUB_ENV writable, the variables are also exported to later CI steps.
 set -euo pipefail
@@ -36,39 +38,18 @@ fetch_sha() {
   echo "$3  $2" | sha256sum -c --quiet - || die "sha256 mismatch for $1"
 }
 
-# -- rust: rustup + the pinned nightly -----------------------------------------
-if ! command -v rustup >/dev/null; then
-  log "installing rustup"
-  # rustup-init 1.29.1; sha256 from static.rust-lang.org/rustup/archive/<ver>/<triple>/rustup-init.sha256.
-  RUSTUP_VER=1.29.1
-  case "$(uname -m)" in
-    x86_64) triple=x86_64-unknown-linux-gnu RUSTUP_SHA=dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71 ;;
-    aarch64) triple=aarch64-unknown-linux-gnu RUSTUP_SHA=15f6e4ce9f583b929c996c91562bad6d4454f3281de858b02cdfdef615fac433 ;;
-    *) die "no pinned rustup-init for $(uname -m); install rustup first" ;;
-  esac
-  fetch_sha "https://static.rust-lang.org/rustup/archive/$RUSTUP_VER/$triple/rustup-init" \
-    "$PREFIX/rustup-init" "$RUSTUP_SHA"
-  chmod +x "$PREFIX/rustup-init"
-  "$PREFIX/rustup-init" -y --profile minimal --default-toolchain none
-  rm -f "$PREFIX/rustup-init"
-  # shellcheck disable=SC1091
-  . "${CARGO_HOME:-$HOME/.cargo}/env"
-fi
+# -- rust: the pinned nightly ---------------------------------------------------
+command -v rustup >/dev/null || die "rustup not found; install it from https://rustup.rs"
 rustup toolchain install "$TC" --profile minimal -c rust-src,rustc-dev,llvm-tools
 SYSROOT="$(rustup run "$TC" rustc --print sysroot)"
 
 # -- codegen backend at the pin --------------------------------------------------
 SO="$PREFIX/librustc_codegen_cuda.so"
 STAMP="$REV $TC"
-src_head="$(git -C "$PREFIX/src" rev-parse HEAD 2>/dev/null || true)"
-if [[ -f "$SO" && ("$(cat "$PREFIX/.backend" 2>/dev/null)" == "$STAMP" || "$src_head" == "$REV") ]]; then
+if [[ -f "$SO" && "$(cat "$PREFIX/.backend" 2>/dev/null)" == "$STAMP" ]]; then
   log "backend: cached ($REV)"
 else
-  # src/ as a git checkout is a hand-built backend: never delete it.
-  [[ -d "$PREFIX/src/.git" ]] &&
-    die "$PREFIX/src is a cuda-oxide checkout at ${src_head:-?}; check out $REV and rebuild it, or pick another PREFIX"
   log "building the cuda-oxide backend at $REV (a few minutes)"
-  # A tarball, not git: manylinux2014's git is too old to fetch by sha.
   rm -rf "$PREFIX/src" && mkdir -p "$PREFIX/src"
   fetch_sha "https://github.com/NVIDIA/cuda-rust/archive/$REV.tar.gz" "$PREFIX/src.tar.gz" "$BACKEND_SHA"
   tar -xzf "$PREFIX/src.tar.gz" -C "$PREFIX/src" --strip-components=1

@@ -1,7 +1,7 @@
 //! kornia's CUDA kernels written in Rust (`device/`), compiled to one PTX
-//! module at build time by [cuda-oxide](https://github.com/NVIDIA/cuda-rust).
-//! Host-only data: loading is the consumer's job (kornia-imgproc's `cuda`
-//! feature). See `docs/cuda-oxide.md`.
+//! module by [cuda-oxide](https://github.com/NVIDIA/cuda-rust) ahead of time
+//! and shipped in this crate (`ptx` feature). Host-only data: loading is the
+//! consumer's job (`kornia_tensor::cuda::oxide`). See `docs/cuda-oxide.md`.
 #![no_std]
 #![deny(missing_docs)]
 
@@ -9,8 +9,7 @@
 /// Empty when [`IS_STUB`].
 pub const PTX: &str = include_str!(concat!(env!("OUT_DIR"), "/kernels.ptx"));
 
-/// True when built without real PTX: the `ptx` feature off, docs.rs, or
-/// `KORNIA_OXIDE_STUB=1`.
+/// True when built without the `ptx` feature.
 pub const IS_STUB: bool = PTX.is_empty();
 
 // `ENTRIES` and `entry::<NAME>`, generated from device/src.

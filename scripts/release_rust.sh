@@ -76,16 +76,16 @@ declare -A NOT_PUBLISHED=(
 
 # Tier-0 leaves (no kornia-* deps) — can be `cargo publish --dry-run`'d
 # locally for verification because there's nothing to resolve from crates.io.
-# kornia-oxide-kernels verifies without its `ptx` feature: stub PTX, no nightly.
 TIER_0=(kornia-algebra kornia-bow kornia-oxide-kernels)
 
 # Per-crate extra flags. We deliberately do NOT pass --all-features:
 # kornia-io's gstreamer feature requires glib/gobject dev headers, and
 # the published Cargo.toml already declares features so users can opt in.
 declare -A CRATE_FEATURES=(
-  # Empty by design — see comment above.
-  # Add per-crate flags here if a crate needs them.
-  [_placeholder]=""
+  # Ships the gitignored kernels.ptx (examples/build_ptx.rs, run by the release
+  # workflow first): cargo counts it as dirty, and `ptx` makes the verify build
+  # check the packaged copy's stamp.
+  [kornia-oxide-kernels]="--features ptx --allow-dirty"
 )
 
 local_version() {

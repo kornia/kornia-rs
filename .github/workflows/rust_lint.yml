@@ -12,6 +12,7 @@ on:
       - "Cargo.lock"
       - ".cargo/config.toml"
       - "scripts/cuda-oxide/**"
+      - ".github/actions/cuda-oxide-ptx/**"
       - ".github/workflows/rust_lint.yml"
   pull_request:
     branches:
@@ -23,6 +24,7 @@ on:
       - "Cargo.lock"
       - ".cargo/config.toml"
       - "scripts/cuda-oxide/**"
+      - ".github/actions/cuda-oxide-ptx/**"
       - ".github/workflows/rust_lint.yml"
 
 permissions:
@@ -70,9 +72,8 @@ jobs:
     name: Check - CUDA features
     # Compile + clippy coverage for the CUDA-gated code on a GPU-less runner.
     # kornia's cudarc is built with `fallback-dynamic-loading`: libcuda.so is
-    # dlopen'd at RUNTIME only, so nothing here needs a GPU. `cuda` builds
-    # kornia-oxide-kernels to PTX (its build.rs + cuda-oxide), so every step
-    # that enables it needs the cuda-oxide toolchain (cached).
+    # dlopen'd at RUNTIME only, so nothing here needs a GPU. `cuda` reads the
+    # prebuilt kornia-oxide-kernels PTX, built here with cuda-oxide.
     # Kernel-execution tests run on real hardware (Jetson) outside CI.
     runs-on: ubuntu-latest
     steps:
@@ -93,21 +94,12 @@ jobs:
         with:
           components: clippy
 
-      - name: Cache cuda-oxide toolchain
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/kornia-cuda-oxide
-          key: cuda-oxide-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('crates/kornia-oxide-kernels/device/rust-toolchain.toml', 'crates/kornia-oxide-kernels/device/Cargo.toml.in', 'scripts/cuda-oxide/install-toolchain.sh', '.cargo/config.toml') }}
-
-      - name: Install cuda-oxide toolchain
-        # Same recipe as the wheel builds: nightly + llvm-tools + backend.
-        run: scripts/cuda-oxide/install-toolchain.sh ~/.cache/kornia-cuda-oxide
+      - uses: ./.github/actions/cuda-oxide-ptx
 
       - name: Clippy CUDA-gated crates (deny warnings)
         # `--tests` also compiles + lints the `#[cfg(test)]` cuda code. The tests
         # need a GPU to RUN (Jetson, outside CI), but compiling them here catches
-        # API/signature rot in the device paths on a GPU-less runner. The
-        # kornia-oxide-kernels step builds and gates the PTX.
+        # API/signature rot in the device paths on a GPU-less runner.
         run: |
           cargo clippy --all-targets -p kornia-oxide-kernels --features ptx -- -D warnings
           cargo clippy --tests -p kornia-tensor --features cuda -- -D warnings
@@ -115,13 +107,6 @@ jobs:
           cargo clippy --all-targets -p kornia-imgproc --features cuda -- -D warnings
           cargo clippy --tests -p kornia-3d --features cuda -- -D warnings
           cargo clippy -p cuda-fusion -p cuda-camera-sift -p cuda-camera-preprocess --features cuda -- -D warnings
-
-      - name: docs.rs build (stub PTX, no toolchain)
-        # The toolchain is installed by now: poison the backend path, so this
-        # fails if DOCS_RS stopped forcing the stub.
-        run: |
-          CUDA_OXIDE_BACKEND=/nonexistent DOCS_RS=1 \
-            cargo doc -p kornia-imgproc -p kornia-oxide-kernels --features kornia-imgproc/cuda --no-deps
 
   cross-platform-check-macos:
     name: Check - macOS
