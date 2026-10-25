@@ -36,11 +36,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Pinned like the aarch64 row: ubuntu-latest moved to 26.04 on
+          # 2026-10-22, which changes the bits that
+          # ba_schur::defaults_are_bit_identical_to_the_frozen_solver freezes.
           - name: Test Debug - x86_64
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
             command: rust-test
           - name: Test Release - x86_64
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
             command: rust-test-release
           - name: Test Debug - aarch64
             runner: ubuntu-24.04-arm
