@@ -31,6 +31,10 @@ name = "bench_stereo_match"
 harness = false
 name = "bench_depth"
 
+[[bench]]
+harness = false
+name = "bench_voxel"
+
 [dependencies]
 bincode = { workspace = true }
 cudarc = { workspace = true, optional = true }
@@ -44,6 +48,7 @@ log = { workspace = true }
 nalgebra = { workspace = true }
 rand = { workspace = true }
 rayon = { workspace = true }
+rustc-hash = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 

@@ -45,3 +45,6 @@ pub mod stereo;
 
 /// 3D transforms algorithms.
 pub mod transforms;
+
+/// Voxel grids: sparse hash grid, voxel downsampling and voxel density filtering.
+pub mod voxel;

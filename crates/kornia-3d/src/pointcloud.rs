@@ -1,3 +1,6 @@
+/// Outlier removal and index selection on point clouds.
+pub mod filter;
+
 /// A point cloud with points, colors, and normals.
 #[derive(Debug, Clone)]
 pub struct PointCloud {

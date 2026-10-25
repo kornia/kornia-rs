@@ -20,6 +20,7 @@
     `pose::RansacParams::confidence` accepts an explicit sampling target; `None` preserves each model family's default. Exhaustive struct literals must add `confidence: None` or use `..Default::default()`. Adaptive caps use the all-inlier probability for distinct sampling without replacement.
 *   **PnP Solvers:** Solve for camera pose given 3D-2D point correspondences.
 *   **Depth Images:** `depth::unproject_depth` turns a `u16` / `f32` depth image into a point cloud; `depth::register_depth` reprojects it into a second pinhole camera with a z-buffer and an optional splat. CUDA twins (`depth::CudaDepthProjector`, feature `cuda`) give identical results.
+*   **Voxel Grids and Outlier Filters:** `voxel::VoxelGrid` is a sparse hash voxel grid with 6/18/26-neighbour iteration; `voxel::voxel_downsample` keeps one point per voxel (centroid, first or nearest to the centre) in a deterministic key order; `voxel::remove_sparse_voxels` drops points in voxels with few occupied neighbours; `pointcloud::filter` has radius and statistical outlier removal. With the `cuda` feature, `voxel::CudaVoxelFilter` downsamples and counts voxel neighbours on the device with results identical to the CPU, in the same order.
 
 ## 📦 Installation
 
