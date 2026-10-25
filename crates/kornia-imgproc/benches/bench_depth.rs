@@ -31,7 +31,13 @@ fn depth_u16(w: usize, h: usize) -> Vec<u16> {
 fn depth_f32(depth: &[u16]) -> Vec<f32> {
     depth
         .iter()
-        .map(|&d| if d == 0 { f32::NAN } else { f32::from(d) * 1e-3 })
+        .map(|&d| {
+            if d == 0 {
+                f32::NAN
+            } else {
+                f32::from(d) * 1e-3
+            }
+        })
         .collect()
 }
 
@@ -63,46 +69,98 @@ fn bench_depth(c: &mut Criterion) {
                 },
             );
         }
+        // Hole-free input: the workload `cv2.medianBlur` sees (it has no
+        // invalid marker), so the two compare like for like.
+        let dense =
+            Image::<u16, 1>::new(size, src.as_slice().iter().map(|&d| d.max(1)).collect()).unwrap();
+        let dense_f32 = Image::<f32, 1>::new(size, depth_f32(dense.as_slice())).unwrap();
+        for ksize in [3usize, 5] {
+            let mut dst = Image::<u16, 1>::from_size_val(size, 0).unwrap();
+            group.bench_function(
+                BenchmarkId::new(format!("median_u16_k{ksize}_dense_cpu"), &id),
+                |b| b.iter(|| std::hint::black_box(median_blur_depth(&dense, &mut dst, ksize))),
+            );
+            let mut dst_f32 = Image::<f32, 1>::from_size_val(size, 0.0).unwrap();
+            group.bench_function(
+                BenchmarkId::new(format!("median_f32_k{ksize}_dense_cpu"), &id),
+                |b| {
+                    b.iter(|| {
+                        std::hint::black_box(median_blur_depth(&dense_f32, &mut dst_f32, ksize))
+                    })
+                },
+            );
+        }
         let mut mask = Image::<u8, 1>::from_size_val(size, 0).unwrap();
         group.bench_function(BenchmarkId::new("flying_mask_u16_cpu", &id), |b| {
             b.iter(|| std::hint::black_box(flying_pixel_mask(&src, &mut mask, 30.0, 0.02, 4)))
+        });
+        group.bench_function(BenchmarkId::new("flying_mask_f32_cpu", &id), |b| {
+            b.iter(|| std::hint::black_box(flying_pixel_mask(&src_f32, &mut mask, 0.025, 0.02, 4)))
         });
 
         #[cfg(feature = "cuda")]
         {
             let ctx = cudarc::driver::CudaContext::new(0).unwrap();
             let stream = ctx.default_stream();
-            let d_src = src.to_cuda(&stream).unwrap();
-            let d_src_f32 = src_f32.to_cuda(&stream).unwrap();
-            // Kernel time only: images stay device-resident, the stream is
-            // synchronized inside the timed loop so launches are not queued.
-            for ksize in [3usize, 5] {
-                let mut d_dst = Image::<u16, 1>::zeros_cuda(size, &stream).unwrap();
-                group.bench_function(
-                    BenchmarkId::new(format!("median_u16_k{ksize}_cuda"), &id),
-                    |b| {
-                        b.iter(|| {
-                            median_blur_depth(&d_src, &mut d_dst, ksize).unwrap();
-                            stream.synchronize().unwrap();
-                        })
-                    },
-                );
-                let mut d_dst_f32 = Image::<f32, 1>::zeros_cuda(size, &stream).unwrap();
-                group.bench_function(
-                    BenchmarkId::new(format!("median_f32_k{ksize}_cuda"), &id),
-                    |b| {
-                        b.iter(|| {
-                            median_blur_depth(&d_src_f32, &mut d_dst_f32, ksize).unwrap();
-                            stream.synchronize().unwrap();
-                        })
-                    },
-                );
+            // Device throughput: images stay device-resident, `iters`
+            // launches are queued and the stream is synchronized once, so
+            // per-launch host overhead and the sync round trip are not
+            // counted per op.
+            let queued = |b: &mut criterion::Bencher, op: &mut dyn FnMut()| {
+                b.iter_custom(|iters| {
+                    stream.synchronize().unwrap();
+                    let t = std::time::Instant::now();
+                    for _ in 0..iters {
+                        op();
+                    }
+                    stream.synchronize().unwrap();
+                    t.elapsed()
+                })
+            };
+            let inputs = [
+                (
+                    "",
+                    src.to_cuda(&stream).unwrap(),
+                    src_f32.to_cuda(&stream).unwrap(),
+                ),
+                (
+                    "_dense",
+                    dense.to_cuda(&stream).unwrap(),
+                    dense_f32.to_cuda(&stream).unwrap(),
+                ),
+            ];
+            for (tag, d_src, d_src_f32) in &inputs {
+                for ksize in [3usize, 5] {
+                    let mut d_dst = Image::<u16, 1>::zeros_cuda(size, &stream).unwrap();
+                    group.bench_function(
+                        BenchmarkId::new(format!("median_u16_k{ksize}{tag}_cuda"), &id),
+                        |b| {
+                            queued(b, &mut || {
+                                median_blur_depth(d_src, &mut d_dst, ksize).unwrap()
+                            })
+                        },
+                    );
+                    let mut d_dst_f32 = Image::<f32, 1>::zeros_cuda(size, &stream).unwrap();
+                    group.bench_function(
+                        BenchmarkId::new(format!("median_f32_k{ksize}{tag}_cuda"), &id),
+                        |b| {
+                            queued(b, &mut || {
+                                median_blur_depth(d_src_f32, &mut d_dst_f32, ksize).unwrap()
+                            })
+                        },
+                    );
+                }
             }
+            let (_, d_src, d_src_f32) = &inputs[0];
             let mut d_mask = Image::<u8, 1>::zeros_cuda(size, &stream).unwrap();
             group.bench_function(BenchmarkId::new("flying_mask_u16_cuda", &id), |b| {
-                b.iter(|| {
-                    flying_pixel_mask(&d_src, &mut d_mask, 30.0, 0.02, 4).unwrap();
-                    stream.synchronize().unwrap();
+                queued(b, &mut || {
+                    flying_pixel_mask(d_src, &mut d_mask, 30.0, 0.02, 4).unwrap()
+                })
+            });
+            group.bench_function(BenchmarkId::new("flying_mask_f32_cuda", &id), |b| {
+                queued(b, &mut || {
+                    flying_pixel_mask(d_src_f32, &mut d_mask, 0.025, 0.02, 4).unwrap()
                 })
             });
         }
