@@ -195,6 +195,23 @@ impl StreamCapture {
     /// Returns [`StreamCaptureError::InvalidImageFormat`] if the frame is not `GRAY8` or its
     /// layout is invalid. Other caps, mapping, buffer size, and lock errors are returned as by
     /// [`Self::grab_rgb8`].
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use kornia_io::gstreamer::StreamCapture;
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let pipeline = "videotestsrc ! video/x-raw,format=GRAY8 ! appsink name=sink sync=false";
+    /// let mut capture = StreamCapture::new(pipeline)?;
+    /// capture.start()?;
+    /// if let Some(frame) = capture.grab_gray8()? {
+    ///     println!("{}x{}", frame.width(), frame.height());
+    /// }
+    /// capture.close()?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn grab_gray8(&mut self) -> Result<Option<Image<u8, 1>>, StreamCaptureError> {
         self.grab_image::<1>(GrabFormat::Gray8)
     }
