@@ -10,8 +10,16 @@
 //! caller-owned buffer; the `remove_*` forms return the filtered
 //! [`PointCloud`] with its colors and normals carried along.
 //!
-//! Neighbour searches use the `kiddo` k-d tree (`ImmutableKdTree`), queried in
-//! parallel over the points.
+//! Neighbour searches run on a uniform grid of cells (a cell list, as in
+//! Open3D's fixed-radius search): the points are sorted by cell with the
+//! voxel sort of [`crate::voxel`], and each query scans the neighbouring
+//! cells as contiguous runs, in parallel over the cells. The radius filter
+//! uses cells as wide as the radius; the statistical filter sizes them for
+//! about `(k + 1) / 2` points and widens a query's search shell by shell
+//! until no unvisited cell can hold a closer point. The `kiddo` k-d tree
+//! (`ImmutableKdTree`) answers the queries the grid cannot (non-finite
+//! points, keys outside `i32`, k-NN neighbourhoods beyond three cells).
+//! Both give the same result bit for bit.
 
 use std::num::NonZero;
 
@@ -20,12 +28,24 @@ use kiddo::SquaredEuclidean;
 use rayon::prelude::*;
 
 use super::PointCloud;
+use grid::CellGrid;
+
+mod grid;
 
 /// Points per k-d tree leaf bucket.
 const KD_BUCKET: usize = 32;
 
 /// Smallest number of queries handed to one rayon task.
 const MIN_QUERIES_PER_TASK: usize = 256;
+
+/// Smallest cloud the statistical filter searches on a grid; below it the
+/// k-d tree alone is cheaper.
+const KNN_GRID_MIN_POINTS: usize = 1024;
+
+/// The k-NN grid holds about `hits / KNN_CELL_LOAD_DIVISOR` points per cell
+/// (`hits = k + 1`), so the 27 cells around a query usually hold its `k`
+/// neighbours: the `k`-NN ball fills under a quarter of a cell of that load.
+const KNN_CELL_LOAD_DIVISOR: usize = 2;
 
 type KdTree = ImmutableKdTree<f64, u32, 3, KD_BUCKET>;
 
@@ -221,23 +241,37 @@ pub fn radius_inlier_indices(
     let Some(cap) = NonZero::new(min_neighbours + 1) else {
         return Ok(());
     };
-    let tree = KdTree::new_from_slice(points);
-    dst.par_extend(
-        points
-            .par_iter()
-            .with_min_len(MIN_QUERIES_PER_TASK)
+    let mut dense = vec![false; points.len()];
+    match CellGrid::for_radius(points, radius) {
+        Some(grid) => grid::radius_dense(&grid, radius_sq, cap.get(), &mut dense),
+        None => radius_dense_kd(points, radius_sq, cap, &mut dense),
+    }
+    dst.extend(
+        dense
+            .iter()
             .enumerate()
-            .filter(|(_, p)| {
-                // The capped search always holds the point itself (distance
-                // 0) unless `cap` exact duplicates crowd it out, which also
-                // means `min_neighbours` neighbours.
-                tree.nearest_n_within::<SquaredEuclidean>(p, radius_sq, cap, true)
-                    .len()
-                    >= cap.get()
-            })
+            .filter(|&(_, &d)| d)
             .map(|(i, _)| i as u32),
     );
     Ok(())
+}
+
+/// The k-d tree form of [`grid::radius_dense`]: whether the `cap` nearest
+/// points within the radius (the point itself included) are all found. The
+/// capped search always holds the point itself (distance 0) unless `cap`
+/// exact duplicates crowd it out, which also means `cap − 1` neighbours.
+fn radius_dense_kd(points: &[[f64; 3]], radius_sq: f64, cap: NonZero<usize>, dense: &mut [bool]) {
+    let tree = KdTree::new_from_slice(points);
+    dense
+        .par_iter_mut()
+        .with_min_len(MIN_QUERIES_PER_TASK)
+        .zip(points.par_iter())
+        .for_each(|(d, p)| {
+            *d = tree
+                .nearest_n_within::<SquaredEuclidean>(p, radius_sq, cap, false)
+                .len()
+                >= cap.get();
+        });
 }
 
 /// Removes the points with fewer than `min_neighbours` other points within
@@ -345,21 +379,27 @@ pub fn statistical_inlier_indices(
     let Some(cap) = NonZero::new(query) else {
         return Ok(());
     };
-    let tree = KdTree::new_from_slice(points);
-    let mut mean_dist = Vec::with_capacity(n);
-    points
-        .par_iter()
-        .with_min_len(MIN_QUERIES_PER_TASK)
-        .map(|p| {
-            let hits = tree.nearest_n::<SquaredEuclidean>(p, cap);
-            let neighbours = hits.len().saturating_sub(1);
-            if neighbours == 0 {
-                return 0.0;
-            }
-            let sum: f64 = hits.iter().map(|h| h.distance.sqrt()).sum();
-            sum / neighbours as f64
-        })
-        .collect_into_vec(&mut mean_dist);
+    let mut mean_dist = vec![0.0f64; n];
+    let grid = (n >= KNN_GRID_MIN_POINTS)
+        .then(|| CellGrid::for_knn(points, query.div_ceil(KNN_CELL_LOAD_DIVISOR)))
+        .flatten();
+    match grid {
+        Some(grid) => {
+            let tree = std::sync::OnceLock::new();
+            let fallback = |p: &[f64; 3]| {
+                knn_mean_kd(tree.get_or_init(|| KdTree::new_from_slice(points)), p, cap)
+            };
+            grid::knn_mean_distances(&grid, query, &fallback, &mut mean_dist);
+        }
+        None => {
+            let tree = KdTree::new_from_slice(points);
+            mean_dist
+                .par_iter_mut()
+                .with_min_len(MIN_QUERIES_PER_TASK)
+                .zip(points.par_iter())
+                .for_each(|(d, p)| *d = knn_mean_kd(&tree, p, cap));
+        }
+    }
 
     let count = n as f64;
     let mean = mean_dist.iter().sum::<f64>() / count;
@@ -377,6 +417,14 @@ pub fn statistical_inlier_indices(
             .map(|(i, _)| i as u32),
     );
     Ok(())
+}
+
+/// Mean distance from `p` to its `cap − 1` nearest other points, from the
+/// `cap` nearest (`p` itself first, at distance 0).
+fn knn_mean_kd(tree: &KdTree, p: &[f64; 3], cap: NonZero<usize>) -> f64 {
+    let hits = tree.nearest_n::<SquaredEuclidean>(p, cap);
+    let sorted_sq: Vec<f64> = hits.iter().map(|h| h.distance).collect();
+    grid::mean_of_sorted(&sorted_sq)
 }
 
 /// Removes the points whose mean distance to their `k` nearest neighbours

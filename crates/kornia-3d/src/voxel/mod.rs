@@ -36,6 +36,8 @@ pub use downsample::{
 };
 pub use grid::VoxelGrid;
 
+pub(crate) use downsample::CellRuns;
+
 #[cfg(feature = "cuda")]
 pub use cuda::{CudaNeighbourCounts, CudaVoxelCloud, CudaVoxelFilter, MAX_CUDA_VOXEL_POINTS};
 

@@ -341,7 +341,10 @@ impl VoxelDownsampler {
             .par_iter_mut()
             .with_min_len(MIN_ITEMS_PER_TASK)
             .enumerate()
-            .for_each(|(v, c)| *c = adjacent_occupied(uniq, uniq[v], max_l1));
+            .for_each_init(
+                || [0usize; 9],
+                |hints, (v, c)| *c = adjacent_occupied(uniq, uniq[v], max_l1, hints),
+            );
 
         dst.clear();
         dst.resize(points.len(), 0);
@@ -358,10 +361,12 @@ impl VoxelDownsampler {
 /// sorted unique keys `unique`, counting offsets with L1 norm `1..=max_l1`.
 ///
 /// For each of the 9 `(dx, dy)` columns, the voxels `z - 1 ..= z + 1` are
-/// consecutive in the sorted keys, found by one binary search. Columns or
-/// `z` values past the `i32` range do not exist. Mirrored by
-/// `adjacent_occupied` in the CUDA source.
-fn adjacent_occupied(unique: &[u128], key: u128, max_l1: i32) -> u8 {
+/// consecutive in the sorted keys, found by one search that gallops from
+/// the column's `hints` entry (the previous voxel's result: voxels visited
+/// in ascending order make it amortized O(1)). Columns or `z` values past
+/// the `i32` range do not exist. Mirrored by `adjacent_occupied` in the
+/// CUDA source (by bisection).
+fn adjacent_occupied(unique: &[u128], key: u128, max_l1: i32, hints: &mut [usize; 9]) -> u8 {
     let x = i64::from((key >> 64) as u32);
     let y = i64::from((key >> 32) as u32);
     let z = i64::from(key as u32);
@@ -382,7 +387,9 @@ fn adjacent_occupied(unique: &[u128], key: u128, max_l1: i32) -> u8 {
             let hi = (z + 1).min(max) as u32;
             let first = pack_biased(tx, ty, lo);
             let last = pack_biased(tx, ty, hi);
-            let start = unique.partition_point(|&k| k < first);
+            let hint = &mut hints[((dx + 1) * 3 + dy + 1) as usize];
+            let start = gallop(unique, *hint, first);
+            *hint = start;
             for &k in unique[start..].iter().take_while(|&&k| k <= last) {
                 let dz = i64::from(k as u32) - z;
                 let l1 = lxy + dz.abs() as i32;
@@ -584,6 +591,111 @@ pub fn remove_sparse_voxels(
         .map(|(i, _)| i as u32)
         .collect();
     select_points(cloud, &kept).map_err(VoxelError::from)
+}
+
+/// A cloud grouped by voxel: the host sort of [`VoxelDownsampler`] exposed
+/// for neighbour queries on a uniform grid.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct CellRuns {
+    /// Input index per sorted position (voxels ascending, indices ascending
+    /// within a voxel).
+    pub(crate) order: Vec<u32>,
+    /// Packed biased key of each voxel, ascending.
+    pub(crate) keys: Vec<u128>,
+    /// Voxel starts into `order`, plus a final `order.len()`.
+    pub(crate) starts: Vec<u32>,
+}
+
+impl CellRuns {
+    /// Sorts `points` into the voxels of `layout`.
+    pub(crate) fn new(points: &[[f64; 3]], layout: &VoxelLayout) -> Result<Self, VoxelError> {
+        let mut ds = VoxelDownsampler::new();
+        ds.sort_and_segment(points, layout)?;
+        let m = ds.voxel_count();
+        let keys = ds.starts[..m]
+            .iter()
+            .map(|&s| key_bits(ds.words[s as usize]))
+            .collect();
+        let mut order = Vec::with_capacity(points.len());
+        ds.words
+            .par_iter()
+            .with_min_len(MIN_ITEMS_PER_TASK)
+            .map(|&w| w as u32)
+            .collect_into_vec(&mut order);
+        Ok(Self {
+            order,
+            keys,
+            starts: ds.starts,
+        })
+    }
+
+    /// The unbiased key of voxel `v`.
+    #[inline]
+    pub(crate) fn key(&self, v: usize) -> VoxelKey {
+        key_from_word(self.keys[v] << 32)
+    }
+
+    /// Sorted positions of the points in the voxels `(x, y, z0..=z1)`
+    /// (unbiased key components, any of them possibly outside `i32`, then
+    /// the voxels do not exist).
+    ///
+    /// `hint` is a voxel index from a previous call, updated to this call's
+    /// first voxel: from it the search gallops forward, so a run of calls
+    /// with ascending targets costs amortized O(1) each. Any `hint` gives
+    /// the same result.
+    pub(crate) fn column(
+        &self,
+        hint: &mut usize,
+        x: i64,
+        y: i64,
+        z0: i64,
+        z1: i64,
+    ) -> std::ops::Range<usize> {
+        let to_biased = |k: i64| -> Option<u32> { i32::try_from(k).ok().map(biased) };
+        let z0 = z0.max(i64::from(i32::MIN));
+        let z1 = z1.min(i64::from(i32::MAX));
+        let (Some(bx), Some(by), Some(b0), Some(b1)) =
+            (to_biased(x), to_biased(y), to_biased(z0), to_biased(z1))
+        else {
+            return 0..0;
+        };
+        if b0 > b1 {
+            return 0..0;
+        }
+        let first = pack_biased(bx, by, b0);
+        let last = pack_biased(bx, by, b1);
+        let a = gallop(&self.keys, *hint, first);
+        *hint = a;
+        let mut b = a;
+        while b < self.keys.len() && self.keys[b] <= last {
+            b += 1;
+        }
+        self.starts[a] as usize..self.starts[b] as usize
+    }
+}
+
+/// The first index of the ascending `keys` whose key is `>= first`,
+/// searched forward from `hint` with doubling steps (or by bisection below
+/// `hint` when `hint` is past it).
+fn gallop(keys: &[u128], hint: usize, first: u128) -> usize {
+    let n = keys.len();
+    let mut lo = hint.min(n);
+    if lo > 0 && keys[lo - 1] >= first {
+        return keys[..lo].partition_point(|&k| k < first);
+    }
+    // Every key below `lo` is `< first`.
+    let mut step = 1;
+    loop {
+        let probe = lo + step - 1;
+        if probe >= n {
+            return lo + keys[lo..].partition_point(|&k| k < first);
+        }
+        if keys[probe] >= first {
+            return lo + keys[lo..=probe].partition_point(|&k| k < first);
+        }
+        lo = probe + 1;
+        step *= 2;
+    }
 }
 
 #[cfg(test)]

@@ -208,3 +208,103 @@ fn select_rejects_bad_index_and_attributes() {
         Err(FilterError::IndexOutOfRange { index: 2, len: 2 })
     ));
 }
+
+/// Clouds where a grid search is easy to get wrong: uniform, planar,
+/// clustered with far outliers, duplicates, points on cell boundaries and
+/// negative coordinates.
+fn grid_clouds() -> Vec<Vec<[f64; 3]>> {
+    let uniform = random_points(6000, 4.0, 11);
+    let planar: Vec<[f64; 3]> = random_points(5000, 3.0, 12)
+        .into_iter()
+        .map(|p| [p[0], p[1], 0.25])
+        .collect();
+    let mut clustered: Vec<[f64; 3]> = random_points(4000, 0.2, 13);
+    clustered.extend(
+        random_points(3000, 0.1, 14)
+            .into_iter()
+            .map(|p| [p[0] + 50.0, p[1], p[2]]),
+    );
+    clustered.extend([[1e4, 0.0, 0.0], [-3e3, 7.0, 1.0], [25.0, 25.0, 25.0]]);
+    let mut dup = random_points(3000, 1.0, 15);
+    for i in (0..3000).step_by(3) {
+        dup[i] = dup[(i * 7) % 3000];
+    }
+    let lattice: Vec<[f64; 3]> = (0..4096)
+        .map(|i| {
+            let (x, y, z) = (i % 16, (i / 16) % 16, i / 256);
+            [
+                x as f64 * 0.05 - 0.4,
+                y as f64 * 0.05 - 0.4,
+                z as f64 * 0.05 - 0.4,
+            ]
+        })
+        .collect();
+    vec![uniform, planar, clustered, dup, lattice]
+}
+
+#[test]
+fn radius_grid_matches_kd_tree() -> TestResult {
+    for (c, points) in grid_clouds().iter().enumerate() {
+        for &(radius, min_neighbours) in &[(0.05, 1), (0.1, 4), (0.15, 20), (0.0125, 2), (3.0, 50)]
+        {
+            let r2 = radius * radius;
+            let cap = NonZero::new(min_neighbours + 1).ok_or("cap")?;
+            let grid = grid::CellGrid::for_radius(points, radius).ok_or("grid")?;
+            let mut got = vec![false; points.len()];
+            grid::radius_dense(&grid, r2, cap.get(), &mut got);
+            let mut want = vec![false; points.len()];
+            radius_dense_kd(points, r2, cap, &mut want);
+            assert_eq!(got, want, "cloud {c} radius {radius} min {min_neighbours}");
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn knn_grid_matches_kd_tree_bit_for_bit() -> TestResult {
+    for (c, points) in grid_clouds().iter().enumerate() {
+        let tree = KdTree::new_from_slice(points);
+        for k in [1usize, 4, 16, 33] {
+            let cap = NonZero::new(k + 1).ok_or("cap")?;
+            for divisor in [1, KNN_CELL_LOAD_DIVISOR, 8] {
+                let grid =
+                    grid::CellGrid::for_knn(points, (k + 1).div_ceil(divisor)).ok_or("grid")?;
+                let mut got = vec![0.0; points.len()];
+                grid::knn_mean_distances(&grid, k + 1, &|p| knn_mean_kd(&tree, p, cap), &mut got);
+                for (i, (g, p)) in got.iter().zip(points).enumerate() {
+                    let want = knn_mean_kd(&tree, p, cap);
+                    assert_eq!(g.to_bits(), want.to_bits(), "cloud {c} k {k} point {i}");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn statistical_matches_brute_force_on_a_grid_sized_cloud() -> TestResult {
+    let mut points = random_points(3000, 2.0, 21);
+    points.extend([[9.0, 9.0, 9.0], [-4.0, 1.0, 1.0]]);
+    let k = 8;
+    let mean: Vec<f64> = points
+        .iter()
+        .map(|p| {
+            let mut d: Vec<f64> = points
+                .iter()
+                .map(|q| (p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2))
+                .collect();
+            d.sort_by(f64::total_cmp);
+            grid::mean_of_sorted(&d[..=k])
+        })
+        .collect();
+    let n = mean.len() as f64;
+    let mu = mean.iter().sum::<f64>() / n;
+    let sd = (mean.iter().map(|d| (d - mu) * (d - mu)).sum::<f64>() / (n - 1.0)).sqrt();
+    let want: Vec<u32> = (0..points.len() as u32)
+        .filter(|&i| mean[i as usize] <= mu + 0.5 * sd)
+        .collect();
+    let mut kept = Vec::new();
+    statistical_inlier_indices(&points, k, 0.5, &mut kept)?;
+    assert_eq!(kept, want);
+    Ok(())
+}
