@@ -82,9 +82,22 @@ impl PinholeCamera {
     ///
     /// Note: this is the projective normalization onto the `z = 1` plane, **not** an L2 (unit-length)
     /// vector normalization — the result is a 2D image-plane point, not a unit bearing ray.
-    pub fn normalize(&self, uv: Vec2F64) -> Vec2F64 {
-        let up = self.undistort(uv.x, uv.y);
-        Vec2F64::new((up.x - self.cx) / self.fx, (up.y - self.cy) / self.fy)
+    ///
+    /// # Arguments
+    ///
+    /// * `uv` - Pixel `(column, row)` in the raw image.
+    ///
+    /// # Returns
+    ///
+    /// The point on the `z = 1` plane, or `None` when [`PinholeCamera::undistort`] is.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible; pixels without a valid preimage return `None`.
+    pub fn normalize(&self, uv: Vec2F64) -> Option<Vec2F64> {
+        let (n, valid) =
+            self.undistort_normalized((uv.x - self.cx) / self.fx, (uv.y - self.cy) / self.fy);
+        valid.then_some(n)
     }
 
     /// Undistorts a pixel by inverting Brown-Conrady distortion with Newton iteration.
@@ -96,18 +109,17 @@ impl PinholeCamera {
     ///
     /// # Returns
     ///
-    /// The pixel `(u, v)` in the ideal pinhole image. For a pixel the distortion
-    /// cannot produce (past the fold of the radial map) this is the inversion's
-    /// best estimate, not a true preimage; [`CameraModel::unproject`] returns
-    /// `None` there instead.
+    /// The pixel `(u, v)` in the ideal pinhole image, or `None` when the
+    /// distortion cannot produce this pixel from a point inside the fold of the
+    /// radial map, or the inversion did not converge.
     ///
     /// # Errors
     ///
-    /// This method is infallible.
-    pub fn undistort(&self, col: f64, row: f64) -> Vec2F64 {
-        let (n, _) =
+    /// This method is infallible; pixels without a valid preimage return `None`.
+    pub fn undistort(&self, col: f64, row: f64) -> Option<Vec2F64> {
+        let (n, valid) =
             self.undistort_normalized((col - self.cx) / self.fx, (row - self.cy) / self.fy);
-        Vec2F64::new(self.fx * n.x + self.cx, self.fy * n.y + self.cy)
+        valid.then(|| Vec2F64::new(self.fx * n.x + self.cx, self.fy * n.y + self.cy))
     }
 
     /// Inverts [`PinholeCamera::distort_normalized`] by damped Newton iteration.
@@ -287,6 +299,8 @@ impl PinholeCamera {
     ///
     /// Given two sets of `[col, row]` keypoints and a list of index pairs
     /// `(idx_in_kps1, idx_in_kps2)`, returns the undistorted points for both views.
+    /// Pairs where either keypoint cannot be undistorted are skipped, so the two
+    /// outputs stay aligned.
     pub fn undistort_matched_pairs(
         &self,
         kps1: &[[f32; 2]],
@@ -301,8 +315,14 @@ impl PinholeCamera {
             }
             let p1 = kps1[i1];
             let p2 = kps2[i2];
-            pts1.push(self.undistort(p1[0] as f64, p1[1] as f64));
-            pts2.push(self.undistort(p2[0] as f64, p2[1] as f64));
+            let (Some(u1), Some(u2)) = (
+                self.undistort(p1[0] as f64, p1[1] as f64),
+                self.undistort(p2[0] as f64, p2[1] as f64),
+            ) else {
+                continue;
+            };
+            pts1.push(u1);
+            pts2.push(u2);
         }
         (pts1, pts2)
     }
@@ -478,7 +498,7 @@ mod tests {
         // IDENTITY leaves normalized coords untouched.
         let id = PinholeCamera::IDENTITY;
         assert_eq!(id.fx, 1.0);
-        let n = id.normalize(Vec2F64::new(0.3, -0.2));
+        let n = id.normalize(Vec2F64::new(0.3, -0.2)).unwrap();
         assert!((n.x - 0.3).abs() < 1e-12 && (n.y + 0.2).abs() < 1e-12);
         // normalize is the inverse of the (distortion-free) pinhole projection.
         let cam = PinholeCamera {
@@ -494,7 +514,7 @@ mod tests {
         let (xn, yn) = (0.12, -0.05);
         let u = cam.fx * xn + cam.cx;
         let v = cam.fy * yn + cam.cy;
-        let back = cam.normalize(Vec2F64::new(u, v));
+        let back = cam.normalize(Vec2F64::new(u, v)).unwrap();
         assert!((back.x - xn).abs() < 1e-9 && (back.y - yn).abs() < 1e-9);
     }
 
@@ -535,6 +555,16 @@ mod tests {
         };
         assert!(cam.unproject(&Vec2F64::new(0.0, 0.0)).is_none());
         assert!(cam.unproject(&Vec2F64::new(751.0, 479.0)).is_none());
+        assert!(cam.undistort(0.0, 0.0).is_none());
+        assert!(cam.normalize(Vec2F64::new(751.0, 479.0)).is_none());
+
+        // A pair with one corner pixel is skipped whole, so the two outputs stay aligned.
+        let kps = [[0.0f32, 0.0], [400.0, 250.0], [420.0, 230.0]];
+        let (pts1, pts2) = cam.undistort_matched_pairs(&kps, &kps, &[(0, 1), (1, 2), (2, 0)]);
+        assert_eq!(pts1.len(), 1);
+        assert_eq!(pts2.len(), 1);
+        assert_eq!(Some(pts1[0]), cam.undistort(400.0, 250.0));
+        assert_eq!(Some(pts2[0]), cam.undistort(420.0, 230.0));
 
         let inside = Vec2F64::new(376.0 + 360.0, 240.0);
         let bearing = cam.unproject(&inside).unwrap();
