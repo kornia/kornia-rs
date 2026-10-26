@@ -13,8 +13,15 @@ Both are checked against each other before timing. Run with the system
 python3 (needs numpy, opencv-python; scikit-image optional):
 
     python3 bench_label_boundaries_baselines.py
+
+`--write-fixture DIR` (needs scikit-image) instead writes
+`label_boundaries_skimage.bin`, the parity fixture read by the
+`erode_label_boundaries` tests, into DIR (the repository's `tests/data`).
 """
 
+import pathlib
+import struct
+import sys
 import time
 
 import cv2
@@ -91,7 +98,40 @@ def best_ms(fn) -> float:
     return best
 
 
+FIXTURE_RADII = (1, 3)
+
+
+def write_fixture(out_dir: str) -> None:
+    """A small random label map and scikit-image's masks for it.
+
+    Little endian: `u64` width, `u64` height, the `u16` labels row-major,
+    then one `u8` mask (1 = eroded) per (connectivity 1, 2) x
+    `FIXTURE_RADII` pair, in that order.
+    """
+    rng = np.random.default_rng(7)
+    w, h = 61, 37
+    # Blocks of 4..9 pixels with random labels (some neighbours share one),
+    # plus single-pixel speckle.
+    ys = np.repeat(np.arange(h), rng.integers(4, 10, size=h))[:h]
+    xs = np.repeat(np.arange(w), rng.integers(4, 10, size=w))[:w]
+    block = rng.integers(0, 5, size=(h, w))
+    labels = block[ys[:, None], xs[None, :]].astype(np.uint16)
+    speckle = rng.random((h, w)) < 0.02
+    labels[speckle] = rng.integers(0, 5, size=int(speckle.sum()))
+    labels = labels * 1000 + 7
+    blob = struct.pack("<QQ", w, h) + labels.astype("<u2").tobytes()
+    for eight in (False, True):
+        for radius in FIXTURE_RADII:
+            out = skimage_erode(labels, radius, eight, 0xFFFF)
+            blob += (out == 0xFFFF).astype(np.uint8).tobytes()
+    pathlib.Path(out_dir, "label_boundaries_skimage.bin").write_bytes(blob)
+    print(f"wrote {w}x{h}, {len(blob)} bytes")
+
+
 def main() -> None:
+    if len(sys.argv) == 3 and sys.argv[1] == "--write-fixture":
+        write_fixture(sys.argv[2])
+        return
     try:
         import skimage  # noqa: F401
 

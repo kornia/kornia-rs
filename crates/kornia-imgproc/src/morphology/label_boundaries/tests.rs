@@ -466,3 +466,54 @@ fn threshold_overflow_errors() -> TestResult {
     assert_eq!(dst.as_slice(), src.as_slice());
     Ok(())
 }
+
+/// Parity with scikit-image 0.21: `find_boundaries(labels, connectivity,
+/// mode="thick")`, dilated by a diamond / square of radius `radius - 1`, on
+/// a fixture written by
+/// `benches/bench_label_boundaries_baselines.py --write-fixture`.
+///
+/// `tests/data/label_boundaries_skimage.bin`, little endian: `u64` width,
+/// `u64` height, the `u16` labels, then one `u8` mask (1 = eroded) per
+/// (connectivity 1, 2) × radius (1, 3) pair, in that order.
+#[test]
+fn skimage_find_boundaries_parity_fixture() -> TestResult {
+    const FILL: u16 = u16::MAX;
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/data/label_boundaries_skimage.bin");
+    let bytes = std::fs::read(&path)?;
+    let word = |at: usize| -> Result<usize, Box<dyn std::error::Error>> {
+        let b: [u8; 8] = bytes
+            .get(at..at + 8)
+            .ok_or("truncated fixture")?
+            .try_into()?;
+        Ok(usize::try_from(u64::from_le_bytes(b))?)
+    };
+    let (w, h) = (word(0)?, word(8)?);
+    let n = w * h;
+    let labels: Vec<u16> = bytes
+        .get(16..16 + 2 * n)
+        .ok_or("truncated fixture")?
+        .chunks_exact(2)
+        .map(|b| u16::from_le_bytes([b[0], b[1]]))
+        .collect();
+    let mut masks = bytes
+        .get(16 + 2 * n..)
+        .ok_or("truncated fixture")?
+        .chunks_exact(n);
+    assert_eq!(masks.len(), 4);
+    let src = Image::<u16, 1>::new(sz(w, h), labels)?;
+    let mut dst = Image::<u16, 1>::from_size_val(src.size(), 0)?;
+    for connectivity in CONNECTIVITIES {
+        for radius in [1, 3] {
+            let want = masks.next().ok_or("missing mask")?;
+            erode_label_boundaries(&src, &mut dst, radius, connectivity, FILL)?;
+            for (i, (&got, &m)) in dst.as_slice().iter().zip(want).enumerate() {
+                assert_eq!(got == FILL, m != 0, "{connectivity:?} r{radius} pixel {i}");
+                if m == 0 {
+                    assert_eq!(got, src.as_slice()[i]);
+                }
+            }
+        }
+    }
+    Ok(())
+}
