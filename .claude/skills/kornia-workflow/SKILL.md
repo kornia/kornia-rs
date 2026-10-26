@@ -43,7 +43,9 @@ Without pixi: `cargo test --features ci`, `cargo test -p kornia-imgproc`,
 
 ## PR rules (checked in review; `pr-validation.yml` fails on a missing Self-review and warns on missing fields)
 
-1. Linked, approved issue assigned to you: `Fixes #123` / `Closes #123`.
+1. Start the PR body from `.github/pull_request_template.md` and fill every
+   section (`gh pr create --body-file`; `--body` text skips the template).
+   Linked, approved issue assigned to you: `Fixes #123` / `Closes #123`.
 2. Small, one concern, only what the issue asks. Out-of-scope hunks block
    review (`kornia-code-review`); split them into their own PRs.
 3. Paste the commands you actually ran and their output, including failures

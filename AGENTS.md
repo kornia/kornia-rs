@@ -237,7 +237,7 @@ Err(KorniaError::SizeMismatch {
 
 4. **Write tests** — new functionality requires unit tests. Bug fixes require a regression test that would have caught the bug.
 
-5. **PR description** — include:
+5. **PR description** — fill in `.github/pull_request_template.md` (`gh pr create --body-file <filled copy>`; `--body` skips the template). It covers:
    - What changed and why
    - Any breaking changes
    - Benchmarks or profiling data for performance-sensitive changes (before/after, see `kornia-code-review`)
