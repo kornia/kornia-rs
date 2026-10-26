@@ -35,12 +35,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # x86_64 pinned to 24.04: on ubuntu-26.04 the frozen BA digest test
+        # (ba_schur defaults_are_bit_identical_to_the_frozen_solver) differs.
         include:
           - name: Test Debug - x86_64
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
             command: rust-test
           - name: Test Release - x86_64
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
             command: rust-test-release
           - name: Test Debug - aarch64
             runner: ubuntu-24.04-arm
@@ -64,4 +66,4 @@ jobs:
       - name: Show sccache stats
         if: always()
         run: |
-          sccache --show-stats 2>&1 || echo "::warning::sccache stats unavailable - server may have exited"
+          "$SCCACHE_PATH" --show-stats 2>&1 || echo "::warning::sccache stats unavailable - server may have exited"
