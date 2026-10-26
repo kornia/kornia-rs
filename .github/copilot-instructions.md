@@ -74,9 +74,7 @@ When reviewing pull requests, ensure strict alignment with the linked issue:
    - Verify the PR description contains a valid issue reference (e.g., "Fixes #123" or "Closes #123")
    - Confirm the linked issue exists and is open (or was open when the PR was created)
 
-2. **Assignment Verification**:
-   - Check that the PR author is assigned to the linked issue
-   - If not assigned, request that a maintainer assign the issue before proceeding with review
+2. **Self-review**: Start from the author's pasted `kornia-code-review` output; check its findings against the diff rather than repeating the review.
 
 3. **Scope Matching**:
    - **Critical**: Verify that the PR implementation strictly matches what the issue describes
@@ -84,8 +82,6 @@ When reviewing pull requests, ensure strict alignment with the linked issue:
    - If the PR includes additional features or changes not mentioned in the issue, request that those be split into separate issues/PRs
    - Compare the PR description, code changes, and tests against the issue description to ensure alignment
 
-4. **Issue Approval Status**:
-   - Verify the linked issue has been reviewed and approved by a maintainer
-   - Issues with the `triage` label may not have been fully reviewed yet
+4. **Issue fit**: If the linked issue does not fit the project's direction, say so; approval or assignment is not required before a PR.
 
 **Reviewer Action**: If the PR does not match the issue scope or requirements, clearly explain the mismatch and request that the PR be updated to strictly align with the issue, or that additional changes be moved to separate issues/PRs.

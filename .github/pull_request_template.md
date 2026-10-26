@@ -7,7 +7,7 @@ For internal changes without a fragment, say so and ask for the no-changelog lab
 
 ## Related issue
 
-<!-- Required: the approved issue you are assigned to, as `Fixes #<number>`. -->
+<!-- Required: the issue this PR addresses, as `Fixes #<number>`. -->
 
 ## What did you check?
 

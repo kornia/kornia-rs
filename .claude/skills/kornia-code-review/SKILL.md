@@ -10,8 +10,9 @@ Two uses, same procedure:
 - **Self-review (mandatory before opening a PR).** The author, or the
   author's agent, runs this skill on `git diff main...HEAD`, fixes what it
   finds, and pastes the final output in the PR's **Self-review** section.
-- **Review.** A reviewer runs it on the PR and compares with the author's
-  self-review (section 7).
+- **Review.** A maintainer starts from the author's self-review: checks its
+  findings against the diff, then runs this skill where the self-review looks
+  thin, and records what it missed (section 7).
 
 Judge the change, not its author: do not speculate about whether or how AI
 was used (disclosure belongs to the author, `AI_POLICY.md`). A defect is a
@@ -28,6 +29,11 @@ Skill gaps: <section 7>
 
 Every finding, scope findings included, is one line:
 `path:line — severity — problem — fix — [measured|inferred]`.
+An applicable section with no finding still gets one line saying what was
+checked: `§<n> — no finding — <what you checked> — [measured|inferred]`.
+`pr-validation.yml` fails a Self-review with no tagged line, with a
+blocking finding, with `Verdict: request changes`, or, when library code
+changed, without a command in `Reuse searches`.
 
 - `path:line`: line in the new file at the PR head (old file for deleted
   lines). Findings about the PR description use `PR body`.

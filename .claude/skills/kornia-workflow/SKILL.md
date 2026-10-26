@@ -45,7 +45,8 @@ Without pixi: `cargo test --features ci`, `cargo test -p kornia-imgproc`,
 
 1. Start the PR body from `.github/pull_request_template.md` and fill every
    section (`gh pr create --body-file`; `--body` text skips the template).
-   Linked, approved issue assigned to you: `Fixes #123` / `Closes #123`.
+   Linked issue: `Fixes #123` / `Closes #123`; say on the issue that you are
+   working on it.
 2. Small, one concern, only what the issue asks. Out-of-scope hunks block
    review (`kornia-code-review`); split them into their own PRs.
 3. Paste the commands you actually ran and their output, including failures
