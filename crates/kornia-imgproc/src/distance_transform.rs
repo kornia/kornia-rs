@@ -70,9 +70,9 @@ impl DistanceTransformExecutor {
     /// empty image of the same size.
     ///
     /// If the image has no foreground pixels, every output value is `1e10`
-    /// (not `f32::MAX` as in [`distance_transform_vanilla`]). Distances are
-    /// computed in `f32`, so they are inexact when the width or height exceeds
-    /// 4096 pixels.
+    /// (not `f32::MAX` as in [`distance_transform_vanilla`]). Squared distances
+    /// are stored as `f32`, so distances above 4096 pixels are rounded to `f32`
+    /// precision.
     ///
     /// # Errors
     ///
@@ -128,7 +128,7 @@ impl DistanceTransformExecutor {
 }
 
 /// 1D Parabolic Distance Transform (Safe Rust)
-fn distance_transform_1d(f: &[f32], d: &mut [f32], v: &mut [usize], z: &mut [f32]) {
+fn distance_transform_1d(f: &[f32], d: &mut [f32], v: &mut [usize], z: &mut [f64]) {
     let n = f.len();
     if n == 0 {
         return;
@@ -136,14 +136,14 @@ fn distance_transform_1d(f: &[f32], d: &mut [f32], v: &mut [usize], z: &mut [f32
 
     let mut k = 0;
     v[0] = 0;
-    z[0] = -INF;
-    z[1] = INF;
+    z[0] = -(INF as f64);
+    z[1] = INF as f64;
 
     for q in 1..n {
         loop {
             let r = v[k];
-            let numerator = (f[q] + (q * q) as f32) - (f[r] + (r * r) as f32);
-            let denominator = 2.0 * (q as f32 - r as f32);
+            let numerator = (f[q] - f[r]) as f64 + (q - r) as f64 * (q + r) as f64;
+            let denominator = 2.0 * (q as f64 - r as f64);
             let s = numerator / denominator;
 
             if s <= z[k] {
@@ -155,7 +155,7 @@ fn distance_transform_1d(f: &[f32], d: &mut [f32], v: &mut [usize], z: &mut [f32
                 k += 1;
                 v[k] = q;
                 z[k] = s;
-                z[k + 1] = INF;
+                z[k + 1] = INF as f64;
                 break;
             }
         }
@@ -163,7 +163,7 @@ fn distance_transform_1d(f: &[f32], d: &mut [f32], v: &mut [usize], z: &mut [f32
 
     k = 0;
     for (q, d_val) in d.iter_mut().enumerate().take(n) {
-        while z[k + 1] < q as f32 {
+        while z[k + 1] < q as f64 {
             k += 1;
         }
         let r = v[k];
@@ -252,6 +252,76 @@ mod tests {
             assert_eq!(output.height(), height, "case {width}x{height}");
             assert!(output.as_slice().is_empty(), "case {width}x{height}");
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn distance_transform_foreground_is_zero_at_large_sizes() -> Result<(), ImageError> {
+        let mut executor = DistanceTransformExecutor::new();
+
+        // Common video resolutions, plus single rows/columns longer than 4096 px.
+        let sizes = [
+            (1920, 1080),
+            (2048, 1080),
+            (3840, 2160),
+            (4096, 2160),
+            (7680, 4320),
+            (4200, 1),
+            (1, 4200),
+        ];
+
+        let mut failures = Vec::new();
+        for (width, height) in sizes {
+            // The first row and the first column are foreground, so every pixel
+            // in them must have distance 0. This exercises both the row pass and
+            // the column pass over their full length.
+            let mut image = Image::<f32, 1>::from_size_val(ImageSize { width, height }, 0.0)?;
+            let data = image.as_slice_mut();
+            data[..width].fill(1.0);
+            for y in 0..height {
+                data[y * width] = 1.0;
+            }
+
+            let output = executor.execute(&image)?;
+            let out = output.as_slice();
+
+            let bad_row: Vec<usize> = (0..width).filter(|&x| out[x] != 0.0).collect();
+            let bad_col: Vec<usize> = (0..height).filter(|&y| out[y * width] != 0.0).collect();
+            if !bad_row.is_empty() || !bad_col.is_empty() {
+                failures.push(format!(
+                    "{width}x{height}: {} pixels in row 0 and {} in column 0 have a non-zero \
+                     distance (first x = {:?}, first y = {:?})",
+                    bad_row.len(),
+                    bad_col.len(),
+                    bad_row.first(),
+                    bad_col.first(),
+                ));
+            }
+        }
+
+        assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn distance_transform_foreground_is_zero_beyond_f32_integer_range() -> Result<(), ImageError> {
+        // q + r exceeds 2^24 here, where f32 can no longer represent every integer.
+        let width = 8_388_614;
+        let image = Image::<f32, 1>::from_size_val(ImageSize { width, height: 1 }, 1.0)?;
+
+        let output = DistanceTransformExecutor::new().execute(&image)?;
+
+        let bad: Vec<usize> = (0..width)
+            .filter(|&x| output.as_slice()[x] != 0.0)
+            .collect();
+        assert!(
+            bad.is_empty(),
+            "{} foreground pixels have a non-zero distance (first x = {:?})",
+            bad.len(),
+            bad.first()
+        );
 
         Ok(())
     }
