@@ -1,5 +1,5 @@
-//! Depth ops: valid-aware median blur (u16 and f32) and the flying-pixel
-//! mask (u16), CPU and (with `--features cuda`) device-resident CUDA.
+//! Depth ops: valid-aware median blur and the flying-pixel mask, u16 and
+//! f32, CPU and (with `--features cuda`) device-resident CUDA.
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use kornia_image::{Image, ImageSize};
