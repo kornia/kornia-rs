@@ -64,4 +64,4 @@ jobs:
       - name: Show sccache stats
         if: always()
         run: |
-          sccache --show-stats 2>&1 || echo "::warning::sccache stats unavailable - server may have exited"
+          "$SCCACHE_PATH" --show-stats 2>&1 || echo "::warning::sccache stats unavailable - server may have exited"
