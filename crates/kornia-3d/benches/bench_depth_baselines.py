@@ -15,10 +15,16 @@ Times, when the package is importable (each is skipped otherwise):
   z-buffer with `np.minimum.at`, splat radius 0 and 1).
 
 Usage: python3 bench_depth_baselines.py [--rounds N]
-Prints best-of-N milliseconds per op and size.
+       python3 bench_depth_baselines.py --write-fixtures DIR
+Prints best-of-N milliseconds per op and size. `--write-fixtures` (needs
+Open3D) writes `unproject_depth_open3d.bin`, the parity fixture read by the
+kornia-3d tests, into DIR (the repository's `tests/data`) instead of timing
+anything.
 """
 
 import argparse
+import pathlib
+import struct
 import time
 
 import numpy as np
@@ -188,10 +194,41 @@ def bench_opencv(depth, w, h, rounds):
         print(f"opencv rgbd.registerDepth_u16_dilation={dil}_cpu {w}x{h}: {ms:.3f} ms")
 
 
+def write_fixtures(out_dir):
+    """A small random `u16` depth image and Open3D's unprojection of it.
+
+    Little endian: `u32` width and height, `f64` fx, fy, cx, cy and
+    `depth_scale`, the `u16` depth pixels row-major, then a `u64` count and
+    the output `x, y, z` `f64` triplets of the legacy
+    `geometry.PointCloud.create_from_depth_image` (row-major order).
+    """
+    import open3d as o3d
+
+    rng = np.random.default_rng(7)
+    w, h = 40, 30
+    fx, fy, cx, cy = 37.5, 41.25, 19.3, 14.6
+    depth_scale = 1000.0
+    depth = rng.integers(1, 65536, size=(h, w), dtype=np.uint16)
+    depth[rng.random((h, w)) < 0.2] = 0
+    cam = o3d.camera.PinholeCameraIntrinsic(w, h, fx, fy, cx, cy)
+    pc = o3d.geometry.PointCloud.create_from_depth_image(
+        o3d.geometry.Image(depth), cam, depth_scale=depth_scale, depth_trunc=1.0e9
+    )
+    pts = np.ascontiguousarray(np.asarray(pc.points), dtype="<f8")
+    blob = struct.pack("<II5d", w, h, fx, fy, cx, cy, depth_scale)
+    blob += np.ascontiguousarray(depth, dtype="<u2").tobytes()
+    blob += struct.pack("<Q", len(pts)) + pts.tobytes()
+    (pathlib.Path(out_dir) / "unproject_depth_open3d.bin").write_bytes(blob)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--rounds", type=int, default=50)
+    ap.add_argument("--write-fixtures", metavar="DIR")
     args = ap.parse_args()
+    if args.write_fixtures:
+        write_fixtures(args.write_fixtures)
+        return
     for w, h in SIZES:
         depth = depth_u16(w, h)
         bench_numpy(depth, w, h, args.rounds)

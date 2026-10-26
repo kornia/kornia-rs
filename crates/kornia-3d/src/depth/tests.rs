@@ -272,6 +272,63 @@ fn unproject_into_reuses_buffers() -> TestResult {
     Ok(())
 }
 
+/// Little-endian reader over a fixture's bytes.
+struct Fixture<'a>(&'a [u8]);
+impl Fixture<'_> {
+    fn take<const N: usize>(&mut self) -> Result<[u8; N], Box<dyn std::error::Error>> {
+        let (head, rest) = self.0.split_at_checked(N).ok_or("fixture truncated")?;
+        self.0 = rest;
+        Ok(head.try_into()?)
+    }
+    fn f64(&mut self) -> Result<f64, Box<dyn std::error::Error>> {
+        Ok(f64::from_le_bytes(self.take()?))
+    }
+}
+
+/// Parity with Open3D 0.20's legacy `PointCloud.create_from_depth_image`
+/// on a fixture written by `benches/bench_depth_baselines.py
+/// --write-fixtures`: a 40×30 random `u16` image over the full range with
+/// ~20% zeros, non-square focal lengths and an off-centre principal point.
+///
+/// `tests/data/unproject_depth_open3d.bin`, little endian: `u32` width and
+/// height, `f64` fx, fy, cx, cy and `depth_scale`, the `u16` pixels, then a
+/// `u64` count and Open3D's `x, y, z` `f64` triplets in row-major order.
+/// Open3D divides by `depth_scale` and kornia multiplies by its inverse,
+/// with `f32` arithmetic, so each coordinate may differ by a few `f32` ulps
+/// of the point's depth.
+#[test]
+fn open3d_unproject_parity_fixture() -> TestResult {
+    const ULPS: f64 = 4.0;
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/data/unproject_depth_open3d.bin");
+    let bytes = std::fs::read(&path)?;
+    let mut f = Fixture(&bytes);
+    let w = usize::try_from(u32::from_le_bytes(f.take()?))?;
+    let h = usize::try_from(u32::from_le_bytes(f.take()?))?;
+    let camera = pinhole(f.f64()?, f.f64()?, f.f64()?, f.f64()?);
+    let depth_scale = f.f64()?;
+    let pixels = (0..w * h)
+        .map(|_| Ok(u16::from_le_bytes(f.take()?)))
+        .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
+    let n = usize::try_from(u64::from_le_bytes(f.take()?))?;
+    let expected = (0..n)
+        .map(|_| Ok([f.f64()?, f.f64()?, f.f64()?]))
+        .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
+    assert!(f.0.is_empty(), "trailing fixture bytes");
+    assert_eq!(n, pixels.iter().filter(|&&d| d != 0).count());
+
+    let depth = Image::<u16, 1>::new(sz(w, h), pixels)?;
+    let cloud = unproject_depth(&depth, (1.0 / depth_scale) as f32, &camera, None)?;
+    assert_eq!(cloud.len(), expected.len());
+    for (a, b) in cloud.points().iter().zip(&expected) {
+        let tol = ULPS * f64::from(f32::EPSILON) * b[2].abs().max(1.0);
+        for k in 0..3 {
+            assert!((a[k] - b[k]).abs() <= tol, "{a:?} vs {b:?}");
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn unproject_empty_and_all_invalid() -> TestResult {
     let camera = pinhole(1.0, 1.0, 0.0, 0.0);
