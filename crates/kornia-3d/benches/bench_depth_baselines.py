@@ -10,6 +10,9 @@ Times, when the package is importable (each is skipped otherwise):
   (a z-buffered projection), timed on CPU and CUDA.
 * OpenCV contrib `cv2.rgbd.depthTo3d` and `cv2.rgbd.registerDepth`
   (`depthDilation=True` is OpenCV's hole-closing splat), CPU only.
+* NumPy, always: a vectorised unprojection (precomputed ray tables, boolean
+  compaction) and a registration (transform, round to the nearest pixel,
+  z-buffer with `np.minimum.at`, splat radius 0 and 1).
 
 Usage: python3 bench_depth_baselines.py [--rounds N]
 Prints best-of-N milliseconds per op and size.
@@ -64,6 +67,54 @@ def best_ms(fn, rounds):
         fn()
         best = min(best, time.perf_counter() - t0)
     return best * 1e3
+
+
+def rays(w, h):
+    """Per-pixel `(x - cx) / fx` and `(y - cy) / fy`, computed once per size."""
+    fx, fy, cx, cy = intrinsics(w, h)
+    xn = ((np.arange(w, dtype=np.float32) - np.float32(cx)) * np.float32(1.0 / fx))
+    yn = ((np.arange(h, dtype=np.float32) - np.float32(cy)) * np.float32(1.0 / fy))
+    return np.broadcast_to(xn, (h, w)), np.broadcast_to(yn[:, None], (h, w))
+
+
+def numpy_unproject(depth, xn, yn, scale):
+    z = depth.astype(np.float32) * np.float32(scale)
+    keep = z > 0
+    zk = z[keep]
+    return np.stack([xn[keep] * zk, yn[keep] * zk, zk], axis=-1)
+
+
+def numpy_register(depth, xn, yn, scale, rt, w, h, radius):
+    fx, fy, cx, cy = intrinsics(w, h)
+    pts = numpy_unproject(depth, xn, yn, scale)
+    r = rt[:3, :3].astype(np.float32)
+    t = rt[:3, 3].astype(np.float32)
+    q = pts @ r.T + t
+    q = q[q[:, 2] > 0]
+    iz = np.float32(1.0) / q[:, 2]
+    u = np.floor(np.float32(fx) * q[:, 0] * iz + np.float32(cx + 0.5)).astype(np.int32)
+    v = np.floor(np.float32(fy) * q[:, 1] * iz + np.float32(cy + 0.5)).astype(np.int32)
+    val = np.rint(q[:, 2] * np.float32(1.0 / scale)).astype(np.int32)
+    ok = (val >= 1) & (val <= 65534)
+    u, v, val = u[ok], v[ok], val[ok]
+    zbuf = np.full(w * h, 65535, dtype=np.int32)
+    for dy in range(-radius, radius + 1):
+        for dx in range(-radius, radius + 1):
+            uu, vv = u + dx, v + dy
+            inb = (uu >= 0) & (uu < w) & (vv >= 0) & (vv < h)
+            np.minimum.at(zbuf, vv[inb] * w + uu[inb], val[inb])
+    zbuf[zbuf == 65535] = 0
+    return zbuf.astype(np.uint16).reshape(h, w)
+
+
+def bench_numpy(depth, w, h, rounds):
+    xn, yn = rays(w, h)
+    pts = numpy_unproject(depth, xn, yn, MM)
+    print(f"numpy unproject_u16_cpu {w}x{h}: {best_ms(lambda: numpy_unproject(depth, xn, yn, MM), rounds):.3f} ms ({len(pts)} points)")
+    rt = dst_from_src()
+    for radius in (0, 1):
+        ms = best_ms(lambda: numpy_register(depth, xn, yn, MM, rt, w, h, radius), rounds)
+        print(f"numpy register_u16_r{radius}_cpu {w}x{h}: {ms:.3f} ms")
 
 
 def bench_open3d(depth, w, h, rounds):
@@ -143,6 +194,7 @@ def main():
     args = ap.parse_args()
     for w, h in SIZES:
         depth = depth_u16(w, h)
+        bench_numpy(depth, w, h, args.rounds)
         bench_open3d(depth, w, h, args.rounds)
         bench_opencv(depth, w, h, args.rounds)
 

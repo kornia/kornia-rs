@@ -1,6 +1,7 @@
 //! Depth unprojection and registration on synthetic u16 / f32 depth images
 //! (640x480 and 1280x720): CPU, and with `--features cuda` the device twins
-//! on device-resident buffers (stream synchronized per iteration).
+//! on device-resident buffers, synchronized per call (latency) and queued
+//! (`_queued`, throughput).
 //!
 //! `cargo bench -p kornia-3d --bench bench_depth [--features cuda]`
 //! Baselines on the same inputs: `benches/bench_depth_baselines.py`.
@@ -58,6 +59,15 @@ fn dst_from_src() -> Pose3d {
     let a = 0.02f64;
     let r =
         Mat3F64::from_cols_array(&[a.cos(), 0.0, -a.sin(), 0.0, 1.0, 0.0, a.sin(), 0.0, a.cos()]);
+    Pose3d::new(r, Vec3F64::new(0.05, 0.0, 0.0))
+}
+
+/// A 3 degree roll about the optical axis: rows of the source land on
+/// slanted destination rows, the hard case for the banded CPU scatter.
+fn dst_from_src_roll() -> Pose3d {
+    let a = 0.05f64;
+    let r =
+        Mat3F64::from_cols_array(&[a.cos(), a.sin(), 0.0, -a.sin(), a.cos(), 0.0, 0.0, 0.0, 1.0]);
     Pose3d::new(r, Vec3F64::new(0.05, 0.0, 0.0))
 }
 
@@ -121,6 +131,11 @@ fn bench_depth(c: &mut Criterion) {
             );
         }
 
+        let roll = dst_from_src_roll();
+        group.bench_function(BenchmarkId::new("register_u16_r0_roll_cpu", &id), |b| {
+            b.iter(|| register_depth(&src_u16, MM, &cam, &roll, &cam, 0, &mut dst_u16).unwrap())
+        });
+
         #[cfg(feature = "cuda")]
         {
             use cudarc::driver::CudaContext;
@@ -136,6 +151,45 @@ fn bench_depth(c: &mut Criterion) {
             let mut dst_u16_dev = Image::<u16, 1>::zeros_cuda(size, &st).unwrap();
             let mut dst_f32_dev = Image::<f32, 1>::zeros_cuda(size, &st).unwrap();
 
+            // Device throughput: `iters` calls are queued and the stream is
+            // synchronized once, so the per-call sync round trip (and the
+            // GPU clock dropping between synced calls) is not counted.
+            let queued = |b: &mut criterion::Bencher, op: &mut dyn FnMut()| {
+                b.iter_custom(|iters| {
+                    st.synchronize().unwrap();
+                    let t = std::time::Instant::now();
+                    for _ in 0..iters {
+                        op();
+                    }
+                    st.synchronize().unwrap();
+                    t.elapsed()
+                })
+            };
+            group.bench_function(BenchmarkId::new("unproject_u16_cuda_queued", &id), |b| {
+                queued(b, &mut || {
+                    proj.unproject_depth(&src_u16_dev, MM, &cam, None, &mut cloud)
+                        .unwrap()
+                })
+            });
+            for radius in [0usize, 1] {
+                group.bench_function(
+                    BenchmarkId::new(format!("register_u16_r{radius}_cuda_queued"), &id),
+                    |b| {
+                        queued(b, &mut || {
+                            proj.register_depth(
+                                &src_u16_dev,
+                                MM,
+                                &cam,
+                                &pose,
+                                &cam,
+                                radius,
+                                &mut dst_u16_dev,
+                            )
+                            .unwrap()
+                        })
+                    },
+                );
+            }
             group.bench_function(BenchmarkId::new("unproject_u16_cuda", &id), |b| {
                 b.iter(|| {
                     proj.unproject_depth(&src_u16_dev, MM, &cam, None, &mut cloud)
