@@ -41,15 +41,16 @@ Conditional gates:
 Without pixi: `cargo test --features ci`, `cargo test -p kornia-imgproc`,
 `cargo clippy --workspace --no-deps --all-targets --features ci -- -D warnings`.
 
-## PR rules (checked in review; `pr-validation.yml` only checks the Self-review)
+## PR rules (checked in review; `pr-validation.yml` fails on a missing Self-review and warns on missing fields)
 
 1. Linked, approved issue assigned to you: `Fixes #123` / `Closes #123`.
 2. Small, one concern, only what the issue asks. Out-of-scope hunks block
    review (`kornia-code-review`); split them into their own PRs.
 3. Paste the commands you actually ran and their output, including failures
    and what you did not run.
-4. Say which part a human did and, if AI was used, which agent and model
-   (see `AI_POLICY.md`). You are the sole responsible author of every line.
+4. Fill in the AI usage disclosure (see `AI_POLICY.md`): agent + version,
+   model, effort level, skills applied, and which part a human did. You are
+   the sole responsible author of every line.
 5. Perf-sensitive change ⇒ before/after bench numbers (`kornia-code-review`).
 6. Changed a fact the skills describe, hit a non-obvious trap, or found something
    reusable (a helper, a measured number, a pattern) ⇒ one line in the owning

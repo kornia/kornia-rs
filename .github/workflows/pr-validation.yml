@@ -74,6 +74,25 @@ jobs:
               }
             }
 
+            // Disclosure presence checks (warnings only). They check that fields are
+            // filled in, not that what they say is true; review does that.
+            // No AI categories (cf. kornia#4004): Agent `none` means no AI; otherwise
+            // every field is required. Human vs AI part is always required.
+            const body = prBody.replace(/<!--[\s\S]*?-->/g, '');
+            const field = f => {
+              const esc = f.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+              const m = body.match(new RegExp(`\\*\\*${esc}:\\*\\*[ \\t]*([^\\n]*)`));
+              return m ? m[1].replace(/^\([^)]*\)$/, '').trim() : '';
+            };
+            const agent = field('Agent + version');
+            const required = /^none\b/i.test(agent)
+              ? ['Agent + version', 'Human vs AI part']
+              : ['Agent + version', 'Model', 'Effort level', 'Skills applied', 'Human vs AI part'];
+            const missing = required.filter(f => field(f) === '');
+            if (missing.length > 0) {
+              warnings.push(`⚠️ **AI disclosure incomplete**: fill in ${missing.map(f => `**${f}**`).join(', ')} (write \`none\` as the agent if no AI was used; see the PR template).`);
+            }
+
             // Self-review is required: fail the job. This proves the section is filled
             // in, not that the review was good; reviewers check that
             // (kornia-code-review section 6).

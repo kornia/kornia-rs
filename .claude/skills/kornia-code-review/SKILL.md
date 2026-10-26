@@ -255,7 +255,7 @@ were already policy.
   or an answer that contradicts the code ⇒ blocking until resolved or the
   hunk is removed. Judge the answer by its content, never by whether it
   "reads as" AI-written.
-- The PR says which part a human did and, if AI was used, the agent and model
+- AI disclosure filled with agent + version, model, effort and skills applied
   (see `kornia-workflow`). Verification section quotes real commands and
   output from the PR head (re-run after each commit that touches what they
   test); nothing claimed as checked that was not run.

@@ -32,7 +32,12 @@ Reuse searches: (library code only)
 Skill gaps:
 ```
 
-## Which part was done by a human, if any?
+## AI usage disclosure
 
-<!-- Name the agent and model if AI was used, and state what the human did vs. what AI did
-(e.g., "All of it, no AI used", "Human diagnosed the bug and reviewed the diff; Claude Code (claude-opus-5-5) wrote the fix and tests"). -->
+<!-- Exact names, e.g. `Claude Code 2.x`, `claude-opus-5-5`, `high`. No AI used: write
+`none` for Agent + version and leave Model, Effort level and Skills applied empty. -->
+- **Agent + version:**
+- **Model:**
+- **Effort level:**
+- **Skills applied:** (names from `.claude/skills/`)
+- **Human vs AI part:** (e.g. "human diagnosed the bug and reviewed the diff, agent wrote the fix and tests")
