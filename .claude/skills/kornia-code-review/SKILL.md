@@ -1,15 +1,15 @@
 ---
 name: kornia-code-review
-description: Use when reviewing a kornia-rs PR or diff, and as the self-review before opening one — scope and size against the linked issue (blocking), performance (copies, allocations, latency, system load), benchmark obligations, correctness traps, probing claimed checks, skill compliance, and reporting findings as measured vs inferred. Trigger on "review this PR", "review my diff", "is this ready", "self-review", "open a PR".
+description: Use when reviewing a kornia-rs PR or diff, and as the mandatory self-review before opening one — scope and size against the linked issue (blocking), performance (copies, allocations, latency, system load), benchmark obligations, correctness traps, probing claimed checks, skill compliance, and reporting findings as measured vs inferred. Trigger on "review this PR", "review my diff", "is this ready", "self-review", "open a PR".
 ---
 
 # Reviewing kornia-rs changes
 
 Two uses, same procedure:
 
-- **Self-review (before opening a PR).** The author, or the author's agent,
-  runs this skill on `git diff main...HEAD` and fixes what it finds. Pasting
-  the output in the PR is optional.
+- **Self-review (mandatory before opening a PR).** The author, or the
+  author's agent, runs this skill on `git diff main...HEAD`, fixes what it
+  finds, and pastes the final output in the PR's **Self-review** section.
 - **Review.** A reviewer runs it on the PR and compares with the author's
   self-review (section 7).
 
@@ -38,7 +38,7 @@ Every finding, scope findings included, is one line:
   the verdict. One problem per line: never merge findings of different
   severities into one.
 - Always blocking: no linked issue or an unreadable one, an out-of-scope
-  hunk, a needed split. A finding whose fix is "split it out", "drop the
+  hunk, a needed split, a missing Self-review. A finding whose fix is "split it out", "drop the
   hunk" or "move it to its own PR" is one of these, so it is blocking.
 - **Measured** = you ran a command and quote its output, in the finding or in
   the `Reuse searches` block it cites (a reuse finding filed under another
@@ -245,6 +245,11 @@ were already policy.
 
 ## 6. PR hygiene
 
+- **Self-review** section has the pasted output of this skill. Missing,
+  empty or placeholder ⇒ blocking. Placeholder = no result per applicable
+  section (0–6, or 0 and 4b for tooling), or, for library code, no
+  `Reuse searches` block. `Verdict: approve` + `Skill gaps: none` alone is a
+  placeholder.
 - Reviewers ask the author at least one concrete question about a non-obvious hunk
   (why this bound, what happens on empty input, why this copy). No answer,
   or an answer that contradicts the code ⇒ blocking until resolved or the

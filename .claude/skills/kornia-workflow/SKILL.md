@@ -8,15 +8,16 @@ description: Use before committing, opening a PR, or debugging CI in kornia-rs â
 All commands are mirrored in CI. Run them through `pixi` (preferred) so the
 toolchain matches CI.
 
-## Pre-PR gate
+## Mandatory pre-PR gate
 
 ```bash
 pixi run pr-check       # skills-check + rust-fmt-check + rust-clippy + rust-check + rust-test
 ```
 
-Then self-review: run `kornia-code-review` on `git diff main...HEAD` and fix
-what it finds. Pasting its output in the PR is optional. Be ready to explain
-any line when a reviewer asks.
+Then self-review: run `kornia-code-review` on `git diff main...HEAD`, fix what
+it finds, and paste its final output (with `Verdict:` and `Skill gaps:`) in
+the PR's **Self-review** section; `pr-validation.yml` fails while it is empty.
+Be ready to explain any line when a reviewer asks.
 
 Equivalent pieces:
 
@@ -40,7 +41,7 @@ Conditional gates:
 Without pixi: `cargo test --features ci`, `cargo test -p kornia-imgproc`,
 `cargo clippy --workspace --no-deps --all-targets --features ci -- -D warnings`.
 
-## PR rules (checked in review)
+## PR rules (checked in review; `pr-validation.yml` only checks the Self-review)
 
 1. Linked, approved issue assigned to you: `Fixes #123` / `Closes #123`.
 2. Small, one concern, only what the issue asks. Out-of-scope hunks block
