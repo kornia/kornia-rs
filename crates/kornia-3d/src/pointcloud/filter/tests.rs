@@ -308,3 +308,77 @@ fn statistical_matches_brute_force_on_a_grid_sized_cloud() -> TestResult {
     assert_eq!(kept, want);
     Ok(())
 }
+
+/// Little-endian reader over a parity fixture.
+struct Fixture<'a> {
+    bytes: &'a [u8],
+    at: usize,
+}
+
+impl Fixture<'_> {
+    fn word(&mut self) -> Result<[u8; 8], Box<dyn std::error::Error>> {
+        let b = self
+            .bytes
+            .get(self.at..self.at + 8)
+            .ok_or("truncated fixture")?;
+        self.at += 8;
+        Ok(b.try_into()?)
+    }
+    fn f64(&mut self) -> Result<f64, Box<dyn std::error::Error>> {
+        Ok(f64::from_le_bytes(self.word()?))
+    }
+    fn usize(&mut self) -> Result<usize, Box<dyn std::error::Error>> {
+        Ok(usize::try_from(u64::from_le_bytes(self.word()?))?)
+    }
+    fn triplets(&mut self) -> Result<Vec<[f64; 3]>, Box<dyn std::error::Error>> {
+        let n = self.usize()?;
+        (0..n)
+            .map(|_| Ok([self.f64()?, self.f64()?, self.f64()?]))
+            .collect()
+    }
+    fn indices(&mut self) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
+        let n = self.usize()?;
+        (0..n).map(|_| Ok(u32::try_from(self.usize()?)?)).collect()
+    }
+}
+
+/// Parity with Open3D 0.20's `remove_radius_outlier` and
+/// `remove_statistical_outlier` on a fixture written by
+/// `benches/bench_voxel_baselines.py --write-fixtures`.
+///
+/// Open3D's legacy `remove_radius_outlier` keeps a point with more than
+/// `nb_points` points in the radius, itself included, so `nb_points` is
+/// kornia's `min_neighbours`. Its `nb_neighbors` counts the query point, so
+/// it is kornia's `k` plus one; its statistical mean then also averages in
+/// the query's zero distance, which scales the mean and the deviation by
+/// the same factor and selects the same points. `tests/data/outlier_filters_open3d.bin`, little
+/// endian: `f64` radius, `u64` `nb_points`, `u64` `nb_neighbors`, `f64`
+/// `std_ratio`, `u64` point count and the `f64` triplets, then the kept
+/// indices of each filter (`u64` count and `u64` indices).
+#[test]
+fn open3d_outlier_filters_parity_fixture() -> TestResult {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/data/outlier_filters_open3d.bin");
+    let bytes = std::fs::read(&path)?;
+    let mut f = Fixture {
+        bytes: &bytes,
+        at: 0,
+    };
+    let radius = f.f64()?;
+    let nb_points = f.usize()?;
+    let nb_neighbors = f.usize()?;
+    let std_ratio = f.f64()?;
+    let points = f.triplets()?;
+    let radius_kept = f.indices()?;
+    let stat_kept = f.indices()?;
+    assert_eq!(f.at, bytes.len(), "trailing fixture bytes");
+
+    let mut kept = Vec::new();
+    radius_inlier_indices(&points, radius, nb_points, &mut kept)?;
+    assert_eq!(kept, radius_kept);
+    statistical_inlier_indices(&points, nb_neighbors - 1, std_ratio, &mut kept)?;
+    assert_eq!(kept, stat_kept);
+    // Both filters must have removed something for the parity to mean anything.
+    assert!(radius_kept.len() < points.len() && stat_kept.len() < points.len());
+    Ok(())
+}
