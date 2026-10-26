@@ -9,6 +9,7 @@ use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicU16, AtomicU32, Ordering};
 
 use kornia_image::ImageSize;
+use kornia_imgproc::simd::cpu_features;
 use rayon::prelude::*;
 
 use super::{DepthError, DepthSample};
@@ -29,8 +30,19 @@ pub const MAX_SPLAT_RADIUS: usize = 32;
 /// and output slices live in stack arrays of this length.
 const MAX_TASKS: usize = 64;
 
-/// Source rows per rayon task in the registration scatter.
-const SCATTER_ROWS_PER_TASK: usize = 16;
+/// Fewest source rows per band of the registration scatter (see
+/// [`scatter_rows`]).
+const MIN_BAND_ROWS: usize = 16;
+
+/// Fewest bands a slant-sized band layout may have (see [`band_layout`]).
+const MIN_BANDS: usize = 4;
+
+/// Destination rows a splat may stray beyond the slant of its band and
+/// still stay in the band's window (see [`band_layout`]).
+const BAND_MARGIN_ROWS: f64 = 8.0;
+
+/// Deferred splats per rayon task in the registration scatter.
+const DEFERRED_CHUNK: usize = 4096;
 
 /// Elements per rayon task in the z-buffer fill and finalize passes.
 const FILL_CHUNK: usize = 1 << 16;
@@ -93,7 +105,7 @@ pub(crate) struct RegisterParams {
 /// and finite: `0` and `NaN` (and negative or infinite values) are missing.
 #[inline(always)]
 pub(crate) fn is_valid_metres(z: f32) -> bool {
-    z > 0.0 && z < f32::INFINITY
+    (z > 0.0) & (z < f32::INFINITY)
 }
 
 /// Checked `i32` image dimensions with room for a splat radius on top.
@@ -408,111 +420,392 @@ pub(crate) fn unproject_into<T: DepthSample>(
 
 // ── Registration ───────────────────────────────────────────────────────────
 
-/// Projects source pixel `(x, y)` at depth `z` metres into the destination
-/// camera. Returns the destination depth `qz` (metres) and the inclusive,
-/// image-clipped splat rectangle `[x0, x1, y0, y1]`, or `None` when the
-/// point is behind the destination camera or its splat misses the image.
+/// Source pixels projected per batch of the registration scatter: a batch
+/// is projected branch-free (NEON on aarch64), then its splats are applied.
+pub(crate) const PROJECT_BATCH: usize = 64;
+
+/// Destination cells of one batch: z-buffer key (`0` = no splat) and the
+/// nearest destination pixel of each source pixel.
+pub(crate) struct Batch {
+    pub key: [u32; PROJECT_BATCH],
+    pub u: [i32; PROJECT_BATCH],
+    pub v: [i32; PROJECT_BATCH],
+}
+
+impl Batch {
+    pub(crate) fn new() -> Self {
+        Self {
+            key: [0; PROJECT_BATCH],
+            u: [0; PROJECT_BATCH],
+            v: [0; PROJECT_BATCH],
+        }
+    }
+}
+
+/// Destination key and nearest destination pixel of source pixel `x` of a
+/// row whose `(y - cy) / fy` is `yn`, at depth `z` metres. The key is `0`
+/// unless `z` is valid, the point is in front of the destination camera,
+/// its splat touches the image and its value is representable (`key_u16` /
+/// `key_f32`). The float expressions are those of the CUDA `scatter`
+/// kernel, evaluated in the same order; [`project_neon`] is its 4-lane twin.
 #[inline(always)]
-fn splat_target(p: &RegisterParams, x: usize, y: usize, z: f32) -> Option<(f32, [usize; 4])> {
+fn project_one(p: &RegisterParams, x: u32, yn: f32, z: f32, u16_keys: bool) -> (u32, i32, i32) {
     let s = &p.src;
-    let px = ((x as f32 - s.cx) * s.inv_fx) * z;
-    let py = ((y as f32 - s.cy) * s.inv_fy) * z;
     let (r, t) = (&p.r, &p.t);
+    let px = ((x as f32 - s.cx) * s.inv_fx) * z;
+    let py = yn * z;
     let qx = r[0] * px + r[1] * py + r[2] * z + t[0];
     let qy = r[3] * px + r[4] * py + r[5] * z + t[1];
     let qz = r[6] * px + r[7] * py + r[8] * z + t[2];
-    if qz.is_nan() || qz <= 0.0 {
-        return None;
-    }
     let iz = 1.0 / qz;
-    let u = p.fx * qx * iz + p.cx;
-    let v = p.fy * qy * iz + p.cy;
-    let uf = (u + 0.5).floor();
-    let vf = (v + 0.5).floor();
+    let uf = (p.fx * qx * iz + p.cx + 0.5).floor();
+    let vf = (p.fy * qy * iz + p.cy + 0.5).floor();
     let rr = p.radius as f32;
-    if !((-rr..(p.width + p.radius) as f32).contains(&uf)
-        && (-rr..(p.height + p.radius) as f32).contains(&vf))
-    {
-        return None;
-    }
-    let (ui, vi) = (uf as i32, vf as i32);
-    let x0 = (ui - p.radius).max(0) as usize;
-    let x1 = (ui + p.radius).min(p.width - 1) as usize;
-    let y0 = (vi - p.radius).max(0) as usize;
-    let y1 = (vi + p.radius).min(p.height - 1) as usize;
-    Some((qz, [x0, x1, y0, y1]))
+    let inside = (uf >= -rr)
+        & (uf < (p.width + p.radius) as f32)
+        & (vf >= -rr)
+        & (vf < (p.height + p.radius) as f32);
+    // `qz > 0` is false for NaN, as the device's `!(isnan || <= 0)`.
+    let ok = is_valid_metres(z) & (qz > 0.0) & inside;
+    let k = if u16_keys {
+        key_u16(qz, p.inv_scale)
+    } else {
+        key_f32(qz, p.inv_scale)
+    };
+    (if ok { k } else { 0 }, uf as i32, vf as i32)
 }
 
-/// Destination `u16` value of a point at `qz` metres, or `None` when it
-/// rounds outside `1..=65534` (`0` is "empty", `65535` the key sentinel).
+/// Projects `row`, source pixels `x0..x0 + row.len()` of row `y` (at most
+/// [`PROJECT_BATCH`]), into `batch`: `key[j]`, `u[j]`, `v[j]` as
+/// [`project_one`] (`u`, `v` are meaningful only for a non-zero key).
 #[inline(always)]
-fn quantise_u16(qz: f32, inv_scale: f32) -> Option<u16> {
+pub(crate) fn project_batch<T: DepthSample>(
+    row: &[T],
+    x0: usize,
+    y: usize,
+    p: &RegisterParams,
+    u16_keys: bool,
+    neon: bool,
+    batch: &mut Batch,
+) {
+    let row = &row[..row.len().min(PROJECT_BATCH)];
+    let mut zs = [0.0f32; PROJECT_BATCH];
+    for (z, &d) in zs.iter_mut().zip(row) {
+        *z = d.metres(p.src.scale);
+    }
+    let zs = &zs[..row.len()];
+    let yn = (y as f32 - p.src.cy) * p.src.inv_fy;
+    let mut done = 0;
+    #[cfg(target_arch = "aarch64")]
+    if neon {
+        // SAFETY: `neon` is `cpu_features().has_neon`; `zs.len()` is at most
+        // `PROJECT_BATCH`, the length of every `batch` array.
+        done = unsafe { project_neon(zs, x0, yn, p, u16_keys, batch) };
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    let _ = neon;
+    for (j, &z) in zs.iter().enumerate().skip(done) {
+        let (k, u, v) = project_one(p, (x0 + j) as u32, yn, z, u16_keys);
+        batch.key[j] = k;
+        batch.u[j] = u;
+        batch.v[j] = v;
+    }
+}
+
+/// NEON twin of [`project_one`] over 4 lanes: the same IEEE operations in
+/// the same order (separate multiply and add, no fusion), so every lane
+/// equals the scalar result bit for bit. Projects the first multiple of 4
+/// of `zs` and returns how many it did.
+///
+/// # Safety
+///
+/// NEON must be available and `zs.len() <= PROJECT_BATCH`.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn project_neon(
+    zs: &[f32],
+    x0: usize,
+    yn: f32,
+    p: &RegisterParams,
+    u16_keys: bool,
+    batch: &mut Batch,
+) -> usize {
+    use std::arch::aarch64::*;
+    let s = &p.src;
+    let (scx, sifx, vyn) = (vdupq_n_f32(s.cx), vdupq_n_f32(s.inv_fx), vdupq_n_f32(yn));
+    let r = p.r.map(|v| vdupq_n_f32(v));
+    let t = p.t.map(|v| vdupq_n_f32(v));
+    let (fx, fy) = (vdupq_n_f32(p.fx), vdupq_n_f32(p.fy));
+    let (cx, cy) = (vdupq_n_f32(p.cx), vdupq_n_f32(p.cy));
+    let (zero, half, one) = (vdupq_n_f32(0.0), vdupq_n_f32(0.5), vdupq_n_f32(1.0));
+    let inf = vdupq_n_f32(f32::INFINITY);
+    let neg_rr = vdupq_n_f32(-(p.radius as f32));
+    let u_end = vdupq_n_f32((p.width + p.radius) as f32);
+    let v_end = vdupq_n_f32((p.height + p.radius) as f32);
+    let inv_scale = vdupq_n_f32(p.inv_scale);
+    let u16_max = vdupq_n_f32(U16_MAX_OUTPUT);
+    let lanes = vld1q_u32([0u32, 1, 2, 3].as_ptr());
+    let n = zs.len() & !3;
+    let mut j = 0;
+    while j < n {
+        let z = vld1q_f32(zs.as_ptr().add(j));
+        let xf = vcvtq_f32_u32(vaddq_u32(vdupq_n_u32((x0 + j) as u32), lanes));
+        let px = vmulq_f32(vmulq_f32(vsubq_f32(xf, scx), sifx), z);
+        let py = vmulq_f32(vyn, z);
+        // ((r0 · px + r1 · py) + r2 · z) + t, as the scalar expression.
+        let qx = vaddq_f32(
+            vaddq_f32(
+                vaddq_f32(vmulq_f32(r[0], px), vmulq_f32(r[1], py)),
+                vmulq_f32(r[2], z),
+            ),
+            t[0],
+        );
+        let qy = vaddq_f32(
+            vaddq_f32(
+                vaddq_f32(vmulq_f32(r[3], px), vmulq_f32(r[4], py)),
+                vmulq_f32(r[5], z),
+            ),
+            t[1],
+        );
+        let qz = vaddq_f32(
+            vaddq_f32(
+                vaddq_f32(vmulq_f32(r[6], px), vmulq_f32(r[7], py)),
+                vmulq_f32(r[8], z),
+            ),
+            t[2],
+        );
+        let iz = vdivq_f32(one, qz);
+        let uf = vrndmq_f32(vaddq_f32(
+            vaddq_f32(vmulq_f32(vmulq_f32(fx, qx), iz), cx),
+            half,
+        ));
+        let vf = vrndmq_f32(vaddq_f32(
+            vaddq_f32(vmulq_f32(vmulq_f32(fy, qy), iz), cy),
+            half,
+        ));
+        let inside = vandq_u32(
+            vandq_u32(vcgeq_f32(uf, neg_rr), vcltq_f32(uf, u_end)),
+            vandq_u32(vcgeq_f32(vf, neg_rr), vcltq_f32(vf, v_end)),
+        );
+        let ok = vandq_u32(
+            vandq_u32(vcgtq_f32(z, zero), vcltq_f32(z, inf)),
+            vandq_u32(vcgtq_f32(qz, zero), inside),
+        );
+        let key = if u16_keys {
+            // key_u16: round half away from zero, keep 1..=65534, !value.
+            let q = vrndaq_f32(vmulq_f32(qz, inv_scale));
+            let in_range = vandq_u32(vcgeq_f32(q, one), vcleq_f32(q, u16_max));
+            let k = veorq_u32(vcvtq_u32_f32(q), vdupq_n_u32(0xffff));
+            vandq_u32(k, vandq_u32(ok, in_range))
+        } else {
+            // key_f32: valid output, !bits(value).
+            let o = vmulq_f32(qz, inv_scale);
+            let valid = vandq_u32(vcgtq_f32(o, zero), vcltq_f32(o, inf));
+            let k = vmvnq_u32(vreinterpretq_u32_f32(o));
+            vandq_u32(k, vandq_u32(ok, valid))
+        };
+        vst1q_u32(batch.key.as_mut_ptr().add(j), key);
+        vst1q_s32(batch.u.as_mut_ptr().add(j), vcvtq_s32_f32(uf));
+        vst1q_s32(batch.v.as_mut_ptr().add(j), vcvtq_s32_f32(vf));
+        j += 4;
+    }
+    n
+}
+
+/// Destination `u16` z-buffer key of a point at `qz` metres: `!value`, or
+/// `0` when the value rounds outside `1..=65534` (`0` is "empty", `65535`
+/// would collide with the empty key).
+#[inline(always)]
+fn key_u16(qz: f32, inv_scale: f32) -> u32 {
     let q = (qz * inv_scale).round();
     if (1.0..=U16_MAX_OUTPUT).contains(&q) {
-        Some(q as u16)
+        u32::from(!(q as u16))
     } else {
-        None
+        0
     }
 }
 
-/// Destination `f32` value of a point at `qz` metres, or `None` when it is
-/// not a valid measurement in the output units.
+/// Destination `f32` z-buffer key of a point at `qz` metres:
+/// `!bits(value)`, or `0` when the value is not a valid measurement.
+/// Positive finite floats order like their bits, so nearer = larger key.
 #[inline(always)]
-fn scale_f32(qz: f32, inv_scale: f32) -> Option<f32> {
+fn key_f32(qz: f32, inv_scale: f32) -> u32 {
     let o = qz * inv_scale;
-    is_valid_metres(o).then_some(o)
+    if is_valid_metres(o) {
+        !o.to_bits()
+    } else {
+        0
+    }
 }
 
-/// Calls `visit(qz, rect)` for every valid source pixel that lands in the
-/// destination, in parallel over bands of source rows.
-fn scatter_rows<T: DepthSample>(
-    src: &[T],
+/// Splat of one projected source pixel: nearest destination pixel `(u, v)`
+/// and z-buffer key.
+type Splat = (i32, i32, u32);
+
+/// Splats `key` around `(u, v)` (the clipped `(2r + 1)²` square): every
+/// cell whose key is smaller gets `update(cell, key)`, so the largest key,
+/// i.e. the nearest point, wins. `update` is a plain store when no other
+/// thread touches these cells meanwhile, an atomic `fetch_max` otherwise
+/// (keys only grow, so a stale `load` never skips a needed update).
+#[inline(always)]
+fn splat<A>(
+    zbuf: &[A],
     p: &RegisterParams,
-    visit: impl Fn(f32, [usize; 4]) + Sync,
+    (u, v, key): Splat,
+    load: &impl Fn(&A) -> u32,
+    update: &impl Fn(&A, u32),
 ) {
-    let w = p.src.width as usize;
-    if w == 0 || p.src.height == 0 || p.width == 0 || p.height == 0 {
+    let (dw, radius) = (p.width as usize, p.radius);
+    let put = |cell: &A| {
+        if key > load(cell) {
+            update(cell, key);
+        }
+    };
+    if radius == 0 {
+        // `inside` with a zero radius bounds (u, v) to the image.
+        put(&zbuf[v as usize * dw + u as usize]);
         return;
     }
-    src.par_chunks(w * SCATTER_ROWS_PER_TASK)
-        .enumerate()
-        .for_each(|(i, band)| {
-            for (r, row) in band.chunks_exact(w).enumerate() {
-                let y = i * SCATTER_ROWS_PER_TASK + r;
-                for (x, &d) in row.iter().enumerate() {
-                    let z = d.metres(p.src.scale);
-                    if !is_valid_metres(z) {
+    let x0 = (u - radius).max(0) as usize;
+    let x1 = (u + radius).min(p.width - 1) as usize;
+    let y0 = (v - radius).max(0) as usize;
+    let y1 = (v + radius).min(p.height - 1) as usize;
+    for yy in y0..=y1 {
+        zbuf[yy * dw + x0..=yy * dw + x1].iter().for_each(put);
+    }
+}
+
+/// Band layout of [`scatter_rows`] from the rotation of `p`: the
+/// destination-row shift of the source principal ray (relative to plain
+/// row rescaling), which centres the windows on where the bands land, and
+/// the source rows per band, tall enough that a window covers the slant of
+/// a rotated (rolled) row plus the splat radius. Only a scheduling choice:
+/// splats that still leave their window are deferred, so any layout gives
+/// the same result.
+fn band_layout(p: &RegisterParams) -> (i64, usize) {
+    let (sh, dh) = (f64::from(p.src.height), f64::from(p.height));
+    let r = p.r.map(f64::from);
+    let (fy, cy) = (f64::from(p.fy), f64::from(p.cy));
+    // Destination row of the direction through source pixel (x, cy).
+    let v_at = |x: f64| {
+        let xn = (x - f64::from(p.src.cx)) * f64::from(p.src.inv_fx);
+        fy * (r[3] * xn + r[5]) / (r[6] * xn + r[8]) + cy
+    };
+    let shift = v_at(f64::from(p.src.cx)) - f64::from(p.src.cy) * dh / sh;
+    let offset = if r[8] > 0.0 && shift.abs() < dh {
+        shift.round() as i64
+    } else {
+        0
+    };
+    let slant = (v_at(0.0) - v_at(f64::from(p.src.width - 1))).abs();
+    // Window half-height (half a destination slice) >= slant / 2 + radius
+    // + margin.
+    let slice = slant + f64::from(2 * p.radius) + 2.0 * BAND_MARGIN_ROWS;
+    let rows = (slice * sh / dh).ceil();
+    // Fewer than MIN_BANDS bands would serialise the scatter: keep thin
+    // bands then and let the deferred (atomic, parallel) path take the
+    // splats that leave their windows.
+    let rows = if rows.is_finite() && rows * MIN_BANDS as f64 <= sh {
+        (rows as usize).max(MIN_BAND_ROWS)
+    } else {
+        MIN_BAND_ROWS
+    };
+    (offset, rows)
+}
+
+/// Splats every valid source pixel into the z-buffer `zbuf`, whose keys
+/// only grow (larger key = nearer point).
+///
+/// The source rows are cut into `nb` bands (height from [`band_layout`])
+/// and the destination rows into `nb` slices; band `i` owns the window of
+/// slice `i` widened by half a slice on each side (and shifted by the
+/// [`band_layout`] offset), so the windows of bands `i` and `i + 2` never
+/// overlap.
+/// The even bands run in parallel, then the odd ones, each writing its own
+/// window with plain load/store (no atomic read-modify-write). Splats that
+/// leave their band's window (strong rotations, near-field parallax) are
+/// deferred and applied at the end, in parallel with atomic `fetch_max`.
+/// The result is the per-cell maximum key, independent of scheduling.
+fn scatter_rows<T: DepthSample, A: Sync>(
+    src: &[T],
+    p: &RegisterParams,
+    zbuf: &[A],
+    u16_keys: bool,
+    load: impl Fn(&A) -> u32 + Sync,
+    store: impl Fn(&A, u32) + Sync,
+    fetch_max: impl Fn(&A, u32) + Sync,
+) {
+    let w = p.src.width as usize;
+    let sh = p.src.height as usize;
+    if w == 0 || sh == 0 || p.width == 0 || p.height == 0 {
+        return;
+    }
+    let (offset, band_rows) = band_layout(p);
+    let nb = sh.div_ceil(band_rows);
+    let (nb_i, dh_i) = (nb as i64, i64::from(p.height));
+    let lo = |i: usize| -> i64 {
+        if i < 2 {
+            i64::MIN
+        } else {
+            (2 * i as i64 - 1) * dh_i / (2 * nb_i) + offset
+        }
+    };
+    let window = |i: usize| (lo(i), if i + 2 >= nb { i64::MAX } else { lo(i + 2) });
+    let radius = i64::from(p.radius);
+    let neon = cpu_features().has_neon;
+
+    let band = |i: usize| -> Vec<Splat> {
+        let (win_lo, win_hi) = window(i);
+        let mut deferred = Vec::new();
+        let mut batch = Batch::new();
+        let y_end = ((i + 1) * band_rows).min(sh);
+        for y in i * band_rows..y_end {
+            let row = &src[y * w..(y + 1) * w];
+            for (c, chunk) in row.chunks(PROJECT_BATCH).enumerate() {
+                project_batch(chunk, c * PROJECT_BATCH, y, p, u16_keys, neon, &mut batch);
+                let n = chunk.len();
+                let cells = batch.key[..n].iter().zip(&batch.u[..n]).zip(&batch.v[..n]);
+                for ((&key, &u), &v) in cells {
+                    if key == 0 {
                         continue;
                     }
-                    if let Some((qz, rect)) = splat_target(p, x, y, z) {
-                        visit(qz, rect);
+                    let v64 = i64::from(v);
+                    if v64 - radius >= win_lo && v64 + radius < win_hi {
+                        splat(zbuf, p, (u, v, key), &load, &store);
+                    } else {
+                        deferred.push((u, v, key));
                     }
                 }
             }
-        });
-}
+        }
+        deferred
+    };
 
-/// Applies `key` to every cell of the splat rectangle: keeps the largest
-/// key, i.e. the nearest point (keys are inverted depths).
-#[inline(always)]
-fn splat_max<A, K: Copy + PartialOrd>(
-    zbuf: &[A],
-    width: usize,
-    rect: [usize; 4],
-    key: K,
-    load: impl Fn(&A) -> K,
-    fetch_max: impl Fn(&A, K),
-) {
-    let [x0, x1, y0, y1] = rect;
-    for yy in y0..=y1 {
-        for cell in &zbuf[yy * width + x0..=yy * width + x1] {
-            // Keys only grow, so a stale load can only under-estimate the
-            // cell and never skips a needed update.
-            if key > load(cell) {
-                fetch_max(cell, key);
-            }
+    let mut deferred: Vec<Splat> = Vec::new();
+    for colour in 0..2 {
+        let mut d = (0..nb.div_ceil(2))
+            .into_par_iter()
+            .map(|k| 2 * k + colour)
+            .filter(|&i| i < nb)
+            .map(band)
+            .reduce(Vec::new, |mut a, mut b| {
+                if a.len() < b.len() {
+                    std::mem::swap(&mut a, &mut b);
+                }
+                a.append(&mut b);
+                a
+            });
+        if deferred.is_empty() {
+            deferred = d;
+        } else {
+            deferred.append(&mut d);
         }
     }
+    // No plain store runs any more: the deferred splats go in parallel
+    // through `fetch_max`.
+    deferred
+        .par_chunks(DEFERRED_CHUNK)
+        .for_each(|c| c.iter().for_each(|&s| splat(zbuf, p, s, &load, &fetch_max)));
 }
 
 const _: () = assert!(
@@ -542,29 +835,22 @@ fn as_atomic_bits(buf: &mut [f32]) -> &[AtomicU32] {
 }
 
 /// Registers a `u16` depth image. The z-buffer is `dst` itself, holding
-/// `!value` (so nearer = larger key, empty = `0` = the initial fill) and
-/// updated with `fetch_max`; the finalize pass inverts the keys back.
+/// `!value` (so nearer = larger key, empty = `0` = the initial fill); the
+/// finalize pass inverts the keys back.
 pub(crate) fn register_u16(src: &[u16], dst: &mut [u16], p: &RegisterParams) {
     dst.par_chunks_mut(FILL_CHUNK).for_each(|c| c.fill(0));
-    let width = p.width as usize;
-    {
-        let zbuf = as_atomic_u16(dst);
-        scatter_rows(src, p, |qz, rect| {
-            let Some(v) = quantise_u16(qz, p.inv_scale) else {
-                return;
-            };
-            splat_max(
-                zbuf,
-                width,
-                rect,
-                !v,
-                |c| c.load(Ordering::Relaxed),
-                |c, k| {
-                    c.fetch_max(k, Ordering::Relaxed);
-                },
-            );
-        });
-    }
+    scatter_rows(
+        src,
+        p,
+        as_atomic_u16(dst),
+        true,
+        |c| u32::from(c.load(Ordering::Relaxed)),
+        // Keys of `key_u16` fit 16 bits.
+        |c, k| c.store(k as u16, Ordering::Relaxed),
+        |c, k| {
+            c.fetch_max(k as u16, Ordering::Relaxed);
+        },
+    );
     dst.par_chunks_mut(FILL_CHUNK).for_each(|c| {
         for d in c {
             if *d != 0 {
@@ -575,29 +861,21 @@ pub(crate) fn register_u16(src: &[u16], dst: &mut [u16], p: &RegisterParams) {
 }
 
 /// Registers an `f32` depth image. The z-buffer is `dst`'s bit patterns,
-/// holding `!bits(value)`: positive finite floats order like their bits,
-/// so nearer = larger key and empty = `0` = the bits of the `0.0` fill.
+/// holding `!bits(value)`: nearer = larger key and empty = `0` = the bits of
+/// the `0.0` fill.
 pub(crate) fn register_f32(src: &[f32], dst: &mut [f32], p: &RegisterParams) {
     dst.par_chunks_mut(FILL_CHUNK).for_each(|c| c.fill(0.0));
-    let width = p.width as usize;
-    {
-        let zbuf = as_atomic_bits(dst);
-        scatter_rows(src, p, |qz, rect| {
-            let Some(o) = scale_f32(qz, p.inv_scale) else {
-                return;
-            };
-            splat_max(
-                zbuf,
-                width,
-                rect,
-                !o.to_bits(),
-                |c| c.load(Ordering::Relaxed),
-                |c, k| {
-                    c.fetch_max(k, Ordering::Relaxed);
-                },
-            );
-        });
-    }
+    scatter_rows(
+        src,
+        p,
+        as_atomic_bits(dst),
+        false,
+        |c| c.load(Ordering::Relaxed),
+        |c, k| c.store(k, Ordering::Relaxed),
+        |c, k| {
+            c.fetch_max(k, Ordering::Relaxed);
+        },
+    );
     dst.par_chunks_mut(FILL_CHUNK).for_each(|c| {
         for d in c {
             let k = d.to_bits();

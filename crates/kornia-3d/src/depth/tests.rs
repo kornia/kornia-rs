@@ -453,3 +453,190 @@ fn register_rejects_bad_arguments() -> TestResult {
     ));
     Ok(())
 }
+
+/// Straight-line oracle of `register_depth` for `u16`: one sequential pass,
+/// one pixel at a time, writing the smallest depth into each splat cell.
+fn register_u16_oracle(
+    src: &[u16],
+    (w, h): (usize, usize),
+    src_cam: &PinholeCamera,
+    pose: &Pose3d,
+    dst_cam: &PinholeCamera,
+    radius: usize,
+    (dw, dh): (usize, usize),
+) -> Vec<u16> {
+    let (ifx, ify) = ((1.0 / src_cam.fx) as f32, (1.0 / src_cam.fy) as f32);
+    let (scx, scy) = (src_cam.cx as f32, src_cam.cy as f32);
+    let (fx, fy) = (dst_cam.fx as f32, dst_cam.fy as f32);
+    let (dcx, dcy) = (dst_cam.cx as f32, dst_cam.cy as f32);
+    let m = pose.rotation.to_cols_array();
+    let r: [f32; 9] = std::array::from_fn(|k| m[3 * (k % 3) + k / 3] as f32);
+    let t = [
+        pose.translation.x as f32,
+        pose.translation.y as f32,
+        pose.translation.z as f32,
+    ];
+    let rad = radius as i64;
+    let mut out = vec![u16::MAX; dw * dh];
+    for y in 0..h {
+        for x in 0..w {
+            let z = f32::from(src[y * w + x]) * MM;
+            if z <= 0.0 {
+                continue;
+            }
+            let px = ((x as f32 - scx) * ifx) * z;
+            let py = ((y as f32 - scy) * ify) * z;
+            let qx = r[0] * px + r[1] * py + r[2] * z + t[0];
+            let qy = r[3] * px + r[4] * py + r[5] * z + t[1];
+            let qz = r[6] * px + r[7] * py + r[8] * z + t[2];
+            if qz <= 0.0 {
+                continue;
+            }
+            let iz = 1.0 / qz;
+            let u = (fx * qx * iz + dcx + 0.5).floor() as i64;
+            let v = (fy * qy * iz + dcy + 0.5).floor() as i64;
+            let q = (qz * (1.0 / MM)).round();
+            if !(1.0..=65534.0).contains(&q) {
+                continue;
+            }
+            for yy in (v - rad).max(0)..=(v + rad).min(dh as i64 - 1) {
+                for xx in (u - rad).max(0)..=(u + rad).min(dw as i64 - 1) {
+                    let cell = &mut out[yy as usize * dw + xx as usize];
+                    *cell = (*cell).min(q as u16);
+                }
+            }
+        }
+    }
+    out.iter_mut()
+        .filter(|c| **c == u16::MAX)
+        .for_each(|c| *c = 0);
+    out
+}
+
+/// The banded scatter equals the sequential oracle when splats stay in
+/// their band's window and when strong rotations (roll, pitch) and
+/// near-field parallax push them out of it into the deferred path.
+#[test]
+fn register_matches_sequential_oracle() -> TestResult {
+    let rot = |roll: f64, pitch: f64| {
+        let (c, s) = (roll.cos(), roll.sin());
+        let rz = Mat3F64::from_cols_array(&[c, s, 0.0, -s, c, 0.0, 0.0, 0.0, 1.0]);
+        let (c, s) = (pitch.cos(), pitch.sin());
+        let rx = Mat3F64::from_cols_array(&[1.0, 0.0, 0.0, 0.0, c, s, 0.0, -s, c]);
+        Mat3F64::from(rz.0 * rx.0)
+    };
+    let poses = [
+        Pose3d::new(rot(0.0, 0.0), Vec3F64::new(0.05, 0.0, 0.0)),
+        Pose3d::new(rot(0.5, 0.0), Vec3F64::new(0.0, 0.0, 0.0)),
+        Pose3d::new(rot(0.1, 0.25), Vec3F64::new(0.02, 0.3, 0.1)),
+        Pose3d::new(rot(-0.3, -0.2), Vec3F64::new(0.0, -0.4, 0.0)),
+    ];
+    for &((w, h), (dw, dh)) in &[
+        ((160, 130), (160, 130)),
+        ((97, 211), (194, 422)),
+        ((200, 70), (100, 35)),
+    ] {
+        let src_cam = pinhole(
+            0.8 * w as f64,
+            0.8 * w as f64,
+            w as f64 / 2.0,
+            h as f64 / 2.0,
+        );
+        let dst_cam = pinhole(
+            0.8 * dw as f64,
+            0.8 * dw as f64,
+            dw as f64 / 2.0,
+            dh as f64 / 2.0,
+        );
+        let data = random_depth_u16(w, h, (w * h) as u64);
+        let src = Image::<u16, 1>::new(sz(w, h), data.clone())?;
+        for pose in &poses {
+            for radius in [0, 1, 3] {
+                let want =
+                    register_u16_oracle(&data, (w, h), &src_cam, pose, &dst_cam, radius, (dw, dh));
+                let mut dst = Image::<u16, 1>::from_size_val(sz(dw, dh), 1)?;
+                register_depth(&src, MM, &src_cam, pose, &dst_cam, radius, &mut dst)?;
+                assert_eq!(dst.as_slice(), &want[..], "{w}x{h}->{dw}x{dh} r={radius}");
+                assert!(want.iter().any(|&v| v != 0));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The NEON projection equals the scalar one bit for bit, lane by lane:
+/// keys and pixels for both dtypes' keys, on random poses and depths that
+/// include missing, negative, infinite, behind-camera and out-of-image
+/// points, and on batch lengths that are not multiples of 4.
+#[test]
+fn register_projection_simd_matches_scalar() -> TestResult {
+    let mut rng = Lcg(77);
+    let mut splats = 0usize;
+    for case in 0..40 {
+        let (w, h) = (
+            64 + (rng.next() % 300) as usize,
+            2 + (rng.next() % 300) as usize,
+        );
+        let cam = pinhole(
+            20.0 + 900.0 * f64::from(rng.unit()),
+            20.0 + 900.0 * f64::from(rng.unit()),
+            w as f64 * f64::from(rng.unit()),
+            h as f64 * f64::from(rng.unit()),
+        );
+        let (a, b) = (f64::from(rng.unit()) - 0.5, f64::from(rng.unit()) - 0.5);
+        let rot = Mat3F64::from_cols_array(&[
+            a.cos(),
+            0.0,
+            -a.sin(),
+            a.sin() * b.sin(),
+            b.cos(),
+            a.cos() * b.sin(),
+            a.sin() * b.cos(),
+            -b.sin(),
+            a.cos() * b.cos(),
+        ]);
+        let pose = Pose3d::new(
+            rot,
+            Vec3F64::new(
+                f64::from(rng.unit()) - 0.5,
+                f64::from(rng.unit()) - 0.5,
+                2.0 * f64::from(rng.unit()) - 1.0,
+            ),
+        );
+        let radius = (rng.next() % 4) as usize;
+        let p = kernels::register_params(&cam, 1.0, &pose, &cam, radius, sz(w, h), sz(w, h))?;
+        let row: Vec<f32> = (0..kernels::PROJECT_BATCH)
+            .map(|_| match rng.next() % 12 {
+                0 => 0.0,
+                1 => f32::NAN,
+                2 => -1.0,
+                3 => f32::INFINITY,
+                4 => 1e-30,
+                5 => 70_000.0,
+                _ => 0.05 + 20.0 * rng.unit(),
+            })
+            .collect();
+        let len = 1 + (rng.next() as usize % kernels::PROJECT_BATCH);
+        let y = rng.next() as usize % h;
+        for u16_keys in [false, true] {
+            let mut simd = kernels::Batch::new();
+            let mut scalar = kernels::Batch::new();
+            kernels::project_batch(&row[..len], 3, y, &p, u16_keys, true, &mut simd);
+            kernels::project_batch(&row[..len], 3, y, &p, u16_keys, false, &mut scalar);
+            for j in 0..len {
+                assert_eq!(simd.key[j], scalar.key[j], "case {case} lane {j}");
+                if scalar.key[j] != 0 {
+                    assert_eq!(
+                        (simd.u[j], simd.v[j]),
+                        (scalar.u[j], scalar.v[j]),
+                        "case {case} lane {j}"
+                    );
+                }
+            }
+            splats += scalar.key[..len].iter().filter(|&&k| k != 0).count();
+        }
+    }
+    // Not vacuous: plenty of lanes are real splats.
+    assert!(splats > 200, "{splats} splats");
+    Ok(())
+}

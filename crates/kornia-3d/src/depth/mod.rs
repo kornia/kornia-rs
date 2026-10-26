@@ -373,12 +373,16 @@ pub fn unproject_depth_into<T: DepthSample>(
 /// above `65534` are dropped; `f32` values are `z_dst / metres_per_unit`.
 /// Pixels no point reaches are `0` (both dtypes).
 ///
-/// The z-buffer is updated with atomic max of the inverted depth key
-/// (`!value` for `u16`, `!bits(value)` for `f32`: positive floats order
-/// like their bit patterns), the integer-atomic form of the usual
-/// `atomicMin` depth trick, held in `dst` itself; ties are equal values, so
-/// the result does not depend on the update order and is deterministic
-/// across threads, runs and the CUDA path.
+/// The z-buffer holds an inverted depth key (`!value` for `u16`,
+/// `!bits(value)` for `f32`: positive floats order like their bit
+/// patterns) in `dst` itself, and every cell keeps its largest key, i.e. its
+/// nearest point. On the CPU the projection runs 4 lanes at a time (NEON)
+/// and the source rows are cut into bands processed in two alternating
+/// parallel phases, each band writing only its own window of destination
+/// rows with plain stores; splats that leave their window are merged with
+/// an atomic max afterwards. On CUDA every splat is an `atomicMax`. A
+/// per-cell maximum does not depend on the update order, so the result is
+/// deterministic across threads, runs and the CUDA path.
 ///
 /// Reference: ROS `depth_image_proc/register` (nearest-pixel projection with
 /// a z-buffer) and Open3D `t::geometry::PointCloud::project_to_depth_image`.

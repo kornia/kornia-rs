@@ -6,11 +6,12 @@
 //! `fmad=false`, so the device output equals the host output exactly
 //! (asserted by test).
 //!
-//! * Unprojection is three launches: per-row kept counts (one block per
-//!   row), one exclusive scan over the rows (one block), and a per-row
-//!   ordered compaction (warp ballots + a block scan per 256-pixel tile).
-//!   The order of the points is the host's row-major order, not the
-//!   arbitrary order an atomic append would give.
+//! * Unprojection is one launch (after a small memset): a block per row
+//!   counts its kept pixels, finds its output offset by decoupled look-back
+//!   over the preceding rows, and compacts the row in order (warp ballots +
+//!   warp offsets per 256-pixel tile). The order of the points is the host's
+//!   row-major order, not the arbitrary order an atomic append would give,
+//!   and the depth is read from memory once.
 //! * Registration is a memset, one scatter (a thread per source pixel,
 //!   `atomicMax` of the inverted depth key per splat cell) and a finalize
 //!   pass. The scatter cannot write the final value directly because the
@@ -39,15 +40,12 @@ unsafe impl DeviceRepr for RegisterParams {}
 
 /// Threads per row block of the unprojection kernels (`ROW_BLOCK` in KERNELS).
 const ROW_BLOCK: u32 = 256;
-/// Threads of the one-block row scan (`SCAN_BLOCK` in KERNELS).
-const SCAN_BLOCK: u32 = 1024;
 /// Scatter block: a warp per row, 8 rows.
 const SCATTER_BLOCK: (u32, u32) = (32, 8);
 
 const KERNELS: &str = r#"
 #define ROW_BLOCK 256
 #define ROW_WARPS (ROW_BLOCK / 32)
-#define SCAN_BLOCK 1024
 #define FULL 0xffffffffu
 
 struct Unp { float inv_fx, inv_fy, cx, cy, scale; int width, height; };
@@ -79,82 +77,66 @@ __device__ __forceinline__ bool kept(const T* row, const unsigned char* mrow, in
 
 /* ---- unprojection ---- */
 
+/* Status word of a row in the look-back buffer: flag in the high half, a
+   point count in the low half. 0 = not published yet. */
+#define ROW_AGGREGATE (1ull << 32)  /* low half = kept pixels of this row */
+#define ROW_PREFIX (2ull << 32)     /* low half = kept pixels of rows 0..=y */
+
+/* One block per row, in ticket order. The block counts its row's kept
+   pixels, publishes the count, adds up the counts of the rows before it by
+   decoupled look-back (Merrill & Garland, "Single-pass Parallel Prefix Scan
+   with Decoupled Look-back", 2016) and then writes its points from that
+   offset: warp ballots + warp offsets per 256-pixel tile, the order of
+   kernels.rs::write_rows. The second read of the row hits the cache.
+   lookback[0] is the ticket counter, lookback[1 + y] the status of row y;
+   the host zeroes them before the launch. */
 template <typename T>
-__device__ void count_rows(const T* __restrict__ depth, const unsigned char* __restrict__ mask,
-                           Unp p, unsigned int* __restrict__ row_count) {
+__device__ void unproject_rows(const T* __restrict__ depth, const unsigned char* __restrict__ mask,
+                               Unp p, unsigned long long* __restrict__ lookback,
+                               float* __restrict__ xyz, unsigned int* __restrict__ index,
+                               unsigned int* __restrict__ total) {
     __shared__ unsigned int warp_sum[ROW_WARPS];
-    int y = blockIdx.x;
+    __shared__ unsigned int s_row, s_base;
+    int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
+    /* Tickets, not blockIdx: a row only waits on rows whose blocks already
+       started, so the look-back always makes progress. */
+    if (threadIdx.x == 0) s_row = (unsigned int)atomicAdd(lookback, 1ull);
+    __syncthreads();
+    int y = (int)s_row;
     const T* row = depth + (size_t)y * p.width;
     const unsigned char* mrow = mask ? mask + (size_t)y * p.width : 0;
+
     unsigned int c = 0;
     for (int x = threadIdx.x; x < p.width; x += ROW_BLOCK) {
         float z;
         c += kept(row, mrow, x, p.scale, &z) ? 1u : 0u;
     }
     for (int off = 16; off > 0; off >>= 1) c += __shfl_down_sync(FULL, c, off);
-    if ((threadIdx.x & 31) == 0) warp_sum[threadIdx.x >> 5] = c;
+    if (lane == 0) warp_sum[warp] = c;
     __syncthreads();
     if (threadIdx.x == 0) {
-        unsigned int s = 0;
-        for (int i = 0; i < ROW_WARPS; ++i) s += warp_sum[i];
-        row_count[y] = s;
-    }
-}
-
-/* Exclusive scan of the row counts by one SCAN_BLOCK block: each thread sums
-   a run of rows, warp 0 scans the SCAN_BLOCK partials (32 per lane + one
-   shuffle scan), each thread then walks its run. Also writes the total. */
-extern "C" __global__ void unproject_scan(const unsigned int* __restrict__ row_count, int rows,
-                                          unsigned int* __restrict__ row_start,
-                                          unsigned int* __restrict__ total) {
-    __shared__ unsigned int part[SCAN_BLOCK];
-    int t = threadIdx.x;
-    int chunk = (rows + SCAN_BLOCK - 1) / SCAN_BLOCK;
-    int b0 = t * chunk;
-    int b1 = min(rows, b0 + chunk);
-    unsigned int s = 0;
-    for (int b = b0; b < b1; ++b) s += row_count[b];
-    part[t] = s;
-    __syncthreads();
-    if (t < 32) {
-        const int per = SCAN_BLOCK / 32;
-        unsigned int acc = 0;
-        for (int i = 0; i < per; ++i) {
-            unsigned int v = part[t * per + i];
-            part[t * per + i] = acc;
-            acc += v;
+        unsigned int count = 0;
+        for (int i = 0; i < ROW_WARPS; ++i) count += warp_sum[i];
+        unsigned long long* status = lookback + 1;
+        unsigned int before = 0;
+        if (y > 0) {
+            atomicExch(status + y, ROW_AGGREGATE | count);
+            for (int j = y - 1;; ) {
+                unsigned long long st = atomicOr(status + j, 0ull);
+                if (st == 0ull) continue;   /* row j not published yet */
+                before += (unsigned int)st;
+                if (st & ROW_PREFIX) break;
+                --j;
+            }
         }
-        unsigned int incl = acc;
-        for (int off = 1; off < 32; off <<= 1) {
-            unsigned int o = __shfl_up_sync(FULL, incl, off);
-            if (t >= off) incl += o;
-        }
-        unsigned int excl = incl - acc;
-        for (int i = 0; i < per; ++i) part[t * per + i] += excl;
-        if (t == 31) *total = incl;
+        atomicExch(status + y, ROW_PREFIX | (before + count));
+        if (y == p.height - 1) *total = before + count;
+        s_base = before;
     }
     __syncthreads();
-    unsigned int a = part[t];
-    for (int b = b0; b < b1; ++b) {
-        row_start[b] = a;
-        a += row_count[b];
-    }
-}
 
-/* Ordered compaction of one row: per 256-pixel tile, a ballot per warp gives
-   each kept lane its rank in the warp, the warp totals give each warp its
-   offset in the tile. Same order as kernels.rs::write_rows. */
-template <typename T>
-__device__ void write_rows(const T* __restrict__ depth, const unsigned char* __restrict__ mask,
-                           Unp p, const unsigned int* __restrict__ row_start,
-                           float* __restrict__ xyz, unsigned int* __restrict__ index) {
-    __shared__ unsigned int warp_sum[ROW_WARPS];
-    int y = blockIdx.x;
-    int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
-    const T* row = depth + (size_t)y * p.width;
-    const unsigned char* mrow = mask ? mask + (size_t)y * p.width : 0;
     float yn = ((float)y - p.cy) * p.inv_fy;
-    unsigned int base = row_start[y];
+    unsigned int base = s_base;
     for (int x0 = 0; x0 < p.width; x0 += ROW_BLOCK) {
         int x = x0 + threadIdx.x;
         float z = 0.0f;
@@ -164,9 +146,9 @@ __device__ void write_rows(const T* __restrict__ depth, const unsigned char* __r
         __syncthreads();
         unsigned int before = 0, tile = 0;
         for (int i = 0; i < ROW_WARPS; ++i) {
-            unsigned int c = warp_sum[i];
-            before += i < warp ? c : 0u;
-            tile += c;
+            unsigned int n = warp_sum[i];
+            before += i < warp ? n : 0u;
+            tile += n;
         }
         if (ok) {
             size_t k = (size_t)base + before + __popc(bal & ((1u << lane) - 1u));
@@ -181,31 +163,21 @@ __device__ void write_rows(const T* __restrict__ depth, const unsigned char* __r
     }
 }
 
-extern "C" __global__ void unproject_count_u16(const unsigned short* depth,
-                                               const unsigned char* mask, Unp p,
-                                               unsigned int* row_count) {
-    count_rows(depth, mask, p, row_count);
+extern "C" __global__ void unproject_u16(const unsigned short* depth, const unsigned char* mask,
+                                         Unp p, unsigned long long* lookback, float* xyz,
+                                         unsigned int* index, unsigned int* total) {
+    unproject_rows(depth, mask, p, lookback, xyz, index, total);
 }
-extern "C" __global__ void unproject_count_f32(const float* depth, const unsigned char* mask,
-                                               Unp p, unsigned int* row_count) {
-    count_rows(depth, mask, p, row_count);
-}
-extern "C" __global__ void unproject_write_u16(const unsigned short* depth,
-                                               const unsigned char* mask, Unp p,
-                                               const unsigned int* row_start, float* xyz,
-                                               unsigned int* index) {
-    write_rows(depth, mask, p, row_start, xyz, index);
-}
-extern "C" __global__ void unproject_write_f32(const float* depth, const unsigned char* mask,
-                                               Unp p, const unsigned int* row_start,
-                                               float* xyz, unsigned int* index) {
-    write_rows(depth, mask, p, row_start, xyz, index);
+extern "C" __global__ void unproject_f32(const float* depth, const unsigned char* mask, Unp p,
+                                         unsigned long long* lookback, float* xyz,
+                                         unsigned int* index, unsigned int* total) {
+    unproject_rows(depth, mask, p, lookback, xyz, index, total);
 }
 
 /* ---- registration ---- */
 
-/* kernels.rs::scatter_rows + splat_target + quantise_u16 / scale_f32 +
-   splat_max. Keys are inverted values: nearer = larger, 0 = empty. */
+/* kernels.rs::project_batch + key_u16 / key_f32 + scatter_rows. Keys are
+   inverted values: nearer = larger, 0 = empty. */
 template <typename T, bool U16>
 __device__ void scatter(const T* __restrict__ src, Reg p, unsigned int* __restrict__ zb) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -276,12 +248,9 @@ extern "C" __global__ void register_finalize_u16(const unsigned int* __restrict_
 "#;
 
 /// Kernel names, in the order [`CudaDepthProjector::new`] unpacks them.
-const NAMES: [&str; 9] = [
-    "unproject_count_u16",
-    "unproject_count_f32",
-    "unproject_write_u16",
-    "unproject_write_f32",
-    "unproject_scan",
+const NAMES: [&str; 6] = [
+    "unproject_u16",
+    "unproject_f32",
     "register_scatter_u16",
     "register_scatter_f32",
     "register_finalize_u16",
@@ -318,13 +287,13 @@ where
 }
 
 /// Grows `buf` to at least `n` elements (contents unspecified).
-fn ensure_len(
+fn ensure_len<T: DeviceRepr + ValidAsZeroBits>(
     stream: &Arc<CudaStream>,
-    buf: &mut CudaSlice<u32>,
+    buf: &mut CudaSlice<T>,
     n: usize,
 ) -> Result<(), DepthError> {
     if buf.len() < n {
-        *buf = stream.alloc_zeros::<u32>(n).map_err(cuda_err)?;
+        *buf = stream.alloc_zeros::<T>(n).map_err(cuda_err)?;
     }
     Ok(())
 }
@@ -453,13 +422,10 @@ impl CudaPointCloud {
 /// host functions is safe because they produce identical results.
 pub struct CudaDepthProjector {
     stream: Arc<CudaStream>,
-    k_count: [CudaKernel; 2],
-    k_write: [CudaKernel; 2],
-    k_scan: CudaKernel,
+    k_unproject: [CudaKernel; 2],
     k_scatter: [CudaKernel; 2],
     k_finalize: [CudaKernel; 2],
-    row_count: CudaSlice<u32>,
-    row_start: CudaSlice<u32>,
+    lookback: CudaSlice<u64>,
     zbuf: CudaSlice<u32>,
 }
 
@@ -514,24 +480,18 @@ impl CudaDepthProjector {
             it.next()
                 .ok_or_else(|| cuda_err("compile_many returned fewer kernels than requested"))
         };
-        let k_count = [next()?, next()?];
-        let k_write = [next()?, next()?];
-        let k_scan = next()?;
+        let k_unproject = [next()?, next()?];
         let k_scatter = [next()?, next()?];
         let k_finalize = [next()?, next()?];
-        let row_count = stream.alloc_zeros::<u32>(1).map_err(cuda_err)?;
-        let row_start = stream.alloc_zeros::<u32>(1).map_err(cuda_err)?;
+        let lookback = stream.alloc_zeros::<u64>(1).map_err(cuda_err)?;
         let zbuf = stream.alloc_zeros::<u32>(1).map_err(cuda_err)?;
         stream.synchronize().map_err(cuda_err)?;
         Ok(Self {
             stream: stream.clone(),
-            k_count,
-            k_write,
-            k_scan,
+            k_unproject,
             k_scatter,
             k_finalize,
-            row_count,
-            row_start,
+            lookback,
             zbuf,
         })
     }
@@ -656,50 +616,28 @@ impl CudaDepthProjector {
             st.memset_zeros(&mut out.count).map_err(cuda_err)?;
             return Ok(());
         }
-        ensure_len(&st, &mut self.row_count, h)?;
-        ensure_len(&st, &mut self.row_start, h)?;
-        let k = T::KERNEL_INDEX;
+        // Ticket counter + one status word per row, zeroed per call.
+        ensure_len(&st, &mut self.lookback, h + 1)?;
+        st.memset_zeros(&mut self.lookback.slice_mut(0..h + 1))
+            .map_err(cuda_err)?;
         let null = 0u64;
-        let rows = LaunchConfig {
-            grid_dim: (h as u32, 1, 1),
-            block_dim: (ROW_BLOCK, 1, 1),
-            shared_mem_bytes: 0,
-        };
-
-        let b = self.k_count[k].launch_builder(&st).arg(d);
+        let b = self.k_unproject[T::KERNEL_INDEX].launch_builder(&st).arg(d);
         let b = match m {
             Some(m) => b.arg(m),
             None => b.arg(&null),
         };
-        b.arg(&p)
-            .arg(&mut self.row_count)
-            .launch_cfg(rows)
-            .map_err(cuda_err)?;
-
-        self.k_scan
-            .launch_builder(&st)
-            .arg(&self.row_count)
-            .arg(&p.height)
-            .arg(&mut self.row_start)
-            .arg(&mut out.count)
-            .launch_cfg(LaunchConfig {
-                grid_dim: (1, 1, 1),
-                block_dim: (SCAN_BLOCK, 1, 1),
-                shared_mem_bytes: 0,
-            })
-            .map_err(cuda_err)?;
-
-        let b = self.k_write[k].launch_builder(&st).arg(d);
-        let b = match m {
-            Some(m) => b.arg(m),
-            None => b.arg(&null),
-        };
-        let b = b.arg(&p).arg(&self.row_start).arg(&mut out.xyz);
+        let b = b.arg(&p).arg(&mut self.lookback).arg(&mut out.xyz);
         let b = match out.pixel_index.as_mut() {
             Some(ix) => b.arg(ix),
             None => b.arg(&null),
         };
-        b.launch_cfg(rows).map_err(cuda_err)?;
+        b.arg(&mut out.count)
+            .launch_cfg(LaunchConfig {
+                grid_dim: (h as u32, 1, 1),
+                block_dim: (ROW_BLOCK, 1, 1),
+                shared_mem_bytes: 0,
+            })
+            .map_err(cuda_err)?;
         Ok(())
     }
 
