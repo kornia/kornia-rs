@@ -54,8 +54,10 @@ pub trait LabelPixel: sealed::Sealed + Copy + PartialEq + Send + Sync + 'static 
 /// the first of which is in `S`). That distance is computed exactly with a
 /// separable, capped distance transform: a vertical then a horizontal
 /// two-sweep min-plus pass (Manhattan), or the same passes on the thresholded
-/// vertical distance (Chebyshev). The cost per pixel is constant, independent
-/// of `radius`; no structuring element is ever scanned.
+/// vertical distance (Chebyshev). The cost per pixel is bounded independently
+/// of `radius`: small radii replace the horizontal two-sweep pass by a direct
+/// window of at most eight shifted minima, and no structuring element is
+/// ever scanned.
 ///
 /// # Reference
 ///

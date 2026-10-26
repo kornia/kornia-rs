@@ -386,6 +386,34 @@ fn horizontal_scan_simd_matches_scalar_u8() {
     check_horizontal_scan::<u8>(u8::MAX - 1, u8::MAX);
 }
 
+/// The direct window minimum and the full two-sweep scan select the same
+/// pixels (`<= t`) for every threshold the window handles, including rows
+/// shorter than the window.
+#[test]
+fn horizontal_window_matches_scan_below_threshold() {
+    let mut rng = Lcg(5);
+    for t in 1..=kernels::DIRECT_MAX_THRESHOLD {
+        let cap = (t + 1) as u8;
+        for len in 1..70 {
+            for _ in 0..8 {
+                let row: Vec<u8> = (0..len)
+                    .map(|_| match rng.next() % 3 {
+                        0 => 0,
+                        1 => (rng.next() % (t as u32 + 2)) as u8,
+                        _ => cap,
+                    })
+                    .collect();
+                let mut scan = row.clone();
+                kernels::horizontal_min_plus_scalar(&mut scan);
+                let mut window = vec![0u8; len];
+                kernels::horizontal_window_min_row(&row, t, &mut window);
+                let sel = |v: &[u8]| v.iter().map(|&d| usize::from(d) <= t).collect::<Vec<_>>();
+                assert_eq!(sel(&window), sel(&scan), "t {t}, row {row:?}");
+            }
+        }
+    }
+}
+
 #[test]
 fn u8_and_u16_distance_lanes_agree() {
     // Every threshold whose cap fits a byte runs on u8 lanes; the u16 lanes
