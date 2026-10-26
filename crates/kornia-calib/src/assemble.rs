@@ -135,11 +135,13 @@ pub(crate) fn assemble_problem(
             continue;
         }
         // Fallback: per-corner FREE point triangulated from two registered cameras that see it.
+        // Corners a camera cannot undistort are left out before the pair is chosen, so one bad
+        // pixel cannot cost the point when two other cameras could still triangulate it.
         for k in 0..4 {
             let seers: Vec<(usize, Vec2F64)> = tag
                 .per_camera
                 .iter()
-                .filter(|(c, _)| have[*c])
+                .filter(|(c, corners)| have[*c] && cameras[*c].normalize(corners[k]).is_some())
                 .map(|(c, corners)| (*c, corners[k]))
                 .collect();
             if seers.len() < 2 {
@@ -228,12 +230,14 @@ pub(crate) fn assemble_board(
 
     // Feature tracks: ONE free point per track, triangulated from the widest-baseline pair of
     // registered cameras (best conditioned), with every registered observation then attached.
+    // Observations a camera cannot undistort are left out before the pair search, so one bad pixel
+    // in the widest pair cannot cost the point.
     for track in tracks {
         let regs: Vec<(usize, Vec2F64)> = track
             .obs
             .iter()
             .copied()
-            .filter(|(c, _)| *c < have.len() && have[*c])
+            .filter(|(c, uv)| *c < have.len() && have[*c] && cameras[*c].normalize(*uv).is_some())
             .collect();
         if regs.len() < 2 {
             continue;
@@ -266,4 +270,59 @@ pub(crate) fn assemble_board(
     }
 
     (points, obs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kornia_3d::camera::CameraModel;
+    use kornia_algebra::Mat3F64;
+
+    #[test]
+    fn assemble_board_triangulates_a_track_around_an_unundistortable_observation() {
+        // With k1 = -0.28 the distorted radius peaks at about 364 px, so pixel (0, 0) has no
+        // preimage. Camera 2 has the widest baseline to camera 0 but sees the track there, so the
+        // point must come from cameras 0 and 1 instead of being dropped.
+        let cam = PinholeCamera {
+            fx: 500.0,
+            fy: 500.0,
+            cx: 376.0,
+            cy: 240.0,
+            k1: -0.28,
+            k2: 0.0,
+            p1: 0.0,
+            p2: 0.0,
+        };
+        let cameras = [cam.clone(), cam.clone(), cam.clone()];
+        // World to camera; camera i sits at x = centres[i], looking down +z.
+        let centres = [0.0, 0.3, 1.0];
+        let poses: Vec<Pose3d> = centres
+            .iter()
+            .map(|x| Pose3d::new(Mat3F64::IDENTITY, Vec3F64::new(-x, 0.0, 0.0)))
+            .collect();
+        let p_world = Vec3F64::new(0.0, 0.0, 3.0);
+        let pixel = |i: usize| CameraModel::project(&cam, &poses[i].transform_point(&p_world));
+        let tracks = [FeatureTrack {
+            obs: vec![
+                (0, pixel(0).unwrap()),
+                (1, pixel(1).unwrap()),
+                (2, Vec2F64::new(0.0, 0.0)),
+            ],
+        }];
+
+        let (points, obs) = assemble_board(
+            &cameras,
+            &[],
+            &tracks,
+            &BoardGeometry::default(),
+            &poses,
+            &[true; 3],
+            &CalibConfig::new(0.1),
+        );
+
+        assert_eq!(points.len(), 1);
+        assert!((points[0] - p_world).length() < 1e-6, "{:?}", points[0]);
+        let views: Vec<usize> = obs.iter().map(|o| o.pose_idx).collect();
+        assert_eq!(views, [0, 1]);
+    }
 }
