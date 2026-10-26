@@ -47,12 +47,13 @@ const COL_BLOCK: usize = 16;
 /// array of lane vectors. The pair list feeds the tests and the CUDA code
 /// generator, the function feeds the CPU kernels, from one literal list.
 macro_rules! network {
-    ($(#[$doc:meta])* $name:ident, $apply:ident, [$(($a:literal, $b:literal)),* $(,)?]) => {
+    ($(#[$doc:meta])* $name:ident, $(#[$fattr:meta])* $apply:ident, [$(($a:literal, $b:literal)),* $(,)?]) => {
         $(#[$doc])*
         // Read by the tests and the CUDA code generator.
         #[cfg_attr(not(any(test, feature = "cuda")), allow(dead_code))]
         pub(crate) const $name: &[(usize, usize)] = &[$(($a, $b)),*];
 
+        $(#[$fattr])*
         #[inline(always)]
         fn $apply<V: Exchange, const N: usize>(v: &mut [V; N]) {
             $(ce(v, $a, $b);)*
@@ -117,6 +118,8 @@ network!(
     /// sorted-column network of the `u8` [`crate::filter::median_blur`]
     /// 5×5 kernel, proven on the same subspace in the tests.
     MED25,
+    // Only the NEON kernel takes the all-valid shortcut.
+    #[cfg(target_arch = "aarch64")]
     med25,
     [
         (9, 10), (8, 9), (14, 16), (14, 15), (2, 5), (3, 6), (0, 3), (4, 7), (1, 4),
@@ -135,6 +138,7 @@ network!(
 /// rank`) when all 9 samples are valid: the exact identity
 /// `med3(max(lows), med3(mids), min(highs))` (the `u8`
 /// [`crate::filter::median_blur`] 3×3 kernel uses it too).
+#[cfg(any(test, target_arch = "aarch64"))]
 #[inline(always)]
 fn med9<V: Exchange>(v: &[V; 9]) -> V {
     let max = |a, b| V::exchange(a, b).1;
