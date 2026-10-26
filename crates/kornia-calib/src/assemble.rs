@@ -38,8 +38,9 @@ fn add_free_point(
     (cb, ub): (usize, Vec2F64),
     attach: &[(usize, Vec2F64)],
 ) -> bool {
-    let na = cameras[ca].normalize(ua);
-    let nb = cameras[cb].normalize(ub);
+    let (Some(na), Some(nb)) = (cameras[ca].normalize(ua), cameras[cb].normalize(ub)) else {
+        return false;
+    };
     let Ok(pts) = triangulate_matched_points(
         &[na],
         &[nb],
@@ -56,7 +57,9 @@ fn add_free_point(
     let pidx = points.len();
     points.push(pts[0].position);
     for (c, uv) in attach {
-        obs.push(ba_obs(*c, pidx, cameras[*c].normalize(*uv), false));
+        if let Some(n) = cameras[*c].normalize(*uv) {
+            obs.push(ba_obs(*c, pidx, n, false));
+        }
     }
     true
 }
@@ -95,7 +98,9 @@ pub(crate) fn assemble_problem(
     points.extend_from_slice(&ref_corners);
     for (cam_idx, corners) in &tags[ref_ti].per_camera {
         for k in 0..4 {
-            let n = cameras[*cam_idx].normalize(corners[k]);
+            let Some(n) = cameras[*cam_idx].normalize(corners[k]) else {
+                continue;
+            };
             obs.push(ba_obs(*cam_idx, base + k, n, true));
         }
     }
@@ -121,7 +126,9 @@ pub(crate) fn assemble_problem(
                     continue;
                 }
                 for k in 0..4 {
-                    let n = cameras[*cam_idx].normalize(corners[k]);
+                    let Some(n) = cameras[*cam_idx].normalize(corners[k]) else {
+                        continue;
+                    };
                     obs.push(ba_obs(*cam_idx, base + k, n, true)); // FIXED measured board corner
                 }
             }
@@ -211,7 +218,9 @@ pub(crate) fn assemble_board(
                 if !have[*c] {
                     continue;
                 }
-                let n = cameras[*c].normalize(corners[k]);
+                let Some(n) = cameras[*c].normalize(corners[k]) else {
+                    continue;
+                };
                 obs.push(ba_obs(*c, pidx, n, true)); // fixed board point
             }
         }
