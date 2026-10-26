@@ -1486,18 +1486,24 @@ fn try_bootstrap_pair(
         let (Some((_, ua)), Some((_, ub))) = (pa, pb) else {
             continue;
         };
-        let (Some(ua_u), Some(ub_u), Some(na), Some(nb)) = (
+        let (Some(ua_u), Some(ub_u)) = (
             cameras[a0].undistort(ua.x, ua.y),
             cameras[b0].undistort(ub.x, ub.y),
-            cameras[a0].normalize(*ua),
-            cameras[b0].normalize(*ub),
         ) else {
             continue;
         };
+        // K⁻¹·undistort(px) == normalize(px), without inverting the distortion a second time.
+        let (ka, kb) = (&cameras[a0], &cameras[b0]);
+        n1.push(Vec2F64::new(
+            (ua_u.x - ka.cx) / ka.fx,
+            (ua_u.y - ka.cy) / ka.fy,
+        ));
+        n2.push(Vec2F64::new(
+            (ub_u.x - kb.cx) / kb.fx,
+            (ub_u.y - kb.cy) / kb.fy,
+        ));
         x1u.push(ua_u);
         x2u.push(ub_u);
-        n1.push(na);
-        n2.push(nb);
     }
     if x1u.len() < 8 {
         return None;
