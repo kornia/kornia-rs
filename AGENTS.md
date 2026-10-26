@@ -231,13 +231,13 @@ Err(KorniaError::SizeMismatch {
 
    Agents posting comments or reviews for someone end them with `Posted on behalf of @<handle> by <Agent> (<actual model>).`
 
-   Then self-review with `kornia-code-review` and paste its output in the PR's Self-review section. The human author then writes the Author walkthrough in their own words (each file, why, riskiest part). Both are required; the PR check fails without them. Agents must not write the walkthrough.
+   Then self-review with `kornia-code-review` and paste its output in the PR's Self-review section (required; the PR check fails without it).
 
 3. **Update documentation** — any new or changed public API must have updated doc comments. New features need an entry in the relevant crate's `README.md` or module-level doc.
 
 4. **Write tests** — new functionality requires unit tests. Bug fixes require a regression test that would have caught the bug.
 
-5. **PR description** — include:
+5. **PR description** — fill in `.github/pull_request_template.md` (`gh pr create --body-file <filled copy>`; `--body` skips the template). It covers:
    - What changed and why
    - Any breaking changes
    - Benchmarks or profiling data for performance-sensitive changes (before/after, see `kornia-code-review`)
