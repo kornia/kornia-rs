@@ -5,7 +5,7 @@
 //!
 //! Thresholds up to [`FUSED_MAX_THRESHOLD`] (radius <= 9) run as one
 //! launch with no scratch buffer: `label_boundary_fused_*` loads a
-//! `32 x 32` output tile plus a `t + 1` label halo into shared memory and
+//! `32 x 64` output tile plus a `t + 1` label halo into shared memory and
 //! turns the seeds of the tile plus a `t` halo into one 64-bit mask per row
 //! (warp ballots). The selected set is the seed set dilated by the diamond
 //! (Manhattan) or square (Chebyshev) of radius `t`: per output row, the OR
@@ -58,8 +58,11 @@ const H_ITEMS: u32 = 5;
 /// Largest distance threshold handled by the fused single-launch kernel;
 /// its shared tiles are sized for this halo.
 pub(crate) const FUSED_MAX_THRESHOLD: u16 = 8;
-/// Output tile side of the fused kernel (one warp wide).
+/// Output tile width of the fused kernel (one warp wide).
 const F_TILE: u32 = 32;
+/// Output tile height of the fused kernel; a tall tile amortizes the halo
+/// and the per-block setup over more rows.
+const F_TILE_H: u32 = 64;
 /// Thread rows of the fused kernel's `F_TILE x F_ROWS` block.
 const F_ROWS: u32 = 8;
 
@@ -253,8 +256,10 @@ extern "C" __global__ void {hname}(
 #define FT {F_TILE}
 #define FROWS {F_ROWS}
 #define FMAXT {FUSED_MAX_THRESHOLD}
+#define FTH {F_TILE_H}
 #define FLW (FT + 2 * FMAXT + 2)
-#define FSW (FT + 2 * FMAXT)
+#define FLH (FTH + 2 * FMAXT + 2)
+#define FSH (FTH + 2 * FMAXT)
 
 // Seed test at tile seed coordinates (i, j); labels were loaded with
 // clamped coordinates, so this matches `is_seed`.
@@ -266,7 +271,7 @@ __device__ __forceinline__ bool tile_seed(const L (*lab)[FLW], int i, int j) {{
     return d;
 }}
 
-// One FT x FT output tile per block of FT x FROWS threads, thr <= FMAXT.
+// One FT x FTH output tile per block of FT x FROWS threads, thr <= FMAXT.
 // Tile coordinates: output (r, c) is seed (r + t, c + t) and label
 // (r + t + 1, c + t + 1). Each seed row (FT + 2t <= 64 columns) is a
 // 64-bit mask built with two warp ballots; out-of-image seeds are 0.
@@ -277,44 +282,62 @@ extern "C" __global__ void {fname}(
     const L* __restrict__ src, L* __restrict__ dst,
     int w, int h, int thr, int fill
 ) {{
-    __shared__ L lab[FLW][FLW];
-    __shared__ unsigned long long smask[FSW];
-    __shared__ unsigned long long omask[FT];
+    __shared__ L lab[FLH][FLW];
+    __shared__ unsigned long long smask[FSH];
+    __shared__ unsigned long long omask[FTH];
     int t = thr;
     int tx = threadIdx.x;
     int ty = threadIdx.y;
     int x0 = blockIdx.x * FT;
-    int y0 = blockIdx.y * FT;
+    int y0 = blockIdx.y * FTH;
     int lw = FT + 2 * t + 2;
+    int lh = FTH + 2 * t + 2;
     int sw = FT + 2 * t;
+    int sh = FTH + 2 * t;
 
-    for (int i = ty; i < lw; i += FROWS) {{
-        int gy = min(max(y0 - t - 1 + i, 0), h - 1);
-        const L* row = src + (size_t)gy * w;
-        for (int j = tx; j < lw; j += FT) {{
-            int gx = min(max(x0 - t - 1 + j, 0), w - 1);
-            lab[i][j] = __ldg(row + gx);
+    // Interior tiles (the common case) skip the coordinate clamps: the
+    // kernel is instruction bound, not memory bound.
+    bool interior = x0 - t - 1 >= 0 && y0 - t - 1 >= 0
+                 && x0 + FT + t + 1 <= w && y0 + FTH + t + 1 <= h;
+    if (interior) {{
+        const L* base = src + (size_t)(y0 - t - 1) * w + (x0 - t - 1);
+        for (int i = ty; i < lh; i += FROWS) {{
+            const L* row = base + (size_t)i * w;
+            lab[i][tx] = __ldg(row + tx);
+            if (tx < lw - FT) lab[i][tx + FT] = __ldg(row + tx + FT);
+        }}
+    }} else {{
+        for (int i = ty; i < lh; i += FROWS) {{
+            int gy = min(max(y0 - t - 1 + i, 0), h - 1);
+            const L* row = src + (size_t)gy * w;
+            for (int j = tx; j < lw; j += FT) {{
+                int gx = min(max(x0 - t - 1 + j, 0), w - 1);
+                lab[i][j] = __ldg(row + gx);
+            }}
         }}
     }}
-    if (ty == 0) omask[tx] = 0ull;
+    for (int r = ty * FT + tx; r < FTH; r += FT * FROWS) omask[r] = 0ull;
     __syncthreads();
 
     // Warp-uniform loop: every lane reaches both ballots.
-    for (int i = ty; i < sw; i += FROWS) {{
+    for (int i = ty; i < sh; i += FROWS) {{
         int gy = y0 - t + i;
         bool row_in = gy >= 0 && gy < h;
         int gx = x0 - t + tx;
         bool lo = row_in && gx >= 0 && gx < w && tile_seed(lab, i, tx);
-        int j2 = tx + FT;
-        bool hi = row_in && j2 < sw && gx + FT < w && tile_seed(lab, i, j2);
         unsigned int blo = __ballot_sync(0xffffffffu, lo);
-        unsigned int bhi = __ballot_sync(0xffffffffu, hi);
+        unsigned int bhi = 0u;
+        if (t > 0) {{
+            // Block-uniform: only a halo needs the high word.
+            int j2 = tx + FT;
+            bool hi = row_in && j2 < sw && gx + FT < w && tile_seed(lab, i, j2);
+            bhi = __ballot_sync(0xffffffffu, hi);
+        }}
         if (tx == 0) smask[i] = (unsigned long long)blo | ((unsigned long long)bhi << 32);
     }}
     __syncthreads();
 
-    {{
-        int r = tx;
+    for (int r = tx; r < FTH; r += FT) {{
         unsigned long long acc = 0ull;
         for (int dy = -t + ty; dy <= t; dy += FROWS) {{
             unsigned long long m = smask[r + t + dy];
@@ -329,10 +352,11 @@ extern "C" __global__ void {fname}(
 
     int gx = x0 + tx;
     if (gx >= w) return;
-    for (int r = ty; r < FT; r += FROWS) {{
+    #pragma unroll
+    for (int r = ty; r < FTH; r += FROWS) {{
         int gy = y0 + r;
         if (gy >= h) break;
-        bool hit = (omask[r] >> (tx + t)) & 1ull;
+        bool hit = ((unsigned int)(omask[r] >> t) >> tx) & 1u;
         dst[(size_t)gy * w + gx] = hit ? (L)fill : lab[r + t + 1][tx + t + 1];
     }}
 }}
@@ -440,7 +464,11 @@ pub(crate) fn launch_erode_label_boundaries<T: CudaLabelPixel>(
     if threshold <= FUSED_MAX_THRESHOLD {
         let cfg = LaunchConfig {
             block_dim: (F_TILE, F_ROWS, 1),
-            grid_dim: ((w as u32).div_ceil(F_TILE), (h as u32).div_ceil(F_TILE), 1),
+            grid_dim: (
+                (w as u32).div_ceil(F_TILE),
+                (h as u32).div_ceil(F_TILE_H),
+                1,
+            ),
             shared_mem_bytes: 0,
         };
         return kernels

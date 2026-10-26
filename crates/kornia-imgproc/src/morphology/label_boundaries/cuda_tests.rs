@@ -7,9 +7,9 @@ use kornia_image::ImageSize;
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 /// Includes a single pixel, a single row / column, widths around and above
-/// one horizontal tile (640 elements) and a height above one vertical
-/// segment.
-const SIZES: [(usize, usize); 8] = [
+/// one horizontal tile (640 elements), a height above one vertical segment,
+/// and a map with interior fused tiles (32 x 64 plus halo, no clamping).
+const SIZES: [(usize, usize); 9] = [
     (1, 1),
     (1, 9),
     (9, 1),
@@ -18,6 +18,7 @@ const SIZES: [(usize, usize); 8] = [
     (640, 3),
     (1283, 5),
     (131, 97),
+    (131, 211),
 ];
 
 /// Radii up to 9 (threshold 8) take the fused single-launch kernel, larger

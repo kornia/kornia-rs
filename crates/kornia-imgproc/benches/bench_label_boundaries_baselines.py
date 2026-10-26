@@ -4,7 +4,8 @@ Times the equivalent pipelines on the same synthetic label maps:
 
 * OpenCV: seed mask `compare(dilate(L, k3), erode(L, k3), CMP_NE)` (3x3
   cross for 4-connectivity, 3x3 rectangle for 8), dilated by a diamond /
-  square of radius `r - 1`, then `fill` written through the mask; timed
+  square of radius `r - 1`, then `fill` written through the mask with
+  `cv2.copyTo`; timed
   on one thread and on all of OpenCV's threads.
 * scikit-image: `find_boundaries(L, connectivity, mode="thick")`, then
   `binary_dilation` with a diamond / square of radius `r - 1`.
@@ -73,8 +74,10 @@ def opencv_erode(labels: np.ndarray, radius: int, eight: bool, fill: int) -> np.
     seeds = cv2.compare(cv2.dilate(labels, k3), cv2.erode(labels, k3), cv2.CMP_NE)
     if radius > 1:
         seeds = cv2.dilate(seeds, footprint(radius - 1, eight))
+    # Masked write in OpenCV (cv2.copyTo), not NumPy boolean indexing,
+    # which would add NumPy overhead to the OpenCV timing.
     out = labels.copy()
-    out[seeds.view(bool)] = fill
+    cv2.copyTo(np.full_like(labels, fill), seeds, out)
     return out
 
 

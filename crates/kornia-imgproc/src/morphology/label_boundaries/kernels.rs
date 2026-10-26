@@ -13,8 +13,10 @@
 //! 2. vertical two-sweep min-plus pass over the band (`v[y] = min(v[y],
 //!    v[y ∓ 1] + 1)`, column lanes, vectorizable);
 //! 3. per output row: for Chebyshev the vertical distance is thresholded,
-//!    then a horizontal two-sweep min-plus scan (NEON log-step scan on
-//!    aarch64, scalar elsewhere) and the `fill` / label select.
+//!    then the horizontal pass and the `fill` / label select. The
+//!    horizontal pass is a direct `2t`-shift window minimum while
+//!    `t <= DIRECT_MAX_THRESHOLD`, and a two-sweep min-plus scan (NEON
+//!    log-step scan on aarch64, scalar elsewhere) above.
 //!
 //! Distances saturate at `cap`: only the comparison `distance <= t` is ever
 //! read, and every value above `t` behaves identically in the min-plus
@@ -39,6 +41,11 @@ pub(crate) const PAR_MIN_PIXELS: usize = 64 * 1024;
 /// rows keeps the SIMD pipelines busy while each chain waits.
 pub(crate) const H_ROWS: usize = 4;
 
+/// Largest distance threshold whose horizontal pass is the direct window
+/// [`horizontal_window_min_row`] (`2t` shifted minima per pixel) instead of
+/// the two-sweep scan, whose cost does not depend on `t`.
+pub(crate) const DIRECT_MAX_THRESHOLD: usize = 4;
+
 /// Saturating distance lane of the scratch. Every value `>= cap = t + 1`
 /// behaves identically, so a lane type only has to hold `cap`.
 pub(crate) trait Dist: Copy + Ord + Send + Sync + 'static {
@@ -48,6 +55,8 @@ pub(crate) trait Dist: Copy + Ord + Send + Sync + 'static {
     fn from_u16(v: u16) -> Self;
     /// `self + 1`, saturating.
     fn sat_inc(self) -> Self;
+    /// `self + rhs`, saturating.
+    fn sat_add(self, rhs: Self) -> Self;
     /// Horizontal two-sweep min-plus pass in place on every `w`-wide row
     /// of `rows` (`w > 0`, `rows.len()` a multiple of `w`).
     fn horizontal_min_plus_rows(rows: &mut [Self], w: usize);
@@ -60,6 +69,9 @@ impl Dist for u8 {
     }
     fn sat_inc(self) -> Self {
         self.saturating_add(1)
+    }
+    fn sat_add(self, rhs: Self) -> Self {
+        self.saturating_add(rhs)
     }
     fn horizontal_min_plus_rows(rows: &mut [Self], w: usize) {
         #[cfg(target_arch = "aarch64")]
@@ -88,6 +100,9 @@ impl Dist for u16 {
     }
     fn sat_inc(self) -> Self {
         self.saturating_add(1)
+    }
+    fn sat_add(self, rhs: Self) -> Self {
+        self.saturating_add(rhs)
     }
     fn horizontal_min_plus_rows(rows: &mut [Self], w: usize) {
         #[cfg(target_arch = "aarch64")]
@@ -200,11 +215,12 @@ fn erode_band<T: Copy + PartialEq, D: Dist>(
     let e0 = y0.saturating_sub(t);
     let e1 = (y1 + t).min(h);
     let len = (e1 - e0) * w;
-    // Grow only: every element of `dist` is written by `seed_row` below.
-    if scratch.len() < len {
-        scratch.resize(len, D::ZERO);
+    // Grow only: every element of `dist` is written by `seed_row` below,
+    // and every element of `row_tmp` by `horizontal_window_min_row`.
+    if scratch.len() < len + w {
+        scratch.resize(len + w, D::ZERO);
     }
-    let dist = &mut scratch[..len];
+    let (dist, row_tmp) = scratch[..len + w].split_at_mut(len);
 
     for (i, row) in dist.chunks_exact_mut(w).enumerate() {
         seed_row(src, w, h, e0 + i, connectivity, cap, row);
@@ -215,6 +231,21 @@ fn erode_band<T: Copy + PartialEq, D: Dist>(
         vertical_min_plus(dist, w);
     }
     let out_rows = out.len() / w;
+    if t > 0 && t <= DIRECT_MAX_THRESHOLD {
+        // Small threshold: the horizontal pass is a direct window of `2t`
+        // shifted minima per row, cheaper than the two-sweep scan.
+        for i in 0..out_rows {
+            let y = y0 + i;
+            let row = &mut dist[(y - e0) * w..(y - e0 + 1) * w];
+            if connectivity == Connectivity::Eight {
+                threshold_row(row, thr, cap);
+            }
+            horizontal_window_min_row(row, t, row_tmp);
+            let labels = &src[y * w..(y + 1) * w];
+            select_row(labels, row_tmp, thr, fill, &mut out[i * w..(i + 1) * w]);
+        }
+        return;
+    }
     let mut i = 0;
     while i < out_rows {
         let n = (out_rows - i).min(H_ROWS);
@@ -350,6 +381,30 @@ pub(crate) fn vertical_min_plus<D: Dist>(dist: &mut [D], w: usize) {
 fn threshold_row<D: Dist>(row: &mut [D], threshold: D, cap: D) {
     for v in row.iter_mut() {
         *v = if *v <= threshold { D::ZERO } else { cap };
+    }
+}
+
+/// `out[x] = min over |k| <= t of (row[x + k] + |k|)`, saturating, over
+/// in-image `x + k` only: the horizontal min-plus pass restricted to a
+/// window of `t` columns, exact for every value compared against `t`.
+///
+/// Each shift is a pair of equal-length slice zips the compiler vectorizes
+/// (NEON / AVX2 / scalar from the same code); `out.len() == row.len()`.
+pub(crate) fn horizontal_window_min_row<D: Dist>(row: &[D], t: usize, out: &mut [D]) {
+    let w = row.len();
+    let out = &mut out[..w];
+    out.copy_from_slice(row);
+    let mut inc = D::ZERO;
+    for k in 1..=t.min(w.saturating_sub(1)) {
+        inc = inc.sat_inc();
+        // out[x] <- min(out[x], row[x - k] + k), x in k..w
+        for (o, &v) in out[k..].iter_mut().zip(&row[..w - k]) {
+            *o = (*o).min(v.sat_add(inc));
+        }
+        // out[x] <- min(out[x], row[x + k] + k), x in 0..w - k
+        for (o, &v) in out[..w - k].iter_mut().zip(&row[k..]) {
+            *o = (*o).min(v.sat_add(inc));
+        }
     }
 }
 
