@@ -117,6 +117,15 @@ pub trait DepthSample: sealed::Sealed + Copy + Send + Sync + 'static {
     #[doc(hidden)]
     fn metres(self, metres_per_unit: f32) -> f32;
 
+    /// Whether `self != 0` alone decides validity at `metres_per_unit`
+    /// (which the caller has checked to be finite and positive), i.e.
+    /// `is_valid_metres(v.metres(s)) == (v != 0)` for every sample `v`.
+    #[doc(hidden)]
+    fn nonzero_is_valid(metres_per_unit: f32) -> bool;
+
+    #[doc(hidden)]
+    fn is_nonzero(self) -> bool;
+
     #[doc(hidden)]
     fn register_depth_impl(
         src: &Image<Self, 1>,
@@ -135,6 +144,19 @@ impl DepthSample for u16 {
     #[inline(always)]
     fn metres(self, metres_per_unit: f32) -> f32 {
         f32::from(self) * metres_per_unit
+    }
+
+    /// For `v >= 1` and a finite positive `s`, rounding is monotone, so
+    /// `s <= v * s <= 65535 * s`: the product is positive, and finite iff
+    /// the largest one is. `0 * s` is `0`, which is missing.
+    #[inline(always)]
+    fn nonzero_is_valid(metres_per_unit: f32) -> bool {
+        (f32::from(u16::MAX) * metres_per_unit).is_finite()
+    }
+
+    #[inline(always)]
+    fn is_nonzero(self) -> bool {
+        self != 0
     }
 
     fn register_depth_impl(
@@ -168,6 +190,17 @@ impl DepthSample for f32 {
     #[inline(always)]
     fn metres(self, metres_per_unit: f32) -> f32 {
         self * metres_per_unit
+    }
+
+    /// NaN, negative and infinite samples are missing too.
+    #[inline(always)]
+    fn nonzero_is_valid(_metres_per_unit: f32) -> bool {
+        false
+    }
+
+    #[inline(always)]
+    fn is_nonzero(self) -> bool {
+        self != 0.0
     }
 
     fn register_depth_impl(

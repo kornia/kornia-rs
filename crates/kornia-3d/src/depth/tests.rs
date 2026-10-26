@@ -192,6 +192,65 @@ fn unproject_parallel_matches_sequential() -> TestResult {
     Ok(())
 }
 
+/// The u16 `!= 0` shortcut keeps exactly the pixels the metres test keeps,
+/// with and without a mask, at a scale where it applies and at one where
+/// `65535 * scale` overflows (large samples become infinite and are
+/// dropped, so the shortcut must be off).
+#[test]
+fn unproject_u16_parallel_matches_sequential() -> TestResult {
+    let (w, h) = (97, 71);
+    let data = random_depth_u16(w, h, 5);
+    let mask: Vec<u8> = (0..w * h).map(|i| u8::from(i % 7 != 0)).collect();
+    let camera = pinhole(60.0, 61.0, w as f64 / 2.0, h as f64 / 2.0);
+    for scale in [MM, 1e35] {
+        assert_eq!(u16::nonzero_is_valid(scale), scale == MM);
+        let p = kernels::unproject_params(&camera, scale, w, h)?;
+        for m in [None, Some(mask.as_slice())] {
+            let (mut par_pts, mut par_ix) = (Vec::new(), Vec::new());
+            let (mut seq_pts, mut seq_ix) = (Vec::new(), Vec::new());
+            kernels::unproject_into(&data, m, &p, &mut par_pts, Some(&mut par_ix));
+            kernels::unproject_sequential(&data, m, &p, &mut seq_pts, Some(&mut seq_ix));
+            assert!(!seq_pts.is_empty() && seq_pts.len() < w * h);
+            assert_eq!(par_pts, seq_pts, "scale {scale}, mask {}", m.is_some());
+            assert_eq!(par_ix, seq_ix, "scale {scale}, mask {}", m.is_some());
+        }
+    }
+    Ok(())
+}
+
+/// Wherever `nonzero_is_valid` holds, `!= 0` equals the metres test for
+/// every u16 sample, down to the smallest subnormal scale and up to the
+/// scale `f32::MAX / 65536` (`65535 * scale` still finite).
+#[test]
+fn u16_nonzero_shortcut_is_exact() {
+    // A power-of-two divisor is exact, so `65535 * largest < f32::MAX`.
+    let largest = f32::MAX / 65536.0;
+    let scales = [
+        f32::from_bits(1),
+        f32::MIN_POSITIVE,
+        MM,
+        1.0,
+        largest,
+        largest * 1.0001,
+        f32::MAX,
+    ];
+    for s in scales {
+        if !u16::nonzero_is_valid(s) {
+            assert!((f32::from(u16::MAX) * s).is_infinite(), "{s}");
+            continue;
+        }
+        for v in 0..=u16::MAX {
+            assert_eq!(
+                v.is_nonzero(),
+                kernels::is_valid_metres(v.metres(s)),
+                "v {v}, scale {s}"
+            );
+        }
+    }
+    assert!(u16::nonzero_is_valid(largest) && !u16::nonzero_is_valid(f32::MAX));
+    assert!(!f32::nonzero_is_valid(1.0));
+}
+
 #[test]
 fn unproject_into_reuses_buffers() -> TestResult {
     let (w, h) = (50, 40);

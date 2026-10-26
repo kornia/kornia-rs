@@ -225,29 +225,34 @@ pub(crate) fn check_pixel_index(width: usize, height: usize) -> Result<(), Depth
 
 // ── Unprojection ───────────────────────────────────────────────────────────
 
-/// Number of kept pixels in `depth` (mask non-zero and valid metres).
-fn count_kept<T: DepthSample>(depth: &[T], mask: Option<&[u8]>, scale: f32) -> usize {
+/// Number of kept pixels in `depth` (mask non-zero and `valid`).
+#[inline(always)]
+fn count_kept<T: DepthSample>(
+    depth: &[T],
+    mask: Option<&[u8]>,
+    valid: impl Fn(T) -> bool,
+) -> usize {
     match mask {
-        None => depth
-            .iter()
-            .filter(|&&d| is_valid_metres(d.metres(scale)))
-            .count(),
+        // A sum of 0/1 (not `filter().count()`) so the loop vectorises.
+        None => depth.iter().map(|&d| usize::from(valid(d))).sum(),
         Some(m) => depth
             .iter()
             .zip(m)
-            .filter(|&(&d, &k)| k != 0 && is_valid_metres(d.metres(scale)))
-            .count(),
+            .map(|(&d, &k)| usize::from((k != 0) & valid(d)))
+            .sum(),
     }
 }
 
 /// Writes the kept pixels of whole rows `y0..` into `points` (and their
 /// linear pixel index into `index`), in row-major order. Returns the number
 /// written, or `None` if the slots ran out (never for a matching count).
+#[inline(always)]
 fn write_rows<T: DepthSample>(
     depth: &[T],
     mask: Option<&[u8]>,
     y0: usize,
     p: &UnprojectParams,
+    valid: impl Fn(T) -> bool,
     points: &mut [MaybeUninit<[f64; 3]>],
     mut index: Option<&mut [MaybeUninit<u32>]>,
 ) -> Option<usize> {
@@ -258,13 +263,10 @@ fn write_rows<T: DepthSample>(
         let yn = (y as f32 - p.cy) * p.inv_fy;
         let mrow = mask.map(|m| &m[r * w..(r + 1) * w]);
         for (x, &d) in row.iter().enumerate() {
-            if mrow.is_some_and(|m| m[x] == 0) {
+            if mrow.is_some_and(|m| m[x] == 0) || !valid(d) {
                 continue;
             }
             let z = d.metres(p.scale);
-            if !is_valid_metres(z) {
-                continue;
-            }
             let xn = (x as f32 - p.cx) * p.inv_fx;
             *points.get_mut(k)? =
                 MaybeUninit::new([f64::from(xn * z), f64::from(yn * z), f64::from(z)]);
@@ -277,7 +279,43 @@ fn write_rows<T: DepthSample>(
     Some(k)
 }
 
-/// Sequential fallback with the same output as the parallel path.
+/// Count and write passes of one band with the validity test `valid`.
+#[inline(always)]
+fn band_pass<T: DepthSample>(
+    depth: &[T],
+    mask: Option<&[u8]>,
+    y0: usize,
+    p: &UnprojectParams,
+    out: BandOut<'_>,
+) -> Option<usize> {
+    if T::nonzero_is_valid(p.scale) {
+        let valid = |d: T| d.is_nonzero();
+        match out {
+            BandOut::Count => Some(count_kept(depth, mask, valid)),
+            BandOut::Write(pts, idx) => write_rows(depth, mask, y0, p, valid, pts, idx),
+        }
+    } else {
+        let valid = |d: T| is_valid_metres(d.metres(p.scale));
+        match out {
+            BandOut::Count => Some(count_kept(depth, mask, valid)),
+            BandOut::Write(pts, idx) => write_rows(depth, mask, y0, p, valid, pts, idx),
+        }
+    }
+}
+
+/// What [`band_pass`] does with a band: count its kept pixels, or write
+/// them into the band's output slots.
+enum BandOut<'a> {
+    Count,
+    Write(
+        &'a mut [MaybeUninit<[f64; 3]>],
+        Option<&'a mut [MaybeUninit<u32>]>,
+    ),
+}
+
+/// Sequential fallback with the same output as the parallel path. It always
+/// applies the metres test, so tests also use it as the oracle for the
+/// `nonzero_is_valid` shortcut of the parallel path.
 pub(crate) fn unproject_sequential<T: DepthSample>(
     depth: &[T],
     mask: Option<&[u8]>,
@@ -363,7 +401,8 @@ pub(crate) fn unproject_into<T: DepthSample>(
         .enumerate()
         .for_each(|(i, c)| {
             let r = band_range(i);
-            *c = count_kept(&depth[r.clone()], mask.map(|m| &m[r]), p.scale);
+            *c = band_pass(&depth[r.clone()], mask.map(|m| &m[r]), 0, p, BandOut::Count)
+                .unwrap_or(0);
         });
     let counts = &counts[..n_tasks];
     let total: usize = counts.iter().sum();
@@ -386,13 +425,12 @@ pub(crate) fn unproject_into<T: DepthSample>(
                 let r = band_range(i);
                 let want = pts.len();
                 let idx = if with_index { Some(&mut **idx) } else { None };
-                write_rows(
+                band_pass(
                     &depth[r.clone()],
                     mask.map(|m| &m[r]),
                     i * rows_per_task,
                     p,
-                    pts,
-                    idx,
+                    BandOut::Write(pts, idx),
                 ) == Some(want)
             })
     };
