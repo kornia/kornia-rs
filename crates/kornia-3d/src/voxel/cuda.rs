@@ -5,13 +5,23 @@
 //! The pipeline is sort-by-key, mirroring the host:
 //!
 //! 1. one thread per point writes the 128-bit sort word `(x ^ 2³¹,
-//!    y ^ 2³¹, z ^ 2³¹, index)` as a `uint4`, padding to a power of two
-//!    with all-ones words that sort last;
-//! 2. a bitonic sort of the words: each 2048-word tile is sorted in shared
-//!    memory, then the merge stages wider than a tile run as global
-//!    compare-exchange passes and the narrower ones in shared memory again
-//!    (`1 + Σ (log₂ k − 10)` launches for `k = 4096 … len`). The order is
-//!    a total order on unique words, so the result equals the host sort;
+//!    y ^ 2³¹, z ^ 2³¹, index)` as a `uint4`, and the per-component key
+//!    range is folded on the device.
+//!
+//!    The key is exactly the host's `floor(fl((v - o) / s))`. FP64 runs at
+//!    a small fraction of the FP32 rate on most GPUs, so an `f32` estimate
+//!    `q = (fl32(v) − fl32(o)) · fl32(1 / s)` decides first: its error is
+//!    below `2⁻²² ((|v| + |o|) / s + |q| + 1)`, so a `q` farther than
+//!    `2⁻²⁰ (…)` from every integer has the same floor. The other points
+//!    (near a boundary, huge keys, non-finite input) take the host
+//!    expression in `f64`;
+//! 2. a stable least-significant-digit radix sort of the words on the
+//!    96-bit key, 8-bit digits, three launches per digit (tile histograms,
+//!    one-block scan, stable tile scatter). A digit that the key range
+//!    shows to be constant is skipped on the device, so a cloud spanning
+//!    under 256 voxels per axis costs three passes, with no host sync. The
+//!    words start in index order and every pass is stable, so the result
+//!    is sorted by `(key, index)`: the host sort;
 //! 3. run heads (key differs from the previous word) are scanned per
 //!    1024-word tile, the tile totals by one block, and each head writes
 //!    its run start (and, for the neighbour count, its key);
@@ -37,13 +47,22 @@ use crate::pointcloud::PointCloud;
 #[cfg(doc)]
 use super::VoxelDownsampler;
 
-/// Largest cloud of the device path: the padded sort length must fit `u32`.
+/// Largest cloud of the device path: point indices, radix offsets and
+/// launch sizes are `u32`.
 pub const MAX_CUDA_VOXEL_POINTS: usize = 1 << 31;
 
-/// Words per shared-memory sort tile (`SORT_TILE` in KERNELS).
-const SORT_TILE: usize = 2048;
-/// Threads of a sort tile block (`SORT_THREADS` in KERNELS).
-const SORT_THREADS: u32 = 1024;
+/// Words per radix tile (`RADIX_TILE` in KERNELS).
+const RADIX_TILE: usize = 2048;
+/// Threads of a radix tile block, one per digit value (`RADIX_THREADS`).
+const RADIX_THREADS: u32 = 256;
+/// Digit values (`RADIX_BINS` in KERNELS).
+const RADIX_BINS: usize = 256;
+/// 8-bit digits of the 96-bit key (`RADIX_DIGITS` in KERNELS).
+const RADIX_DIGITS: u32 = 12;
+/// Threads of the one-block scans.
+const SCAN_THREADS: u32 = 1024;
+/// `u32` words of the folded key range: `!min` then `max` per axis.
+const RANGE_WORDS: usize = 6;
 /// Words per run-head scan tile, one per thread (`SCAN_TILE` in KERNELS).
 const SCAN_TILE: usize = 1024;
 
@@ -62,40 +81,76 @@ struct LayoutParams {
     ox: f64,
     oy: f64,
     oz: f64,
+    inv: f64,
+    /// `f32` origin and reciprocal of the key screen in `axis_key`;
+    /// `finv == 0` disables it.
+    fx: f32,
+    fy: f32,
+    fz: f32,
+    finv: f32,
 }
 
-// SAFETY: plain-old-data, repr(C), four f64 fields (no padding); mirrored
+// SAFETY: plain-old-data, repr(C), five f64 then four f32 fields (56
+// bytes, no padding); mirrored
 // field-for-field by `struct Lay` in KERNELS.
 unsafe impl DeviceRepr for LayoutParams {}
 
 impl From<&VoxelLayout> for LayoutParams {
     fn from(l: &VoxelLayout) -> Self {
         let o = l.origin();
+        let r32 = (1.0 / l.voxel_size()) as f32;
         Self {
             size: l.voxel_size(),
             ox: o[0],
             oy: o[1],
             oz: o[2],
+            inv: l.inv_size(),
+            fx: o[0] as f32,
+            fy: o[1] as f32,
+            fz: o[2] as f32,
+            finv: if r32.is_normal() { r32 } else { 0.0 },
         }
     }
 }
 
 const KERNELS: &str = r#"
-#define SORT_TILE 2048
-#define SORT_THREADS 1024
+#define KEY_SCREEN_EPS 4.0
+#define DBL_EPS 2.220446049250313e-16
+#define KEY_SCREEN_F32 9.5367431640625e-07f
+#define RADIX_BINS 256
+#define RADIX_THREADS 256
+#define RADIX_WARPS 8
+#define RADIX_ITEMS 8
+#define RADIX_TILE 2048
+#define RADIX_DIGITS 12
 #define SCAN_TILE 1024
 #define FULL 0xffffffffu
 #define BIAS 0x80000000u
 #define MODE_CENTROID 0
 #define MODE_NEAREST 2
 
-struct Lay { double size, ox, oy, oz; };
+struct Lay { double size, ox, oy, oz, inv; float fx, fy, fz, finv; };
 
 /* ---- mirrors of voxel/mod.rs and voxel/downsample.rs; keep the expression trees identical ---- */
 
 /* axis_key */
-__device__ __forceinline__ bool axis_key(double v, double o, double s, int* k) {
-    double f = floor((v - o) / s);
+__device__ __forceinline__ bool axis_key(double v, double o, double s, double r, float o32,
+                                         float r32, int* k) {
+    /* f32 screen (FP64 is the bottleneck of this kernel); see the module
+       doc for its error bound. */
+    float v32 = __double2float_rn(v);
+    float q = (v32 - o32) * r32;
+    float fq = floorf(q);
+    float tol32 = KEY_SCREEN_F32 * ((fabsf(v32) + fabsf(o32)) * r32 + fabsf(q) + 1.0f);
+    if (q - fq > tol32 && fq + 1.0f - q > tol32) {
+        *k = (int)fq;
+        return true;
+    }
+    double a = v - o;
+    double qa = a * r;
+    double fa = floor(qa);
+    double tol = KEY_SCREEN_EPS * DBL_EPS * fmax(fabs(qa), 1.0);
+    double f = (qa - fa > tol && fa + 1.0 - qa > tol) ? fa : floor(a / s);
     if (!(f >= -2147483648.0 && f <= 2147483647.0)) return false;
     *k = (int)f;
     return true;
@@ -110,104 +165,9 @@ __device__ __forceinline__ double dist2(const double* p, double cx, double cy, d
     return dx * dx + dy * dy + dz * dz;
 }
 
-__device__ __forceinline__ bool word_gt(uint4 a, uint4 b) {
-    if (a.x != b.x) return a.x > b.x;
-    if (a.y != b.y) return a.y > b.y;
-    if (a.z != b.z) return a.z > b.z;
-    return a.w > b.w;
-}
 __device__ __forceinline__ bool key_ne(uint4 a, uint4 b) {
     return a.x != b.x || a.y != b.y || a.z != b.z;
 }
-
-/* ---- 1. sort words ---- */
-
-extern "C" __global__ void voxel_keys(const double* __restrict__ xyz, unsigned int n,
-                                      unsigned int len, Lay L, uint4* __restrict__ words,
-                                      unsigned int* __restrict__ err) {
-    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= len) return;
-    uint4 w = make_uint4(FULL, FULL, FULL, FULL);
-    if (i < n) {
-        const double* p = xyz + 3 * (size_t)i;
-        int kx, ky, kz;
-        if (axis_key(p[0], L.ox, L.size, &kx) && axis_key(p[1], L.oy, L.size, &ky) &&
-            axis_key(p[2], L.oz, L.size, &kz)) {
-            w = make_uint4((unsigned int)kx ^ BIAS, (unsigned int)ky ^ BIAS,
-                           (unsigned int)kz ^ BIAS, i);
-        } else {
-            w.w = i;
-            atomicMax(err, FULL - i);
-        }
-    }
-    words[i] = w;
-}
-
-/* ---- 2. bitonic sort ---- */
-
-/* Lower element of compare-exchange pair `t` at distance `j`. */
-__device__ __forceinline__ unsigned int pair_lo(unsigned int t, unsigned int j) {
-    return 2u * j * (t / j) + (t % j);
-}
-
-__device__ __forceinline__ void tile_load(const uint4* words, unsigned int base, uint4* s) {
-    s[threadIdx.x] = words[base + threadIdx.x];
-    s[threadIdx.x + SORT_THREADS] = words[base + threadIdx.x + SORT_THREADS];
-}
-__device__ __forceinline__ void tile_store(uint4* words, unsigned int base, const uint4* s) {
-    words[base + threadIdx.x] = s[threadIdx.x];
-    words[base + threadIdx.x + SORT_THREADS] = s[threadIdx.x + SORT_THREADS];
-}
-/* Merge stages j = j0 .. 1 of stage k, in shared memory. */
-__device__ __forceinline__ void tile_merge(uint4* s, unsigned int base, unsigned int k,
-                                           unsigned int j0) {
-    for (unsigned int j = j0; j > 0; j >>= 1) {
-        unsigned int i = pair_lo(threadIdx.x, j);
-        bool asc = ((base + i) & k) == 0;
-        uint4 a = s[i], b = s[i + j];
-        if (word_gt(a, b) == asc) {
-            s[i] = b;
-            s[i + j] = a;
-        }
-        __syncthreads();
-    }
-}
-
-/* Every stage k <= SORT_TILE: tiles end sorted, alternating direction. */
-extern "C" __global__ void sort_tile(uint4* __restrict__ words) {
-    __shared__ uint4 s[SORT_TILE];
-    unsigned int base = blockIdx.x * SORT_TILE;
-    tile_load(words, base, s);
-    __syncthreads();
-    for (unsigned int k = 2; k <= SORT_TILE; k <<= 1) tile_merge(s, base, k, k >> 1);
-    tile_store(words, base, s);
-}
-
-/* One global merge pass (j >= SORT_TILE) of stage k. */
-extern "C" __global__ void sort_step(uint4* __restrict__ words, unsigned int j, unsigned int k,
-                                     unsigned int pairs) {
-    unsigned int t = blockIdx.x * blockDim.x + threadIdx.x;
-    if (t >= pairs) return;
-    unsigned int i = pair_lo(t, j);
-    bool asc = (i & k) == 0;
-    uint4 a = words[i], b = words[i + j];
-    if (word_gt(a, b) == asc) {
-        words[i] = b;
-        words[i + j] = a;
-    }
-}
-
-/* The merge passes j < SORT_TILE of stage k. */
-extern "C" __global__ void sort_merge_tile(uint4* __restrict__ words, unsigned int k) {
-    __shared__ uint4 s[SORT_TILE];
-    unsigned int base = blockIdx.x * SORT_TILE;
-    tile_load(words, base, s);
-    __syncthreads();
-    tile_merge(s, base, k, SORT_TILE >> 1);
-    tile_store(words, base, s);
-}
-
-/* ---- 3. runs ---- */
 
 /* Exclusive scan of one value per thread over a 1024-thread block; `*sum`
    gets the block total. Every thread must call it. */
@@ -235,14 +195,175 @@ __device__ __forceinline__ unsigned int block_scan(unsigned int v, unsigned int*
     return warp_sum[warp] + incl - v;
 }
 
+/* ---- 1. sort words ---- */
+
+/* Block-wide max of one value per thread (blockDim.x == 256); the result is
+   valid in thread 0. Every thread must call it. */
+__device__ __forceinline__ unsigned int block_max256(unsigned int v, unsigned int* red) {
+    for (unsigned int off = 16; off > 0; off >>= 1) v = max(v, __shfl_xor_sync(FULL, v, off));
+    unsigned int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
+    __syncthreads();
+    if (lane == 0) red[warp] = v;
+    __syncthreads();
+    if (warp == 0) {
+        v = lane < 8 ? red[lane] : 0u;
+        for (unsigned int off = 4; off > 0; off >>= 1) v = max(v, __shfl_xor_sync(FULL, v, off));
+    }
+    return v;
+}
+
+/* One thread per point (256-thread blocks). Also folds the per-component
+   key range into `range` = (~min x, ~min y, ~min z, max x, max y, max z),
+   zero-initialised, so that the radix passes over constant digits are
+   skipped. */
+extern "C" __global__ void voxel_keys(const double* __restrict__ xyz, unsigned int n, Lay L,
+                                      uint4* __restrict__ words,
+                                      unsigned int* __restrict__ range,
+                                      unsigned int* __restrict__ err) {
+    __shared__ unsigned int red[8];
+    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+    uint4 w = make_uint4(FULL, FULL, FULL, FULL);
+    if (i < n) {
+        const double* p = xyz + 3 * (size_t)i;
+        int kx, ky, kz;
+        if (axis_key(p[0], L.ox, L.size, L.inv, L.fx, L.finv, &kx) &&
+            axis_key(p[1], L.oy, L.size, L.inv, L.fy, L.finv, &ky) &&
+            axis_key(p[2], L.oz, L.size, L.inv, L.fz, L.finv, &kz)) {
+            w = make_uint4((unsigned int)kx ^ BIAS, (unsigned int)ky ^ BIAS,
+                           (unsigned int)kz ^ BIAS, i);
+        } else {
+            w.w = i;
+            atomicMax(err, FULL - i);
+        }
+        words[i] = w;
+    }
+    bool live = i < n;
+    unsigned int v[6] = {live ? ~w.x : 0u, live ? ~w.y : 0u, live ? ~w.z : 0u,
+                         live ? w.x : 0u,  live ? w.y : 0u,  live ? w.z : 0u};
+    for (int c = 0; c < 6; ++c) {
+        unsigned int m = block_max256(v[c], red);
+        if (threadIdx.x == 0 && m != 0u) atomicMax(range + c, m);
+    }
+}
+
+/* ---- 2. stable LSD radix sort, 8-bit digits ---- */
+
+/* Digit `d` (0 = least significant) of a word's 96-bit key: z, then y, x. */
+__device__ __forceinline__ unsigned int word_digit(uint4 w, unsigned int d) {
+    unsigned int c = d < 4 ? w.z : (d < 8 ? w.y : w.x);
+    return (c >> (8u * (d & 3u))) & 0xffu;
+}
+/* Whether digit `d` varies over the keys: else its pass is the identity. */
+__device__ __forceinline__ bool digit_active(const unsigned int* range, unsigned int d) {
+    unsigned int c = d < 4 ? 2u : (d < 8 ? 1u : 0u);
+    unsigned int s = 8u * (d & 3u);
+    return ((~range[c]) >> s) != (range[3 + c] >> s);
+}
+/* Active passes before pass `d`: their parity says which buffer is the
+   source of pass `d` (and, for d == RADIX_DIGITS, holds the sorted words). */
+__device__ __forceinline__ unsigned int passes_before(const unsigned int* range, unsigned int d) {
+    unsigned int k = 0;
+    for (unsigned int e = 0; e < d; ++e) k += digit_active(range, e) ? 1u : 0u;
+    return k;
+}
+/* The buffer holding the sorted words. */
+__device__ __forceinline__ const uint4* sorted_words(const uint4* a, const uint4* b,
+                                                     const unsigned int* range) {
+    return (passes_before(range, RADIX_DIGITS) & 1u) ? b : a;
+}
+
+/* Per tile of RADIX_TILE words, the digit histogram, digit-major:
+   hist[digit * tiles + tile]. */
+extern "C" __global__ void radix_hist(const uint4* __restrict__ a, const uint4* __restrict__ b,
+                                      unsigned int n, const unsigned int* __restrict__ range,
+                                      unsigned int d, unsigned int* __restrict__ hist) {
+    if (!digit_active(range, d)) return;
+    __shared__ unsigned int h[RADIX_BINS];
+    const uint4* src = (passes_before(range, d) & 1u) ? b : a;
+    h[threadIdx.x] = 0u;
+    __syncthreads();
+    unsigned int base = blockIdx.x * RADIX_TILE;
+    for (unsigned int j = 0; j < RADIX_ITEMS; ++j) {
+        unsigned int i = base + j * RADIX_THREADS + threadIdx.x;
+        if (i < n) atomicAdd(&h[word_digit(src[i], d)], 1u);
+    }
+    __syncthreads();
+    hist[threadIdx.x * gridDim.x + blockIdx.x] = h[threadIdx.x];
+}
+
+/* One block: exclusive scan of the `len` histogram entries in place, each
+   thread a contiguous chunk. */
+extern "C" __global__ void radix_scan(unsigned int* __restrict__ hist, unsigned int len,
+                                      const unsigned int* __restrict__ range, unsigned int d) {
+    if (!digit_active(range, d)) return;
+    __shared__ unsigned int total;
+    unsigned int chunk = (len + blockDim.x - 1) / blockDim.x;
+    unsigned int b0 = min(len, threadIdx.x * chunk);
+    unsigned int b1 = min(len, b0 + chunk);
+    unsigned int v = 0;
+    for (unsigned int e = b0; e < b1; ++e) v += hist[e];
+    unsigned int acc = block_scan(v, &total);
+    for (unsigned int e = b0; e < b1; ++e) {
+        unsigned int c = hist[e];
+        hist[e] = acc;
+        acc += c;
+    }
+}
+
+/* Stable scatter of one tile: the tile is walked in RADIX_ITEMS chunks of
+   RADIX_THREADS consecutive words; within a chunk a word's rank among equal
+   digits is its rank in its warp (__match_any_sync) plus the counts of the
+   lower warps and of the earlier chunks. */
+extern "C" __global__ void radix_scatter(uint4* __restrict__ a, uint4* __restrict__ b,
+                                         unsigned int n, const unsigned int* __restrict__ range,
+                                         unsigned int d, const unsigned int* __restrict__ hist) {
+    if (!digit_active(range, d)) return;
+    __shared__ unsigned int base_of[RADIX_BINS];
+    __shared__ unsigned int warp_off[RADIX_WARPS][RADIX_BINS];
+    bool odd = passes_before(range, d) & 1u;
+    const uint4* src = odd ? b : a;
+    uint4* dst = odd ? a : b;
+    unsigned int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
+    unsigned int lt = (1u << lane) - 1u;
+    base_of[threadIdx.x] = hist[threadIdx.x * gridDim.x + blockIdx.x];
+    unsigned int tile = blockIdx.x * RADIX_TILE;
+    for (unsigned int j = 0; j < RADIX_ITEMS; ++j) {
+        for (unsigned int w = 0; w < RADIX_WARPS; ++w) warp_off[w][threadIdx.x] = 0u;
+        __syncthreads();
+        unsigned int i = tile + j * RADIX_THREADS + threadIdx.x;
+        bool live = i < n;
+        uint4 word = live ? src[i] : make_uint4(0u, 0u, 0u, 0u);
+        unsigned int dig = live ? word_digit(word, d) : RADIX_BINS;
+        unsigned int peers = __match_any_sync(FULL, dig);
+        unsigned int rank = __popc(peers & lt);
+        if (live && rank == 0u) warp_off[warp][dig] = __popc(peers);
+        __syncthreads();
+        /* thread t scans digit t over the warps */
+        unsigned int run = base_of[threadIdx.x];
+        for (unsigned int w = 0; w < RADIX_WARPS; ++w) {
+            unsigned int c = warp_off[w][threadIdx.x];
+            warp_off[w][threadIdx.x] = run;
+            run += c;
+        }
+        base_of[threadIdx.x] = run;
+        __syncthreads();
+        if (live) dst[warp_off[warp][dig] + rank] = word;
+        __syncthreads();
+    }
+}
+
+/* ---- 3. runs ---- */
+
 __device__ __forceinline__ unsigned int run_head(const uint4* words, unsigned int i) {
     return (i == 0 || key_ne(words[i], words[i - 1])) ? 1u : 0u;
 }
 
-extern "C" __global__ void run_tile_scan(const uint4* __restrict__ words, unsigned int n,
+extern "C" __global__ void run_tile_scan(const uint4* __restrict__ wa, const uint4* __restrict__ wb,
+                                         const unsigned int* __restrict__ range, unsigned int n,
                                          unsigned int* __restrict__ excl,
                                          unsigned int* __restrict__ tile_sum) {
     __shared__ unsigned int total;
+    const uint4* words = sorted_words(wa, wb, range);
     unsigned int i = blockIdx.x * SCAN_TILE + threadIdx.x;
     unsigned int v = i < n ? run_head(words, i) : 0u;
     unsigned int ex = block_scan(v, &total);
@@ -270,7 +391,8 @@ extern "C" __global__ void run_scan_tiles(const unsigned int* __restrict__ tile_
     if (threadIdx.x == 0) *voxels = total;
 }
 
-extern "C" __global__ void run_finalize(const uint4* __restrict__ words, unsigned int n,
+extern "C" __global__ void run_finalize(const uint4* __restrict__ wa, const uint4* __restrict__ wb,
+                                        const unsigned int* __restrict__ range, unsigned int n,
                                         const unsigned int* __restrict__ excl,
                                         const unsigned int* __restrict__ tile_off,
                                         unsigned int* __restrict__ run_start,
@@ -278,6 +400,7 @@ extern "C" __global__ void run_finalize(const uint4* __restrict__ words, unsigne
                                         uint4* __restrict__ unique) {
     unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
+    const uint4* words = sorted_words(wa, wb, range);
     unsigned int h = run_head(words, i);
     /* word 0 is always a head, so the inclusive count is >= 1 */
     unsigned int r = tile_off[i / SCAN_TILE] + excl[i] + h - 1u;
@@ -292,7 +415,8 @@ extern "C" __global__ void run_finalize(const uint4* __restrict__ words, unsigne
 
 /* VoxelDownsampler::reduce */
 extern "C" __global__ void voxel_reduce(const double* __restrict__ xyz,
-                                        const uint4* __restrict__ words, unsigned int n,
+                                        const uint4* __restrict__ wa, const uint4* __restrict__ wb,
+                                        const unsigned int* __restrict__ range, unsigned int n,
                                         const unsigned int* __restrict__ run_start,
                                         const unsigned int* __restrict__ voxels, Lay L, int mode,
                                         double* __restrict__ out_xyz,
@@ -302,6 +426,7 @@ extern "C" __global__ void voxel_reduce(const double* __restrict__ xyz,
     unsigned int m = *voxels;
     if (v == 0) *out_count = m;
     if (v >= m) return;
+    const uint4* words = sorted_words(wa, wb, range);
     unsigned int b = run_start[v];
     unsigned int e = v + 1 < m ? run_start[v + 1] : n;
     uint4 f = words[b];
@@ -387,23 +512,25 @@ extern "C" __global__ void voxel_count(const uint4* __restrict__ unique,
     vcount[v] = (unsigned char)count;
 }
 
-extern "C" __global__ void scatter_counts(const uint4* __restrict__ words,
+extern "C" __global__ void scatter_counts(const uint4* __restrict__ wa,
+                                          const uint4* __restrict__ wb,
+                                          const unsigned int* __restrict__ range,
                                           const unsigned int* __restrict__ run_of,
                                           unsigned int n,
                                           const unsigned char* __restrict__ vcount,
                                           unsigned char* __restrict__ counts) {
     unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
-    counts[words[i].w] = vcount[run_of[i]];
+    counts[sorted_words(wa, wb, range)[i].w] = vcount[run_of[i]];
 }
 "#;
 
 /// Kernel names, in the order [`CudaVoxelFilter::new`] unpacks them.
 const NAMES: [&str; 10] = [
     "voxel_keys",
-    "sort_tile",
-    "sort_step",
-    "sort_merge_tile",
+    "radix_hist",
+    "radix_scan",
+    "radix_scatter",
     "run_tile_scan",
     "run_scan_tiles",
     "run_finalize",
@@ -629,17 +756,23 @@ impl CudaNeighbourCounts {
 pub struct CudaVoxelFilter {
     stream: Arc<CudaStream>,
     k_keys: CudaKernel,
-    k_sort_tile: CudaKernel,
-    k_sort_step: CudaKernel,
-    k_sort_merge: CudaKernel,
+    k_radix_hist: CudaKernel,
+    k_radix_scan: CudaKernel,
+    k_radix_scatter: CudaKernel,
     k_tile_scan: CudaKernel,
     k_scan_tiles: CudaKernel,
     k_finalize: CudaKernel,
     k_reduce: CudaKernel,
     k_count: CudaKernel,
     k_scatter: CudaKernel,
-    /// Sort words, 4 `u32` (one `uint4`) each.
+    /// Sort words, 4 `u32` (one `uint4`) each, and the radix ping-pong
+    /// buffer; the device picks which one ends sorted.
     words: CudaSlice<u32>,
+    words_alt: CudaSlice<u32>,
+    /// Folded key range (`voxel_keys`).
+    range: CudaSlice<u32>,
+    /// Radix tile histograms, digit-major.
+    hist: CudaSlice<u32>,
     excl: CudaSlice<u32>,
     tile_sum: CudaSlice<u32>,
     tile_off: CudaSlice<u32>,
@@ -696,9 +829,9 @@ impl CudaVoxelFilter {
                 .ok_or_else(|| cuda_err("compile_many returned fewer kernels than requested"))
         };
         let k_keys = next()?;
-        let k_sort_tile = next()?;
-        let k_sort_step = next()?;
-        let k_sort_merge = next()?;
+        let k_radix_hist = next()?;
+        let k_radix_scan = next()?;
+        let k_radix_scatter = next()?;
         let k_tile_scan = next()?;
         let k_scan_tiles = next()?;
         let k_finalize = next()?;
@@ -708,6 +841,9 @@ impl CudaVoxelFilter {
         let one = |s: &Arc<CudaStream>| s.alloc_zeros::<u32>(1).map_err(cuda_err);
         let filter = Self {
             words: one(stream)?,
+            words_alt: one(stream)?,
+            range: one(stream)?,
+            hist: one(stream)?,
             excl: one(stream)?,
             tile_sum: one(stream)?,
             tile_off: one(stream)?,
@@ -718,9 +854,9 @@ impl CudaVoxelFilter {
             vcount: stream.alloc_zeros::<u8>(1).map_err(cuda_err)?,
             stream: stream.clone(),
             k_keys,
-            k_sort_tile,
-            k_sort_step,
-            k_sort_merge,
+            k_radix_hist,
+            k_radix_scan,
+            k_radix_scatter,
             k_tile_scan,
             k_scan_tiles,
             k_finalize,
@@ -845,9 +981,13 @@ impl CudaVoxelFilter {
         for_counts: bool,
     ) -> Result<(), VoxelError> {
         let st = self.stream.clone();
-        let len = n.next_power_of_two().max(SORT_TILE);
+        let radix_tiles = n.div_ceil(RADIX_TILE);
+        let hist_len = RADIX_BINS * radix_tiles;
         let tiles = n.div_ceil(SCAN_TILE);
-        ensure_len(&st, &mut self.words, 4 * len)?;
+        ensure_len(&st, &mut self.words, 4 * n)?;
+        ensure_len(&st, &mut self.words_alt, 4 * n)?;
+        ensure_len(&st, &mut self.range, RANGE_WORDS)?;
+        ensure_len(&st, &mut self.hist, hist_len)?;
         ensure_len(&st, &mut self.excl, n)?;
         ensure_len(&st, &mut self.tile_sum, tiles)?;
         ensure_len(&st, &mut self.tile_off, tiles)?;
@@ -856,62 +996,72 @@ impl CudaVoxelFilter {
             ensure_len(&st, &mut self.run_of, n)?;
             ensure_len(&st, &mut self.unique, 4 * n)?;
         }
-        // `len <= MAX_CUDA_VOXEL_POINTS = 2³¹` and `n <= len`, so every
-        // count below fits `u32`.
-        let (n32, len32, tiles32) = (n as u32, len as u32, tiles as u32);
+        // `n <= MAX_CUDA_VOXEL_POINTS = 2³¹`, so every count below fits
+        // `u32`.
+        let (n32, tiles32) = (n as u32, tiles as u32);
+        let (radix_tiles32, hist_len32) = (radix_tiles as u32, hist_len as u32);
         let null = 0u64;
 
         st.memset_zeros(&mut *err).map_err(cuda_err)?;
+        st.memset_zeros(&mut self.range.slice_mut(0..RANGE_WORDS))
+            .map_err(cuda_err)?;
         self.k_keys
             .launch_builder(&st)
             .arg(points)
             .arg(&n32)
-            .arg(&len32)
             .arg(layout)
             .arg(&mut self.words)
+            .arg(&mut self.range)
             .arg(&mut *err)
-            .launch_1d(len32)
+            .launch_1d(n32)
             .map_err(cuda_err)?;
 
         let tile_cfg = LaunchConfig {
-            grid_dim: ((len / SORT_TILE) as u32, 1, 1),
-            block_dim: (SORT_THREADS, 1, 1),
+            grid_dim: (radix_tiles32, 1, 1),
+            block_dim: (RADIX_THREADS, 1, 1),
             shared_mem_bytes: 0,
         };
-        self.k_sort_tile
-            .launch_builder(&st)
-            .arg(&mut self.words)
-            .launch_cfg(tile_cfg)
-            .map_err(cuda_err)?;
-        let pairs = len32 / 2;
-        let mut k = 2 * SORT_TILE;
-        while k <= len {
-            let k32 = k as u32;
-            let mut j = k / 2;
-            while j >= SORT_TILE {
-                let j32 = j as u32;
-                self.k_sort_step
-                    .launch_builder(&st)
-                    .arg(&mut self.words)
-                    .arg(&j32)
-                    .arg(&k32)
-                    .arg(&pairs)
-                    .launch_1d(pairs)
-                    .map_err(cuda_err)?;
-                j /= 2;
-            }
-            self.k_sort_merge
+        let scan_cfg = LaunchConfig {
+            grid_dim: (1, 1, 1),
+            block_dim: (SCAN_THREADS, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        for d in 0..RADIX_DIGITS {
+            self.k_radix_hist
                 .launch_builder(&st)
-                .arg(&mut self.words)
-                .arg(&k32)
+                .arg(&self.words)
+                .arg(&self.words_alt)
+                .arg(&n32)
+                .arg(&self.range)
+                .arg(&d)
+                .arg(&mut self.hist)
                 .launch_cfg(tile_cfg)
                 .map_err(cuda_err)?;
-            k *= 2;
+            self.k_radix_scan
+                .launch_builder(&st)
+                .arg(&mut self.hist)
+                .arg(&hist_len32)
+                .arg(&self.range)
+                .arg(&d)
+                .launch_cfg(scan_cfg)
+                .map_err(cuda_err)?;
+            self.k_radix_scatter
+                .launch_builder(&st)
+                .arg(&mut self.words)
+                .arg(&mut self.words_alt)
+                .arg(&n32)
+                .arg(&self.range)
+                .arg(&d)
+                .arg(&self.hist)
+                .launch_cfg(tile_cfg)
+                .map_err(cuda_err)?;
         }
 
         self.k_tile_scan
             .launch_builder(&st)
             .arg(&self.words)
+            .arg(&self.words_alt)
+            .arg(&self.range)
             .arg(&n32)
             .arg(&mut self.excl)
             .arg(&mut self.tile_sum)
@@ -937,6 +1087,8 @@ impl CudaVoxelFilter {
             .k_finalize
             .launch_builder(&st)
             .arg(&self.words)
+            .arg(&self.words_alt)
+            .arg(&self.range)
             .arg(&n32)
             .arg(&self.excl)
             .arg(&self.tile_off)
@@ -1003,6 +1155,8 @@ impl CudaVoxelFilter {
             .launch_builder(&st)
             .arg(points)
             .arg(&self.words)
+            .arg(&self.words_alt)
+            .arg(&self.range)
             .arg(&n32)
             .arg(&self.run_start)
             .arg(&self.voxels)
@@ -1069,6 +1223,8 @@ impl CudaVoxelFilter {
         self.k_scatter
             .launch_builder(&st)
             .arg(&self.words)
+            .arg(&self.words_alt)
+            .arg(&self.range)
             .arg(&self.run_of)
             .arg(&n32)
             .arg(&self.vcount)

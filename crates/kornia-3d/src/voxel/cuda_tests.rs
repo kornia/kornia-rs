@@ -110,6 +110,72 @@ fn downsample_matches_host_with_one_point_per_voxel_and_one_voxel() -> TestResul
     Ok(())
 }
 
+/// Clouds whose key range makes one, two or three radix digits vary, so
+/// the sorted words end in either ping-pong buffer.
+#[test]
+fn downsample_matches_host_for_each_radix_pass_parity() -> TestResult {
+    let mut filter = CudaVoxelFilter::new(&stream()?)?;
+    let layout = VoxelLayout::new(1.0, [0.0; 3])?;
+    let line = |n: usize, axis: usize, span: f64| -> Vec<[f64; 3]> {
+        random_points(n, 0.0, 1.0, 29 + axis as u64)
+            .into_iter()
+            .map(|mut p| {
+                p[axis] *= span;
+                p
+            })
+            .collect()
+    };
+    // z within 200 voxels: one varying digit (odd).
+    let z_only = line(9000, 2, 200.0);
+    // x across 300 voxels, past a digit boundary: two digits (even).
+    let x_only = line(9000, 0, 300.0);
+    // y within 100 voxels plus x across 300: three digits (odd).
+    let mut xy = line(9000, 0, 300.0);
+    for (p, q) in xy.iter_mut().zip(line(9000, 1, 100.0)) {
+        p[1] = q[1];
+    }
+    for p in [z_only, x_only, xy] {
+        assert_downsample_parity(&mut filter, &p, &layout)?;
+        assert_counts_parity(&mut filter, &p, &layout)?;
+    }
+    Ok(())
+}
+
+/// Points on voxel boundaries and one or two doubles either side, where
+/// the multiply-screened key falls back to the division.
+#[test]
+fn downsample_matches_host_on_voxel_boundaries() -> TestResult {
+    let mut filter = CudaVoxelFilter::new(&stream()?)?;
+    for (s, o) in [
+        (0.1, 0.0),
+        (1.0 / 3.0, -0.05),
+        (0.07, 1.25),
+        (1e-3, 1234.5678),
+        (1e-41, 0.0),
+        (1e39, -1e40),
+        (2.5e-8, -3e-7),
+    ] {
+        let layout = VoxelLayout::new(s, [o; 3])?;
+        let mut p = Vec::new();
+        for k in -40i32..40 {
+            let b = o + f64::from(k) * s;
+            let near = [
+                b.next_down().next_down(),
+                b.next_down(),
+                b,
+                b.next_up(),
+                b.next_up().next_up(),
+            ];
+            for (j, &x) in near.iter().enumerate() {
+                p.push([x, near[(j + 2) % 5], o + f64::from(k % 7) * s]);
+            }
+        }
+        assert_downsample_parity(&mut filter, &p, &layout)?;
+        assert_counts_parity(&mut filter, &p, &layout)?;
+    }
+    Ok(())
+}
+
 #[test]
 fn downsample_matches_host_near_the_key_limits() -> TestResult {
     let mut filter = CudaVoxelFilter::new(&stream()?)?;

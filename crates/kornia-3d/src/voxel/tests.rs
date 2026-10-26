@@ -82,6 +82,93 @@ fn keys_at_the_i32_limits() -> TestResult {
     Ok(())
 }
 
+/// The reference rule the screened `axis_key` must reproduce exactly.
+fn division_key(v: f64, o: f64, s: f64) -> Option<i32> {
+    let f = ((v - o) / s).floor();
+    (i32::MIN as f64..=i32::MAX as f64)
+        .contains(&f)
+        .then_some(f as i32)
+}
+
+/// Voxel boundaries `o + k · s` and their neighbouring doubles, where the
+/// multiply estimate and the division can disagree, for voxel sizes whose
+/// reciprocal is inexact, subnormal sizes (no reciprocal) and huge ones.
+#[test]
+fn screened_keys_equal_the_division_floor() -> TestResult {
+    let sizes = [
+        0.1,
+        0.3,
+        1.0 / 3.0,
+        0.05,
+        7.0,
+        1e-7,
+        1e-300,
+        5e-324,
+        1e300,
+        1.7e308,
+    ];
+    let origins = [0.0, -0.05, 1.234_567_890_123, -1e6];
+    let mut checked = 0usize;
+    for &s in &sizes {
+        for &o in &origins {
+            let l = VoxelLayout::new(s, [o; 3])?;
+            let r = l.inv_size();
+            let mut probe = |v: f64| {
+                assert_eq!(
+                    axis_key(v, o, s, r),
+                    division_key(v, o, s),
+                    "v={v:e} o={o:e} s={s:e}"
+                );
+                checked += 1;
+            };
+            for k in [
+                -2_000_000_000i64,
+                -1_000_003,
+                -10,
+                -1,
+                0,
+                1,
+                2,
+                9,
+                10,
+                77,
+                999_983,
+            ] {
+                let b = o + k as f64 * s;
+                let mut v = b;
+                for _ in 0..4 {
+                    v = v.next_down();
+                }
+                for _ in 0..9 {
+                    probe(v);
+                    v = v.next_up();
+                }
+            }
+            for v in [
+                0.0,
+                -0.0,
+                1e-310,
+                -1e-310,
+                f64::MIN_POSITIVE,
+                f64::NAN,
+                f64::INFINITY,
+            ] {
+                probe(v);
+            }
+        }
+    }
+    let pts = random_points(20_000, -50.0, 50.0, 41);
+    for &s in &[0.1, 0.07, 0.3] {
+        let l = VoxelLayout::new(s, [0.0; 3])?;
+        for p in pts.as_flattened() {
+            assert_eq!(axis_key(*p, 0.0, s, l.inv_size()), division_key(*p, 0.0, s));
+            checked += 1;
+        }
+    }
+    assert!(checked > 60_000);
+    Ok(())
+}
+
 #[test]
 fn connectivity_offsets() {
     assert_eq!(VoxelConnectivity::Six.offsets().len(), 6);

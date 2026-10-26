@@ -115,6 +115,9 @@ pub enum VoxelError {
 pub struct VoxelLayout {
     voxel_size: f64,
     origin: [f64; 3],
+    /// `1 / voxel_size` when it is a normal `f64`, else `0.0` (every key
+    /// then takes the division path of [`axis_key`]).
+    inv_size: f64,
 }
 
 impl VoxelLayout {
@@ -153,7 +156,13 @@ impl VoxelLayout {
         if origin.iter().any(|o| !o.is_finite()) {
             return Err(VoxelError::InvalidOrigin(origin));
         }
-        Ok(Self { voxel_size, origin })
+        let r = 1.0 / voxel_size;
+        let inv_size = if r.is_normal() { r } else { 0.0 };
+        Ok(Self {
+            voxel_size,
+            origin,
+            inv_size,
+        })
     }
 
     /// Voxel edge length.
@@ -187,9 +196,9 @@ impl VoxelLayout {
     #[inline]
     pub fn key_from_point(&self, point: &[f64; 3]) -> Option<VoxelKey> {
         Some([
-            axis_key(point[0], self.origin[0], self.voxel_size)?,
-            axis_key(point[1], self.origin[1], self.voxel_size)?,
-            axis_key(point[2], self.origin[2], self.voxel_size)?,
+            axis_key(point[0], self.origin[0], self.voxel_size, self.inv_size)?,
+            axis_key(point[1], self.origin[1], self.voxel_size, self.inv_size)?,
+            axis_key(point[2], self.origin[2], self.voxel_size, self.inv_size)?,
         ])
     }
 
@@ -210,13 +219,40 @@ impl VoxelLayout {
             axis_centre(key[2], self.origin[2], self.voxel_size),
         ]
     }
+
+    /// `1 / voxel_size`, or `0.0` when that is not a normal `f64`.
+    #[inline]
+    pub(crate) fn inv_size(&self) -> f64 {
+        self.inv_size
+    }
 }
 
+/// Distance to the nearest integer, in units of `f64::EPSILON ·
+/// max(|q|, 1)`, under which [`axis_key`] falls back to the division.
+const KEY_SCREEN_EPS: f64 = 4.0;
+
 /// `floor((v - o) / s)` as `i32`, range-checked in `f64` before the cast.
-/// Mirrored by `axis_key` in the CUDA source; keep the expressions identical.
+///
+/// The quotient is first estimated as `qa = (v - o) · r` with `r = fl(1 / s)`
+/// (a multiply, not a division). With `u = 2⁻⁵³`, `qa` is within `(2u + u²)
+/// |x|` of `x = (v - o) / s` and the correctly rounded `fl(x)` within `u |x|`,
+/// so when `qa` is more than `KEY_SCREEN_EPS · ε · max(|qa|, 1)` (`8u ·
+/// max(|qa|, 1)`) away from every integer, `floor(qa) == floor(fl(x))`.
+/// Otherwise (near a voxel boundary, `qa` subnormal or zero, `r == 0`, NaN
+/// or infinity) the division is evaluated. The key is therefore always
+/// exactly `floor(fl((v - o) / s))`. Mirrored by `axis_key` in the CUDA
+/// source (which screens with `f32` first); keep the expressions identical.
 #[inline]
-pub(crate) fn axis_key(v: f64, o: f64, s: f64) -> Option<i32> {
-    let f = ((v - o) / s).floor();
+pub(crate) fn axis_key(v: f64, o: f64, s: f64, r: f64) -> Option<i32> {
+    let a = v - o;
+    let qa = a * r;
+    let fa = qa.floor();
+    let tol = KEY_SCREEN_EPS * f64::EPSILON * qa.abs().max(1.0);
+    let f = if qa - fa > tol && fa + 1.0 - qa > tol {
+        fa
+    } else {
+        (a / s).floor()
+    };
     // NaN is in no range.
     if (i32::MIN as f64..=i32::MAX as f64).contains(&f) {
         Some(f as i32)

@@ -117,7 +117,7 @@ impl VoxelDownsampler {
         }
         self.words.clear();
         self.words.resize(n, 0);
-        let (s, o) = (layout.voxel_size(), layout.origin());
+        let (s, o, r) = (layout.voxel_size(), layout.origin(), layout.inv_size());
         self.words
             .par_iter_mut()
             .with_min_len(MIN_ITEMS_PER_TASK)
@@ -125,9 +125,9 @@ impl VoxelDownsampler {
             .enumerate()
             .for_each(|(i, (w, p))| {
                 *w = match (
-                    axis_key(p[0], o[0], s),
-                    axis_key(p[1], o[1], s),
-                    axis_key(p[2], o[2], s),
+                    axis_key(p[0], o[0], s, r),
+                    axis_key(p[1], o[1], s, r),
+                    axis_key(p[2], o[2], s, r),
                 ) {
                     (Some(x), Some(y), Some(z)) => word_from_key(&[x, y, z], i as u32),
                     _ => INVALID_WORD,
