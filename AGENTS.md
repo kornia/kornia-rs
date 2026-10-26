@@ -23,7 +23,7 @@ cited paths); it cannot check that a skill was applied — review does that.
 | `kornia-workflow` | before committing/PR; build, lint, test, PR rules |
 | `kornia-coding-style` | any Rust edit |
 | `kornia-api-flavor` | designing new public API |
-| `kornia-code-review` | mandatory self-review before every PR; reviewing a PR: scope, copies, latency, benchmarks |
+| `kornia-code-review` | self-review before a PR; reviewing a PR: scope, copies, latency, benchmarks |
 | `kornia-curation` | changing a fact the guidance describes; editing skills |
 | `kornia-simd` | SIMD / performance work in `kornia-imgproc` |
 | `kornia-bindings` | Python / C++ binding changes |
@@ -231,7 +231,7 @@ Err(KorniaError::SizeMismatch {
 
    Agents posting comments or reviews for someone end them with `Posted on behalf of @<handle> by <Agent> (<actual model>).`
 
-   Then self-review with `kornia-code-review` and paste its output in the PR's Self-review section. The human author then writes the Author walkthrough in their own words (each file, why, riskiest part). Both are required; the PR check fails without them. Agents must not write the walkthrough.
+   Then self-review with `kornia-code-review` and fix what it finds; pasting its output in the PR is optional.
 
 3. **Update documentation** — any new or changed public API must have updated doc comments. New features need an entry in the relevant crate's `README.md` or module-level doc.
 
@@ -241,7 +241,7 @@ Err(KorniaError::SizeMismatch {
    - What changed and why
    - Any breaking changes
    - Benchmarks or profiling data for performance-sensitive changes (before/after, see `kornia-code-review`)
-   - AI disclosure: agent + version, model, effort level, skills applied, human vs AI part
+   - Which part a human did and, if AI was used, the agent and model
    - A `changelog.d/<PR>.<type>.md` fragment for user-visible changes (see `changelog.d/README.md`); never edit `CHANGELOG.md` outside a release PR
    - What use case does this pr address which you use yourself
 

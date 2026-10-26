@@ -223,7 +223,7 @@ This section provides comprehensive guidance for contributing to kornia-rs, with
    ```bash
    pixi run pr-check     # Gate: skills + fmt-check + clippy + check + tests
    ```
-   Then run the `kornia-code-review` skill on your diff (`git diff main...HEAD`) and paste its output in the PR's **Self-review** section. Then write the **Author walkthrough** yourself, without AI: each changed file, why the issue needs it, the riskiest part and how you checked it. Both are required: the PR check fails without them, and reviewers will ask you about specific lines.
+   Then run the `kornia-code-review` skill on your diff (`git diff main...HEAD`) and fix what it finds. Reviewers may ask you about specific lines.
 
 3. **Add a Changelog Fragment**: For a user-visible change, add `changelog.d/<PR>.<type>.md` (`breaking`, `added`, `perf`, `fixed`) as described in [`changelog.d/README.md`](changelog.d/README.md). Do not edit `CHANGELOG.md`; releases assemble it. Internal-only PRs say so and get the `no-changelog` label.
 

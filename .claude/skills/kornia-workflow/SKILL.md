@@ -8,18 +8,15 @@ description: Use before committing, opening a PR, or debugging CI in kornia-rs �
 All commands are mirrored in CI. Run them through `pixi` (preferred) so the
 toolchain matches CI.
 
-## Mandatory pre-PR gate
+## Pre-PR gate
 
 ```bash
 pixi run pr-check       # skills-check + rust-fmt-check + rust-clippy + rust-check + rust-test
 ```
 
-Then self-review: run `kornia-code-review` on `git diff main...HEAD`, fix what
-it finds, and paste its final output (with `Verdict:` and `Skill gaps:`) in
-the PR's **Self-review** section. Then write the **Author walkthrough**
-yourself, without AI: each changed file, why the issue needs it, the riskiest
-part and how you checked it. Reviewers will question specific lines.
-`pr-validation.yml` fails while either section is empty.
+Then self-review: run `kornia-code-review` on `git diff main...HEAD` and fix
+what it finds. Pasting its output in the PR is optional. Be ready to explain
+any line when a reviewer asks.
 
 Equivalent pieces:
 
@@ -43,16 +40,15 @@ Conditional gates:
 Without pixi: `cargo test --features ci`, `cargo test -p kornia-imgproc`,
 `cargo clippy --workspace --no-deps --all-targets --features ci -- -D warnings`.
 
-## PR rules (checked in review; `pr-validation.yml` only warns on missing fields)
+## PR rules (checked in review)
 
 1. Linked, approved issue assigned to you: `Fixes #123` / `Closes #123`.
 2. Small, one concern, only what the issue asks. Out-of-scope hunks block
    review (`kornia-code-review`); split them into their own PRs.
 3. Paste the commands you actually ran and their output, including failures
    and what you did not run.
-4. Fill in the AI usage disclosure (see `AI_POLICY.md`): agent + version,
-   model, effort level, skills applied, and which part a human did. You are
-   the sole responsible author of every line.
+4. Say which part a human did and, if AI was used, which agent and model
+   (see `AI_POLICY.md`). You are the sole responsible author of every line.
 5. Perf-sensitive change ⇒ before/after bench numbers (`kornia-code-review`).
 6. Changed a fact the skills describe, hit a non-obvious trap, or found something
    reusable (a helper, a measured number, a pattern) ⇒ one line in the owning

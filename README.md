@@ -498,10 +498,9 @@ works without the project's rules.
 1. Link an issue first (required). Tell the agent the issue number and which
    skills apply (`AGENTS.md` lists when to read each).
 2. Before opening the PR run `pixi run pr-check`, then have the agent self-review:
-   "self-review my diff with `.claude/skills/kornia-code-review`". Fix what it
-   finds and paste its final output in the PR's **Self-review** section.
-3. Write the **Author walkthrough** yourself; agents must not write it.
-   Fill in the AI disclosure (agent + version, model, effort, skills applied).
+   "self-review my diff with `.claude/skills/kornia-code-review`" and fix what
+   it finds.
+3. In the PR, say which part a human did and which agent and model, if any.
 4. User-visible change: add `changelog.d/<PR>.<type>.md`.
 
 **Changing the skills:** follow `kornia-curation`, run `pixi run skills-check`,
