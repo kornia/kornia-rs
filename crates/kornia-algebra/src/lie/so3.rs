@@ -546,30 +546,34 @@ impl SO3F64 {
     /// Left Jacobian of SO(3) at `v`.
     pub fn left_jacobian(v: Vec3F64) -> Mat3F64 {
         let skew = Self::hat(v);
-        let theta = v.dot(v).sqrt();
-        let ident = Mat3F64::IDENTITY;
-
-        if theta < SMALL_ANGLE_EPSILON_F64 {
-            return ident + skew * 0.5;
-        }
-
-        ident
-            + ((1.0 - theta.cos()) / theta.powi(2)) * skew
-            + ((theta - theta.sin()) / theta.powi(3)) * (skew * skew)
+        let (a, b) = jacobian_coefficients_f64(v.dot(v));
+        Mat3F64::IDENTITY + a * skew + b * (skew * skew)
     }
 
     /// Right Jacobian of SO(3) at `v`.
     pub fn right_jacobian(v: Vec3F64) -> Mat3F64 {
         let skew = Self::hat(v);
-        let theta = v.dot(v).sqrt();
-        let ident = Mat3F64::IDENTITY;
+        let (a, b) = jacobian_coefficients_f64(v.dot(v));
+        Mat3F64::IDENTITY - a * skew + b * (skew * skew)
+    }
+}
 
-        if theta < SMALL_ANGLE_EPSILON_F64 {
-            return ident - skew * 0.5;
-        }
-
-        ident - ((1.0 - theta.cos()) / theta.powi(2)) * skew
-            + ((theta - theta.sin()) / theta.powi(3)) * (skew * skew)
+/// `(1 − cos θ)/θ²` and `(θ − sin θ)/θ³`, the coefficients of the SO(3)
+/// Jacobians. Below 0.01 rad `1 − cos θ` cancels (an absolute error of about
+/// `1e-16/θ` in the Jacobian), so their Taylor series is used there.
+fn jacobian_coefficients_f64(theta2: f64) -> (f64, f64) {
+    if theta2 < 1.0e-4 {
+        let theta4 = theta2 * theta2;
+        (
+            0.5 - theta2 / 24.0 + theta4 / 720.0,
+            1.0 / 6.0 - theta2 / 120.0 + theta4 / 5040.0,
+        )
+    } else {
+        let theta = theta2.sqrt();
+        (
+            (1.0 - theta.cos()) / theta2,
+            (theta - theta.sin()) / (theta2 * theta),
+        )
     }
 }
 
@@ -1179,6 +1183,21 @@ mod tests_f64 {
             let jr_delta = jr * dv;
             let rhs = r * SO3F64::exp(jr_delta).matrix();
             assert_mat_eq(&lhs, &rhs, 1e-9);
+        }
+    }
+
+    /// At small angles both Jacobians equal their series `I ± ½ω× + ⅙ω×²` to
+    /// the last digit; the closed form `(1 − cos θ)/θ²` was off by ~1e-16/θ.
+    #[test]
+    fn small_angle_jacobians_match_series() {
+        for scale in [1e-9, 1e-7, 1e-5, 1e-3] {
+            let v = Vec3F64::new(0.6, -0.8, 0.3) * scale;
+            let skew = SO3F64::hat(v);
+            let quadratic = (1.0 / 6.0) * (skew * skew);
+            let left = Mat3F64::IDENTITY + 0.5 * skew + quadratic;
+            let right = Mat3F64::IDENTITY - 0.5 * skew + quadratic;
+            assert_mat_eq(&SO3F64::left_jacobian(v), &left, 1e-15 + scale.powi(3));
+            assert_mat_eq(&SO3F64::right_jacobian(v), &right, 1e-15 + scale.powi(3));
         }
     }
 
