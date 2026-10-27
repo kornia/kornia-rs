@@ -201,3 +201,32 @@ jobs:
           name: windows-arm64-${{ matrix.python-version }}-wheels
           path: dist
           retention-days: ${{ inputs.retention-days }}
+
+  sdist:
+    name: sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: messense/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          command: sdist
+          maturin-version: v1.15.0
+          args: --out dist -m kornia-py/Cargo.toml
+      - name: Verify sdist metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -q twine
+          python -m twine check dist/*
+      - name: Upload sdist
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sdist
+          path: dist
+          retention-days: ${{ inputs.retention-days }}
