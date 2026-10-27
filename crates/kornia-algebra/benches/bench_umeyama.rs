@@ -108,7 +108,8 @@ fn bench_umeyama_robust(c: &mut Criterion) {
         });
     }
 
-    // 40% gross outliers: worst case — full IRLS budget + MAD rejection + refit.
+    // 40% gross outliers (40 of 100, spread): worst case — full IRLS budget
+    // + MAD rejection + refit.
     {
         let n = 100;
         let src: Vec<Vec3F64> = (0..n)
@@ -118,7 +119,7 @@ fn bench_umeyama_robust(c: &mut Criterion) {
             .iter()
             .map(|p| (r_true * *p) * s_true + t_true)
             .collect();
-        for i in (0..n).step_by(2) {
+        for i in (0..n).step_by(5).chain((2..n).step_by(5)) {
             dst[i] += Vec3F64::new(30.0, 40.0, -50.0);
         }
         group.bench_function(BenchmarkId::new("outliers_40pct", n), |b| {
