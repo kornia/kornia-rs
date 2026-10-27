@@ -7,6 +7,11 @@ use rand::RngExt;
 
 const SMALL_ANGLE_EPSILON: f32 = 1.0e-8;
 
+/// θ² below which [`SE3F32::left_jacobian`] uses the Taylor series of the
+/// `Q` coefficients: their closed forms cancel catastrophically in f32 below
+/// ~0.1 rad.
+const Q_SERIES_THETA2: f32 = 1.0e-2;
+
 /// Note regarding `PartialEq`:
 /// This struct derives `PartialEq` which performs an exact element-wise comparison.
 /// Because quaternions form a double cover for SO3 (`q` and `-q` represent the same rotation),
@@ -137,23 +142,25 @@ impl SE3F32 {
         ])
     }
 
+    /// Adjoint for the `[υ; ω]` tangent order of [`Self::exp`]:
+    /// `Ad(T) = [[R, t×R], [0, R]]`, so that `T · Exp(ξ) · T⁻¹ = Exp(Ad(T) · ξ)`.
     pub fn adjoint(&self) -> [[f32; 6]; 6] {
         let r = self.r.matrix();
         let t = SO3F32::hat(self.t) * r;
 
         [
-            [r.x_axis.x, r.y_axis.x, r.z_axis.x, 0.0, 0.0, 0.0],
-            [r.x_axis.y, r.y_axis.y, r.z_axis.y, 0.0, 0.0, 0.0],
-            [r.x_axis.z, r.y_axis.z, r.z_axis.z, 0.0, 0.0, 0.0],
             [
-                t.x_axis.x, t.y_axis.x, t.z_axis.x, r.x_axis.x, r.y_axis.x, r.z_axis.x,
+                r.x_axis.x, r.y_axis.x, r.z_axis.x, t.x_axis.x, t.y_axis.x, t.z_axis.x,
             ],
             [
-                t.x_axis.y, t.y_axis.y, t.z_axis.y, r.x_axis.y, r.y_axis.y, r.z_axis.y,
+                r.x_axis.y, r.y_axis.y, r.z_axis.y, t.x_axis.y, t.y_axis.y, t.z_axis.y,
             ],
             [
-                t.x_axis.z, t.y_axis.z, t.z_axis.z, r.x_axis.z, r.y_axis.z, r.z_axis.z,
+                r.x_axis.z, r.y_axis.z, r.z_axis.z, t.x_axis.z, t.y_axis.z, t.z_axis.z,
             ],
+            [0.0, 0.0, 0.0, r.x_axis.x, r.y_axis.x, r.z_axis.x],
+            [0.0, 0.0, 0.0, r.x_axis.y, r.y_axis.y, r.z_axis.y],
+            [0.0, 0.0, 0.0, r.x_axis.z, r.y_axis.z, r.z_axis.z],
         ]
     }
 
@@ -239,43 +246,36 @@ impl SE3F32 {
     /// ref: https://arxiv.org/pdf/1812.01537 (eq 180)
     pub fn left_jacobian(rho: Vec3AF32, omega: Vec3AF32) -> [[f32; 6]; 6] {
         let theta2 = omega.dot(omega);
-        let theta = theta2.sqrt();
 
         let jl_so3 = SO3F32::left_jacobian(omega);
 
         let rho_hat = SO3F32::hat(rho);
         let omega_hat = SO3F32::hat(omega);
-        let omega_hat2 = omega_hat * omega_hat;
+        let wp = omega_hat * rho_hat;
+        let pw = rho_hat * omega_hat;
+        let wpw = wp * omega_hat;
 
-        // Small-angle safeguard
-        const EPS: f32 = 1e-6;
-        let (q_mat, jl_so3) = if theta < EPS {
-            // Series:  Q ≈ ½ρ× + 1/12(ω×ρ× + ρ×ω×) - 1/24 ω×ρ×ω×
-            //          Jₗ_SO3 ≈ I + ½ω× + 1/6 ω×²
-            let q = 0.5 * rho_hat + (1.0 / 12.0) * (omega_hat * rho_hat + rho_hat * omega_hat)
-                - (1.0 / 24.0) * (omega_hat * rho_hat * omega_hat);
-            let j = Mat3AF32::IDENTITY + 0.5 * omega_hat + (1.0 / 6.0) * omega_hat2;
-            (q, j)
+        // The three coefficients of Q above, signs folded in (Barfoot, State
+        // Estimation for Robotics, eq. 7.86).
+        let (c1, c2, c3) = if theta2 < Q_SERIES_THETA2 {
+            (
+                1.0 / 6.0 - theta2 / 120.0,
+                1.0 / 24.0 - theta2 / 720.0,
+                1.0 / 120.0 - theta2 / 2520.0,
+            )
         } else {
-            let theta3 = theta2 * theta;
-            let theta4 = theta2 * theta2;
-            let theta5 = theta4 * theta;
-
-            let a = 0.5;
-            let b = (theta - theta.sin()) / theta3;
-            let c = (1.0 - 0.5 * theta2 - theta.cos()) / theta4;
-            let d = 0.5 * (c - 3.0 * b / theta5);
-
-            let term1 = a * rho_hat;
-            let term2 =
-                b * (omega_hat * rho_hat + rho_hat * omega_hat + omega_hat * rho_hat * omega_hat);
-            let term3 = c
-                * (omega_hat2 * rho_hat + rho_hat * omega_hat2
-                    - 3.0 * omega_hat * rho_hat * omega_hat);
-            let term4 = d * (omega_hat * rho_hat * omega_hat2 + omega_hat2 * rho_hat * omega_hat);
-
-            (term1 + term2 - term3 - term4, jl_so3)
+            let theta = theta2.sqrt();
+            let (s, c) = theta.sin_cos();
+            (
+                (theta - s) / (theta2 * theta),
+                (theta2 + 2.0 * c - 2.0) / (2.0 * theta2 * theta2),
+                (2.0 * theta - 3.0 * s + theta * c) / (2.0 * theta2 * theta2 * theta),
+            )
         };
+        let q_mat = 0.5 * rho_hat
+            + c1 * (wp + pw + wpw)
+            + c2 * (omega_hat * wp + pw * omega_hat - 3.0 * wpw)
+            + c3 * (wpw * omega_hat + omega_hat * wpw);
 
         let mut jl = [[0.0; 6]; 6];
 
@@ -1016,6 +1016,114 @@ mod tests {
         for i in 0..6 {
             for j in 0..6 {
                 assert_relative_eq!(jl[i][j], jr_t[i][j], epsilon = 1e-3);
+            }
+        }
+    }
+
+    /// `T · Exp(ξ) · T⁻¹ = Exp(Ad(T) · ξ)` for the `[υ; ω]` order of `exp`.
+    #[test]
+    fn test_adjoint_conjugates_exp() {
+        let t = SE3F32::exp(Vec3AF32::new(0.4, -1.2, 0.7), Vec3AF32::new(0.3, -0.5, 0.9));
+        let (rho, omega) = (
+            Vec3AF32::new(0.2, 0.1, -0.3),
+            Vec3AF32::new(-0.1, 0.25, 0.05),
+        );
+        let xi = [rho.x, rho.y, rho.z, omega.x, omega.y, omega.z];
+        let m = mat6_mul_vec6(&t.adjoint(), &xi);
+        let mapped = SE3F32::exp(
+            Vec3AF32::new(m[0], m[1], m[2]),
+            Vec3AF32::new(m[3], m[4], m[5]),
+        );
+        let conjugated = t * SE3F32::exp(rho, omega) * t.inverse();
+        let (a, b) = (
+            mapped.matrix().to_cols_array(),
+            conjugated.matrix().to_cols_array(),
+        );
+        for k in 0..16 {
+            assert_relative_eq!(a[k], b[k], epsilon = 1e-5);
+        }
+    }
+
+    /// Twists for the Jacobian checks: large and medium rotations, one on each
+    /// side of the `Q` series threshold, a tiny one and a pure translation.
+    fn jacobian_test_twists() -> [(Vec3AF32, Vec3AF32); 6] {
+        [
+            (Vec3AF32::new(0.4, -0.3, 0.8), Vec3AF32::new(0.9, -0.6, 0.5)),
+            (Vec3AF32::new(-0.3, 0.5, 0.1), Vec3AF32::new(0.7, 0.0, 0.0)),
+            (
+                Vec3AF32::new(0.6, 0.2, -0.4),
+                Vec3AF32::new(0.08, -0.05, 0.03),
+            ),
+            (
+                Vec3AF32::new(0.6, 0.2, -0.4),
+                Vec3AF32::new(0.06, -0.08, 0.02),
+            ),
+            (
+                Vec3AF32::new(0.5, -0.4, 0.2),
+                Vec3AF32::new(1e-3, -2e-3, 1.5e-3),
+            ),
+            (Vec3AF32::new(0.5, -0.4, 0.2), Vec3AF32::ZERO),
+        ]
+    }
+
+    /// Column `k` of `∂ Log(f(Exp(ξ + δ))) / ∂δ` at `δ = 0`, by central differences.
+    fn central_difference(
+        rho: Vec3AF32,
+        omega: Vec3AF32,
+        k: usize,
+        f: impl Fn(SE3F32) -> SE3F32,
+    ) -> [f32; 6] {
+        const H: f32 = 1e-2;
+        let at = |h: f32| {
+            let mut xi = [rho.x, rho.y, rho.z, omega.x, omega.y, omega.z];
+            xi[k] += h;
+            let (u, w) = f(SE3F32::exp(
+                Vec3AF32::new(xi[0], xi[1], xi[2]),
+                Vec3AF32::new(xi[3], xi[4], xi[5]),
+            ))
+            .log();
+            [u.x, u.y, u.z, w.x, w.y, w.z]
+        };
+        let (up, down) = (at(H), at(-H));
+        std::array::from_fn(|i| (up[i] - down[i]) / (2.0 * H))
+    }
+
+    /// `Exp(ξ + δ) ≈ Exp(Jₗ(ξ) · δ) · Exp(ξ)`.
+    #[test]
+    fn test_left_jacobian_matches_central_differences() {
+        for (rho, omega) in jacobian_test_twists() {
+            let jl = SE3F32::left_jacobian(rho, omega);
+            let x_inv = SE3F32::exp(rho, omega).inverse();
+            let columns: [[f32; 6]; 6] =
+                std::array::from_fn(|k| central_difference(rho, omega, k, |y| y * x_inv));
+            for (i, row) in jl.iter().enumerate() {
+                for (k, &analytic) in row.iter().enumerate() {
+                    let numeric = columns[k][i];
+                    assert!(
+                        (analytic - numeric).abs() < 2e-3,
+                        "ξ = ({rho:?}, {omega:?}), J[{i}][{k}] = {analytic} vs {numeric}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// `Exp(ξ + δ) ≈ Exp(ξ) · Exp(Jᵣ(ξ) · δ)`.
+    #[test]
+    fn test_right_jacobian_matches_central_differences() {
+        for (rho, omega) in jacobian_test_twists() {
+            let jr = SE3F32::right_jacobian(rho, omega);
+            let x_inv = SE3F32::exp(rho, omega).inverse();
+            let columns: [[f32; 6]; 6] =
+                std::array::from_fn(|k| central_difference(rho, omega, k, |y| x_inv * y));
+            for (i, row) in jr.iter().enumerate() {
+                for (k, &analytic) in row.iter().enumerate() {
+                    let numeric = columns[k][i];
+                    assert!(
+                        (analytic - numeric).abs() < 2e-3,
+                        "ξ = ({rho:?}, {omega:?}), J[{i}][{k}] = {analytic} vs {numeric}"
+                    );
+                }
             }
         }
     }
