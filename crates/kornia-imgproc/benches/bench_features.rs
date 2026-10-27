@@ -95,6 +95,43 @@ fn bench_harris_response(c: &mut Criterion) {
                 b.iter(|| std::hint::black_box(harris_response.compute(src, &mut dst)))
             },
         );
+
+        #[cfg(feature = "cuda")]
+        {
+            use kornia_imgproc::cuda::harris::launch_harris_f32;
+
+            let ctx = cudarc::driver::CudaContext::new(0).unwrap();
+            let stream = ctx.default_stream();
+            let mut src = stream.clone_htod(image_f32.as_slice()).unwrap();
+            let mut dst = stream.alloc_zeros::<f32>(width * height).unwrap();
+            let mut host_dst = vec![0.0f32; width * height];
+            // Compile before timing; both GPU cases include completion synchronization.
+            launch_harris_f32(&ctx, &stream, &src, &mut dst, *width, *height, 0.04).unwrap();
+            stream.synchronize().unwrap();
+            group.bench_function(
+                BenchmarkId::new("harris_cuda_resident", &parameter_string),
+                |b| {
+                    b.iter(|| {
+                        launch_harris_f32(&ctx, &stream, &src, &mut dst, *width, *height, 0.04)
+                            .unwrap();
+                        stream.synchronize().unwrap();
+                    });
+                },
+            );
+            group.bench_function(
+                BenchmarkId::new("harris_cuda_roundtrip", &parameter_string),
+                |b| {
+                    b.iter(|| {
+                        stream.memcpy_htod(image_f32.as_slice(), &mut src).unwrap();
+                        launch_harris_f32(&ctx, &stream, &src, &mut dst, *width, *height, 0.04)
+                            .unwrap();
+                        stream.memcpy_dtoh(&dst, &mut host_dst).unwrap();
+                        stream.synchronize().unwrap();
+                        std::hint::black_box(&host_dst);
+                    });
+                },
+            );
+        }
     }
     group.finish();
 }
