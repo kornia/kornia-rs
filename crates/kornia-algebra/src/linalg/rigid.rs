@@ -325,6 +325,7 @@ pub struct RobustUmeyamaConfig {
 }
 
 impl Default for RobustUmeyamaConfig {
+    /// Huber threshold 1.0, 20 IRLS iterations, tolerance 1e-6.
     fn default() -> Self {
         Self {
             delta: 1.0,
@@ -454,22 +455,8 @@ pub fn umeyama_f64_robust(
         }
     };
 
-    // Scene extent: max centered destination distance. It scales the
-    // translation convergence check so a near-zero translation cannot clamp
-    // the denominator to EPSILON and disable the early exit. The destination
-    // cloud may contain outliers, so this is a coarse scene scale used only
-    // as a floor.
+    // Convergence denominators use EPSILON floors.
     let eps = f64::EPSILON;
-    let dst_mean = dst.iter().fold(Vec3F64::ZERO, |sum, d| sum + *d) / n as f64;
-    let extent = dst
-        .iter()
-        .map(|d| {
-            let offset = *d - dst_mean;
-            offset.dot(offset)
-        })
-        .fold(0.0_f64, f64::max)
-        .sqrt()
-        .max(eps);
 
     let mut residuals = vec![0.0_f64; n];
     for iter in 0..config.max_iters {
@@ -501,7 +488,7 @@ pub fn umeyama_f64_robust(
         let rot_rel = (0..3)
             .map(|c| (new_fit.0.col(c) - fit.0.col(c)).length() / fit.0.col(c).length().max(eps))
             .fold(0.0_f64, f64::max);
-        let t_rel = (new_fit.1 - fit.1).length() / fit.1.length().max(extent);
+        let t_rel = (new_fit.1 - fit.1).length() / fit.1.length().max(eps);
 
         fit = new_fit;
         if scale_rel.max(rot_rel).max(t_rel) < config.tol {
@@ -1866,10 +1853,9 @@ mod tests {
 
     #[test]
     fn test_umeyama_f64_robust_near_zero_translation_converges() -> Result<(), UmeyamaError> {
-        // Near-zero true translation: a translation-relative convergence
-        // denominator would clamp to EPSILON and disable the early exit, so
-        // this guards the scene-extent floor. The returned fit is the same
-        // fixed point either way; the observable guarantee is tight recovery.
+        // Near-zero true translation: a valid scenario where the translation
+        // is at the origin throughout, with one down-weighted correspondence.
+        // The returned fit must still recover rotation, scale and translation.
         let mut src = random_points(0x6001, 20, 2.0);
         let r_true = rot_z90();
         let t_true = Vec3F64::new(0.0, 0.0, 0.0);

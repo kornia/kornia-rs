@@ -41,21 +41,6 @@ agrees to within floating-point rounding.
 `UmeyamaError` gained the variants `MismatchedWeightsLength`, `InvalidWeights`,
 and `EmptyInput`, so exhaustive downstream `match`es need new arms.
 
-**Robust Umeyama alignment (`kornia-algebra`).** `umeyama_f64_robust` fits
-`(R, t, s)` to point sets contaminated by gross outliers: a Huber-weighted
-IRLS loop over `umeyama_f64` down-weights large residuals, and a MAD
-hard-rejection pass (`3.5 · MAD / Φ⁻¹(3/4)`, i.e. ≈ `5.19 · MAD`, around the
-median residual) drops them before a final unweighted refit on the survivors.
-When the MAD is exactly zero (noiseless inliers), exact-zero-deviation
-correspondences are kept, so noise-free data with outliers recovers exactly;
-the refit needs at least three survivors.
-The fit is deterministic; `with_scale` selects Sim3 (estimated scale) or rigid
-(`s = 1.0`) alignment; `RobustUmeyamaConfig` controls the
-Huber threshold, iteration cap, and convergence tolerance. **Breaking:**
-`UmeyamaError` gains `InvalidDelta`, `InvalidMaxIters`, and `InvalidTol`
-(reported for invalid `RobustUmeyamaConfig` fields); it is not
-`#[non_exhaustive]`, so exhaustive `match`es need three new arms.
-
 **Breaking: fundamental-matrix RANSAC now samples seven points by default.** A seven-point
 hypothesis needs one correspondence fewer than an eight-point one, so RANSAC reaches the same
 confidence with fewer draws; every real root of a sample (up to three) is scored. Estimated
