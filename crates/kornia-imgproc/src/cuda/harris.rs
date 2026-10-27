@@ -1,6 +1,7 @@
 //! Fused f32 Harris response without shared memory, compiled through NVRTC.
 
-use std::sync::{Arc, OnceLock};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use cudarc::driver::{CudaContext, CudaSlice, CudaStream};
 use kornia_tensor::CudaKernel;
@@ -54,8 +55,27 @@ extern "C" __global__ void harris_fused_f32(
 }
 "#;
 
-// shortcut: first-context cache; replaced by context-aware caching in the next commit.
-static KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
+type KernelMap = Mutex<HashMap<usize, Arc<CudaKernel>>>;
+static KERNELS: OnceLock<KernelMap> = OnceLock::new();
+
+fn get_kernel(ctx: &Arc<CudaContext>) -> Result<Arc<CudaKernel>, CudaHarrisError> {
+    let cache = KERNELS.get_or_init(Default::default);
+    let key = ctx.cu_ctx() as usize;
+    let lock_error = |_| CudaHarrisError::Cuda("Harris kernel cache mutex poisoned".into());
+    if let Some(kernel) = cache.lock().map_err(lock_error)?.get(&key).cloned() {
+        return Ok(kernel);
+    }
+    let kernel = Arc::new(
+        super::try_compile_with_l1(ctx, HARRIS_SRC, "harris_fused_f32")
+            .map_err(CudaHarrisError::Cuda)?,
+    );
+    Ok(cache
+        .lock()
+        .map_err(lock_error)?
+        .entry(key)
+        .or_insert(kernel)
+        .clone())
+}
 
 /// Launch the fused Harris kernel on device-resident f32 images.
 ///
@@ -72,7 +92,8 @@ static KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 ///
 /// # Errors
 ///
-/// Returns an error for invalid dimensions, undersized buffers or CUDA failures.
+/// Returns an error for invalid dimensions, undersized buffers, mismatched
+/// contexts or CUDA failures.
 ///
 /// # Example
 ///
@@ -104,9 +125,14 @@ pub fn launch_harris_f32(
         })?;
     CudaHarrisError::check_slice("src", src.len(), count)?;
     CudaHarrisError::check_slice("dst", dst.len(), count)?;
+    if ctx != stream.context() || ctx != src.stream().context() || ctx != dst.stream().context() {
+        return Err(CudaHarrisError::Cuda(
+            "buffers and stream must belong to ctx".into(),
+        ));
+    }
     let w = width as i32;
     let h = height as i32;
-    let kernel = CudaHarrisError::get_kernel(&KERNEL, ctx, HARRIS_SRC, "harris_fused_f32")?;
+    let kernel = get_kernel(ctx)?;
     kernel
         .launch_builder(stream)
         .arg(src)
@@ -186,6 +212,53 @@ mod tests {
         }
         let src = stream.alloc_zeros::<f32>(9).unwrap();
         assert!(launch_harris_f32(stream.context(), &stream, &src, &mut dst, 3, 3, 0.04).is_err());
+    }
+
+    #[test]
+    fn harris_available_devices() {
+        for ordinal in 0..CudaContext::device_count().unwrap() as usize {
+            let ctx = CudaContext::new(ordinal).unwrap();
+            let stream = ctx.default_stream();
+            let src = stream.alloc_zeros::<f32>(9).unwrap();
+            let mut dst = stream.alloc_zeros::<f32>(9).unwrap();
+            launch_harris_f32(&ctx, &stream, &src, &mut dst, 3, 3, 0.04).unwrap();
+            stream.synchronize().unwrap();
+            assert_eq!(stream.clone_dtoh(&dst).unwrap(), vec![0.0; 9]);
+        }
+    }
+
+    #[test]
+    fn harris_separate_contexts() {
+        use cudarc::driver::sys;
+
+        let primary = CudaContext::new(0).unwrap();
+        let device = cudarc::driver::result::device::get(0).unwrap();
+        let mut raw = std::ptr::null_mut();
+        // SAFETY: the driver symbol has this ABI; device is valid and ownership transfers below.
+        let separate = unsafe {
+            // Resolve the legacy entry directly: cudarc's safe constructor omits CUDA 13.2.
+            let create = sys::culib().get::<unsafe extern "C" fn(*mut sys::CUcontext, u32, sys::CUdevice) -> sys::CUresult>(b"cuCtxCreate_v2\0").unwrap();
+            create(&mut raw, 0, device).result().unwrap();
+            CudaContext::from_raw_context(0, device, raw).unwrap()
+        };
+        let first = get_kernel(&primary).unwrap();
+        let second = get_kernel(&separate).unwrap();
+        assert!(!Arc::ptr_eq(&first, &second));
+        assert!(Arc::ptr_eq(&first, &get_kernel(&primary).unwrap()));
+        for ctx in [&primary, &separate, &primary] {
+            let stream = ctx.default_stream();
+            let src = stream.alloc_zeros::<f32>(9).unwrap();
+            let mut dst = stream.clone_htod(&[-7.0f32; 9]).unwrap();
+            launch_harris_f32(ctx, &stream, &src, &mut dst, 3, 3, 0.04).unwrap();
+            stream.synchronize().unwrap();
+            let gpu = stream.clone_dtoh(&dst).unwrap();
+            assert_eq!(gpu[4], 0.0);
+            assert_eq!(gpu[0], -7.0);
+        }
+        let stream = primary.default_stream();
+        let src = stream.alloc_zeros::<f32>(9).unwrap();
+        let mut dst = stream.alloc_zeros::<f32>(9).unwrap();
+        assert!(launch_harris_f32(&separate, &stream, &src, &mut dst, 3, 3, 0.04).is_err());
     }
 
     #[test]
