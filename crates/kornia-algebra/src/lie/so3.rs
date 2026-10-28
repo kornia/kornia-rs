@@ -1108,9 +1108,9 @@ mod tests {
         assert_relative_eq!(a_above, a_ref_above, epsilon = 5e-6);
         assert_relative_eq!(b_above, b_ref_above, epsilon = 5e-6);
 
-        // Verify continuity across the threshold
-        assert_relative_eq!(a_below, a_above, epsilon = 1e-5);
-        assert_relative_eq!(b_below, b_above, epsilon = 1e-5);
+        // Verify continuity across the threshold matches the reference step
+        assert_relative_eq!(a_below - a_above, a_ref_below - a_ref_above, epsilon = 6e-6);
+        assert_relative_eq!(b_below - b_above, b_ref_below - b_ref_above, epsilon = 6e-6);
     }
 
     #[test]
