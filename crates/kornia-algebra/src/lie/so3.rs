@@ -44,6 +44,12 @@ use crate::{
 use rand::RngExt;
 const SMALL_ANGLE_EPSILON: f32 = 1.0e-8;
 const SMALL_ANGLE_EPSILON_F64: f64 = 1.0e-10;
+/// Threshold on θ² below which the Taylor series is used for SO(3) Jacobian
+/// coefficients in single precision (`f32`). At `θ² = 1e-2` (`θ = 0.1` rad), the 4th-order
+/// Taylor series truncation error (`θ⁶ / 40320 ≈ 2.5e-11`) is four orders
+/// of magnitude smaller than `f32::EPSILON` (~1.19e-7), while preventing catastrophic
+/// cancellation in `(1 - cos θ)/θ²` below `θ = 0.1` rad.
+const JACOBIAN_TAYLOR_THRESHOLD_F32: f32 = 1.0e-2;
 
 /// A 3D rotation, stored as a unit quaternion.
 ///
@@ -250,7 +256,7 @@ impl SO3F32 {
 /// drastically to 0.0, so their Taylor series is used there.
 #[inline]
 pub(crate) fn jacobian_coefficients_f32(theta2: f32) -> (f32, f32) {
-    if theta2 < 1.0e-2 {
+    if theta2 < JACOBIAN_TAYLOR_THRESHOLD_F32 {
         let theta4 = theta2 * theta2;
         (
             0.5 - theta2 / 24.0 + theta4 / 720.0,
@@ -1081,8 +1087,8 @@ mod tests {
     /// across the series threshold (theta² = 1e-2, theta ≈ 0.1 rad).
     #[test]
     fn jacobian_coefficients_continuity() {
-        let theta2_below = 0.99e-2f32;
-        let theta2_above = 1.01e-2f32;
+        let theta2_below = JACOBIAN_TAYLOR_THRESHOLD_F32 * 0.99;
+        let theta2_above = JACOBIAN_TAYLOR_THRESHOLD_F32 * 1.01;
 
         let (a_below, b_below) = jacobian_coefficients_f32(theta2_below);
         let (a_above, b_above) = jacobian_coefficients_f32(theta2_above);
