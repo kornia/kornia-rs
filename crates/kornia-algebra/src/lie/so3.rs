@@ -232,29 +232,34 @@ impl SO3F32 {
 
     pub fn left_jacobian(v: Vec3AF32) -> Mat3AF32 {
         let skew = Self::hat(v);
-        let theta = v.dot(v).sqrt();
-        let ident = Mat3AF32::IDENTITY;
-
-        if theta < SMALL_ANGLE_EPSILON {
-            return ident + skew * 0.5;
-        }
-
-        ident
-            + ((1.0 - theta.cos()) / theta.powi(2)) * skew
-            + ((theta - theta.sin()) / theta.powi(3)) * (skew * skew)
+        let (a, b) = jacobian_coefficients_f32(v.dot(v));
+        Mat3AF32::IDENTITY + a * skew + b * (skew * skew)
     }
 
     pub fn right_jacobian(v: Vec3AF32) -> Mat3AF32 {
         let skew = Self::hat(v);
-        let theta = v.dot(v).sqrt();
-        let ident = Mat3AF32::IDENTITY;
+        let (a, b) = jacobian_coefficients_f32(v.dot(v));
+        Mat3AF32::IDENTITY - a * skew + b * (skew * skew)
+    }
+}
 
-        if theta < SMALL_ANGLE_EPSILON {
-            return ident - skew * 0.5;
-        }
-
-        ident - ((1.0 - theta.cos()) / theta.powi(2)) * skew
-            + ((theta - theta.sin()) / theta.powi(3)) * (skew * skew)
+/// `(1 − cos θ)/θ²` and `(θ − sin θ)/θ³`, the coefficients of the SO(3)
+/// Jacobians. Below 0.1 rad (theta2 < 1e-2) in f32, `1 − cos θ` cancels
+/// drastically to 0.0, so their Taylor series is used there.
+#[inline]
+pub(crate) fn jacobian_coefficients_f32(theta2: f32) -> (f32, f32) {
+    if theta2 < 1.0e-2 {
+        let theta4 = theta2 * theta2;
+        (
+            0.5 - theta2 / 24.0 + theta4 / 720.0,
+            (1.0 / 6.0) - theta2 / 120.0 + theta4 / 5040.0,
+        )
+    } else {
+        let theta = theta2.sqrt();
+        (
+            (1.0 - theta.cos()) / theta2,
+            (theta - theta.sin()) / (theta2 * theta),
+        )
     }
 }
 
@@ -1037,6 +1042,52 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// At small angles both Jacobians equal their series `I ± ½ω× + ⅙ω×²` to
+    /// single precision; without the Taylor series, `(1 − cos θ)/θ²` cancelled
+    /// completely to 0.0 in f32 between 1e-8 and 1e-4 rad.
+    #[test]
+    fn small_angle_jacobians_match_series() {
+        for scale in [1e-7f32, 1e-5, 1e-4, 1e-3] {
+            let v = Vec3AF32::new(0.6, -0.8, 0.3) * scale;
+            let skew = SO3F32::hat(v);
+            let quadratic = (1.0 / 6.0) * (skew * skew);
+            let left_expected = Mat3AF32::IDENTITY + 0.5 * skew + quadratic;
+            let right_expected = Mat3AF32::IDENTITY - 0.5 * skew + quadratic;
+            let left_actual = SO3F32::left_jacobian(v);
+            let right_actual = SO3F32::right_jacobian(v);
+
+            for i in 0..3 {
+                for j in 0..3 {
+                    assert_relative_eq!(
+                        left_actual.col(i)[j],
+                        left_expected.col(i)[j],
+                        epsilon = 1e-6
+                    );
+                    assert_relative_eq!(
+                        right_actual.col(i)[j],
+                        right_expected.col(i)[j],
+                        epsilon = 1e-6
+                    );
+                }
+            }
+        }
+    }
+
+    /// Tests smooth continuity of the Jacobian coefficients across the series threshold (theta² = 1e-2, theta = 0.1 rad).
+    #[test]
+    fn jacobian_coefficients_continuity() {
+        let theta = 0.1f32;
+        let theta2 = theta * theta;
+        let theta4 = theta2 * theta2;
+        let a_series = 0.5 - theta2 / 24.0 + theta4 / 720.0;
+        let b_series = (1.0 / 6.0) - theta2 / 120.0 + theta4 / 5040.0;
+        let a_closed = (1.0 - theta.cos()) / theta2;
+        let b_closed = (theta - theta.sin()) / (theta2 * theta);
+
+        assert_relative_eq!(a_series, a_closed, epsilon = 5e-6);
+        assert_relative_eq!(b_series, b_closed, epsilon = 5e-6);
     }
 
     #[test]
