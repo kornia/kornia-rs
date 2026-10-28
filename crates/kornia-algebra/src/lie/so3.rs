@@ -230,12 +230,14 @@ impl SO3F32 {
         Vec3AF32::new(a, b, c)
     }
 
+    /// Left Jacobian of SO(3) at `v`.
     pub fn left_jacobian(v: Vec3AF32) -> Mat3AF32 {
         let skew = Self::hat(v);
         let (a, b) = jacobian_coefficients_f32(v.dot(v));
         Mat3AF32::IDENTITY + a * skew + b * (skew * skew)
     }
 
+    /// Right Jacobian of SO(3) at `v`.
     pub fn right_jacobian(v: Vec3AF32) -> Mat3AF32 {
         let skew = Self::hat(v);
         let (a, b) = jacobian_coefficients_f32(v.dot(v));
@@ -1075,19 +1077,40 @@ mod tests {
         }
     }
 
-    /// Tests smooth continuity of the Jacobian coefficients across the series threshold (theta² = 1e-2, theta = 0.1 rad).
+    /// Tests smooth continuity and branch selection of `jacobian_coefficients_f32`
+    /// across the series threshold (theta² = 1e-2, theta ≈ 0.1 rad).
     #[test]
     fn jacobian_coefficients_continuity() {
-        let theta = 0.1f32;
-        let theta2 = theta * theta;
-        let theta4 = theta2 * theta2;
-        let a_series = 0.5 - theta2 / 24.0 + theta4 / 720.0;
-        let b_series = (1.0 / 6.0) - theta2 / 120.0 + theta4 / 5040.0;
-        let a_closed = (1.0 - theta.cos()) / theta2;
-        let b_closed = (theta - theta.sin()) / (theta2 * theta);
+        let theta2_below = 0.99e-2f32;
+        let theta2_above = 1.01e-2f32;
 
-        assert_relative_eq!(a_series, a_closed, epsilon = 5e-6);
-        assert_relative_eq!(b_series, b_closed, epsilon = 5e-6);
+        let (a_below, b_below) = jacobian_coefficients_f32(theta2_below);
+        let (a_above, b_above) = jacobian_coefficients_f32(theta2_above);
+
+        // Independent double-precision reference
+        let ref_coef = |t2: f32| -> (f32, f32) {
+            let t2_f64 = t2 as f64;
+            let t_f64 = t2_f64.sqrt();
+            (
+                ((1.0 - t_f64.cos()) / t2_f64) as f32,
+                ((t_f64 - t_f64.sin()) / (t2_f64 * t_f64)) as f32,
+            )
+        };
+
+        let (a_ref_below, b_ref_below) = ref_coef(theta2_below);
+        let (a_ref_above, b_ref_above) = ref_coef(theta2_above);
+
+        // Verify series branch below threshold matches reference
+        assert_relative_eq!(a_below, a_ref_below, epsilon = 1e-6);
+        assert_relative_eq!(b_below, b_ref_below, epsilon = 1e-6);
+
+        // Verify closed-form branch above threshold matches reference
+        assert_relative_eq!(a_above, a_ref_above, epsilon = 5e-6);
+        assert_relative_eq!(b_above, b_ref_above, epsilon = 5e-6);
+
+        // Verify continuity across the threshold
+        assert_relative_eq!(a_below, a_above, epsilon = 1e-5);
+        assert_relative_eq!(b_below, b_above, epsilon = 1e-5);
     }
 
     #[test]
