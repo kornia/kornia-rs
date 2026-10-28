@@ -149,8 +149,8 @@ fn bench_umeyama_robust(c: &mut Criterion) {
                 std::hint::black_box(umeyama_f64(
                     std::hint::black_box(&src),
                     std::hint::black_box(&dst),
-                    None,
-                    true,
+                    std::hint::black_box(None),
+                    std::hint::black_box(true),
                 ))
             });
         });
