@@ -60,9 +60,9 @@ fn bench_umeyama_robust(c: &mut Criterion) {
     let t_true = Vec3F64::new(0.5, -0.3, 2.0);
     let s_true = 1.7;
 
-    // Clean data: one seed solve plus at least one reweighted solve (and a
-    // possible MAD refit at the SVD noise floor); ~3-4x the cost of
-    // `umeyama_f64` on this data.
+    // Clean data: the seed fit plus a possible MAD refit at the SVD noise
+    // floor (the all-ones fast path skips reweighted solves); ~4-5x the cost
+    // of `umeyama_f64` on this machine.
     for n in [20usize, 100, 1000] {
         let src: Vec<Vec3F64> = (0..n)
             .map(|i| Vec3F64::new(pseudo(3 * i), pseudo(3 * i + 1), pseudo(3 * i + 2)))
