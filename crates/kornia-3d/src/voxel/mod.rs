@@ -133,18 +133,34 @@ impl VoxelLayout {
 
     /// Voxel edge length.
     ///
+    /// # Arguments
+    ///
+    /// This method takes no arguments beyond `self`.
+    ///
     /// # Returns
     ///
     /// The `voxel_size` given to [`new`](Self::new).
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible.
     pub fn voxel_size(&self) -> f64 {
         self.voxel_size
     }
 
     /// Corner of voxel `(0, 0, 0)`.
     ///
+    /// # Arguments
+    ///
+    /// This method takes no arguments beyond `self`.
+    ///
     /// # Returns
     ///
     /// The `origin` given to [`new`](Self::new).
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible.
     pub fn origin(&self) -> [f64; 3] {
         self.origin
     }
@@ -159,6 +175,10 @@ impl VoxelLayout {
     ///
     /// `floor((point - origin) / voxel_size)` per axis, or `None` if a
     /// coordinate is not finite or the key does not fit `i32`.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible.
     #[inline]
     pub fn key_from_point(&self, point: &[f64; 3]) -> Option<VoxelKey> {
         Some([
@@ -177,6 +197,10 @@ impl VoxelLayout {
     /// # Returns
     ///
     /// `origin + (key + 0.5) · voxel_size` per axis.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible.
     #[inline]
     pub fn centre_from_key(&self, key: &VoxelKey) -> [f64; 3] {
         [
@@ -275,9 +299,17 @@ const OFFSETS_26: [[i32; 3]; 26] = neighbour_offsets::<26>(3);
 impl VoxelConnectivity {
     /// The neighbour offsets of this connectivity.
     ///
+    /// # Arguments
+    ///
+    /// This method takes no arguments beyond `self`.
+    ///
     /// # Returns
     ///
     /// 6, 18 or 26 offsets `(dx, dy, dz)`, in lexicographic order.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible.
     pub fn offsets(self) -> &'static [[i32; 3]] {
         match self {
             Self::Six => &OFFSETS_6,

@@ -8,13 +8,19 @@
 //! clusters on a sparse background, where the statistical filter shrinks
 //! its cells and sends the background queries to the k-d tree).
 //!
+//! `voxel_downsample_centroid_attrs_cpu` times `voxel_downsample` on the same
+//! cloud with colors and normals, so it includes the attribute reduction.
+//!
 //! `cargo bench -p kornia-3d --bench bench_voxel`
 //! Single-thread numbers: `RAYON_NUM_THREADS=1`.
 //! Baselines on the same inputs: `benches/bench_voxel_baselines.py`.
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use kornia_3d::pointcloud::filter::{radius_inlier_indices, statistical_inlier_indices};
-use kornia_3d::voxel::{DownsampleMode, VoxelConnectivity, VoxelDownsampler, VoxelLayout};
+use kornia_3d::pointcloud::PointCloud;
+use kornia_3d::voxel::{
+    voxel_downsample, DownsampleMode, VoxelConnectivity, VoxelDownsampler, VoxelLayout,
+};
 
 const SIZES: [usize; 2] = [100_000, 1_000_000];
 const EXTENT_M: f64 = 4.0;
@@ -101,6 +107,22 @@ fn bench_voxel(c: &mut Criterion) {
                 })
             });
         }
+        let colors = pts
+            .iter()
+            .map(|p| p.map(|v| (v / EXTENT_M * 255.0) as u8))
+            .collect();
+        let normals = pts
+            .iter()
+            .map(|p| {
+                let len = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt().max(1e-12);
+                p.map(|v| v / len)
+            })
+            .collect();
+        let cloud = PointCloud::new(pts.clone(), Some(colors), Some(normals));
+        group.bench_function(
+            BenchmarkId::new("voxel_downsample_centroid_attrs_cpu", &id),
+            |b| b.iter(|| voxel_downsample(&cloud, &layout, DownsampleMode::Centroid).unwrap()),
+        );
         group.bench_function(BenchmarkId::new("neighbour_counts26_cpu", &id), |b| {
             b.iter(|| {
                 ds.neighbour_counts_into(&pts, &layout, VoxelConnectivity::TwentySix, &mut counts)
