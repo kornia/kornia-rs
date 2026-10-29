@@ -95,9 +95,17 @@ pub struct VoxelDownsampler {
 impl VoxelDownsampler {
     /// Creates an empty scratch.
     ///
+    /// # Arguments
+    ///
+    /// This function takes no arguments.
+    ///
     /// # Returns
     ///
     /// A downsampler with no buffers allocated yet.
+    ///
+    /// # Errors
+    ///
+    /// This function is infallible.
     pub fn new() -> Self {
         Self::default()
     }
@@ -633,7 +641,7 @@ pub(super) mod test_access {
     //! Exposes the sort words to the sibling tests.
     use super::*;
 
-    /// Sorted words of `points`, for the device-sort parity test.
+    /// Sorted words of `points`, for the sort-word ordering test.
     pub(in crate::voxel) fn sorted_words(
         points: &[[f64; 3]],
         layout: &VoxelLayout,
