@@ -214,36 +214,29 @@ impl CellGrid {
         }
     }
 
-    /// Runs `f(cell, positions, slice, scratch)` on every cell, in
-    /// parallel, where `slice` is the cell's part of `dst` (one slot per
-    /// sorted position). Rayon splits the cell range adaptively, in halves
-    /// at cell boundaries and never below [`MIN_CELLS_PER_TASK`] cells, as
-    /// `with_min_len` did; no per-cell list of slices is allocated.
+    /// Splits `dst` (one slot per sorted position) into one slice per cell
+    /// and runs `f(cell, positions, slice, scratch)` on each, in parallel.
+    /// The slice list (16 bytes per cell) is allocated per call: splitting
+    /// `dst` without it (recursive halving, `rayon::iter::split`) was 3–5%
+    /// slower on the single-thread statistical bench.
     fn for_each_cell<T: Send, S>(
         &self,
         dst: &mut [T],
         init: impl Fn() -> S + Sync + Send,
         f: impl Fn(usize, Range<usize>, &mut [T], &mut S) + Sync + Send,
     ) {
-        let starts = &self.runs.starts;
-        rayon::iter::split((0..self.cells(), dst), |(cells, dst)| {
-            if cells.len() < 2 * MIN_CELLS_PER_TASK {
-                return ((cells, dst), None);
-            }
-            let mid = cells.start + cells.len() / 2;
-            let at = (starts[mid] - starts[cells.start]) as usize;
-            let (lo, hi) = dst.split_at_mut(at);
-            ((cells.start..mid, lo), Some((mid..cells.end, hi)))
-        })
-        .for_each_init(init, |scratch, (cells, dst)| {
-            let mut rest = dst;
-            for c in cells {
-                let own = self.cell_points(c);
-                let (head, tail) = rest.split_at_mut(own.len());
-                f(c, own, head, scratch);
-                rest = tail;
-            }
-        });
+        let mut slices = Vec::with_capacity(self.cells());
+        let mut rest = dst;
+        for c in 0..self.cells() {
+            let (head, tail) = rest.split_at_mut(self.cell_points(c).len());
+            slices.push(head);
+            rest = tail;
+        }
+        slices
+            .into_par_iter()
+            .enumerate()
+            .with_min_len(MIN_CELLS_PER_TASK)
+            .for_each_init(init, |s, (c, out)| f(c, self.cell_points(c), out, s));
     }
 
     /// Scatters per-sorted-position values to input order.
