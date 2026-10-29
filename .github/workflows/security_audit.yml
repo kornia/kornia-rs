@@ -65,11 +65,12 @@ jobs:
       # RUSTSEC-2026-0367  zip < 9 `extract` keeps SUID/SGID bits.
       # RUSTSEC-2026-0368  zip < 9 `extract` writes symlinks out of the target.
       # RUSTSEC-2026-0369  zip < 9 `extract` chmods through symlinks.
-      #                    candle-core 0.11 (newest; kornia-vlm only) pins
-      #                    zip ^8 and never calls `extract`.
-      # RUSTSEC-2026-0391  zstd < 0.14.3 leaks data across a reused stream.
-      # RUSTSEC-2026-0398  zstd-safe < 8.2 `Seekable::decompress` length bug.
-      # RUSTSEC-2026-0403  zstd-safe < 8.2 legacy-frame uninit memory.
+      #                    candle-core 0.11 (newest; kornia-vlm) pins zip ^8
+      #                    and never calls `extract`; rerun's
+      #                    re_web_viewer_server (examples only) also pulls it.
+      # RUSTSEC-2026-0391  zstd >= 0.13.2, < 0.14.3 leaks data across a reused stream.
+      # RUSTSEC-2026-0398  zstd-safe >= 7.2.2, < 8.2 `Seekable::decompress` length bug.
+      # RUSTSEC-2026-0403  zstd-safe >= 4.0, < 8.2 legacy-frame uninit memory.
       #                    Examples only (rerun -> mcap / parquet pin zstd
       #                    0.13); no library crate depends on zstd.
       - name: Run cargo audit
