@@ -61,42 +61,55 @@ const KNN_MAX_LOAD_RATIO: f64 = 4.0;
 const FLAT_AXIS_RATIO: f64 = 1000.0;
 
 /// A cloud sorted into the cells of a layout, coordinates in cell order.
+/// Rebuilding a long-lived grid reuses its buffers. After a build that
+/// returned `false` the contents are unspecified and must not be queried.
+#[derive(Debug, Default, Clone)]
 pub(super) struct CellGrid {
-    layout: VoxelLayout,
+    /// Cell edge and origin of the layout of the last build.
+    cell: f64,
+    origin: [f64; 3],
     runs: CellRuns,
     xyz: Vec<[f64; 3]>,
 }
 
 impl CellGrid {
-    fn new(points: &[[f64; 3]], layout: VoxelLayout) -> Option<Self> {
-        let runs = CellRuns::new(points, &layout).ok()?;
-        let mut xyz = Vec::with_capacity(points.len());
-        runs.order
+    /// Sorts `points` into the cells of `layout`; `false` if a key does not
+    /// fit `i32`.
+    fn build(&mut self, points: &[[f64; 3]], layout: VoxelLayout) -> bool {
+        if self.runs.sort(points, &layout).is_err() {
+            return false;
+        }
+        self.cell = layout.voxel_size();
+        self.origin = layout.origin();
+        self.runs
+            .order
             .par_iter()
             .map(|&i| points[i as usize])
-            .collect_into_vec(&mut xyz);
-        Some(Self { layout, runs, xyz })
+            .collect_into_vec(&mut self.xyz);
+        true
     }
 
-    /// The grid of the radius filter: cells slightly wider than `radius`,
-    /// so the 27 cells around a query hold all its neighbours.
-    pub(super) fn for_radius(points: &[[f64; 3]], radius: f64) -> Option<Self> {
-        let layout = VoxelLayout::new(radius * RADIUS_CELL_SLACK, [0.0; 3]).ok()?;
-        Self::new(points, layout)
+    /// Builds the grid of the radius filter: cells slightly wider than
+    /// `radius`, so the 27 cells around a query hold all its neighbours.
+    pub(super) fn for_radius(&mut self, points: &[[f64; 3]], radius: f64) -> bool {
+        match VoxelLayout::new(radius * RADIUS_CELL_SLACK, [0.0; 3]) {
+            Ok(layout) => self.build(points, layout),
+            Err(_) => false,
+        }
     }
 
-    /// The grid of the k-NN search, about `load` points per cell: sized from
-    /// the bounding box, then shrunk while the mean number of points that
-    /// share a point's cell exceeds `KNN_MAX_LOAD_RATIO · load` (clustered
-    /// or surface clouds).
-    pub(super) fn for_knn(points: &[[f64; 3]], load: usize) -> Option<Self> {
+    /// Builds the grid of the k-NN search, about `load` points per cell:
+    /// sized from the bounding box, then shrunk while the mean number of
+    /// points that share a point's cell exceeds `KNN_MAX_LOAD_RATIO · load`
+    /// (clustered or surface clouds). `false` if no grid fits.
+    pub(super) fn for_knn(&mut self, points: &[[f64; 3]], load: usize) -> bool {
         let n = points.len();
         let mut lo = [f64::INFINITY; 3];
         let mut hi = [f64::NEG_INFINITY; 3];
         for p in points {
             for a in 0..3 {
                 if !p[a].is_finite() {
-                    return None;
+                    return false;
                 }
                 lo[a] = lo[a].min(p[a]);
                 hi[a] = hi[a].max(p[a]);
@@ -107,16 +120,22 @@ impl CellGrid {
         let volume: f64 = ext.iter().map(|&e| e.max(flat)).product();
         let load = load.max(1) as f64;
         let mut cell = (volume * load / n as f64).cbrt();
-        let mut grid = Self::new(points, VoxelLayout::new(cell, lo).ok()?)?;
-        for _ in 1..KNN_SIZING_ROUNDS {
-            let shared = grid.mean_shared_load();
-            if shared <= KNN_MAX_LOAD_RATIO * load {
-                break;
+        for round in 0..KNN_SIZING_ROUNDS {
+            if round > 0 {
+                let shared = self.mean_shared_load();
+                if shared <= KNN_MAX_LOAD_RATIO * load {
+                    break;
+                }
+                cell *= (load / shared).cbrt();
             }
-            cell *= (load / shared).cbrt();
-            grid = Self::new(points, VoxelLayout::new(cell, lo).ok()?)?;
+            let Ok(layout) = VoxelLayout::new(cell, lo) else {
+                return false;
+            };
+            if !self.build(points, layout) {
+                return false;
+            }
         }
-        Some(grid)
+        true
     }
 
     /// Mean, over the points, of the number of points in their cell.
@@ -195,26 +214,47 @@ impl CellGrid {
         }
     }
 
-    /// Splits `dst` (one slot per sorted position) into one slice per cell
-    /// and runs `f(cell, positions, slice, scratch)` on each, in parallel.
+    /// Runs `f(cell, positions, slice, scratch)` on every cell, in
+    /// parallel, where `slice` is the cell's part of `dst` (one slot per
+    /// sorted position). `dst` is split in halves at cell boundaries down to
+    /// tasks of [`MIN_CELLS_PER_TASK`] to `2 · MIN_CELLS_PER_TASK` cells,
+    /// each with one `init()` scratch, so no per-cell list is allocated.
     fn for_each_cell<T: Send, S>(
         &self,
         dst: &mut [T],
-        init: impl Fn() -> S + Sync + Send,
-        f: impl Fn(usize, Range<usize>, &mut [T], &mut S) + Sync + Send,
+        init: impl Fn() -> S + Sync,
+        f: impl Fn(usize, Range<usize>, &mut [T], &mut S) + Sync,
     ) {
-        let mut slices = Vec::with_capacity(self.cells());
-        let mut rest = dst;
-        for c in 0..self.cells() {
-            let (head, tail) = rest.split_at_mut(self.cell_points(c).len());
-            slices.push(head);
-            rest = tail;
+        self.for_cells_in(0..self.cells(), dst, &init, &f);
+    }
+
+    /// [`for_each_cell`](Self::for_each_cell) on `cells`, whose points are
+    /// exactly `dst`.
+    fn for_cells_in<T: Send, S>(
+        &self,
+        cells: Range<usize>,
+        dst: &mut [T],
+        init: &(impl Fn() -> S + Sync),
+        f: &(impl Fn(usize, Range<usize>, &mut [T], &mut S) + Sync),
+    ) {
+        let base = self.runs.starts[cells.start] as usize;
+        if cells.len() < 2 * MIN_CELLS_PER_TASK {
+            let mut scratch = init();
+            let mut rest = dst;
+            for c in cells {
+                let own = self.cell_points(c);
+                let (head, tail) = rest.split_at_mut(own.len());
+                f(c, own, head, &mut scratch);
+                rest = tail;
+            }
+            return;
         }
-        slices
-            .into_par_iter()
-            .enumerate()
-            .with_min_len(MIN_CELLS_PER_TASK)
-            .for_each_init(init, |s, (c, out)| f(c, self.cell_points(c), out, s));
+        let mid = cells.start + cells.len() / 2;
+        let (lo, hi) = dst.split_at_mut(self.runs.starts[mid] as usize - base);
+        rayon::join(
+            || self.for_cells_in(cells.start..mid, lo, init, f),
+            || self.for_cells_in(mid..cells.end, hi, init, f),
+        );
     }
 
     /// Scatters per-sorted-position values to input order.
@@ -233,10 +273,18 @@ fn dist2(a: &[f64; 3], b: &[f64; 3]) -> f64 {
 
 /// Per input point, whether at least `cap` points (itself included) lie
 /// within `radius` (squared distance `<= radius_sq`, as the k-d tree path).
-pub(super) fn radius_dense(grid: &CellGrid, radius_sq: f64, cap: usize, dense: &mut [bool]) {
-    let mut sorted = vec![false; grid.xyz.len()];
+/// `sorted` is scratch for the per-sorted-position flags.
+pub(super) fn radius_dense(
+    grid: &CellGrid,
+    radius_sq: f64,
+    cap: usize,
+    sorted: &mut Vec<bool>,
+    dense: &mut [bool],
+) {
+    sorted.clear();
+    sorted.resize(grid.xyz.len(), false);
     grid.for_each_cell(
-        &mut sorted,
+        sorted,
         || (Vec::new(), [0usize; BLOCK_COLUMNS]),
         |c, own, out, (ranges, hints): &mut (Vec<Range<usize>>, [usize; BLOCK_COLUMNS])| {
             ranges.clear();
@@ -257,10 +305,10 @@ pub(super) fn radius_dense(grid: &CellGrid, radius_sq: f64, cap: usize, dense: &
             }
         },
     );
-    grid.scatter(&sorted, dense);
+    grid.scatter(sorted, dense);
 }
 
-/// Per-thread scratch of [`knn_mean_distances`].
+/// Per-task scratch of [`knn_mean_distances`].
 #[derive(Default)]
 struct KnnScratch {
     /// Ranges of the block and shells `2..` searched so far for the
@@ -297,18 +345,20 @@ fn push_best(best: &mut Vec<f64>, k: usize, d: f64) {
 /// (`hits` nearest including itself), summed over the ascending squared
 /// distances exactly as `mean_of_sorted` does for the k-d tree. Queries
 /// whose `hits`-th neighbour may lie beyond [`MAX_SHELL`] cells call
-/// `fallback`.
+/// `fallback`. `sorted` is scratch for the per-sorted-position means.
 pub(super) fn knn_mean_distances(
     grid: &CellGrid,
     hits: usize,
     fallback: &(impl Fn(&[f64; 3]) -> f64 + Sync),
+    sorted: &mut Vec<f64>,
     mean: &mut [f64],
 ) {
-    let s = grid.layout.voxel_size();
-    let o = grid.layout.origin();
-    let mut sorted = vec![0.0f64; grid.xyz.len()];
+    let s = grid.cell;
+    let o = grid.origin;
+    sorted.clear();
+    sorted.resize(grid.xyz.len(), 0.0);
     grid.for_each_cell(
-        &mut sorted,
+        sorted,
         KnnScratch::default,
         |c, own, out, sc: &mut KnnScratch| {
             sc.ranges.clear();
@@ -354,7 +404,7 @@ pub(super) fn knn_mean_distances(
             }
         },
     );
-    grid.scatter(&sorted, mean);
+    grid.scatter(sorted, mean);
 }
 
 /// A lower bound on the distance from `q` (in cell `key`) to any point in a

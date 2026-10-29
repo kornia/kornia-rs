@@ -286,9 +286,10 @@ fn radius_grid_matches_kd_tree() -> TestResult {
         {
             let r2 = radius * radius;
             let cap = NonZero::new(min_neighbours + 1).ok_or("cap")?;
-            let grid = grid::CellGrid::for_radius(points, radius).ok_or("grid")?;
+            let mut grid = grid::CellGrid::default();
+            assert!(grid.for_radius(points, radius), "grid");
             let mut got = vec![false; points.len()];
-            grid::radius_dense(&grid, r2, cap.get(), &mut got);
+            grid::radius_dense(&grid, r2, cap.get(), &mut Vec::new(), &mut got);
             let mut want = vec![false; points.len()];
             radius_dense_kd(points, r2, cap, &mut want);
             assert_eq!(got, want, "cloud {c} radius {radius} min {min_neighbours}");
@@ -304,10 +305,11 @@ fn knn_grid_matches_kd_tree_bit_for_bit() -> TestResult {
         for k in [1usize, 4, 16, 33] {
             let cap = NonZero::new(k + 1).ok_or("cap")?;
             for divisor in [1, KNN_CELL_LOAD_DIVISOR, 8] {
-                let grid =
-                    grid::CellGrid::for_knn(points, (k + 1).div_ceil(divisor)).ok_or("grid")?;
+                let mut grid = grid::CellGrid::default();
+                assert!(grid.for_knn(points, (k + 1).div_ceil(divisor)), "grid");
                 let mut got = vec![0.0; points.len()];
-                grid::knn_mean_distances(&grid, k + 1, &|p| knn_mean_kd(&tree, p, cap), &mut got);
+                let fallback = |p: &[f64; 3]| knn_mean_kd(&tree, p, cap);
+                grid::knn_mean_distances(&grid, k + 1, &fallback, &mut Vec::new(), &mut got);
                 for (i, (g, p)) in got.iter().zip(points).enumerate() {
                     let want = knn_mean_kd(&tree, p, cap);
                     assert_eq!(g.to_bits(), want.to_bits(), "cloud {c} k {k} point {i}");
@@ -364,11 +366,13 @@ fn non_finite_points_are_dropped_as_if_absent() -> TestResult {
         }
         assert_same_as_finite_subset(&cloud)?;
         // The finite points still get the grid search.
-        let subset = FiniteSubset::of(&cloud).ok_or("no non-finite point")?;
-        assert!(grid::CellGrid::for_radius(&subset.points, 0.1).is_some());
-        assert!(grid::CellGrid::for_knn(&subset.points, 5).is_some());
+        let mut subset = FiniteSubset::default();
+        assert!(subset.compact(&cloud), "no non-finite point");
+        let mut grid = grid::CellGrid::default();
+        assert!(grid.for_radius(&subset.points, 0.1));
+        assert!(grid.for_knn(&subset.points, 5));
     }
-    assert!(FiniteSubset::of(&points).is_none());
+    assert!(!FiniteSubset::default().compact(&points));
     Ok(())
 }
 
@@ -524,5 +528,36 @@ fn open3d_outlier_filters_parity_fixture() -> TestResult {
     assert_eq!(kept, stat_kept);
     // Both filters must have removed something for the parity to mean anything.
     assert!(radius_kept.len() < points.len() && stat_kept.len() < points.len());
+    Ok(())
+}
+
+#[test]
+fn reused_filter_matches_fresh_calls_across_cloud_sizes() -> TestResult {
+    // Large, small, NaN-bearing, clustered and empty clouds through one
+    // scratch, in an order that shrinks and regrows every buffer, against a
+    // fresh free-function call each time.
+    let mut nan_cloud = random_points(5000, 1.0, 41);
+    nan_cloud[17] = [f64::NAN, 0.0, 0.0];
+    nan_cloud[4000] = [0.0, f64::INFINITY, 0.0];
+    let mut clouds = grid_clouds();
+    clouds.insert(1, random_points(300, 1.0, 43));
+    clouds.insert(2, nan_cloud);
+    clouds.push(Vec::new());
+    clouds.push(random_points(20_000, 3.0, 47));
+    clouds.push(random_points(2, 1.0, 53));
+    let mut filter = OutlierFilter::new();
+    let (mut got, mut want) = (Vec::new(), Vec::new());
+    for (c, points) in clouds.iter().enumerate() {
+        for (radius, min_neighbours) in [(0.05, 1), (0.15, 6)] {
+            filter.radius_inlier_indices_into(points, radius, min_neighbours, &mut got)?;
+            radius_inlier_indices(points, radius, min_neighbours, &mut want)?;
+            assert_eq!(got, want, "cloud {c} radius {radius} min {min_neighbours}");
+        }
+        for (k, std_ratio) in [(8, 1.0), (3, -0.5)] {
+            filter.statistical_inlier_indices_into(points, k, std_ratio, &mut got)?;
+            statistical_inlier_indices(points, k, std_ratio, &mut want)?;
+            assert_eq!(got, want, "cloud {c} k {k} std_ratio {std_ratio}");
+        }
+    }
     Ok(())
 }

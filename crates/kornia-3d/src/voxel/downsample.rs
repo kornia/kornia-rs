@@ -608,7 +608,9 @@ pub fn remove_sparse_voxels(
 }
 
 /// A cloud grouped by voxel: the host sort of [`VoxelDownsampler`] exposed
-/// for neighbour queries on a uniform grid.
+/// for neighbour queries on a uniform grid. [`sort`](Self::sort) reuses the
+/// buffers of the previous sort, so a long-lived value allocates only when a
+/// cloud is larger than every earlier one.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct CellRuns {
     /// Input index per sorted position (voxels ascending, indices ascending
@@ -618,29 +620,34 @@ pub(crate) struct CellRuns {
     pub(crate) keys: Vec<u128>,
     /// Voxel starts into `order`, plus a final `order.len()`.
     pub(crate) starts: Vec<u32>,
+    /// Sort scratch; its `starts` buffer is swapped with `starts` above.
+    sorter: VoxelDownsampler,
 }
 
 impl CellRuns {
-    /// Sorts `points` into the voxels of `layout`.
-    pub(crate) fn new(points: &[[f64; 3]], layout: &VoxelLayout) -> Result<Self, VoxelError> {
-        let mut ds = VoxelDownsampler::new();
+    /// Sorts `points` into the voxels of `layout`, replacing the previous
+    /// contents. On error the contents are unspecified.
+    pub(crate) fn sort(
+        &mut self,
+        points: &[[f64; 3]],
+        layout: &VoxelLayout,
+    ) -> Result<(), VoxelError> {
+        let ds = &mut self.sorter;
         ds.sort_and_segment(points, layout)?;
         let m = ds.voxel_count();
-        let keys = ds.starts[..m]
-            .iter()
-            .map(|&s| key_bits(ds.words[s as usize]))
-            .collect();
-        let mut order = Vec::with_capacity(points.len());
+        self.keys.clear();
+        self.keys.extend(
+            ds.starts[..m]
+                .iter()
+                .map(|&s| key_bits(ds.words[s as usize])),
+        );
         ds.words
             .par_iter()
             .with_min_len(MIN_ITEMS_PER_TASK)
             .map(|&w| w as u32)
-            .collect_into_vec(&mut order);
-        Ok(Self {
-            order,
-            keys,
-            starts: ds.starts,
-        })
+            .collect_into_vec(&mut self.order);
+        std::mem::swap(&mut self.starts, &mut ds.starts);
+        Ok(())
     }
 
     /// The unbiased key of voxel `v`.

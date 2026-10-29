@@ -8,7 +8,9 @@
 //! Every filter keeps the surviving points in their input order. The
 //! `*_inlier_indices` forms write the kept indices (ascending) into a
 //! caller-owned buffer; the `remove_*` forms return the filtered
-//! [`PointCloud`] with its colors and normals carried along.
+//! [`PointCloud`] with its colors and normals carried along. Both allocate
+//! their search scratch on every call; [`OutlierFilter`] owns it and reuses
+//! it across calls, which is the allocation-free path for repeated filtering.
 //!
 //! Non-finite points (any coordinate NaN or infinite) are dropped, as PCL
 //! does: they are never inliers, never count as a neighbour, and are left
@@ -132,46 +134,99 @@ pub(crate) fn check_attributes(cloud: &PointCloud) -> Result<(), FilterError> {
 
 /// The finite points of a cloud that has non-finite ones, compacted in
 /// input order, with the input index of each.
+#[derive(Debug, Default, Clone)]
 struct FiniteSubset {
     points: Vec<[f64; 3]>,
     index: Vec<u32>,
 }
 
 impl FiniteSubset {
-    /// `None` when every point is finite, so the input is searched as is.
-    fn of(points: &[[f64; 3]]) -> Option<Self> {
+    /// Compacts the finite points of `points` into `self`. `false`, with
+    /// `self` untouched, when every point is finite, so the input is
+    /// searched as is.
+    fn compact(&mut self, points: &[[f64; 3]]) -> bool {
         let finite = |p: &[f64; 3]| p.iter().all(|v| v.is_finite());
         if points.iter().all(finite) {
-            return None;
+            return false;
         }
-        let (points, index) = points
-            .iter()
-            .enumerate()
-            .filter(|(_, p)| finite(p))
-            .map(|(i, p)| (*p, i as u32))
-            .unzip();
-        Some(Self { points, index })
+        self.points.clear();
+        self.index.clear();
+        for (i, p) in points.iter().enumerate().filter(|(_, p)| finite(p)) {
+            self.points.push(*p);
+            self.index.push(i as u32);
+        }
+        true
     }
 }
 
-/// Runs `filter` on the finite points of `points` and writes the kept
-/// indices, mapped back to `points`, into `dst` (ascending, as the
-/// compaction keeps the input order).
+/// Runs `filter` on the finite points of `points` (compacted into `subset`
+/// when some are not finite) and writes the kept indices, mapped back to
+/// `points`, into `dst` (ascending, as the compaction keeps the input
+/// order).
 fn on_finite_points(
+    subset: &mut FiniteSubset,
     points: &[[f64; 3]],
     dst: &mut Vec<u32>,
     filter: impl FnOnce(&[[f64; 3]], &mut Vec<u32>),
 ) {
     dst.clear();
-    match FiniteSubset::of(points) {
-        None => filter(points, dst),
-        Some(subset) => {
-            filter(&subset.points, dst);
-            for i in dst.iter_mut() {
-                *i = subset.index[*i as usize];
-            }
+    if subset.compact(points) {
+        filter(&subset.points, dst);
+        for i in dst.iter_mut() {
+            *i = subset.index[*i as usize];
         }
+    } else {
+        filter(points, dst);
     }
+}
+
+/// Search buffers of [`OutlierFilter`], apart from the finite subset the
+/// search runs on.
+#[derive(Debug, Default, Clone)]
+struct SearchScratch {
+    grid: CellGrid,
+    /// Radius rule result per point, in search order and in grid order.
+    dense: Vec<bool>,
+    sorted_dense: Vec<bool>,
+    /// Mean k-NN distance per point, in search order and in grid order.
+    mean_dist: Vec<f64>,
+    sorted_mean: Vec<f64>,
+}
+
+/// Reusable scratch of the radius and statistical outlier filters.
+///
+/// [`radius_inlier_indices`] and [`statistical_inlier_indices`] allocate
+/// their search buffers (the cell grid, its sorted coordinates and the
+/// per-point results) on every call. An `OutlierFilter` keeps them and
+/// reuses them: after a call on a cloud of `n` points, later calls on clouds
+/// of at most `n` points allocate nothing on the grid path. Results are
+/// identical to the free functions.
+///
+/// The k-d tree fallback (keys outside `i32`, k-NN neighbourhoods wider
+/// than three cells, statistical clouds under 1024 points) still builds its
+/// tree per call, and the parallel grid search allocates a few small
+/// per-task lists (the cell ranges and the k-NN candidates).
+///
+/// # Example
+///
+/// ```
+/// use kornia_3d::pointcloud::filter::OutlierFilter;
+///
+/// let mut filter = OutlierFilter::new();
+/// let mut kept = Vec::new();
+/// for points in [
+///     vec![[0.0, 0.0, 0.0], [0.1, 0.0, 0.0], [5.0, 0.0, 0.0]],
+///     vec![[0.0, 0.0, 0.0], [9.0, 0.0, 0.0]],
+/// ] {
+///     filter.radius_inlier_indices_into(&points, 0.5, 1, &mut kept)?;
+/// }
+/// assert!(kept.is_empty());
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+#[derive(Debug, Default, Clone)]
+pub struct OutlierFilter {
+    finite: FiniteSubset,
+    search: SearchScratch,
 }
 
 fn check_len(len: usize) -> Result<(), FilterError> {
@@ -244,6 +299,9 @@ pub fn select_points(cloud: &PointCloud, indices: &[u32]) -> Result<PointCloud, 
 /// A non-finite point (any coordinate NaN or infinite) is never kept and
 /// never counts as a neighbour of another point.
 ///
+/// Allocates its search scratch on every call;
+/// [`OutlierFilter::radius_inlier_indices_into`] reuses it across calls.
+///
 /// # Arguments
 ///
 /// * `points` - Input points.
@@ -278,19 +336,12 @@ pub fn radius_inlier_indices(
     min_neighbours: usize,
     dst: &mut Vec<u32>,
 ) -> Result<(), FilterError> {
-    let radius_sq = radius * radius;
-    if !(radius.is_finite() && radius > 0.0 && radius_sq.is_finite()) {
-        return Err(FilterError::InvalidRadius(radius));
-    }
-    check_len(points.len())?;
-    on_finite_points(points, dst, |finite, dst| {
-        radius_inliers_of_finite(finite, radius, radius_sq, min_neighbours, dst)
-    });
-    Ok(())
+    OutlierFilter::new().radius_inlier_indices_into(points, radius, min_neighbours, dst)
 }
 
 /// [`radius_inlier_indices`] on finite points, into an empty `dst`.
 fn radius_inliers_of_finite(
+    search: &mut SearchScratch,
     points: &[[f64; 3]],
     radius: f64,
     radius_sq: f64,
@@ -308,10 +359,19 @@ fn radius_inliers_of_finite(
     let Some(cap) = NonZero::new(min_neighbours + 1) else {
         return;
     };
-    let mut dense = vec![false; points.len()];
-    match CellGrid::for_radius(points, radius) {
-        Some(grid) => grid::radius_dense(&grid, radius_sq, cap.get(), &mut dense),
-        None => radius_dense_kd(points, radius_sq, cap, &mut dense),
+    let dense = &mut search.dense;
+    dense.clear();
+    dense.resize(points.len(), false);
+    if search.grid.for_radius(points, radius) {
+        grid::radius_dense(
+            &search.grid,
+            radius_sq,
+            cap.get(),
+            &mut search.sorted_dense,
+            dense,
+        );
+    } else {
+        radius_dense_kd(points, radius_sq, cap, dense);
     }
     dst.extend(
         dense
@@ -394,11 +454,19 @@ pub fn remove_radius_outliers(
 /// never a neighbour, and is left out of the global mean and deviation:
 /// `n` and the cloud size above count the finite points only.
 ///
+/// A negative `std_ratio` is accepted, as in PCL: the threshold then lies
+/// below the mean, so fewer than half of a symmetric distribution is kept.
+///
+/// Allocates its search scratch on every call;
+/// [`OutlierFilter::statistical_inlier_indices_into`] reuses it across
+/// calls.
+///
 /// # Arguments
 ///
 /// * `points` - Input points.
 /// * `k` - Neighbours per point, at least `1`.
-/// * `std_ratio` - Standard deviation multiplier; smaller removes more.
+/// * `std_ratio` - Standard deviation multiplier, any finite value; smaller
+///   removes more.
 /// * `dst` - Cleared, then filled with the kept indices in ascending order.
 ///
 /// # Returns
@@ -429,21 +497,12 @@ pub fn statistical_inlier_indices(
     std_ratio: f64,
     dst: &mut Vec<u32>,
 ) -> Result<(), FilterError> {
-    if k == 0 {
-        return Err(FilterError::InvalidNeighbourCount);
-    }
-    if !std_ratio.is_finite() {
-        return Err(FilterError::InvalidStdRatio(std_ratio));
-    }
-    check_len(points.len())?;
-    on_finite_points(points, dst, |finite, dst| {
-        statistical_inliers_of_finite(finite, k, std_ratio, dst)
-    });
-    Ok(())
+    OutlierFilter::new().statistical_inlier_indices_into(points, k, std_ratio, dst)
 }
 
 /// [`statistical_inlier_indices`] on finite points, into an empty `dst`.
 fn statistical_inliers_of_finite(
+    search: &mut SearchScratch,
     points: &[[f64; 3]],
     k: usize,
     std_ratio: f64,
@@ -461,26 +520,31 @@ fn statistical_inliers_of_finite(
     let Some(cap) = NonZero::new(query) else {
         return;
     };
-    let mut mean_dist = vec![0.0f64; n];
-    let grid = (n >= KNN_GRID_MIN_POINTS)
-        .then(|| CellGrid::for_knn(points, query.div_ceil(KNN_CELL_LOAD_DIVISOR)))
-        .flatten();
-    match grid {
-        Some(grid) => {
-            let tree = std::sync::OnceLock::new();
-            let fallback = |p: &[f64; 3]| {
-                knn_mean_kd(tree.get_or_init(|| KdTree::new_from_slice(points)), p, cap)
-            };
-            grid::knn_mean_distances(&grid, query, &fallback, &mut mean_dist);
-        }
-        None => {
-            let tree = KdTree::new_from_slice(points);
-            mean_dist
-                .par_iter_mut()
-                .with_min_len(MIN_QUERIES_PER_TASK)
-                .zip(points.par_iter())
-                .for_each(|(d, p)| *d = knn_mean_kd(&tree, p, cap));
-        }
+    let mean_dist = &mut search.mean_dist;
+    mean_dist.clear();
+    mean_dist.resize(n, 0.0);
+    let on_grid = n >= KNN_GRID_MIN_POINTS
+        && search
+            .grid
+            .for_knn(points, query.div_ceil(KNN_CELL_LOAD_DIVISOR));
+    if on_grid {
+        let tree = std::sync::OnceLock::new();
+        let fallback =
+            |p: &[f64; 3]| knn_mean_kd(tree.get_or_init(|| KdTree::new_from_slice(points)), p, cap);
+        grid::knn_mean_distances(
+            &search.grid,
+            query,
+            &fallback,
+            &mut search.sorted_mean,
+            mean_dist,
+        );
+    } else {
+        let tree = KdTree::new_from_slice(points);
+        mean_dist
+            .par_iter_mut()
+            .with_min_len(MIN_QUERIES_PER_TASK)
+            .zip(points.par_iter())
+            .for_each(|(d, p)| *d = knn_mean_kd(&tree, p, cap));
     }
 
     let count = n as f64;
@@ -500,6 +564,129 @@ fn statistical_inliers_of_finite(
     );
 }
 
+impl OutlierFilter {
+    /// Creates an empty scratch.
+    ///
+    /// # Arguments
+    ///
+    /// This function takes no arguments.
+    ///
+    /// # Returns
+    ///
+    /// A filter with no buffers allocated yet.
+    ///
+    /// # Errors
+    ///
+    /// This function is infallible.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// [`radius_inlier_indices`], reusing this filter's search buffers; see
+    /// it for the exact rule. The result is the same.
+    ///
+    /// # Arguments
+    ///
+    /// * `points` - Input points.
+    /// * `radius` - Search radius, in the units of `points`.
+    /// * `min_neighbours` - Neighbours (excluding the point) needed to keep a
+    ///   point; `0` keeps every finite point.
+    /// * `dst` - Cleared, then filled with the kept indices in ascending order.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` once `dst` is written.
+    ///
+    /// # Errors
+    ///
+    /// * [`FilterError::InvalidRadius`] if `radius` is not finite and positive.
+    /// * [`FilterError::TooManyPoints`] above [`MAX_FILTER_POINTS`] points.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_3d::pointcloud::filter::OutlierFilter;
+    ///
+    /// let points = [[0.0, 0.0, 0.0], [0.1, 0.0, 0.0], [5.0, 0.0, 0.0]];
+    /// let mut kept = Vec::new();
+    /// OutlierFilter::new().radius_inlier_indices_into(&points, 0.5, 1, &mut kept)?;
+    /// assert_eq!(kept, vec![0, 1]);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn radius_inlier_indices_into(
+        &mut self,
+        points: &[[f64; 3]],
+        radius: f64,
+        min_neighbours: usize,
+        dst: &mut Vec<u32>,
+    ) -> Result<(), FilterError> {
+        let radius_sq = radius * radius;
+        if !(radius.is_finite() && radius > 0.0 && radius_sq.is_finite()) {
+            return Err(FilterError::InvalidRadius(radius));
+        }
+        check_len(points.len())?;
+        let Self { finite, search } = self;
+        on_finite_points(finite, points, dst, |finite, dst| {
+            radius_inliers_of_finite(search, finite, radius, radius_sq, min_neighbours, dst)
+        });
+        Ok(())
+    }
+
+    /// [`statistical_inlier_indices`], reusing this filter's search buffers;
+    /// see it for the exact rule. The result is the same.
+    ///
+    /// # Arguments
+    ///
+    /// * `points` - Input points.
+    /// * `k` - Neighbours per point, at least `1`.
+    /// * `std_ratio` - Standard deviation multiplier, any finite value; a
+    ///   negative one puts the threshold below the mean, as in PCL.
+    /// * `dst` - Cleared, then filled with the kept indices in ascending order.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` once `dst` is written.
+    ///
+    /// # Errors
+    ///
+    /// * [`FilterError::InvalidNeighbourCount`] if `k == 0`.
+    /// * [`FilterError::InvalidStdRatio`] if `std_ratio` is not finite.
+    /// * [`FilterError::TooManyPoints`] above [`MAX_FILTER_POINTS`] points.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_3d::pointcloud::filter::OutlierFilter;
+    ///
+    /// let mut points: Vec<[f64; 3]> = (0..10).map(|i| [i as f64 * 0.1, 0.0, 0.0]).collect();
+    /// points.push([50.0, 0.0, 0.0]);
+    /// let mut kept = Vec::new();
+    /// OutlierFilter::new().statistical_inlier_indices_into(&points, 2, 1.0, &mut kept)?;
+    /// assert_eq!(kept, (0..10).collect::<Vec<u32>>());
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn statistical_inlier_indices_into(
+        &mut self,
+        points: &[[f64; 3]],
+        k: usize,
+        std_ratio: f64,
+        dst: &mut Vec<u32>,
+    ) -> Result<(), FilterError> {
+        if k == 0 {
+            return Err(FilterError::InvalidNeighbourCount);
+        }
+        if !std_ratio.is_finite() {
+            return Err(FilterError::InvalidStdRatio(std_ratio));
+        }
+        check_len(points.len())?;
+        let Self { finite, search } = self;
+        on_finite_points(finite, points, dst, |finite, dst| {
+            statistical_inliers_of_finite(search, finite, k, std_ratio, dst)
+        });
+        Ok(())
+    }
+}
+
 /// Mean distance from `p` to its `cap − 1` nearest other points, from the
 /// `cap` nearest (`p` itself first, at distance 0).
 fn knn_mean_kd(tree: &KdTree, p: &[f64; 3], cap: NonZero<usize>) -> f64 {
@@ -516,7 +703,8 @@ fn knn_mean_kd(tree: &KdTree, p: &[f64; 3], cap: NonZero<usize>) -> f64 {
 ///
 /// * `cloud` - Input cloud; colors and normals are carried along.
 /// * `k` - Neighbours per point, at least `1`.
-/// * `std_ratio` - Standard deviation multiplier.
+/// * `std_ratio` - Standard deviation multiplier, any finite value (negative
+///   puts the threshold below the mean, as in PCL).
 ///
 /// # Returns
 ///

@@ -8,6 +8,9 @@
 //! clusters on a sparse background, where the statistical filter shrinks
 //! its cells and sends the background queries to the k-d tree).
 //!
+//! `*_outliers_reused_cpu` run the uniform-cloud filters through one
+//! reused `OutlierFilter` scratch instead of the allocating free functions.
+//!
 //! `voxel_downsample_centroid_attrs_cpu` times `voxel_downsample` on the same
 //! cloud with colors and normals, so it includes the attribute reduction.
 //!
@@ -16,7 +19,9 @@
 //! Baselines on the same inputs: `benches/bench_voxel_baselines.py`.
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use kornia_3d::pointcloud::filter::{radius_inlier_indices, statistical_inlier_indices};
+use kornia_3d::pointcloud::filter::{
+    radius_inlier_indices, statistical_inlier_indices, OutlierFilter,
+};
 use kornia_3d::pointcloud::PointCloud;
 use kornia_3d::voxel::{
     voxel_downsample, DownsampleMode, VoxelConnectivity, VoxelDownsampler, VoxelLayout,
@@ -137,6 +142,24 @@ fn bench_voxel(c: &mut Criterion) {
         group.bench_function(BenchmarkId::new("statistical_outliers_cpu", &id), |b| {
             b.iter(|| statistical_inlier_indices(&pts, STAT_K, STAT_STD_RATIO, &mut kept).unwrap())
         });
+        let mut filter = OutlierFilter::new();
+        group.bench_function(BenchmarkId::new("radius_outliers_reused_cpu", &id), |b| {
+            b.iter(|| {
+                filter
+                    .radius_inlier_indices_into(&pts, RADIUS_M, RADIUS_MIN_NEIGHBOURS, &mut kept)
+                    .unwrap()
+            })
+        });
+        group.bench_function(
+            BenchmarkId::new("statistical_outliers_reused_cpu", &id),
+            |b| {
+                b.iter(|| {
+                    filter
+                        .statistical_inlier_indices_into(&pts, STAT_K, STAT_STD_RATIO, &mut kept)
+                        .unwrap()
+                })
+            },
+        );
         for (suffix, cloud) in [
             ("nan", points_with_nan(n)),
             ("clustered", clustered_points(n)),
