@@ -55,6 +55,20 @@ pub enum OxideError {
 ///
 /// [`OxideError::Stub`] without real PTX; [`OxideError::Load`] if the driver
 /// rejects the module or `name` is not an entry.
+///
+/// # Example
+///
+/// ```no_run
+/// use cudarc::driver::CudaContext;
+/// use kornia_tensor::cuda::oxide::{entry, kernel};
+///
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let stream = CudaContext::new(0)?.default_stream();
+/// let gray = kernel(&stream, entry::GRAY_FROM_RGB_U8)?;
+/// # let _ = gray;
+/// # Ok(())
+/// # }
+/// ```
 pub fn kernel(stream: &Arc<CudaStream>, name: &str) -> Result<&'static CudaKernel, OxideError> {
     if IS_STUB {
         return Err(OxideError::Stub);

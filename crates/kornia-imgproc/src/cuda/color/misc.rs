@@ -85,6 +85,17 @@ static SEPIA_F32: KernelCell = KernelCell::new();
 /// Launch sepia tone on RGB8 (Q8 fixed point, bit-exact vs CPU;
 /// word-vectorized 4 px/thread).
 ///
+/// # Arguments
+///
+/// * `stream` - Stream to launch on.
+/// * `src` - Interleaved RGB bytes, at least `3 * npixels` long.
+/// * `dst` - Interleaved sepia RGB output, at least `3 * npixels` long.
+/// * `npixels` - Pixel count; zero is a no-op.
+///
+/// # Returns
+///
+/// `Ok(())` once the kernel is enqueued.
+///
 /// # Errors
 ///
 /// [`CudaColorError::TooManyPixels`] if `3 * npixels` exceeds `u32::MAX`,

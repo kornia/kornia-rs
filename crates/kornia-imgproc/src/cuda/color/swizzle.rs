@@ -203,6 +203,17 @@ static STRIP_U8: KernelSuiteCell = KernelSuiteCell::new();
 /// Launch RGB8 ↔ BGR8 channel swap (symmetric — also BGR → RGB;
 /// word-vectorized 4 px/thread).
 ///
+/// # Arguments
+///
+/// * `stream` - Stream to launch on.
+/// * `src` - Interleaved RGB bytes, at least `3 * npixels` long.
+/// * `dst` - Interleaved output with the R and B channels swapped, at least `3 * npixels` long.
+/// * `npixels` - Pixel count; zero is a no-op.
+///
+/// # Returns
+///
+/// `Ok(())` once the kernel is enqueued.
+///
 /// # Errors
 ///
 /// [`CudaColorError::TooManyPixels`] if `3 * npixels` exceeds `u32::MAX`,

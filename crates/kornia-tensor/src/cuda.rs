@@ -757,6 +757,22 @@ impl CudaKernel {
     ///
     /// Returns [`CudaError::Driver`] if the driver rejects the PTX (e.g. its
     /// `.version` is newer than the driver supports) or an entry is missing.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use cudarc::driver::CudaContext;
+    /// use kornia_tensor::CudaKernel;
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let ctx = CudaContext::new(0)?;
+    /// // The cuda-oxide PTX and its entry names, as `cuda::oxide` loads them.
+    /// let kernels =
+    ///     CudaKernel::load_ptx_many(&ctx, kornia_oxide_kernels::PTX, kornia_oxide_kernels::ENTRIES)?;
+    /// assert_eq!(kernels.len(), kornia_oxide_kernels::ENTRIES.len());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn load_ptx_many(
         ctx: &Arc<CudaContext>,
         ptx: &str,

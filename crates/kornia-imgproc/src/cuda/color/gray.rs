@@ -316,6 +316,7 @@ mod tests {
             // SAFETY: both aliases stay inside the live allocations above and
             // are leaked below, so they never free memory they do not own.
             let src = unsafe { stream.upgrade_device_ptr::<u8>(src_base + src_off, 48) };
+            // SAFETY: as above, for the destination alias.
             let mut dst = unsafe { stream.upgrade_device_ptr::<u8>(dst_base + dst_off, 16) };
             let r = launch_gray_from_rgb_u8(&stream, &src, &mut dst, 16);
             src.leak();
