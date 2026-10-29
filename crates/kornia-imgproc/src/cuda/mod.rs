@@ -52,6 +52,10 @@ pub mod histogram;
 /// Median-blur sorting-network kernels (byte-exact vs the CPU path, cv2
 /// and VPI).
 pub mod median;
+
+/// Valid-aware depth median kernels (bit-identical to the CPU `depth`
+/// ops).
+pub(crate) mod depth;
 /// Native CUDA u8 morphology kernels (dilate / erode, byte-exact with the
 /// CPU ops).
 pub mod morphology;
