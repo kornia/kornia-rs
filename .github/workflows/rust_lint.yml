@@ -66,7 +66,7 @@ jobs:
       - name: Show sccache stats
         if: always() && matrix.needs-sccache
         run: |
-          sccache --show-stats 2>&1 || echo "::warning::sccache stats unavailable - server may have exited"
+          "$SCCACHE_PATH" --show-stats 2>&1 || echo "::warning::sccache stats unavailable - server may have exited"
 
   cuda-feature-check:
     name: Check - CUDA features

@@ -40,15 +40,13 @@ AI models often hallucinate comments or reinvent existing utilities.
 
 **Failure Condition:** Answering a review question with "That's what the AI outputted" or "I don't know, it works" leads to immediate closure.
 
-**Requirement:** The PR's **Author walkthrough** is written by you, in your own words: each changed file, why the issue needs it, the riskiest part and how you checked it.
-
 ## 3. Instructions for Reviewers (human or AI)
 
 Review with the [`kornia-code-review`](.claude/skills/kornia-code-review/SKILL.md) skill: scope against the linked issue first, then copies, latency, benchmarks, correctness and the coding-style rules, each finding tagged measured or inferred.
 
 **Do not speculate about whether or how AI was used.** Disclosure belongs to the author, in the PR template. Judge the change: a hallucinated comment, a reinvented utility or an `unwrap()` in library code is a defect whoever wrote it, and poor code or a long, structured description is not evidence of AI use. Only demonstrable deception (verification that never ran, fabricated output) is grounds for closure.
 
-To check that the author understands the change, use the Author walkthrough and ask about specific lines (Law 3), rather than guessing at provenance.
+To check that the author understands the change, ask about specific lines (Law 3), rather than guessing at provenance.
 
 ## 4. Additional Resources
 

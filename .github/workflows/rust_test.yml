@@ -35,6 +35,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # x86_64 pinned to 24.04: on ubuntu-26.04 the frozen BA digest test
+        # (ba_schur defaults_are_bit_identical_to_the_frozen_solver) differs.
         include:
           # Pinned like the aarch64 row: ubuntu-latest moved to 26.04 on
           # 2026-10-22, which changes the bits that
@@ -67,4 +69,4 @@ jobs:
       - name: Show sccache stats
         if: always()
         run: |
-          sccache --show-stats 2>&1 || echo "::warning::sccache stats unavailable - server may have exited"
+          "$SCCACHE_PATH" --show-stats 2>&1 || echo "::warning::sccache stats unavailable - server may have exited"

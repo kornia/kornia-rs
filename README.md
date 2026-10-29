@@ -500,8 +500,8 @@ works without the project's rules.
 2. Before opening the PR run `pixi run pr-check`, then have the agent self-review:
    "self-review my diff with `.claude/skills/kornia-code-review`". Fix what it
    finds and paste its final output in the PR's **Self-review** section.
-3. Write the **Author walkthrough** yourself; agents must not write it.
-   Fill in the AI disclosure (agent + version, model, effort, skills applied).
+3. Fill in the AI disclosure (agent + version, model, effort, skills applied,
+   human vs AI part).
 4. User-visible change: add `changelog.d/<PR>.<type>.md`.
 
 **Changing the skills:** follow `kornia-curation`, run `pixi run skills-check`,

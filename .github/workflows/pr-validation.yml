@@ -27,7 +27,8 @@ jobs:
             // Extract issue numbers from PR description
             // Matches patterns like: Fixes #123, Closes #456, Relates to #789, etc.
             const issuePattern = /(?:fixes?|closes?|resolves?|relates?\s+to|see|refs?)\s+#(\d+)/gi;
-            const matches = [...prBody.matchAll(issuePattern)];
+            // Ignore template comments so placeholder text never counts as a link.
+            const matches = [...prBody.replace(/<!--[\s\S]*?-->/g, '').matchAll(issuePattern)];
             // Cap the number of issues checked to bound API calls on crafted PR bodies.
             const MAX_ISSUES = 5;
             const issueNumbers = [...new Set(matches.map(m => parseInt(m[1], 10)))].slice(0, MAX_ISSUES);
@@ -50,19 +51,6 @@ jobs:
                     warnings.push(`⚠️ **Issue #${issueNumber} is closed**: The linked issue #${issueNumber} is already closed. Please ensure you're linking to the correct issue.`);
                   }
 
-                  // Check if PR author is assigned to the issue
-                  const assignees = issue.data.assignees.map(a => a.login);
-                  if (assignees.length === 0) {
-                    warnings.push(`⚠️ **Issue #${issueNumber} has no assignee**: This issue has not been assigned to anyone. Please wait for a maintainer to assign it to you before submitting a PR.`);
-                  } else if (!assignees.includes(prAuthor)) {
-                    warnings.push(`⚠️ **Assignment mismatch**: You (@${prAuthor}) are not assigned to issue #${issueNumber}. The issue is assigned to: ${assignees.map(a => `@${a}`).join(', ')}. Please wait for a maintainer to assign the issue to you.`);
-                  }
-
-                  // Check if issue has triage label (indicating it might not be approved yet)
-                  const labels = issue.data.labels.map(l => l.name);
-                  if (labels.includes('triage')) {
-                    warnings.push(`ℹ️ **Issue #${issueNumber} is still in triage**: This issue may not have been reviewed and approved by a maintainer yet. Please ensure the issue has been approved before submitting a PR.`);
-                  }
                 } catch (error) {
                   if (error.status === 404) {
                     warnings.push(`❌ **Issue #${issueNumber} not found**: The linked issue #${issueNumber} does not exist. Please check the issue number.`);
@@ -92,25 +80,38 @@ jobs:
               warnings.push(`⚠️ **AI disclosure incomplete**: fill in ${missing.map(f => `**${f}**`).join(', ')} (write \`none\` as the agent if no AI was used; see the PR template).`);
             }
 
-            // Self-review and author walkthrough are required: fail the job (make it a
-            // required check to block merge). This proves the sections are filled in,
-            // not that the review was good or the author understands the change;
-            // reviewers check that (kornia-code-review section 6).
+            // Self-review is required and must be a real kornia-code-review run, so
+            // maintainers can rely on it before reviewing by hand. These checks catch
+            // placeholders and unaddressed findings, not a poor review; reviewers
+            // judge that (kornia-code-review sections 6 and 7).
             const failures = [];
-            const sr = prBody.replace(/<!--[\s\S]*?-->/g, '').match(/##[^\n]*Self-review[^\n]*\n([\s\S]*?)(?=\n## |$)/i);
-            const verdict = sr && /Verdict:[ \t]*(approve|request changes|comment)\b/i.test(sr[1]);
-            if (!verdict || !/Skill gaps:/i.test(sr[1])) {
-              failures.push('❌ **Self-review missing**: run the `kornia-code-review` skill on your diff and paste its output (with `Verdict:` and `Skill gaps:`) in the Self-review section. See `.claude/skills/kornia-code-review/SKILL.md`.');
+            const sr = body.match(/##[^\n]*Self-review[^\n]*\n([\s\S]*?)(?=\n## |$)/i);
+            const srText = sr ? sr[1] : '';
+            const verdict = (srText.match(/Verdict:[ \t]*(approve|request changes|comment)\b/i) || [])[1];
+            const findings = srText.split('\n').filter(l => /\[(measured|inferred)\]/i.test(l));
+            const blocking = findings.filter(l => /(^|\s)[—–-]+\s*blocking\s*[—–-]/i.test(l));
+            const SKILL = '`.claude/skills/kornia-code-review/SKILL.md`';
+            if (!verdict || !/Skill gaps:/i.test(srText)) {
+              failures.push(`❌ **Self-review missing**: run the \`kornia-code-review\` skill on your diff and paste its output (with \`Verdict:\` and \`Skill gaps:\`) in the Self-review section. See ${SKILL}.`);
+            } else if (findings.length === 0) {
+              failures.push(`❌ **Self-review is a placeholder**: paste the skill's full output, one line per finding or checked section, each tagged \`[measured]\` or \`[inferred]\`. See ${SKILL}.`);
+            } else if (blocking.length > 0) {
+              failures.push(`❌ **Self-review has ${blocking.length} blocking finding(s)**: fix them, re-run the skill and paste the new output before a maintainer reviews.`);
+            } else if (/request changes/i.test(verdict)) {
+              failures.push('❌ **Self-review requests changes**: address its findings, re-run the skill and paste the new output before a maintainer reviews.');
             }
-            const wt = prBody.replace(/<!--[\s\S]*?-->/g, '').match(/##[^\n]*Author walkthrough[^\n]*\n([\s\S]*?)(?=\n## |$)/i);
-            const wtField = f => {
-              const m = wt && wt[1].match(new RegExp(`\\*\\*${f}:\\*\\*[ \\t]*([\\s\\S]*?)(?=\\n- \\*\\*|\\n---|$)`));
-              const v = m ? m[1].trim() : '';
-              // Template or agent placeholders ("_to be written…_", TODO) count as empty.
-              return /^_[\s\S]*_$|to be written|^(TODO|TBD)\b/i.test(v) ? '' : v;
-            };
-            if (!wtField('Per file') || !wtField('Riskiest part and how I checked it')) {
-              failures.push('❌ **Author walkthrough missing**: in your own words, explain each changed file and the riskiest part of the change (Author walkthrough section). Reviewers will ask about specific lines.');
+
+            // Library code needs the reuse search log (kornia-code-review section 0b).
+            // Only file names are read through the API; the PR's code is never checked out.
+            if (failures.length === 0) {
+              const files = await github.paginate(github.rest.pulls.listFiles, {
+                owner: context.repo.owner, repo: context.repo.repo, pull_number: pr.number, per_page: 100
+              });
+              const library = files.some(f => /^(crates\/|kornia-py\/src\/|kornia-cpp\/src\/)/.test(f.filename));
+              const reuse = srText.match(/Reuse searches:([\s\S]*?)(?=\n\s*Skill gaps:|$)/i);
+              if (library && !(reuse && /^\s*\$ /m.test(reuse[1]))) {
+                failures.push(`❌ **Reuse searches missing**: this PR changes library code; the Self-review needs the \`Reuse searches\` block with the commands run and their hits. See ${SKILL} section 0b.`);
+              }
             }
             warnings.unshift(...failures);
 

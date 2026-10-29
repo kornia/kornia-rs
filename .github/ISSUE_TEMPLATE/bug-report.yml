@@ -20,11 +20,10 @@ body:
 
         If you plan to fix this bug yourself:
 
-        1. **Wait for maintainer approval**: A maintainer must review and approve this issue first
-        2. **Wait for assignment**: You must be assigned to this issue by a maintainer before submitting a PR
-        3. **Do not start work until assigned**: PRs submitted without prior issue approval and assignment may be closed
+        1. **Say you are working on it**: comment here so others do not duplicate the work
+        2. **Link this issue** from your PR (`Fixes #<number>`) and paste the `kornia-code-review` self-review
 
-        This helps us ensure the issue aligns with project goals, avoid duplicate work, and coordinate contributions effectively. See the [Contributing Guide](https://github.com/kornia/kornia-rs/blob/main/CONTRIBUTING.md#pull-request) for more details.
+        This avoids duplicate work. See the [Contributing Guide](https://github.com/kornia/kornia-rs/blob/main/CONTRIBUTING.md#pull-request) for more details.
 
   - type: textarea
     id: describe-bug

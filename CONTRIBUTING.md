@@ -227,7 +227,7 @@ This section provides comprehensive guidance for contributing to kornia-rs, with
    ```bash
    pixi run pr-check     # Gate: skills + fmt-check + clippy + check + tests
    ```
-   Then run the `kornia-code-review` skill on your diff (`git diff main...HEAD`) and paste its output in the PR's **Self-review** section. Then write the **Author walkthrough** yourself, without AI: each changed file, why the issue needs it, the riskiest part and how you checked it. Both are required: the PR check fails without them, and reviewers will ask you about specific lines.
+   Then run the `kornia-code-review` skill on your diff (`git diff main...HEAD`) and paste its output in the PR's **Self-review** section (required: the PR check fails without it). Reviewers may ask you about specific lines.
 
 3. **Add a Changelog Fragment**: For a user-visible change, add `changelog.d/<PR>.<type>.md` (`breaking`, `added`, `perf`, `fixed`) as described in [`changelog.d/README.md`](changelog.d/README.md). Do not edit `CHANGELOG.md`; releases assemble it. Internal-only PRs say so and get the `no-changelog` label.
 
@@ -316,25 +316,16 @@ This section provides comprehensive guidance for contributing to kornia-rs, with
 
 # Pull Request
 
-## Issue Approval and Assignment Workflow
+## Issue Workflow
 
-**Before submitting a PR, you must:**
+**Before submitting a PR:**
 
-1. **Open an issue first**: All PRs must be linked to an existing issue. If no issue exists for your work, create one using the appropriate template (bug report or feature request).
+1. **Open or find an issue**: Every PR links an issue. If none exists, open one with the bug report or feature request template.
+2. **Say you are working on it**: Comment on the issue so others do not duplicate the work. You do not need to wait for approval or assignment; maintainers may still close a PR that does not fit the project's direction.
 
-2. **Wait for maintainer approval**: A maintainer must review and approve the issue before you start working on it. New issues are automatically labeled with `triage` and will receive a welcome message explaining this process.
-
-3. **Wait for assignment**: You must be assigned to the issue by a maintainer before submitting a PR. This ensures:
-   - The issue aligns with project goals
-   - No duplicate work is being done
-   - Proper coordination of contributions
-
-4. **Do not start work until assigned**: PRs submitted without prior issue approval and assignment may be closed or receive warnings during automated validation.
-
-This workflow helps maintain quality, avoid conflicts, and ensure contributions align with the project's direction. The automated PR validation workflow will check these requirements and post warnings if they're not met.
+The automated PR validation checks that an issue is linked and that the Self-review is a real `kornia-code-review` run.
 
 **Requirements:**
-- **Issue approval and assignment**: The linked issue must be approved by a maintainer and you must be assigned to it (see workflow above)
 - Link PR to an issue (use "Closes #123" or "Fixes #123")
 - Pass all local tests before submission
 - For first time contributors, provide proof of local test execution in the PR description
