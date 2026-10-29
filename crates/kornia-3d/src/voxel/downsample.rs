@@ -1,7 +1,9 @@
 //! Sort-by-key voxel reductions on the host: every point gets a packed
 //! 128-bit sort word (biased voxel key `x, y, z` in the top 96 bits, point
 //! index in the low 32), the words are sorted, and each run of equal keys is
-//! one voxel, its points in ascending index.
+//! one voxel, its points in ascending index. The CUDA path
+//! (`super::cuda`) sorts the same words and reduces the runs with the same
+//! expressions.
 
 use rayon::prelude::*;
 
@@ -170,6 +172,7 @@ impl VoxelDownsampler {
 
     /// The representative point of voxel `v` and the index of the point it
     /// came from (for [`DownsampleMode::Centroid`], the lowest index).
+    /// Mirrored by `voxel_reduce` in the CUDA source.
     fn reduce(
         &self,
         v: usize,
@@ -361,7 +364,8 @@ impl VoxelDownsampler {
 /// consecutive in the sorted keys, found by one search that gallops from
 /// the column's `hints` entry (the previous voxel's result: voxels visited
 /// in ascending order make it amortized O(1)). Columns or `z` values past
-/// the `i32` range do not exist.
+/// the `i32` range do not exist. Mirrored by `adjacent_occupied` in the
+/// CUDA source (by bisection).
 fn adjacent_occupied(unique: &[u128], key: u128, max_l1: i32, hints: &mut [usize; 9]) -> u8 {
     let x = i64::from((key >> 64) as u32);
     let y = i64::from((key >> 32) as u32);
@@ -402,8 +406,9 @@ fn adjacent_occupied(unique: &[u128], key: u128, max_l1: i32, hints: &mut [usize
 /// filter).
 ///
 /// The output is in ascending voxel key order (lexicographic `(x, y, z)`),
-/// the same for any permutation-free rerun. Open3D's `voxel_down_sample`
-/// returns the same centroids in hash-map order; compare with it as sets.
+/// the same for any permutation-free rerun and on the device
+/// (`CudaVoxelFilter::downsample`). Open3D's `voxel_down_sample` returns
+/// the same centroids in hash-map order; compare with it as sets.
 ///
 /// # Arguments
 ///

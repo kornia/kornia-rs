@@ -1,0 +1,1 @@
+With the `cuda` feature, `kornia_3d::voxel::CudaVoxelFilter` runs the voxel downsampling and the voxel neighbour count on device-resident points (stable radix sort by key, then segment reduce) with the same output, in the same order, as the CPU.

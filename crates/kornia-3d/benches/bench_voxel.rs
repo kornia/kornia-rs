@@ -1,7 +1,9 @@
 //! Voxel downsampling and voxel neighbour counts on 100k and 1M uniform
-//! random points in a 4 m cube (0.1 m voxels), on the CPU.
+//! random points in a 4 m cube (0.1 m voxels): CPU, and with `--features
+//! cuda` the device twins on device-resident points (stream synchronized
+//! per iteration).
 //!
-//! `cargo bench -p kornia-3d --bench bench_voxel`
+//! `cargo bench -p kornia-3d --bench bench_voxel [--features cuda]`
 //! Single-thread numbers: `RAYON_NUM_THREADS=1`.
 //! Baselines on the same inputs: `benches/bench_voxel_baselines.py`.
 
@@ -55,6 +57,38 @@ fn bench_voxel(c: &mut Criterion) {
                     .unwrap()
             })
         });
+
+        #[cfg(feature = "cuda")]
+        {
+            use cudarc::driver::CudaContext;
+            use kornia_3d::voxel::CudaVoxelFilter;
+
+            let st = CudaContext::new(0).unwrap().default_stream();
+            let mut filter = CudaVoxelFilter::new(&st).unwrap();
+            let dev = st.clone_htod(pts.as_flattened()).unwrap();
+            let mut vox = filter.alloc_voxel_cloud(n).unwrap();
+            let mut cnt = filter.alloc_neighbour_counts(n).unwrap();
+            for (name, mode) in [
+                ("downsample_centroid_cuda", DownsampleMode::Centroid),
+                ("downsample_first_cuda", DownsampleMode::First),
+                ("downsample_nearest_cuda", DownsampleMode::NearestToCentre),
+            ] {
+                group.bench_function(BenchmarkId::new(name, &id), |b| {
+                    b.iter(|| {
+                        filter.downsample(&dev, n, &layout, mode, &mut vox).unwrap();
+                        st.synchronize().unwrap();
+                    })
+                });
+            }
+            group.bench_function(BenchmarkId::new("neighbour_counts26_cuda", &id), |b| {
+                b.iter(|| {
+                    filter
+                        .neighbour_counts(&dev, n, &layout, VoxelConnectivity::TwentySix, &mut cnt)
+                        .unwrap();
+                    st.synchronize().unwrap();
+                })
+            });
+        }
     }
     group.finish();
 }
