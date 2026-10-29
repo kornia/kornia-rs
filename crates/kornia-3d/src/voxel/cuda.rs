@@ -581,45 +581,81 @@ pub struct CudaVoxelCloud {
 impl CudaVoxelCloud {
     /// Voxel capacity.
     ///
+    /// # Arguments
+    ///
+    /// This method takes no arguments beyond `self`.
+    ///
     /// # Returns
     ///
     /// The number of voxels the buffers hold; a call needs one slot per
     /// input point.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible.
     pub fn capacity(&self) -> usize {
         self.capacity
     }
 
     /// Device points.
     ///
+    /// # Arguments
+    ///
+    /// This method takes no arguments beyond `self`.
+    ///
     /// # Returns
     ///
     /// The `3 × capacity` `f64` buffer; the first `3 × count` hold one point
     /// per voxel in ascending key order.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible.
     pub fn xyz(&self) -> &CudaSlice<f64> {
         &self.xyz
     }
 
     /// Device source indices.
     ///
+    /// # Arguments
+    ///
+    /// This method takes no arguments beyond `self`.
+    ///
     /// # Returns
     ///
     /// The `capacity` `u32` buffer: per voxel, the input index of its point
     /// (the lowest index of the voxel for [`DownsampleMode::Centroid`]).
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible.
     pub fn index(&self) -> &CudaSlice<u32> {
         &self.index
     }
 
     /// Device voxel count.
     ///
+    /// # Arguments
+    ///
+    /// This method takes no arguments beyond `self`.
+    ///
     /// # Returns
     ///
     /// One `u32` written by the last call, for device consumers that must
     /// not sync. Meaningless when the call recorded an invalid point.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible.
     pub fn count(&self) -> &CudaSlice<u32> {
         &self.count
     }
 
     /// Reads the voxel count. Synchronizes the stream.
+    ///
+    /// # Arguments
+    ///
+    /// This method takes no arguments beyond `self`.
     ///
     /// # Returns
     ///
@@ -636,6 +672,10 @@ impl CudaVoxelCloud {
     }
 
     /// Copies the points to a host [`PointCloud`]. Synchronizes the stream.
+    ///
+    /// # Arguments
+    ///
+    /// This method takes no arguments beyond `self`.
     ///
     /// # Returns
     ///
@@ -659,6 +699,10 @@ impl CudaVoxelCloud {
     }
 
     /// Copies the source indices to the host. Synchronizes the stream.
+    ///
+    /// # Arguments
+    ///
+    /// This method takes no arguments beyond `self`.
     ///
     /// # Returns
     ///
@@ -690,42 +734,78 @@ pub struct CudaNeighbourCounts {
 impl CudaNeighbourCounts {
     /// Point capacity.
     ///
+    /// # Arguments
+    ///
+    /// This method takes no arguments beyond `self`.
+    ///
     /// # Returns
     ///
     /// The number of points the buffer holds.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible.
     pub fn capacity(&self) -> usize {
         self.capacity
     }
 
     /// Points of the last call.
     ///
+    /// # Arguments
+    ///
+    /// This method takes no arguments beyond `self`.
+    ///
     /// # Returns
     ///
     /// The `n` of the last [`CudaVoxelFilter::neighbour_counts`].
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible.
     pub fn len(&self) -> usize {
         self.len
     }
 
     /// Whether the last call had no point.
     ///
+    /// # Arguments
+    ///
+    /// This method takes no arguments beyond `self`.
+    ///
     /// # Returns
     ///
     /// `true` if [`len`](Self::len) is `0`.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible.
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
     /// Device counts.
     ///
+    /// # Arguments
+    ///
+    /// This method takes no arguments beyond `self`.
+    ///
     /// # Returns
     ///
     /// The `capacity` `u8` buffer; the first [`len`](Self::len) hold one
     /// count per input point, in input order.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible.
     pub fn counts(&self) -> &CudaSlice<u8> {
         &self.counts
     }
 
     /// Copies the counts to the host. Synchronizes the stream.
+    ///
+    /// # Arguments
+    ///
+    /// This method takes no arguments beyond `self`.
     ///
     /// # Returns
     ///
@@ -747,9 +827,11 @@ impl CudaNeighbourCounts {
 }
 
 /// CUDA voxel downsampling and neighbour counting on one stream: the
-/// kernels are compiled once at construction and the scratch buffers are
-/// reused across calls. Work is enqueued without host syncs; read results
-/// after syncing the stream.
+/// kernels are compiled once at construction. The per-point device
+/// scratch buffers are allocated on first use and reallocated only when a
+/// call has more points than any earlier one, so steady-state calls with the same or
+/// fewer points allocate nothing. Work is enqueued without host syncs;
+/// read results after syncing the stream.
 ///
 /// Input points are a device `f64` buffer of interleaved `x, y, z`
 /// (`stream.clone_htod(points.as_flattened())` uploads a host slice).
@@ -785,8 +867,9 @@ pub struct CudaVoxelFilter {
 }
 
 impl CudaVoxelFilter {
-    /// Compiles the kernels (nvrtc) for `stream`'s device and allocates the
-    /// scratch buffers. Synchronizes `stream` once, so compile and
+    /// Compiles the kernels (nvrtc) for `stream`'s device and allocates
+    /// one-element placeholder scratch buffers; the first call grows the
+    /// per-point ones to its cloud size. Synchronizes `stream` once, so compile and
     /// allocation failures surface here rather than on the first call.
     ///
     /// # Arguments
@@ -870,9 +953,17 @@ impl CudaVoxelFilter {
 
     /// The stream this filter enqueues on.
     ///
+    /// # Arguments
+    ///
+    /// This method takes no arguments beyond `self`.
+    ///
     /// # Returns
     ///
     /// The stream given to [`new`](Self::new).
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible.
     pub fn stream(&self) -> &Arc<CudaStream> {
         &self.stream
     }
