@@ -53,6 +53,15 @@ pub enum ImageError {
     #[error("Invalid sigma values {0} and {1}")]
     InvalidSigmaValue(f32, f32),
 
+    /// A threshold argument is NaN or negative.
+    #[error("invalid threshold `{name}` = {value}: must be non-negative and not NaN")]
+    InvalidThreshold {
+        /// Name of the offending argument.
+        name: &'static str,
+        /// The value that was passed.
+        value: f32,
+    },
+
     /// Error when the channel count is unsupported.
     #[error("Unsupported channel count {0}")]
     UnsupportedChannelCount(usize),

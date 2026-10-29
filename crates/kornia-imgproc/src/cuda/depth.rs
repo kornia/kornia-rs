@@ -1,5 +1,5 @@
-//! CUDA kernels for the valid-aware depth median — twins of
-//! `depth/kernels.rs`.
+//! CUDA kernels for the valid-aware depth median, the flying-pixel mask and
+//! flagged-pixel removal — twins of `depth/kernels.rs`.
 //!
 //! One launch per op. A block owns a `tile_w(ksize) × TILE_H` output tile: its
 //! threads first sort the `ksize`-sample columns of the tile plus a
@@ -9,9 +9,9 @@
 //! fully valid takes the plain-median network instead (a warp-uniform
 //! branch, so no divergence). The networks are code-generated from the
 //! const arrays the CPU uses (`COL3` / `COL5`, `RANK9` / `RANK25`,
-//! `filter::median::MED25_SORTED_COLUMNS`), keys are the same expressions,
-//! and every selection is exact, so device and host results are
-//! bit-identical.
+//! `filter::median::MED25_SORTED_COLUMNS`), keys and the flying-pixel test
+//! are the same expressions, and every selection is exact, so device and
+//! host results are bit-identical.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -21,7 +21,8 @@ use cudarc::driver::{
 };
 use kornia_tensor::CudaKernel;
 
-use crate::depth::kernels::{COL3, COL5, RANK25, RANK9};
+use super::try_compile_with_l1;
+use crate::depth::kernels::{COL3, COL5, FLYING_KSIZE, MASK_FLAGGED, RANK25, RANK9};
 use crate::filter::median::MED25_SORTED_COLUMNS;
 
 /// Threads per tile row: one warp (the warp-uniform fast path relies on
@@ -44,7 +45,7 @@ pub(crate) trait CudaDepthPixel: DeviceRepr + ValidAsZeroBits + Copy + 'static {
     /// Short tag used in kernel names and the kernel cache key.
     const TAG: &'static str;
     /// Device helper functions: `T`, `is_valid`, `to_key`, `from_key`,
-    /// `invalid_value`, `CE`. `is_valid` and `to_key` are
+    /// `invalid_value`, `abs_diff_f32`, `CE`. `is_valid` and `to_key` are
     /// the host rule ([`crate::depth::is_valid_depth_u16`] /
     /// [`crate::depth::is_valid_depth_f32`]) and `DepthRepr::key`,
     /// expression for expression.
@@ -59,6 +60,7 @@ __device__ __forceinline__ bool is_valid(T v) { return v != 0; }
 __device__ __forceinline__ T to_key(T v) { return (T)(v - 1); }
 __device__ __forceinline__ T from_key(T k) { return (T)(k + 1); }
 __device__ __forceinline__ T invalid_value() { return 0; }
+__device__ __forceinline__ float abs_diff_f32(T a, T b) { return (float)abs((int)a - (int)b); }
 #define CE(a, b) { T lo = min(a, b), hi = max(a, b); a = lo; b = hi; }
 "#;
 }
@@ -71,6 +73,7 @@ __device__ __forceinline__ bool is_valid(T v) { return isfinite(v) && v > 0.0f; 
 __device__ __forceinline__ T to_key(T v) { return is_valid(v) ? v : __int_as_float(0x7f800000); }
 __device__ __forceinline__ T from_key(T k) { return k; }
 __device__ __forceinline__ T invalid_value() { return __int_as_float(0x7fc00000); }
+__device__ __forceinline__ float abs_diff_f32(T a, T b) { return fabsf(a - b); }
 #define CE(a, b) { T lo = fminf(a, b), hi = fmaxf(a, b); a = lo; b = hi; }
 "#;
 }
@@ -176,6 +179,8 @@ __device__ __forceinline__ T median_tile(
 #[derive(Clone, Copy, Hash, PartialEq, Eq)]
 enum Kind {
     Median { ksize: usize, channels: usize },
+    FlyingMask,
+    RemoveFlagged,
 }
 
 fn kernel_src<T: CudaDepthPixel>(kind: Kind) -> (String, String) {
@@ -205,6 +210,56 @@ extern "C" __global__ void {name}(
             );
             (name, src)
         }
+        Kind::FlyingMask => {
+            let name = format!("flying_pixel_mask_{tag}");
+            let helper = median_fn_src(FLYING_KSIZE, 1);
+            let tile_w = tile_w(FLYING_KSIZE);
+            let src = format!(
+                r#"{prelude}{helper}
+extern "C" __global__ void {name}(
+    const T* __restrict__ src, unsigned char* __restrict__ mask, int w, int h,
+    float abs_threshold, float rel_threshold, int min_valid
+) {{
+    int x = blockIdx.x * {tile_w} + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    // No early return: every thread takes part in the tile's barriers.
+    int n;
+    T m = median_tile(src, w, h, 0, &n);
+    if (threadIdx.x >= {tile_w} || x >= w || y >= h) return;
+    T d = src[y * w + x];
+    unsigned char out = 0;
+    if (is_valid(d)) {{
+        if (n < min_valid) {{
+            out = {MASK_FLAGGED};
+        }} else {{
+            float threshold = fmaxf(abs_threshold, rel_threshold * (float)d);
+            if (abs_diff_f32(d, m) > threshold) out = {MASK_FLAGGED};
+        }}
+    }}
+    mask[y * w + x] = out;
+}}
+"#
+            );
+            (name, src)
+        }
+        Kind::RemoveFlagged => {
+            let name = format!("remove_flagged_{tag}");
+            let src = format!(
+                r#"{prelude}
+extern "C" __global__ void {name}(
+    const T* __restrict__ src, const unsigned char* __restrict__ mask,
+    T* __restrict__ dst, int w, int h
+) {{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= w || y >= h) return;
+    int i = y * w + x;
+    dst[i] = mask[i] != 0 ? invalid_value() : src[i];
+}}
+"#
+            );
+            (name, src)
+        }
     }
 }
 
@@ -223,10 +278,14 @@ fn get_kernel<T: CudaDepthPixel>(
     }
     // Build outside the lock (scoped-guard idiom, like the sibling caches).
     let (name, src) = kernel_src::<T>(kind);
-    // The tile kernel uses shared memory: leave the L1 / shared carveout to
-    // the driver.
-    let kernel = CudaKernel::compile(ctx, &src, &name)
-        .map_err(|e| CudaDepthError::Cuda(format!("failed to compile {name}: {e}")))?;
+    // The tile kernels use shared memory: leave the L1 / shared carveout to
+    // the driver. The elementwise kernel prefers L1.
+    let kernel = match kind {
+        Kind::RemoveFlagged => try_compile_with_l1(ctx, &src, &name),
+        Kind::Median { .. } | Kind::FlyingMask => CudaKernel::compile(ctx, &src, &name)
+            .map_err(|e| format!("failed to compile {name}: {e}")),
+    }
+    .map_err(CudaDepthError::Cuda)?;
     let kernel = Arc::new(kernel);
     Ok(map
         .lock()
@@ -289,6 +348,75 @@ pub(crate) fn launch_median_blur_depth<T: CudaDepthPixel>(
     kernel
         .launch_builder(stream)
         .arg(src)
+        .arg(dst)
+        .arg(&w)
+        .arg(&h)
+        .launch_cfg(cfg)
+        .map_err(|e| CudaDepthError::Cuda(e.to_string()))
+}
+
+/// Flying-pixel mask on device; same contract as
+/// [`crate::depth::flying_pixel_mask`], which validates the thresholds
+/// before dispatching here.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn launch_flying_pixel_mask<T: CudaDepthPixel>(
+    ctx: &Arc<CudaContext>,
+    stream: &Arc<CudaStream>,
+    src: &CudaSlice<T>,
+    mask: &mut CudaSlice<u8>,
+    width: usize,
+    height: usize,
+    abs_threshold: f32,
+    rel_threshold: f32,
+    min_valid: usize,
+) -> Result<(), CudaDepthError> {
+    if is_empty(width, height) {
+        return Ok(());
+    }
+    let (w, h) = dims_i32(width, height)?;
+    CudaDepthError::check_slice("src", src.len(), width * height)?;
+    CudaDepthError::check_slice("mask", mask.len(), width * height)?;
+    // Any value above the tap count flags every valid pixel, as on the CPU.
+    let min_valid = i32::try_from(min_valid).unwrap_or(i32::MAX);
+    let kernel = get_kernel::<T>(ctx, Kind::FlyingMask)?;
+    let cfg = tile_config(w as u32, h as u32, FLYING_KSIZE);
+    kernel
+        .launch_builder(stream)
+        .arg(src)
+        .arg(mask)
+        .arg(&w)
+        .arg(&h)
+        .arg(&abs_threshold)
+        .arg(&rel_threshold)
+        .arg(&min_valid)
+        .launch_cfg(cfg)
+        .map_err(|e| CudaDepthError::Cuda(e.to_string()))
+}
+
+/// Flagged-pixel removal on device; same contract as
+/// [`crate::depth::invalidate_masked_depth`].
+pub(crate) fn launch_remove_flagged<T: CudaDepthPixel>(
+    ctx: &Arc<CudaContext>,
+    stream: &Arc<CudaStream>,
+    src: &CudaSlice<T>,
+    mask: &CudaSlice<u8>,
+    dst: &mut CudaSlice<T>,
+    width: usize,
+    height: usize,
+) -> Result<(), CudaDepthError> {
+    if is_empty(width, height) {
+        return Ok(());
+    }
+    let (w, h) = dims_i32(width, height)?;
+    CudaDepthError::check_slice("src", src.len(), width * height)?;
+    CudaDepthError::check_slice("mask", mask.len(), width * height)?;
+    CudaDepthError::check_slice("dst", dst.len(), width * height)?;
+    let kernel = get_kernel::<T>(ctx, Kind::RemoveFlagged)?;
+    let cfg = super::make_config(w as u32, h as u32, None);
+    kernel
+        .launch_builder(stream)
+        .arg(src)
+        .arg(mask)
         .arg(dst)
         .arg(&w)
         .arg(&h)

@@ -53,8 +53,8 @@ pub mod histogram;
 /// and VPI).
 pub mod median;
 
-/// Valid-aware depth median kernels (bit-identical to the CPU `depth`
-/// ops).
+/// Valid-aware depth median, flying-pixel mask and removal kernels
+/// (bit-identical to the CPU `depth` ops).
 pub(crate) mod depth;
 /// Native CUDA u8 morphology kernels (dilate / erode, byte-exact with the
 /// CPU ops).

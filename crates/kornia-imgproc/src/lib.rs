@@ -40,7 +40,7 @@ pub mod core;
 /// image cropping module.
 pub mod crop;
 
-/// depth-image filtering: valid-aware median.
+/// depth-image filtering: valid-aware median and flying-pixel removal.
 pub mod depth;
 
 /// image padding module.

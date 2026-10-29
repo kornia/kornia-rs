@@ -1,0 +1,1 @@
+`kornia_image::ImageError` gains the variant `InvalidThreshold { name, value }`, returned by `kornia_imgproc::depth::flying_pixel_mask` when `abs_threshold` or `rel_threshold` is NaN or negative (values that would otherwise silently disable the deviation test). Exhaustive `match`es on `ImageError` need an arm for it.

@@ -1,4 +1,4 @@
-//! CPU kernels for the valid-aware depth median.
+//! CPU kernels for the valid-aware depth median and the flying-pixel mask.
 //!
 //! Invalid samples are mapped to a sort key above every valid key (see
 //! [`DepthRepr::key`]), so the median of the `n` valid samples of a window
@@ -30,6 +30,12 @@
 //! kernels in `cuda/depth.rs` are code-generated from the same networks.
 
 use rayon::prelude::*;
+
+/// Window side of the flying-pixel test.
+pub(crate) const FLYING_KSIZE: usize = 3;
+
+/// Value written to the mask for a flagged pixel.
+pub(crate) const MASK_FLAGGED: u8 = 255;
 
 /// Widest lane block any kernel uses; the scratch is padded to it.
 const MAX_LANES: usize = 16;
@@ -204,6 +210,10 @@ pub(crate) trait DepthRepr: Copy + Send + Sync + 'static {
     fn kmin(a: Self::Key, b: Self::Key) -> Self::Key;
     /// Larger of two keys.
     fn kmax(a: Self::Key, b: Self::Key) -> Self::Key;
+    /// `|a - b|` in `f32`, for two valid samples.
+    fn abs_diff_f32(a: Self, b: Self) -> f32;
+    /// The sample as `f32`.
+    fn as_f32(self) -> f32;
     /// Valid-aware median over an interleaved `h × w × C` buffer at the
     /// dtype's lane widths. `ksize` is 3 or 5.
     fn median_blur<const C: usize>(
@@ -213,6 +223,16 @@ pub(crate) trait DepthRepr: Copy + Send + Sync + 'static {
         h: usize,
         ksize: usize,
     );
+    /// Flying-pixel mask over a single-channel `h × w` buffer.
+    fn flying_mask(src: &[Self], mask: &mut [u8], w: usize, h: usize, rule: FlyingRule);
+}
+
+/// The caller's flying-pixel thresholds.
+#[derive(Clone, Copy)]
+pub(crate) struct FlyingRule {
+    pub(crate) abs_threshold: f32,
+    pub(crate) rel_threshold: f32,
+    pub(crate) min_valid: usize,
 }
 
 impl DepthRepr for u16 {
@@ -245,6 +265,14 @@ impl DepthRepr for u16 {
     fn kmax(a: u16, b: u16) -> u16 {
         a.max(b)
     }
+    #[inline(always)]
+    fn abs_diff_f32(a: u16, b: u16) -> f32 {
+        f32::from(a.abs_diff(b))
+    }
+    #[inline(always)]
+    fn as_f32(self) -> f32 {
+        f32::from(self)
+    }
     fn median_blur<const C: usize>(src: &[u16], dst: &mut [u16], w: usize, h: usize, ksize: usize) {
         if ksize == 3 {
             let simd = simd_median_row::<u16, C, 3, 9>();
@@ -253,6 +281,9 @@ impl DepthRepr for u16 {
             let simd = simd_median_row::<u16, C, 5, 25>();
             median_blur_ks::<u16, C, 5, 25, { u16::LANES5 }>(src, dst, w, h, simd);
         }
+    }
+    fn flying_mask(src: &[u16], mask: &mut [u8], w: usize, h: usize, rule: FlyingRule) {
+        flying_mask_ks::<u16, { u16::LANES3 }>(src, mask, w, h, rule, simd_flying_row::<u16>());
     }
 }
 
@@ -289,6 +320,14 @@ impl DepthRepr for f32 {
     fn kmax(a: f32, b: f32) -> f32 {
         a.max(b)
     }
+    #[inline(always)]
+    fn abs_diff_f32(a: f32, b: f32) -> f32 {
+        (a - b).abs()
+    }
+    #[inline(always)]
+    fn as_f32(self) -> f32 {
+        self
+    }
     fn median_blur<const C: usize>(src: &[f32], dst: &mut [f32], w: usize, h: usize, ksize: usize) {
         if ksize == 3 {
             let simd = simd_median_row::<f32, C, 3, 9>();
@@ -297,6 +336,9 @@ impl DepthRepr for f32 {
             let simd = simd_median_row::<f32, C, 5, 25>();
             median_blur_ks::<f32, C, 5, 25, { f32::LANES5 }>(src, dst, w, h, simd);
         }
+    }
+    fn flying_mask(src: &[f32], mask: &mut [u8], w: usize, h: usize, rule: FlyingRule) {
+        flying_mask_ks::<f32, { f32::LANES3 }>(src, mask, w, h, rule, simd_flying_row::<f32>());
     }
 }
 
@@ -511,6 +553,17 @@ unsafe fn median_row_avx2<
 type MedianRowFn<T> =
     fn(&[T], &mut [T], usize, usize, usize, &mut Columns<<T as DepthRepr>::Key>) -> bool;
 
+/// See [`MedianRowFn`]; the mask variant.
+type FlyingRowFn<T> = fn(
+    &[T],
+    &mut [u8],
+    usize,
+    usize,
+    usize,
+    FlyingRule,
+    &mut Columns<<T as DepthRepr>::Key>,
+) -> bool;
+
 /// The SIMD median row kernel for this dtype / layout, if any.
 #[allow(unreachable_code)]
 fn simd_median_row<T: SimdDepth, const C: usize, const KS: usize, const TAPS: usize>(
@@ -519,6 +572,14 @@ fn simd_median_row<T: SimdDepth, const C: usize, const KS: usize, const TAPS: us
     if C == 1 {
         return Some(neon::median_row::<T, KS, TAPS>);
     }
+    None
+}
+
+/// The SIMD flying-pixel row kernel for this dtype, if any.
+#[allow(unreachable_code)]
+fn simd_flying_row<T: SimdDepth>() -> Option<FlyingRowFn<T>> {
+    #[cfg(target_arch = "aarch64")]
+    return Some(neon::flying_row::<T>);
     None
 }
 
@@ -557,6 +618,84 @@ fn median_blur_ks<
         );
 }
 
+/// One output row of the flying-pixel mask.
+#[inline(always)]
+fn flying_row<T: DepthRepr, const L: usize>(
+    src: &[T],
+    mrow: &mut [u8],
+    w: usize,
+    h: usize,
+    y: usize,
+    rule: FlyingRule,
+    cols: &mut Columns<T::Key>,
+) {
+    const KS: usize = FLYING_KSIZE;
+    let sy = window_rows::<KS>(y, h);
+    sort_columns::<T, 1, KS>(src, w, &sy, 0, cols);
+    let srow = &src[y * w..(y + 1) * w];
+    for x0 in (0..w).step_by(L) {
+        let (m, n) = window_medians::<T, KS, { KS * KS }, L>(cols, x0);
+        let lanes = L.min(w - x0);
+        for l in 0..lanes {
+            let d = srow[x0 + l];
+            mrow[x0 + l] = if is_flying(d, T::from_key(m[l]), n[l], rule) {
+                MASK_FLAGGED
+            } else {
+                0
+            };
+        }
+    }
+}
+
+/// [`flying_row`] compiled with AVX2 enabled.
+///
+/// # Safety
+///
+/// The CPU must support AVX2.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn flying_row_avx2<T: DepthRepr, const L: usize>(
+    src: &[T],
+    mrow: &mut [u8],
+    w: usize,
+    h: usize,
+    y: usize,
+    rule: FlyingRule,
+    cols: &mut Columns<T::Key>,
+) {
+    flying_row::<T, L>(src, mrow, w, h, y, rule, cols);
+}
+
+/// Flying-pixel mask, `L`-lane blocks; rows go to `simd` when it covers
+/// them, else to the portable [`flying_row`].
+fn flying_mask_ks<T: DepthRepr, const L: usize>(
+    src: &[T],
+    mask: &mut [u8],
+    w: usize,
+    h: usize,
+    rule: FlyingRule,
+    simd: Option<FlyingRowFn<T>>,
+) {
+    mask.par_chunks_mut(w)
+        .enumerate()
+        .with_min_len(min_rows(h))
+        .for_each_init(
+            || Columns::new(w, FLYING_KSIZE, T::INVALID.key()),
+            |cols, (y, mrow)| {
+                if simd.is_some_and(|f| f(src, mrow, w, h, y, rule, cols)) {
+                    return;
+                }
+                #[cfg(target_arch = "x86_64")]
+                if crate::simd::cpu_features().has_avx2 {
+                    // SAFETY: AVX2 support was just checked.
+                    unsafe { flying_row_avx2::<T, L>(src, mrow, w, h, y, rule, cols) };
+                    return;
+                }
+                flying_row::<T, L>(src, mrow, w, h, y, rule, cols);
+            },
+        );
+}
+
 /// Valid-aware median blur over an interleaved `h × w × C` buffer. `ksize`
 /// is 3 or 5 (validated by the caller). An empty image is a no-op.
 pub(crate) fn median_blur_depth<T: DepthRepr, const C: usize>(
@@ -573,6 +712,44 @@ pub(crate) fn median_blur_depth<T: DepthRepr, const C: usize>(
     T::median_blur::<C>(src, dst, w, h, ksize);
 }
 
+/// Flying-pixel mask over a single-channel `h × w` buffer. An empty image
+/// is a no-op.
+pub(crate) fn flying_pixel_mask<T: DepthRepr>(
+    src: &[T],
+    mask: &mut [u8],
+    w: usize,
+    h: usize,
+    abs_threshold: f32,
+    rel_threshold: f32,
+    min_valid: usize,
+) {
+    if w == 0 || h == 0 {
+        return;
+    }
+    let rule = FlyingRule {
+        abs_threshold,
+        rel_threshold,
+        min_valid,
+    };
+    T::flying_mask(src, mask, w, h, rule);
+}
+
+/// The flying-pixel rule for one pixel: valid and either supported by fewer
+/// than `min_valid` valid window samples, or farther than
+/// `max(abs_threshold, rel_threshold * d)` from the valid-sample median.
+/// Mirrored expression-for-expression by the CUDA kernel.
+#[inline(always)]
+fn is_flying<T: DepthRepr>(d: T, median: T, count: u16, rule: FlyingRule) -> bool {
+    if !d.is_valid() {
+        return false;
+    }
+    if usize::from(count) < rule.min_valid {
+        return true;
+    }
+    let threshold = rule.abs_threshold.max(rule.rel_threshold * d.as_f32());
+    T::abs_diff_f32(d, median) > threshold
+}
+
 /// Dtypes with a SIMD row kernel on this architecture.
 #[cfg(target_arch = "aarch64")]
 use neon::NeonDepth as SimdDepth;
@@ -587,14 +764,15 @@ impl SimdDepth for f32 {}
 
 /// NEON row kernels (single channel): the two passes of the portable
 /// kernels on one 128-bit vector per wire, `u16x8` or `f32x4`. Same
-/// networks, same keys, so bit-identical to [`median_row`] (pinned in the
-/// tests).
+/// networks, same keys, so bit-identical to [`median_row`] /
+/// [`flying_row`] (pinned in the tests).
 #[cfg(target_arch = "aarch64")]
 mod neon {
     use std::arch::aarch64::*;
 
     use super::{
-        med25, med9, pad_columns, rank25, rank9, sort_col3, sort_col5, Columns, DepthRepr, Exchange,
+        med25, med9, pad_columns, rank25, rank9, sort_col3, sort_col5, Columns, DepthRepr,
+        Exchange, FlyingRule,
     };
 
     /// `u16x8` sort keys.
@@ -669,6 +847,13 @@ mod neon {
         ///
         /// `p` is valid for writing `W` samples.
         unsafe fn st_out(p: *mut Self, m: Self::V, n: Self::N);
+        /// Flying-pixel flags of the `W` samples at `d` against median keys
+        /// `m` and valid counts `n`, written as `W` mask bytes.
+        ///
+        /// # Safety
+        ///
+        /// `d` is valid for reading `W` samples, `dst` for writing `W` bytes.
+        unsafe fn st_flags(dst: *mut u8, d: *const Self, m: Self::V, n: Self::N, rule: FlyingRule);
     }
 
     impl NeonDepth for u16 {
@@ -739,6 +924,31 @@ mod neon {
             // from_key; an all-invalid window selects key u16::MAX, whose
             // inverse is the invalid marker 0.
             vst1q_u16(p, vaddq_u16(m.0, vdupq_n_u16(1)))
+        }
+        #[inline(always)]
+        unsafe fn st_flags(dst: *mut u8, d: *const u16, m: U16x8, n: uint16x8_t, rule: FlyingRule) {
+            let d = vld1q_u16(d);
+            let valid = vtstq_u16(d, d);
+            let median = vaddq_u16(m.0, vdupq_n_u16(1));
+            let diff = vabdq_u16(d, median);
+            let abs = vdupq_n_f32(rule.abs_threshold);
+            let rel = vdupq_n_f32(rule.rel_threshold);
+            let to_f32 = |x: uint16x4_t| vcvtq_f32_u32(vmovl_u16(x));
+            let far = |diff: uint16x4_t, d: uint16x4_t| {
+                let threshold = vmaxnmq_f32(abs, vmulq_f32(rel, to_f32(d)));
+                vmovn_u32(vcgtq_f32(to_f32(diff), threshold))
+            };
+            let far = vcombine_u16(
+                far(vget_low_u16(diff), vget_low_u16(d)),
+                far(vget_high_u16(diff), vget_high_u16(d)),
+            );
+            // Counts are <= 25; a larger `min_valid` flags every valid lane
+            // either way.
+            let min_valid = rule.min_valid.min(usize::from(u16::MAX)) as u16;
+            let few = vcltq_u16(n, vdupq_n_u16(min_valid));
+            let flag = vandq_u16(valid, vorrq_u16(few, far));
+            // All-ones lanes narrow to 0xff = MASK_FLAGGED.
+            vst1_u8(dst, vmovn_u16(flag));
         }
     }
 
@@ -821,6 +1031,24 @@ mod neon {
         unsafe fn st_out(p: *mut f32, m: F32x4, n: uint16x4_t) {
             let empty = vceqzq_u32(vmovl_u16(n));
             vst1q_f32(p, vbslq_f32(empty, vdupq_n_f32(f32::NAN), m.0))
+        }
+        #[inline(always)]
+        unsafe fn st_flags(dst: *mut u8, d: *const f32, m: F32x4, n: uint16x4_t, rule: FlyingRule) {
+            let d = vld1q_f32(d);
+            let valid = valid_f32(d);
+            // fabd = |d - m| with one rounding, as `(d - m).abs()`.
+            let diff = vabdq_f32(d, m.0);
+            let threshold = vmaxnmq_f32(
+                vdupq_n_f32(rule.abs_threshold),
+                vmulq_f32(vdupq_n_f32(rule.rel_threshold), d),
+            );
+            let far = vcgtq_f32(diff, threshold);
+            let min_valid = rule.min_valid.min(u32::MAX as usize) as u32;
+            let few = vcltq_u32(vmovl_u16(n), vdupq_n_u32(min_valid));
+            let flag = vmovn_u32(vandq_u32(valid, vorrq_u32(few, far)));
+            let bytes = vmovn_u16(vcombine_u16(flag, flag));
+            let word = vget_lane_u32::<0>(vreinterpret_u32_u8(bytes));
+            dst.cast::<u32>().write_unaligned(word);
         }
     }
 
@@ -940,6 +1168,47 @@ mod neon {
         }
         true
     }
+
+    /// One output row of the flying-pixel mask; `false` (nothing written)
+    /// when `w < T::W`.
+    pub(super) fn flying_row<T: NeonDepth>(
+        src: &[T],
+        mrow: &mut [u8],
+        w: usize,
+        h: usize,
+        y: usize,
+        rule: FlyingRule,
+        cols: &mut Columns<T::Key>,
+    ) -> bool {
+        if w < T::W {
+            return false;
+        }
+        const KS: usize = super::FLYING_KSIZE;
+        let sy = super::window_rows::<KS>(y, h);
+        // SAFETY: as in `median_row`; the mask row and source row `y` hold
+        // `w` entries and every block reads / writes `T::W` of them from
+        // `x0 <= w - T::W`.
+        unsafe {
+            sort_columns::<T, KS>(src, w, &sy, cols);
+            let srow = src.as_ptr().add(y * w);
+            let mut x = 0;
+            while x < w {
+                let x0 = x.min(w - T::W);
+                let (m, n) = window::<T, KS, { KS * KS }>(cols, x0);
+                T::st_flags(mrow.as_mut_ptr().add(x0), srow.add(x0), m, n, rule);
+                x += T::W;
+            }
+        }
+        true
+    }
+}
+
+/// `dst = INVALID` where `mask != 0`, else `src`.
+pub(crate) fn remove_flagged<T: DepthRepr>(src: &[T], mask: &[u8], dst: &mut [T]) {
+    dst.par_iter_mut()
+        .zip(src.par_iter().zip(mask.par_iter()))
+        .with_min_len(1 << 14)
+        .for_each(|(d, (&s, &m))| *d = if m != 0 { T::INVALID } else { s });
 }
 
 #[cfg(test)]
@@ -1169,6 +1438,27 @@ mod tests {
         out
     }
 
+    /// Scalar reference flying-pixel mask (the rule of [`is_flying`],
+    /// spelled out on the scalar median).
+    fn scalar_flying<T: TestDepth>(src: &[T], w: usize, h: usize, rule: FlyingRule) -> Vec<u8> {
+        let mut out = vec![0u8; src.len()];
+        for y in 0..h {
+            for x in 0..w {
+                let d = src[y * w + x];
+                if !d.is_valid() {
+                    continue;
+                }
+                let valid = window_valid::<T, 1>(src, (w, h), (x, y, 0), FLYING_KSIZE);
+                let m = valid[valid.len() / 2];
+                let threshold = rule.abs_threshold.max(rule.rel_threshold * d.as_f32());
+                if valid.len() < rule.min_valid || T::abs_diff_f32(d, m) > threshold {
+                    out[y * w + x] = MASK_FLAGGED;
+                }
+            }
+        }
+        out
+    }
+
     /// Runs one row kernel over the whole image; `None` when it declines a
     /// row (a SIMD kernel below its minimum width).
     fn run_rows<T: DepthRepr, O: Copy>(
@@ -1268,6 +1558,82 @@ mod tests {
             assert!(simd[..4].iter().all(|&n| n > 0), "{simd:?}");
         }
         assert!(simd[4..].iter().all(|&n| n == 0), "{simd:?}");
+    }
+
+    /// [`check_median_paths`] for the flying-pixel mask.
+    fn check_flying_paths<T: TestDepth, const L: usize>(scale: f32) -> (usize, usize) {
+        let rules = [(1.0, 0.0, 0), (0.5, 0.1, 5), (0.0, 0.0, 10), (4.0, 0.02, 3)];
+        let (mut simd_covered, mut flagged) = (0, 0);
+        for (i, (w, h)) in parity_shapes().enumerate() {
+            for (j, &(abs_threshold, rel_threshold, min_valid)) in rules.iter().enumerate() {
+                let rule = FlyingRule {
+                    abs_threshold: abs_threshold * scale,
+                    rel_threshold,
+                    min_valid,
+                };
+                let holes_pct = HOLE_PCTS[j % HOLE_PCTS.len()];
+                let src = random_depth::<T>(w * h, 31 + 10 * i as u64 + j as u64, holes_pct);
+                let want = scalar_flying(&src, w, h, rule);
+                flagged += want.iter().filter(|&&v| v != 0).count();
+                let ctx = format!("{} {w}x{h} rule {j}", std::any::type_name::<T>());
+                let dims = (w, h, w, FLYING_KSIZE);
+                const POISON: u8 = 7;
+
+                let got = run_rows(&src, dims, POISON, |s, m, y, cols| {
+                    flying_row::<T, L>(s, m, w, h, y, rule, cols);
+                    true
+                });
+                assert_eq!(got.as_ref(), Some(&want), "portable {ctx}");
+
+                #[cfg(target_arch = "x86_64")]
+                if crate::simd::cpu_features().has_avx2 {
+                    let got = run_rows(&src, dims, POISON, |s, m, y, cols| {
+                        // SAFETY: AVX2 support was just checked.
+                        unsafe { flying_row_avx2::<T, L>(s, m, w, h, y, rule, cols) };
+                        true
+                    });
+                    assert_eq!(got.as_ref(), Some(&want), "avx2 {ctx}");
+                }
+
+                if let Some(simd) = simd_flying_row::<T>() {
+                    let got = run_rows(&src, dims, POISON, |s, m, y, cols| {
+                        simd(s, m, w, h, y, rule, cols)
+                    });
+                    if let Some(got) = got {
+                        assert_eq!(got, want, "simd {ctx}");
+                        simd_covered += 1;
+                    }
+                }
+
+                let mut got = vec![POISON; w * h];
+                flying_pixel_mask(
+                    &src,
+                    &mut got,
+                    w,
+                    h,
+                    rule.abs_threshold,
+                    rule.rel_threshold,
+                    rule.min_valid,
+                );
+                assert_eq!(got, want, "dispatched {ctx}");
+            }
+        }
+        (simd_covered, flagged)
+    }
+
+    #[test]
+    fn every_flying_mask_path_matches_scalar_reference() {
+        // u16 samples are 1..=64, f32 samples 1.0..=4.75: scale the
+        // absolute thresholds so both flag a fair share of pixels.
+        let runs = [
+            check_flying_paths::<u16, { u16::LANES3 }>(4.0),
+            check_flying_paths::<f32, { f32::LANES3 }>(0.25),
+        ];
+        // The fixtures must flag something, or the comparison is vacuous.
+        assert!(runs.iter().all(|&(_, flagged)| flagged > 0), "{runs:?}");
+        if cfg!(target_arch = "aarch64") {
+            assert!(runs.iter().all(|&(simd, _)| simd > 0), "{runs:?}");
+        }
     }
 
     #[test]

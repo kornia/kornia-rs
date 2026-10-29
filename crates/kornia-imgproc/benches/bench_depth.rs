@@ -1,9 +1,9 @@
-//! Depth ops: valid-aware median blur, u16 and f32, CPU and (with
-//! `--features cuda`) device-resident CUDA.
+//! Depth ops: valid-aware median blur and the flying-pixel mask, u16 and
+//! f32, CPU and (with `--features cuda`) device-resident CUDA.
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use kornia_image::{Image, ImageSize};
-use kornia_imgproc::depth::median_blur_depth;
+use kornia_imgproc::depth::{flying_pixel_mask, median_blur_depth};
 
 const SIZES: [(usize, usize); 2] = [(640, 480), (1280, 720)];
 
@@ -90,6 +90,13 @@ fn bench_depth(c: &mut Criterion) {
                 },
             );
         }
+        let mut mask = Image::<u8, 1>::from_size_val(size, 0).unwrap();
+        group.bench_function(BenchmarkId::new("flying_mask_u16_cpu", &id), |b| {
+            b.iter(|| std::hint::black_box(flying_pixel_mask(&src, &mut mask, 30.0, 0.02, 4)))
+        });
+        group.bench_function(BenchmarkId::new("flying_mask_f32_cpu", &id), |b| {
+            b.iter(|| std::hint::black_box(flying_pixel_mask(&src_f32, &mut mask, 0.025, 0.02, 4)))
+        });
 
         #[cfg(feature = "cuda")]
         {
@@ -144,6 +151,18 @@ fn bench_depth(c: &mut Criterion) {
                     );
                 }
             }
+            let (_, d_src, d_src_f32) = &inputs[0];
+            let mut d_mask = Image::<u8, 1>::zeros_cuda(size, &stream).unwrap();
+            group.bench_function(BenchmarkId::new("flying_mask_u16_cuda", &id), |b| {
+                queued(b, &mut || {
+                    flying_pixel_mask(d_src, &mut d_mask, 30.0, 0.02, 4).unwrap()
+                })
+            });
+            group.bench_function(BenchmarkId::new("flying_mask_f32_cuda", &id), |b| {
+                queued(b, &mut || {
+                    flying_pixel_mask(d_src_f32, &mut d_mask, 0.025, 0.02, 4).unwrap()
+                })
+            });
         }
     }
     group.finish();
