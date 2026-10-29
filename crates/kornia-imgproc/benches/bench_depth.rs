@@ -1,5 +1,8 @@
 //! Depth ops: valid-aware median blur and the flying-pixel mask, u16 and
 //! f32, CPU and (with `--features cuda`) device-resident CUDA.
+//!
+//! `bench_depth_baselines.py` times `cv2.medianBlur` on the same fixture
+//! (the mask has no third-party equivalent).
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use kornia_image::{Image, ImageSize};
