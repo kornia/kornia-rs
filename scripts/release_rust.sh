@@ -87,7 +87,7 @@ declare -A CRATE_FEATURES=(
 )
 
 # Crates that ship a generated, gitignored file, which cargo counts as dirty:
-# they publish with --allow-dirty, after check_dirty has confirmed that file
+# they publish with --allow-dirty, after publish_flags has confirmed that file
 # (path relative to the crate) is the package's only uncommitted one.
 declare -A ALLOW_DIRTY=(
   # examples/build_ptx.rs, run by the release workflow first.
