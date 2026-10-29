@@ -477,6 +477,11 @@ fn size_mismatch_errors() -> TestResult {
     let mut dst = Image::<u8, 1>::from_size_val(sz(4, 5), 0)?;
     let err = erode_label_boundaries(&src, &mut dst, 1, Connectivity::Four, 0);
     assert!(matches!(err, Err(ImageError::InvalidImageSize(..))));
+    // Same pixel count, different shape: still rejected, `dst` untouched.
+    let mut dst = Image::<u8, 1>::from_size_val(sz(2, 8), 7)?;
+    let err = erode_label_boundaries(&src, &mut dst, 1, Connectivity::Four, 0);
+    assert!(matches!(err, Err(ImageError::InvalidImageSize(..))));
+    assert!(dst.as_slice().iter().all(|&v| v == 7));
     Ok(())
 }
 
@@ -488,7 +493,13 @@ fn threshold_overflow_errors() -> TestResult {
     let src = Image::<u8, 1>::from_size_val(sz(w, 1), 1)?;
     let mut dst = Image::<u8, 1>::from_size_val(sz(w, 1), 0)?;
     let err = erode_label_boundaries(&src, &mut dst, 70_000, Connectivity::Four, 0);
-    assert!(matches!(err, Err(ImageError::InvalidKernelLength(..))));
+    assert!(matches!(
+        err,
+        Err(ImageError::RadiusTooLarge {
+            radius: 70_000,
+            max: 65_535
+        })
+    ));
     // The largest supported threshold still runs.
     erode_label_boundaries(&src, &mut dst, 65_535, Connectivity::Four, 0)?;
     assert_eq!(dst.as_slice(), src.as_slice());

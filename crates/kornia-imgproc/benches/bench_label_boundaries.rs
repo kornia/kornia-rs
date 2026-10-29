@@ -7,7 +7,9 @@ use kornia_imgproc::connected_components::Connectivity;
 use kornia_imgproc::morphology::erode_label_boundaries;
 
 const SIZES: [(usize, usize); 2] = [(640, 480), (1280, 720)];
-const RADII: [usize; 3] = [1, 2, 5];
+/// 1, 2, 5: direct window (`t <= 4`); 8: CPU scan, CUDA fused launch;
+/// 12: CPU scan, CUDA two-launch path (`radius >= 10`).
+const RADII: [usize; 5] = [1, 2, 5, 8, 12];
 const CONNECTIVITIES: [(Connectivity, &str); 2] =
     [(Connectivity::Four, "c4"), (Connectivity::Eight, "c8")];
 

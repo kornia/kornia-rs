@@ -92,7 +92,7 @@ pub trait LabelPixel: sealed::Sealed + Copy + PartialEq + Send + Sync + 'static 
 /// # Errors
 ///
 /// * [`ImageError::InvalidImageSize`] if `src` and `dst` sizes differ.
-/// * [`ImageError::InvalidKernelLength`] if the distance threshold
+/// * [`ImageError::RadiusTooLarge`] if the distance threshold
 ///   `min(radius - 1, largest in-image distance)` exceeds 65534; only images
 ///   with a side above 32767 pixels can reach it.
 /// * [`ImageError::MixedResidency`] / [`ImageError::Cuda`] for device images
@@ -146,7 +146,10 @@ pub(crate) fn distance_threshold(
     };
     let threshold = (radius - 1).min(max_distance);
     if threshold > MAX_THRESHOLD {
-        return Err(ImageError::InvalidKernelLength(radius, radius));
+        return Err(ImageError::RadiusTooLarge {
+            radius,
+            max: MAX_THRESHOLD + 1,
+        });
     }
     Ok(Some(threshold as u16))
 }
