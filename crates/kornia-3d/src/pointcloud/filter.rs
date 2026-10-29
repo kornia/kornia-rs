@@ -199,13 +199,15 @@ struct SearchScratch {
 /// their search buffers (the cell grid, its sorted coordinates and the
 /// per-point results) on every call. An `OutlierFilter` keeps them and
 /// reuses them: after a call on a cloud of `n` points, later calls on clouds
-/// of at most `n` points allocate nothing on the grid path. Results are
-/// identical to the free functions.
+/// of at most `n` points do not reallocate them. Results are identical to
+/// the free functions.
 ///
-/// The k-d tree fallback (keys outside `i32`, k-NN neighbourhoods wider
-/// than three cells, statistical clouds under 1024 points) still builds its
-/// tree per call, and the parallel grid search allocates a few small
-/// per-task lists (the cell ranges and the k-NN candidates).
+/// Still allocated per call: the k-d tree of the fallback (keys outside
+/// `i32`, k-NN neighbourhoods wider than three cells, statistical clouds
+/// under 1024 points) and its per-query results; the list of per-cell
+/// output slices of the parallel grid search (16 bytes per occupied cell);
+/// and a few small per-task lists (the cell ranges and the k-NN
+/// candidates).
 ///
 /// # Example
 ///
