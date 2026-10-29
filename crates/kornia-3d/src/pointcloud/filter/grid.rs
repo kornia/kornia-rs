@@ -216,45 +216,34 @@ impl CellGrid {
 
     /// Runs `f(cell, positions, slice, scratch)` on every cell, in
     /// parallel, where `slice` is the cell's part of `dst` (one slot per
-    /// sorted position). `dst` is split in halves at cell boundaries down to
-    /// tasks of [`MIN_CELLS_PER_TASK`] to `2 · MIN_CELLS_PER_TASK` cells,
-    /// each with one `init()` scratch, so no per-cell list is allocated.
+    /// sorted position). Rayon splits the cell range adaptively, in halves
+    /// at cell boundaries and never below [`MIN_CELLS_PER_TASK`] cells, as
+    /// `with_min_len` did; no per-cell list of slices is allocated.
     fn for_each_cell<T: Send, S>(
         &self,
         dst: &mut [T],
-        init: impl Fn() -> S + Sync,
-        f: impl Fn(usize, Range<usize>, &mut [T], &mut S) + Sync,
+        init: impl Fn() -> S + Sync + Send,
+        f: impl Fn(usize, Range<usize>, &mut [T], &mut S) + Sync + Send,
     ) {
-        self.for_cells_in(0..self.cells(), dst, &init, &f);
-    }
-
-    /// [`for_each_cell`](Self::for_each_cell) on `cells`, whose points are
-    /// exactly `dst`.
-    fn for_cells_in<T: Send, S>(
-        &self,
-        cells: Range<usize>,
-        dst: &mut [T],
-        init: &(impl Fn() -> S + Sync),
-        f: &(impl Fn(usize, Range<usize>, &mut [T], &mut S) + Sync),
-    ) {
-        let base = self.runs.starts[cells.start] as usize;
-        if cells.len() < 2 * MIN_CELLS_PER_TASK {
-            let mut scratch = init();
+        let starts = &self.runs.starts;
+        rayon::iter::split((0..self.cells(), dst), |(cells, dst)| {
+            if cells.len() < 2 * MIN_CELLS_PER_TASK {
+                return ((cells, dst), None);
+            }
+            let mid = cells.start + cells.len() / 2;
+            let at = (starts[mid] - starts[cells.start]) as usize;
+            let (lo, hi) = dst.split_at_mut(at);
+            ((cells.start..mid, lo), Some((mid..cells.end, hi)))
+        })
+        .for_each_init(init, |scratch, (cells, dst)| {
             let mut rest = dst;
             for c in cells {
                 let own = self.cell_points(c);
                 let (head, tail) = rest.split_at_mut(own.len());
-                f(c, own, head, &mut scratch);
+                f(c, own, head, scratch);
                 rest = tail;
             }
-            return;
-        }
-        let mid = cells.start + cells.len() / 2;
-        let (lo, hi) = dst.split_at_mut(self.runs.starts[mid] as usize - base);
-        rayon::join(
-            || self.for_cells_in(cells.start..mid, lo, init, f),
-            || self.for_cells_in(mid..cells.end, hi, init, f),
-        );
+        });
     }
 
     /// Scatters per-sorted-position values to input order.
