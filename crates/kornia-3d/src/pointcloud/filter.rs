@@ -360,8 +360,7 @@ fn radius_inliers_of_finite(
         return;
     };
     let dense = &mut search.dense;
-    dense.clear();
-    dense.resize(points.len(), false);
+    grid::resize_for_overwrite(dense, points.len(), false);
     if search.grid.for_radius(points, radius) {
         grid::radius_dense(
             &search.grid,
@@ -521,8 +520,7 @@ fn statistical_inliers_of_finite(
         return;
     };
     let mean_dist = &mut search.mean_dist;
-    mean_dist.clear();
-    mean_dist.resize(n, 0.0);
+    grid::resize_for_overwrite(mean_dist, n, 0.0);
     let on_grid = n >= KNN_GRID_MIN_POINTS
         && search
             .grid

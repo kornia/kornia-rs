@@ -254,6 +254,18 @@ impl CellGrid {
     }
 }
 
+/// Sets `buf` to `n` elements whose values the caller overwrites in full:
+/// a buffer that is too short is replaced by a fresh `vec![fill; n]` (zeroed
+/// pages for a zero `fill`), a long enough one is only truncated, so reuse
+/// writes nothing and a fresh buffer costs what `vec!` does.
+pub(super) fn resize_for_overwrite<T: Clone>(buf: &mut Vec<T>, n: usize, fill: T) {
+    if buf.len() < n {
+        *buf = vec![fill; n];
+    } else {
+        buf.truncate(n);
+    }
+}
+
 #[inline]
 fn dist2(a: &[f64; 3], b: &[f64; 3]) -> f64 {
     let d = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
@@ -270,8 +282,7 @@ pub(super) fn radius_dense(
     sorted: &mut Vec<bool>,
     dense: &mut [bool],
 ) {
-    sorted.clear();
-    sorted.resize(grid.xyz.len(), false);
+    resize_for_overwrite(sorted, grid.xyz.len(), false);
     grid.for_each_cell(
         sorted,
         || (Vec::new(), [0usize; BLOCK_COLUMNS]),
@@ -344,8 +355,7 @@ pub(super) fn knn_mean_distances(
 ) {
     let s = grid.cell;
     let o = grid.origin;
-    sorted.clear();
-    sorted.resize(grid.xyz.len(), 0.0);
+    resize_for_overwrite(sorted, grid.xyz.len(), 0.0);
     grid.for_each_cell(
         sorted,
         KnnScratch::default,
