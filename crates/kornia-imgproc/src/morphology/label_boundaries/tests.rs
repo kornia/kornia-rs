@@ -309,9 +309,15 @@ fn matches_oracle_parallel_path() -> TestResult {
     Ok(())
 }
 
-/// The dispatched (SIMD on aarch64) scan of one and of several rows equals
-/// the scalar scan, which equals the brute-force definition.
-fn check_horizontal_scan<D: kernels::Dist + std::fmt::Debug>(near_max: D, max: D) {
+/// `kernel` applied to a block of `block_rows` rows of width `len` equals
+/// the scalar scan of each row, and the scalar scan equals the brute-force
+/// definition.
+fn check_horizontal_scan<D: kernels::Dist + std::fmt::Debug>(
+    near_max: D,
+    max: D,
+    kernel: fn(&mut [D], usize),
+    block_rows: usize,
+) {
     let mut rng = Lcg(42);
     for len in 0..70 {
         for trial in 0..8 {
@@ -331,28 +337,6 @@ fn check_horizontal_scan<D: kernels::Dist + std::fmt::Debug>(near_max: D, max: D
                 .collect();
             let mut scalar = row.clone();
             kernels::horizontal_min_plus_scalar(&mut scalar);
-            let mut dispatched = row.clone();
-            kernels::horizontal_min_plus_rows(&mut dispatched, len);
-            assert_eq!(dispatched, scalar, "len={len} trial={trial} row={row:?}");
-            // Several rows in one call (the interleaved SIMD group plus a
-            // remainder): each row equals its own scalar scan.
-            let mut block: Vec<D> = (0..kernels::H_ROWS + 1)
-                .flat_map(|k| {
-                    let mut r = row.clone();
-                    r.rotate_left(k % len.max(1));
-                    r
-                })
-                .collect();
-            let expected: Vec<D> = block
-                .chunks(len.max(1))
-                .flat_map(|r| {
-                    let mut r = r.to_vec();
-                    kernels::horizontal_min_plus_scalar(&mut r);
-                    r
-                })
-                .collect();
-            kernels::horizontal_min_plus_rows(&mut block, len);
-            assert_eq!(block, expected, "rows len={len} trial={trial}");
             // Reference: min over x' of row[x'] + |x - x'|, saturating.
             let reference: Vec<D> = (0..len)
                 .map(|x: usize| {
@@ -372,18 +356,64 @@ fn check_horizontal_scan<D: kernels::Dist + std::fmt::Debug>(near_max: D, max: D
                 })
                 .collect();
             assert_eq!(scalar, reference, "len={len} trial={trial}");
+            // `block_rows` rows in one call: each row equals its own
+            // scalar scan.
+            let mut block: Vec<D> = (0..block_rows)
+                .flat_map(|k| {
+                    let mut r = row.clone();
+                    r.rotate_left(k % len.max(1));
+                    r
+                })
+                .collect();
+            let expected: Vec<D> = block
+                .chunks(len.max(1))
+                .flat_map(|r| {
+                    let mut r = r.to_vec();
+                    kernels::horizontal_min_plus_scalar(&mut r);
+                    r
+                })
+                .collect();
+            kernel(&mut block, len);
+            assert_eq!(
+                block, expected,
+                "rows={block_rows} len={len} trial={trial} row={row:?}"
+            );
         }
     }
 }
 
+/// The dispatched scan (NEON on aarch64, scalar elsewhere) of one row, and
+/// of an interleaved group plus a remainder, equals the scalar scan.
 #[test]
-fn horizontal_scan_simd_matches_scalar_u16() {
-    check_horizontal_scan::<u16>(u16::MAX - 1, u16::MAX);
+fn horizontal_scan_dispatch_matches_scalar_u16() {
+    let k: fn(&mut [u16], usize) = kernels::horizontal_min_plus_rows::<u16>;
+    check_horizontal_scan::<u16>(u16::MAX - 1, u16::MAX, k, 1);
+    check_horizontal_scan::<u16>(u16::MAX - 1, u16::MAX, k, kernels::H_ROWS + 1);
 }
 
 #[test]
-fn horizontal_scan_simd_matches_scalar_u8() {
-    check_horizontal_scan::<u8>(u8::MAX - 1, u8::MAX);
+fn horizontal_scan_dispatch_matches_scalar_u8() {
+    let k: fn(&mut [u8], usize) = kernels::horizontal_min_plus_rows::<u8>;
+    check_horizontal_scan::<u8>(u8::MAX - 1, u8::MAX, k, 1);
+    check_horizontal_scan::<u8>(u8::MAX - 1, u8::MAX, k, kernels::H_ROWS + 1);
+}
+
+/// The NEON kernels, called directly (one row, and `H_ROWS` rows in lock
+/// step), equal the scalar scan bit for bit.
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn horizontal_scan_neon_matches_scalar_u16() {
+    use kernels::{horizontal_min_plus_neon_u16 as neon, H_ROWS};
+    check_horizontal_scan::<u16>(u16::MAX - 1, u16::MAX, neon::<1>, 1);
+    check_horizontal_scan::<u16>(u16::MAX - 1, u16::MAX, neon::<H_ROWS>, H_ROWS);
+}
+
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn horizontal_scan_neon_matches_scalar_u8() {
+    use kernels::{horizontal_min_plus_neon_u8 as neon, H_ROWS};
+    check_horizontal_scan::<u8>(u8::MAX - 1, u8::MAX, neon::<1>, 1);
+    check_horizontal_scan::<u8>(u8::MAX - 1, u8::MAX, neon::<H_ROWS>, H_ROWS);
 }
 
 /// The direct window minimum and the full two-sweep scan select the same
