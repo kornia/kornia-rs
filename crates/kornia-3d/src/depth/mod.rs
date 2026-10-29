@@ -23,9 +23,14 @@
 //! undistorted (as depth sensors and Open3D's `PinholeCameraIntrinsic`
 //! assume).
 //!
-//! All arithmetic is `f32`.
+//! All arithmetic is `f32`, on the host and on the device (feature `cuda`,
+//! `CudaDepthProjector`); the device kernels mirror the host expressions
+//! and produce identical results.
 
 mod kernels;
+
+#[cfg(feature = "cuda")]
+mod cuda;
 
 use kornia_image::{Image, ImageError};
 
@@ -35,10 +40,13 @@ use crate::pose::Pose3d;
 
 pub use kernels::MAX_SPLAT_RADIUS;
 
+#[cfg(feature = "cuda")]
+pub use cuda::{CudaDepthProjector, CudaPointCloud};
+
 /// Errors of the depth unprojection and registration ops.
 #[derive(Debug, thiserror::Error)]
 pub enum DepthError {
-    /// An image operand is invalid (size mismatch, residency).
+    /// An image operand is invalid (size mismatch, residency, CUDA failure).
     #[error(transparent)]
     Image(#[from] ImageError),
 
@@ -76,7 +84,7 @@ pub enum DepthError {
     },
 
     /// An image is too large for the index types (`i32` coordinates, `u32`
-    /// pixel indices).
+    /// pixel indices and point counts).
     #[error("image {width}x{height} is too large")]
     ImageTooLarge {
         /// Image width.
@@ -84,6 +92,21 @@ pub enum DepthError {
         /// Image height.
         height: usize,
     },
+
+    /// A device point buffer cannot hold one point per depth pixel
+    /// (feature `cuda`).
+    #[error("point buffer capacity {capacity} < {needed} depth pixels")]
+    CapacityTooSmall {
+        /// Buffer capacity in points.
+        capacity: usize,
+        /// Depth pixels of the call.
+        needed: usize,
+    },
+
+    /// A device buffer belongs to a different stream than the projector
+    /// using it (feature `cuda`).
+    #[error("device buffer was allocated on a different stream than the projector")]
+    StreamMismatch,
 }
 
 mod sealed {
@@ -97,6 +120,9 @@ mod sealed {
 /// Distinct from `kornia_imgproc::depth::DepthPixel`, whose hidden methods
 /// are the image-filter kernels of that crate.
 pub trait DepthSample: sealed::Sealed + Copy + Send + Sync + 'static {
+    #[doc(hidden)]
+    const KERNEL_INDEX: usize;
+
     #[doc(hidden)]
     fn metres(self, metres_per_unit: f32) -> f32;
 
@@ -123,6 +149,8 @@ pub trait DepthSample: sealed::Sealed + Copy + Send + Sync + 'static {
 }
 
 impl DepthSample for u16 {
+    const KERNEL_INDEX: usize = kernels::KIND_U16;
+
     #[inline(always)]
     fn metres(self, metres_per_unit: f32) -> f32 {
         f32::from(self) * metres_per_unit
@@ -169,6 +197,8 @@ impl DepthSample for u16 {
 }
 
 impl DepthSample for f32 {
+    const KERNEL_INDEX: usize = kernels::KIND_F32;
+
     #[inline(always)]
     fn metres(self, metres_per_unit: f32) -> f32 {
         self * metres_per_unit
@@ -212,7 +242,8 @@ impl DepthSample for f32 {
     }
 }
 
-/// Host paths read images as slices; device-resident images are rejected.
+/// Host paths read images as slices; device images go through
+/// `CudaDepthProjector` instead.
 fn check_host<T, const C: usize>(img: &Image<T, C>) -> Result<(), DepthError> {
     if img.storage.domain().is_host_accessible() {
         Ok(())
@@ -327,7 +358,7 @@ pub fn unproject_depth<T: DepthSample>(
 /// * [`DepthError::Image`]`(`[`ImageError::InvalidImageSize`]`)` if the mask
 ///   size differs from the depth size.
 /// * [`DepthError::Image`]`(`[`ImageError::UnsupportedDevice`]`)` for a
-///   device-resident image.
+///   device-resident image (use `CudaDepthProjector`).
 /// * [`DepthError::ImageTooLarge`] if a side does not fit `i32`, or, with
 ///   `pixel_index`, the pixel count exceeds `2^32`.
 ///
@@ -404,7 +435,7 @@ pub fn unproject_depth_into<T: DepthSample>(
 /// dropped. Pixels no point reaches are `0` (both dtypes).
 ///
 /// The projection restates `camera::pinhole::project_point` in `f32` rather
-/// than calling it (that function is `f64`): the scalar and NEON paths
+/// than calling it (that function is `f64`): the host, NEON and CUDA paths
 /// evaluate the same `f32` operations in the same order, which is what
 /// makes their outputs bit-identical.
 ///
@@ -415,8 +446,9 @@ pub fn unproject_depth_into<T: DepthSample>(
 /// and the source rows are cut into bands processed in two alternating
 /// parallel phases, each band writing only its own window of destination
 /// rows with plain stores; splats that leave their window are merged with
-/// an atomic max afterwards. A per-cell maximum does not depend on the
-/// update order, so the result is deterministic across threads and runs.
+/// an atomic max afterwards. On CUDA every splat is an `atomicMax`. A
+/// per-cell maximum does not depend on the update order, so the result is
+/// deterministic across threads, runs and the CUDA path.
 ///
 /// Reference: ROS `depth_image_proc/register` (nearest-pixel projection with
 /// a z-buffer) and Open3D `t::geometry::PointCloud::project_to_depth_image`.
@@ -452,7 +484,7 @@ pub fn unproject_depth_into<T: DepthSample>(
 /// * [`DepthError::SplatRadiusTooLarge`] if `splat_radius` exceeds
 ///   [`MAX_SPLAT_RADIUS`].
 /// * [`DepthError::Image`]`(`[`ImageError::UnsupportedDevice`]`)` for a
-///   device-resident image.
+///   device-resident image (use `CudaDepthProjector`).
 /// * [`DepthError::ImageTooLarge`] if a side does not fit `i32`.
 ///
 /// # Example
@@ -500,3 +532,6 @@ pub fn register_depth<T: DepthSample>(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, feature = "cuda"))]
+mod cuda_tests;

@@ -217,7 +217,7 @@ fn unproject_u16_parallel_matches_sequential() -> TestResult {
 }
 
 /// At every accepted scale, a u16 sample is valid iff non-zero, and that
-/// equals the metres-value test the scatter applies, down
+/// equals the metres-value test the CUDA kernels and the scatter apply, down
 /// to the smallest subnormal scale and up to the scale `f32::MAX / 65536`
 /// (`65535 * scale` still finite). Larger scales are rejected.
 #[test]

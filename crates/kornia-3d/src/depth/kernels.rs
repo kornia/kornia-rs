@@ -1,4 +1,9 @@
 //! Slice-level CPU kernels for depth unprojection and registration.
+//!
+//! Every float expression here has a textual twin in `cuda.rs`'s `KERNELS`,
+//! which nvrtc compiles with `fmad=false` (no contraction, IEEE division,
+//! no flush-to-zero), so the host and the device round every step the same
+//! way and produce identical points and depth values.
 
 use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicU16, AtomicU32, Ordering};
@@ -11,9 +16,14 @@ use super::{DepthError, DepthSample};
 use crate::camera::PinholeCamera;
 use crate::pose::Pose3d;
 
+/// `DepthSample::KERNEL_INDEX` of `u16`.
+pub(crate) const KIND_U16: usize = 0;
+/// `DepthSample::KERNEL_INDEX` of `f32`.
+pub(crate) const KIND_F32: usize = 1;
+
 /// Largest accepted splat radius. A wider footprint is a hole-filling
 /// filter rather than a splat, and the bound keeps every pixel coordinate
-/// plus radius inside `i32`.
+/// plus radius inside `i32` on both host and device.
 pub const MAX_SPLAT_RADIUS: usize = 32;
 
 /// Upper bound on the rayon tasks of one unprojection: the per-task counts
@@ -41,7 +51,9 @@ const FILL_CHUNK: usize = 1 << 16;
 /// sentinel and is never written.
 const U16_MAX_OUTPUT: f32 = 65534.0;
 
-/// Unprojection constants of the CPU kernels.
+/// Unprojection constants, shared verbatim by the CPU kernels and the CUDA
+/// kernel ABI (`struct Unp` in `cuda.rs`).
+#[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct UnprojectParams {
     /// `1 / fx` of the depth camera.
@@ -60,7 +72,9 @@ pub(crate) struct UnprojectParams {
     pub height: i32,
 }
 
-/// Registration constants of the CPU kernels.
+/// Registration constants, shared verbatim by the CPU kernels and the CUDA
+/// kernel ABI (`struct Reg` in `cuda.rs`).
+#[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RegisterParams {
     /// Source camera and image; `src.scale` is also the output's metres
@@ -88,7 +102,7 @@ pub(crate) struct RegisterParams {
 
 // The validity rule is `kornia_imgproc::depth`'s, used as is: a `u16`
 // sample is a measurement iff non-zero, an `f32` sample iff finite and
-// positive.
+// positive. The CUDA kernels mirror the `f32` predicate as `valid_z`.
 //
 // The kernels also apply `is_valid_depth_f32` to a value in metres
 // (`d · metres_per_unit`) and to an output value: for a finite positive
@@ -295,7 +309,8 @@ enum BandOut<'a> {
 }
 
 /// Sequential fallback with the same output as the parallel path. It applies
-/// [`is_valid_depth_f32`] to the value in metres for both dtypes, so tests also use it as the oracle for the
+/// [`is_valid_depth_f32`] to the value in metres for both dtypes (the form
+/// the CUDA kernel uses), so tests also use it as the oracle for the
 /// per-dtype test of the parallel path ([`DepthSample::is_valid_at`]).
 pub(crate) fn unproject_sequential<T: DepthSample>(
     depth: &[T],
@@ -465,11 +480,12 @@ impl Batch {
 /// row whose `(y - cy) / fy` is `yn`, at depth `z` metres. The key is `0`
 /// unless `z` is valid, the point is in front of the destination camera,
 /// its splat touches the image and its value is representable (`key_u16` /
-/// `key_f32`). [`project_neon`] is its 4-lane twin.
+/// `key_f32`). The float expressions are those of the CUDA `scatter`
+/// kernel, evaluated in the same order; [`project_neon`] is its 4-lane twin.
 ///
 /// This restates the pinhole model of `camera::pinhole::project_point`
 /// instead of calling it: that function works in `f64` through `Pose3d` and
-/// `Vec3F64`, with its own `z <= 1e-8` cut, whereas the scalar and NEON
+/// `Vec3F64`, with its own `z <= 1e-8` cut, whereas the host, NEON and CUDA
 /// paths here must evaluate the same `f32` operations in the same order to
 /// stay bit-identical.
 #[inline(always)]
@@ -489,7 +505,7 @@ fn project_one(p: &RegisterParams, x: u32, yn: f32, z: f32, u16_keys: bool) -> (
         & (uf < (p.width + p.radius) as f32)
         & (vf >= -rr)
         & (vf < (p.height + p.radius) as f32);
-    // `qz > 0` is false for NaN.
+    // `qz > 0` is false for NaN, as the device's `!(isnan || <= 0)`.
     let ok = is_valid_depth_f32(z) & (qz > 0.0) & inside;
     let k = if u16_keys {
         key_u16(qz, s.scale)
