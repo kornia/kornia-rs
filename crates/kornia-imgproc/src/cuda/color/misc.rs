@@ -238,4 +238,30 @@ mod tests {
         stream.synchronize().unwrap();
         assert_eq!(gpu, cpu);
     }
+
+    /// Sepia u8 is word-vectorized like gray u8: an alias at an odd offset is
+    /// rejected by `launch_map` before the word loads would fault.
+    #[test]
+    fn sepia_u8_misaligned_alias() {
+        use cudarc::driver::DevicePtr;
+        let stream = default_stream();
+        let d_src = stream.clone_htod(&[7u8; 64]).unwrap();
+        let d_dst = stream.clone_htod(&[0u8; 64]).unwrap();
+        let src_base = d_src.device_ptr(&stream).0;
+        let dst_base = d_dst.device_ptr(&stream).0;
+        for (src_off, dst_off, what) in [(9, 0, "src"), (0, 1, "dst")] {
+            // SAFETY: both aliases stay inside the live allocations above and
+            // are leaked below, so they never free memory they do not own.
+            let src = unsafe { stream.upgrade_device_ptr::<u8>(src_base + src_off, 48) };
+            let mut dst = unsafe { stream.upgrade_device_ptr::<u8>(dst_base + dst_off, 48) };
+            let r = launch_sepia_from_rgb_u8(&stream, &src, &mut dst, 16);
+            src.leak();
+            dst.leak();
+            assert!(
+                matches!(r, Err(CudaColorError::Misaligned { what: w, .. }) if w == what),
+                "{what} offset: {r:?}"
+            );
+        }
+        stream.synchronize().unwrap();
+    }
 }
