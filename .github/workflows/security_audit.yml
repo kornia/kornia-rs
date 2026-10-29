@@ -62,6 +62,16 @@ jobs:
       #                    PyCFunction::new_closure. Both need the pyo3/numpy/
       #                    dlpack-rs 0.29 migration in kornia-py (tracked
       #                    separately).
+      # RUSTSEC-2026-0367  zip < 9 `extract` keeps SUID/SGID bits.
+      # RUSTSEC-2026-0368  zip < 9 `extract` writes symlinks out of the target.
+      # RUSTSEC-2026-0369  zip < 9 `extract` chmods through symlinks.
+      #                    candle-core 0.11 (newest; kornia-vlm only) pins
+      #                    zip ^8 and never calls `extract`.
+      # RUSTSEC-2026-0391  zstd < 0.14.3 leaks data across a reused stream.
+      # RUSTSEC-2026-0398  zstd-safe < 8.2 `Seekable::decompress` length bug.
+      # RUSTSEC-2026-0403  zstd-safe < 8.2 legacy-frame uninit memory.
+      #                    Examples only (rerun -> mcap / parquet pin zstd
+      #                    0.13); no library crate depends on zstd.
       - name: Run cargo audit
         run: |
           cargo audit \
@@ -70,4 +80,10 @@ jobs:
             --ignore RUSTSEC-2026-0194 \
             --ignore RUSTSEC-2026-0195 \
             --ignore RUSTSEC-2026-0176 \
-            --ignore RUSTSEC-2026-0177
+            --ignore RUSTSEC-2026-0177 \
+            --ignore RUSTSEC-2026-0367 \
+            --ignore RUSTSEC-2026-0368 \
+            --ignore RUSTSEC-2026-0369 \
+            --ignore RUSTSEC-2026-0391 \
+            --ignore RUSTSEC-2026-0398 \
+            --ignore RUSTSEC-2026-0403
