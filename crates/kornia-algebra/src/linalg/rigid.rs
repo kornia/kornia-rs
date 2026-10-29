@@ -438,6 +438,19 @@ pub fn umeyama_f64_robust(
     config: &RobustUmeyamaConfig,
     with_scale: bool,
 ) -> UmeyamaResultF64 {
+    robust_fit(src, dst, config, with_scale).map(|(fit, _)| fit)
+}
+
+/// The robust fit plus the number of completed IRLS reweighted solves.
+///
+/// The seed solve and the final MAD refit are not counted. `pub(crate)` so the
+/// convergence tests can observe the loop; the public API discards the count.
+pub(crate) fn robust_fit(
+    src: &[Vec3F64],
+    dst: &[Vec3F64],
+    config: &RobustUmeyamaConfig,
+    with_scale: bool,
+) -> Result<(UmeyamaOutputF64, usize), UmeyamaError> {
     config.validate()?;
 
     let n = src.len();
@@ -458,6 +471,7 @@ pub fn umeyama_f64_robust(
     let eps = f64::EPSILON;
 
     let mut residuals = vec![0.0_f64; n];
+    let mut solves = 0usize;
     for iter in 0..config.max_iters {
         write_residuals(&fit, &mut residuals);
         // Huber weights: full weight below `delta`, `delta / r` above.
@@ -478,6 +492,7 @@ pub fn umeyama_f64_robust(
             break;
         }
         let new_fit = umeyama_f64(src, dst, Some(&weights), with_scale)?;
+        solves += 1;
 
         // Convergence: maximum relative change of scale, rotation columns
         // and translation between the two fits. `scale_rel` is 0 in rigid
@@ -549,7 +564,7 @@ pub fn umeyama_f64_robust(
         }
     }
 
-    Ok(fit)
+    Ok((fit, solves))
 }
 
 /// Accumulated first- and second-order statistics of the two point sets.
@@ -1882,6 +1897,62 @@ mod tests {
 
         let got = umeyama_f64_robust(&src, &dst, &RobustUmeyamaConfig::default(), true)?;
         assert_matches_true(&got, &r_true, &t_true, s_true, 5e-3);
+        Ok(())
+    }
+
+    #[test]
+    fn test_umeyama_f64_robust_clean_data_skips_reweighted_solves() -> Result<(), UmeyamaError> {
+        // Exact data: every Huber weight is 1 on the first pass, so the
+        // all-ones fast path must exit before any reweighted solve.
+        let src = random_points(0x7001, 12, 2.0);
+        let r_true = rot_z90();
+        let t_true = Vec3F64::new(0.5, -0.3, 2.0);
+        let s_true = 1.7;
+        let dst: Vec<Vec3F64> = src
+            .iter()
+            .map(|p| (r_true * *p) * s_true + t_true)
+            .collect();
+
+        let (_, solves) = robust_fit(&src, &dst, &RobustUmeyamaConfig::default(), true)?;
+        assert_eq!(solves, 0, "clean data must take the all-ones fast path");
+        Ok(())
+    }
+
+    #[test]
+    fn test_umeyama_f64_robust_irls_solve_count_is_bounded() -> Result<(), UmeyamaError> {
+        // Noisy data with one gross outlier: the loop must reweight, converge
+        // before `max_iters`, and respect a tighter iteration cap.
+        let mut src = random_points(0x7002, 20, 2.0);
+        let r_true = rot_z90();
+        let t_true = Vec3F64::new(0.5, -0.3, 2.0);
+        let s_true = 1.7;
+        add_noise(0x7003, &mut src, 5e-4);
+        let mut dst: Vec<Vec3F64> = src
+            .iter()
+            .map(|p| (r_true * *p) * s_true + t_true)
+            .collect();
+        add_noise(0x7004, &mut dst, 5e-4);
+        dst[5] += Vec3F64::new(50.0, -40.0, 30.0);
+
+        let cfg = RobustUmeyamaConfig::default();
+        let (fit, solves) = robust_fit(&src, &dst, &cfg, true)?;
+        assert!(
+            solves > 0,
+            "IRLS must perform at least one reweighted solve"
+        );
+        assert!(
+            solves < cfg.max_iters,
+            "IRLS should converge before max_iters, got {solves}"
+        );
+        assert_matches_true(&fit, &r_true, &t_true, s_true, 5e-3);
+
+        // `max_iters` is a hard cap on the number of reweighted solves.
+        let capped = RobustUmeyamaConfig {
+            max_iters: 2,
+            ..cfg
+        };
+        let (_, capped_solves) = robust_fit(&src, &dst, &capped, true)?;
+        assert_eq!(capped_solves, 2, "max_iters must cap the solve count");
         Ok(())
     }
 }
