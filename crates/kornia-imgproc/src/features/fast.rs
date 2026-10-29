@@ -490,6 +490,17 @@ pub fn fast_detect_rows_u8_serial(
     fast_detect_rows_u8_impl(src, threshold, arc_length, border, rows, false)
 }
 
+/// Shared body of [`fast_detect_rows_u8`] (`parallel = true`, rows split
+/// across rayon) and [`fast_detect_rows_u8_serial`] (`parallel = false`).
+///
+/// Scans `rows`, clamped to the valid area given by `border` (at least 3, the
+/// radius of the FAST ring), and returns `([y, x], score)` for each corner.
+/// The score is the FAST-9 `cornerScore` for `arc_length == 9` and the sum of
+/// absolute differences otherwise, both scaled by `1 / 255`. The AVX2/NEON
+/// 16-pixel block implements FAST-9 only, so it runs only for
+/// `arc_length == 9`; other arc lengths use the scalar path. On the SIMD path,
+/// images 800 px wide and up also get an in-block local-maximum candidate
+/// filter, so they can return fewer corners than the scalar reference.
 fn fast_detect_rows_u8_impl(
     src: &Image<u8, 1>,
     threshold: f32,
