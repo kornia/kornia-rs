@@ -1,5 +1,7 @@
 //! Depth ops: valid-aware median blur, u16 and f32, CPU and (with
 //! `--features cuda`) device-resident CUDA.
+//!
+//! `bench_depth_baselines.py` times `cv2.medianBlur` on the same fixture.
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use kornia_image::{Image, ImageSize};
