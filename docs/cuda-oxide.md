@@ -59,7 +59,8 @@ on stable without the toolchain.
 - Release: the Rust release workflow builds the PTX, and
   `scripts/release_rust.sh` publishes the crate with `--features ptx
   --allow-dirty` (cargo counts the gitignored-but-included file as dirty), so
-  the verify build checks the stamp inside the packaged copy.
+  the verify build checks the stamp inside the packaged copy. Before that it
+  aborts if any other packaged file is modified, untracked or ignored.
 - The PTX targets `sm_75` (PTX ISA 6.3): the driver JITs it for any
   Turing-or-newer GPU and any host CPU, so one file serves every wheel and
   platform. Maxwell/Pascal (Jetson Nano/TX2) cannot run ported ops.
@@ -108,6 +109,26 @@ bench.
 by default (like `nvcc --fmad=true`); the CPU twins round each op, so
 `build_ptx` always sets it on the nested build (an outer value cannot change
 it) and the gate still rejects any `fma`.
+
+### Compile-checking `cuda` without the toolchain
+
+To run `cargo check`/`clippy` with `--features cuda` on a machine without the
+nightly toolchain, point `KORNIA_OXIDE_PTX` at a placeholder: the stamp that
+`build.rs` reports as expected, then one `ret`-only entry per `#[kernel]`.
+**Compile and lint only**: on a GPU these kernels do nothing, so never run
+tests or benches with it. Regenerate it after any change under `device/`.
+
+```bash
+dev=crates/kornia-oxide-kernels/device
+ph=$PWD/target/placeholder.ptx; mkdir -p target; : > "$ph"
+stamp=$(KORNIA_OXIDE_PTX=$ph cargo check -q -p kornia-oxide-kernels --features ptx 2>&1 \
+  | grep -o '// kornia-oxide-kernels source fnv1a64 [0-9a-f]*' | head -1)
+{ echo "$stamp"; printf '.version 6.3\n.target sm_75\n.address_size 64\n'
+  for e in $(grep -rh -A1 '#\[kernel\]' "$dev/src" | grep -o 'fn [a-z0-9_]*' | cut -c4-); do
+    printf '.visible .entry %s()\n{\n\tret;\n}\n' "$e"
+  done; } > "$ph"
+export KORNIA_OXIDE_PTX=$ph
+```
 
 ## Adding a kernel / migrating an NVRTC family
 
