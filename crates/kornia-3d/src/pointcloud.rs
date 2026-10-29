@@ -1,4 +1,4 @@
-/// Index selection on point clouds.
+/// Outlier removal and index selection on point clouds.
 pub mod filter;
 
 /// A point cloud with points, colors, and normals.
