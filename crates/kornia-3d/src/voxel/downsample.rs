@@ -1047,6 +1047,94 @@ pub fn remove_sparse_voxels<'a>(
     Ok(PointCloudView::from_checked(cloud, Cow::Owned(kept)))
 }
 
+/// A cloud grouped by voxel: the host sort of [`VoxelDownsampler`] exposed
+/// for neighbour queries on a uniform grid. [`sort`](Self::sort) reuses the
+/// buffers of the previous sort, so a long-lived value allocates only when a
+/// cloud is larger than every earlier one.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct CellRuns {
+    /// Input index per sorted position (voxels ascending, indices ascending
+    /// within a voxel).
+    pub(crate) order: Vec<u32>,
+    /// Packed biased key of each voxel, ascending.
+    pub(crate) keys: Vec<u128>,
+    /// Voxel starts into `order`, plus a final `order.len()`.
+    pub(crate) starts: Vec<u32>,
+    /// Sort scratch; its `starts` buffer is swapped with `starts` above.
+    sorter: VoxelDownsampler,
+}
+
+impl CellRuns {
+    /// Sorts `points` into the voxels of `layout`, replacing the previous
+    /// contents. On error the contents are unspecified.
+    pub(crate) fn sort(
+        &mut self,
+        points: &[[f64; 3]],
+        layout: &VoxelLayout,
+    ) -> Result<(), VoxelError> {
+        let ds = &mut self.sorter;
+        ds.sort_and_segment(points, layout)?;
+        let m = ds.voxel_count();
+        self.keys.clear();
+        self.keys.extend(
+            ds.starts[..m]
+                .iter()
+                .map(|&s| key_bits(ds.words[s as usize])),
+        );
+        ds.words
+            .par_iter()
+            .with_min_len(MIN_ITEMS_PER_TASK)
+            .map(|&w| w as u32)
+            .collect_into_vec(&mut self.order);
+        std::mem::swap(&mut self.starts, &mut ds.starts);
+        Ok(())
+    }
+
+    /// The unbiased key of voxel `v`.
+    #[inline]
+    pub(crate) fn key(&self, v: usize) -> VoxelKey {
+        key_from_word(self.keys[v] << 32)
+    }
+
+    /// Sorted positions of the points in the voxels `(x, y, z0..=z1)`
+    /// (unbiased key components, any of them possibly outside `i32`, then
+    /// the voxels do not exist).
+    ///
+    /// `hint` is a voxel index from a previous call, updated to this call's
+    /// first voxel: from it the search gallops forward, so a run of calls
+    /// with ascending targets costs amortized O(1) each. Any `hint` gives
+    /// the same result.
+    pub(crate) fn column(
+        &self,
+        hint: &mut usize,
+        x: i64,
+        y: i64,
+        z0: i64,
+        z1: i64,
+    ) -> std::ops::Range<usize> {
+        let to_biased = |k: i64| -> Option<u32> { i32::try_from(k).ok().map(biased) };
+        let z0 = z0.max(i64::from(i32::MIN));
+        let z1 = z1.min(i64::from(i32::MAX));
+        let (Some(bx), Some(by), Some(b0), Some(b1)) =
+            (to_biased(x), to_biased(y), to_biased(z0), to_biased(z1))
+        else {
+            return 0..0;
+        };
+        if b0 > b1 {
+            return 0..0;
+        }
+        let first = pack_biased(bx, by, b0);
+        let last = pack_biased(bx, by, b1);
+        let a = gallop(&self.keys, *hint, first);
+        *hint = a;
+        let mut b = a;
+        while b < self.keys.len() && self.keys[b] <= last {
+            b += 1;
+        }
+        self.starts[a] as usize..self.starts[b] as usize
+    }
+}
+
 /// The first index of the ascending `keys` whose key is `>= first`,
 /// searched forward from `hint` with doubling steps (or by bisection below
 /// `hint` when `hint` is past it).

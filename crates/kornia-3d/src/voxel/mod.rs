@@ -35,6 +35,8 @@ pub use downsample::{
 };
 pub use grid::VoxelGrid;
 
+pub(crate) use downsample::CellRuns;
+
 use crate::pointcloud::filter::FilterError;
 
 /// Integer voxel coordinates `(x, y, z)`.

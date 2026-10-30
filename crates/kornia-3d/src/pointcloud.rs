@@ -1,4 +1,4 @@
-/// Errors of the point cloud filters and index selection.
+/// Outlier removal, and the errors of index selection, on point clouds.
 pub mod filter;
 
 mod view;
