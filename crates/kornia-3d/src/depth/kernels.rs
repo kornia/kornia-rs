@@ -3,11 +3,10 @@
 use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicU16, AtomicU32, Ordering};
 
-use kornia_image::ImageSize;
 use kornia_imgproc::simd::cpu_features;
 use rayon::prelude::*;
 
-use super::{DepthError, DepthSample};
+use super::{DepthError, DepthImage, DepthSample};
 use crate::camera::PinholeCamera;
 use crate::pose::Pose3d;
 
@@ -52,7 +51,7 @@ pub(crate) struct UnprojectParams {
     pub cx: f32,
     /// Principal point y (pixels).
     pub cy: f32,
-    /// Metres per depth unit.
+    /// Metres per depth unit, `1 / meter` in `f32`.
     pub scale: f32,
     /// Depth image width.
     pub width: i32,
@@ -63,8 +62,7 @@ pub(crate) struct UnprojectParams {
 /// Registration constants of the CPU kernels.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RegisterParams {
-    /// Source camera and image; `src.scale` is also the output's metres
-    /// per unit (the output value is `z_dst / scale`).
+    /// Source camera and image; `src.scale` is `1 / meter` of the source.
     pub src: UnprojectParams,
     /// `dst_from_src` rotation, row-major.
     pub r: [f32; 9],
@@ -84,6 +82,9 @@ pub(crate) struct RegisterParams {
     pub height: i32,
     /// Splat radius in destination pixels.
     pub radius: i32,
+    /// `1 / meter` of the destination in `f32`: the output value is
+    /// `z_dst / dst_scale`.
+    pub dst_scale: f32,
 }
 
 // The validity rule is `kornia_imgproc::depth`'s, used as is: a `u16`
@@ -91,81 +92,112 @@ pub(crate) struct RegisterParams {
 // positive.
 //
 // The kernels also apply `is_valid_depth_f32` to a value in metres
-// (`d · metres_per_unit`) and to an output value: for a finite positive
-// scale `s`, the product is valid iff the sample is valid and `d · s`
-// neither overflows nor underflows to `0`, and for a `u16` sample (whose
-// scale passed [`DepthSample::scale_is_valid`]) iff the sample is non-zero.
+// (`d · s`, `s = 1 / meter`) and to an output value: for a finite
+// positive `s`, the product is valid iff the sample is valid and `d · s` neither overflows nor
+// underflows to `0`, and for a `u16` sample (whose `meter` passed
+// [`DepthSample::meter_is_valid`]) iff the sample is non-zero.
 pub(crate) use kornia_imgproc::depth::{is_valid_depth_f32, is_valid_depth_u16};
 
-/// Checked `i32` image dimensions with room for a splat radius on top.
-fn dims_i32(width: usize, height: usize) -> Result<(i32, i32), DepthError> {
-    let fits = |v: usize| {
-        v.checked_add(MAX_SPLAT_RADIUS)
-            .is_some_and(|s| i32::try_from(s).is_ok())
-    };
-    if !fits(width) || !fits(height) {
-        return Err(DepthError::ImageTooLarge { width, height });
-    }
-    Ok((width as i32, height as i32))
+/// Image dimensions checked to fit `i32` with room for a splat radius on
+/// top.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Dims {
+    /// Width in pixels.
+    pub width: i32,
+    /// Height in pixels.
+    pub height: i32,
 }
 
-/// Rejects a camera whose `f32` constants would not be finite and non-zero.
-fn check_camera(camera: &PinholeCamera) -> Result<(f32, f32, f32, f32), DepthError> {
-    let inv_fx = (1.0 / camera.fx) as f32;
-    let inv_fy = (1.0 / camera.fy) as f32;
-    let (cx, cy) = (camera.cx as f32, camera.cy as f32);
-    let finite = [camera.fx as f32, camera.fy as f32, inv_fx, inv_fy, cx, cy]
-        .iter()
-        .all(|v| v.is_finite());
-    if !finite || inv_fx == 0.0 || inv_fy == 0.0 {
-        return Err(DepthError::InvalidIntrinsics {
-            fx: camera.fx,
-            fy: camera.fy,
-            cx: camera.cx,
-            cy: camera.cy,
-        });
+impl Dims {
+    /// Checks that both sides plus [`MAX_SPLAT_RADIUS`] fit `i32`.
+    fn new(width: usize, height: usize) -> Result<Self, DepthError> {
+        let fits = |v: usize| {
+            v.checked_add(MAX_SPLAT_RADIUS)
+                .is_some_and(|s| i32::try_from(s).is_ok())
+        };
+        if !fits(width) || !fits(height) {
+            return Err(DepthError::ImageTooLarge { width, height });
+        }
+        Ok(Self {
+            width: width as i32,
+            height: height as i32,
+        })
     }
-    Ok((inv_fx, inv_fy, cx, cy))
 }
 
-/// Builds the unprojection constants of a `T` depth image after validating
-/// every argument.
+/// The `f32` pinhole constants of the CPU kernels: reciprocal focal lengths
+/// and principal point, all finite and the reciprocals non-zero.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Intrinsics32 {
+    /// `1 / fx`.
+    pub inv_fx: f32,
+    /// `1 / fy`.
+    pub inv_fy: f32,
+    /// Principal point x (pixels).
+    pub cx: f32,
+    /// Principal point y (pixels).
+    pub cy: f32,
+}
+
+impl Intrinsics32 {
+    /// Rejects a camera whose `f32` constants would not be finite and
+    /// non-zero.
+    fn new(camera: &PinholeCamera) -> Result<Self, DepthError> {
+        let inv_fx = (1.0 / camera.fx) as f32;
+        let inv_fy = (1.0 / camera.fy) as f32;
+        let (cx, cy) = (camera.cx as f32, camera.cy as f32);
+        let finite = [camera.fx as f32, camera.fy as f32, inv_fx, inv_fy, cx, cy]
+            .iter()
+            .all(|v| v.is_finite());
+        if !finite || inv_fx == 0.0 || inv_fy == 0.0 {
+            return Err(DepthError::InvalidIntrinsics {
+                fx: camera.fx,
+                fy: camera.fy,
+                cx: camera.cx,
+                cy: camera.cy,
+            });
+        }
+        Ok(Self {
+            inv_fx,
+            inv_fy,
+            cx,
+            cy,
+        })
+    }
+}
+
+/// Builds the unprojection constants of `depth` after validating the
+/// camera and the image size; `depth`'s `meter` was validated by its
+/// constructor.
 pub(crate) fn unproject_params<T: DepthSample>(
     camera: &PinholeCamera,
-    metres_per_unit: f32,
-    width: usize,
-    height: usize,
+    depth: &DepthImage<T>,
 ) -> Result<UnprojectParams, DepthError> {
-    if !T::scale_is_valid(metres_per_unit) {
-        return Err(DepthError::InvalidDepthScale(metres_per_unit));
-    }
-    let (inv_fx, inv_fy, cx, cy) = check_camera(camera)?;
-    let (w, h) = dims_i32(width, height)?;
+    let k = Intrinsics32::new(camera)?;
+    let dims = Dims::new(depth.width(), depth.height())?;
     Ok(UnprojectParams {
-        inv_fx,
-        inv_fy,
-        cx,
-        cy,
-        scale: metres_per_unit,
-        width: w,
-        height: h,
+        inv_fx: k.inv_fx,
+        inv_fy: k.inv_fy,
+        cx: k.cx,
+        cy: k.cy,
+        scale: depth.metres_per_unit(),
+        width: dims.width,
+        height: dims.height,
     })
 }
 
-/// Builds the registration constants of a `T` depth image after validating
-/// every argument. The same `metres_per_unit` values are accepted as by
-/// [`unproject_params`]: the output is a division by the scale, so no
-/// reciprocal has to be representable.
+/// Builds the registration constants of `src` into `dst` after validating
+/// the cameras, the transform, the splat radius and both image sizes; both
+/// `meter`s were validated by their constructors.
 pub(crate) fn register_params<T: DepthSample>(
+    src: &DepthImage<T>,
     src_camera: &PinholeCamera,
-    metres_per_unit: f32,
     dst_from_src: &Pose3d,
     dst_camera: &PinholeCamera,
     splat_radius: usize,
-    src_size: ImageSize,
-    dst_size: ImageSize,
+    dst: &DepthImage<T>,
 ) -> Result<RegisterParams, DepthError> {
-    let src = unproject_params::<T>(src_camera, metres_per_unit, src_size.width, src_size.height)?;
+    let src_params = unproject_params(src_camera, src)?;
     if splat_radius > MAX_SPLAT_RADIUS {
         return Err(DepthError::SplatRadiusTooLarge {
             radius: splat_radius,
@@ -173,8 +205,8 @@ pub(crate) fn register_params<T: DepthSample>(
         });
     }
     // Validates the destination focal lengths; the reciprocals are unused.
-    check_camera(dst_camera)?;
-    let (dst_w, dst_h) = dims_i32(dst_size.width, dst_size.height)?;
+    Intrinsics32::new(dst_camera)?;
+    let dst_dims = Dims::new(dst.width(), dst.height())?;
     // Column-major [c0.x, c0.y, c0.z, c1.x, ...]; r[3 * i + j] = R[i][j].
     let m = dst_from_src.rotation.to_cols_array();
     let mut r = [0.0f32; 9];
@@ -189,16 +221,17 @@ pub(crate) fn register_params<T: DepthSample>(
         return Err(DepthError::InvalidTransform);
     }
     Ok(RegisterParams {
-        src,
+        src: src_params,
         r,
         t,
         fx: dst_camera.fx as f32,
         fy: dst_camera.fy as f32,
         cx: dst_camera.cx as f32,
         cy: dst_camera.cy as f32,
-        width: dst_w,
-        height: dst_h,
+        width: dst_dims.width,
+        height: dst_dims.height,
         radius: splat_radius as i32,
+        dst_scale: dst.metres_per_unit(),
     })
 }
 
@@ -473,7 +506,7 @@ impl Batch {
 /// paths here must evaluate the same `f32` operations in the same order to
 /// stay bit-identical.
 #[inline(always)]
-fn project_one(p: &RegisterParams, x: u32, yn: f32, z: f32, u16_keys: bool) -> (u32, i32, i32) {
+fn project_one(p: &RegisterParams, x: u32, yn: f32, z: f32, u16_keys: bool) -> Splat {
     let s = &p.src;
     let (r, t) = (&p.r, &p.t);
     let px = ((x as f32 - s.cx) * s.inv_fx) * z;
@@ -492,11 +525,15 @@ fn project_one(p: &RegisterParams, x: u32, yn: f32, z: f32, u16_keys: bool) -> (
     // `qz > 0` is false for NaN.
     let ok = is_valid_depth_f32(z) & (qz > 0.0) & inside;
     let k = if u16_keys {
-        key_u16(qz, s.scale)
+        key_u16(qz, p.dst_scale)
     } else {
-        key_f32(qz, s.scale)
+        key_f32(qz, p.dst_scale)
     };
-    (if ok { k } else { 0 }, uf as i32, vf as i32)
+    Splat {
+        u: uf as i32,
+        v: vf as i32,
+        key: if ok { k } else { 0 },
+    }
 }
 
 /// Projects `row`, source pixels `x0..x0 + row.len()` of row `y` (at most
@@ -533,10 +570,10 @@ pub(crate) fn project_batch<T: DepthSample>(
         0
     };
     for (j, &z) in zs.iter().enumerate().skip(done) {
-        let (k, u, v) = project_one(p, (x0 + j) as u32, yn, z, u16_keys);
-        batch.key[j] = k;
-        batch.u[j] = u;
-        batch.v[j] = v;
+        let sp = project_one(p, (x0 + j) as u32, yn, z, u16_keys);
+        batch.key[j] = sp.key;
+        batch.u[j] = sp.u;
+        batch.v[j] = sp.v;
     }
 }
 
@@ -570,7 +607,7 @@ unsafe fn project_neon(
     let neg_rr = vdupq_n_f32(-(p.radius as f32));
     let u_end = vdupq_n_f32((p.width + p.radius) as f32);
     let v_end = vdupq_n_f32((p.height + p.radius) as f32);
-    let scale = vdupq_n_f32(s.scale);
+    let dst_scale = vdupq_n_f32(p.dst_scale);
     let u16_max = vdupq_n_f32(U16_MAX_OUTPUT);
     let lanes = vld1q_u32([0u32, 1, 2, 3].as_ptr());
     let n = zs.len() & !3;
@@ -622,13 +659,13 @@ unsafe fn project_neon(
         );
         let key = if u16_keys {
             // key_u16: round half away from zero, keep 1..=65534, !value.
-            let q = vrndaq_f32(vdivq_f32(qz, scale));
+            let q = vrndaq_f32(vdivq_f32(qz, dst_scale));
             let in_range = vandq_u32(vcgeq_f32(q, one), vcleq_f32(q, u16_max));
             let k = veorq_u32(vcvtq_u32_f32(q), vdupq_n_u32(0xffff));
             vandq_u32(k, vandq_u32(ok, in_range))
         } else {
             // key_f32: valid output, !bits(value).
-            let o = vdivq_f32(qz, scale);
+            let o = vdivq_f32(qz, dst_scale);
             let valid = vandq_u32(vcgtq_f32(o, zero), vcltq_f32(o, inf));
             let k = vmvnq_u32(vreinterpretq_u32_f32(o));
             vandq_u32(k, vandq_u32(ok, valid))
@@ -642,7 +679,8 @@ unsafe fn project_neon(
 }
 
 /// Destination `u16` z-buffer key of a point at `qz` metres, `scale` metres
-/// per unit: `!value` with `value = round(qz / scale)`, or `0` when the
+/// per destination unit (`1 / meter` of `dst`): `!value` with
+/// `value = round(qz / scale)`, or `0` when the
 /// value is outside `1..=65534` (`0` is "empty", `65535` would collide with
 /// the empty key).
 #[inline(always)]
@@ -656,12 +694,18 @@ fn key_u16(qz: f32, scale: f32) -> u32 {
 }
 
 /// Destination `f32` z-buffer key of a point at `qz` metres, `scale` metres
-/// per unit: `!bits(value)` with `value = qz / scale`, or `0` when the value
-/// is not a valid measurement. A division rather than a multiplication by
-/// `1 / scale`: it is correctly rounded, so an identity registration
-/// returns `(d · scale) / scale`, which is `d` for far more samples than
-/// `(d · scale) · (1 / scale)` (exactly `d` is not achievable in general,
-/// as `d · scale` is itself rounded). Positive finite floats order like
+/// per destination unit (`1 / meter` of `dst`, rounded to `f32`):
+/// `!bits(value)` with `value = qz / scale`, or `0` when the value is not a
+/// valid measurement. A division by the same `scale` the unprojection
+/// multiplied by, rather than a multiplication by `meter`: it is correctly
+/// rounded, so an identity registration with equal `meter`s returns
+/// `(d · scale) / scale`, which is `d` for far more samples than
+/// `(d · scale) · meter` because `scale` is itself rounded (`1 / 1000` is
+/// not exact): for millimetres, every `f32` in `[300, 12000)` round-trips
+/// 97.8% vs 41.1% of the time, and of the integers `1..=65535` 1510 vs
+/// 38588 are 1 ulp off (pinned by test); never fewer at the other `meter`s
+/// tried. Exactly `d` is not achievable in general,
+/// as `d · scale` is itself rounded. Positive finite floats order like
 /// their bits, so nearer = larger key.
 #[inline(always)]
 fn key_f32(qz: f32, scale: f32) -> u32 {
@@ -674,8 +718,16 @@ fn key_f32(qz: f32, scale: f32) -> u32 {
 }
 
 /// Splat of one projected source pixel: nearest destination pixel `(u, v)`
-/// and z-buffer key.
-type Splat = (i32, i32, u32);
+/// and z-buffer key (`0` = nothing to splat).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Splat {
+    /// Destination column.
+    u: i32,
+    /// Destination row.
+    v: i32,
+    /// Inverted depth key; larger = nearer.
+    key: u32,
+}
 
 /// Splats `key` around `(u, v)` (the clipped `(2r + 1)²` square): every
 /// cell whose key is smaller gets `update(cell, key)`, so the largest key,
@@ -686,7 +738,7 @@ type Splat = (i32, i32, u32);
 fn splat<A>(
     zbuf: &[A],
     p: &RegisterParams,
-    (u, v, key): Splat,
+    Splat { u, v, key }: Splat,
     load: &impl Fn(&A) -> u32,
     update: &impl Fn(&A, u32),
 ) {
@@ -710,6 +762,15 @@ fn splat<A>(
     }
 }
 
+/// Band layout of [`scatter_rows`] (see [`band_layout`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BandLayout {
+    /// Destination-row shift of the band windows.
+    offset: i64,
+    /// Source rows per band.
+    band_rows: usize,
+}
+
 /// Band layout of [`scatter_rows`] from the rotation of `p`: the
 /// destination-row shift of the source principal ray (relative to plain
 /// row rescaling), which centres the windows on where the bands land, and
@@ -717,7 +778,7 @@ fn splat<A>(
 /// a rotated (rolled) row plus the splat radius. Only a scheduling choice:
 /// splats that still leave their window are deferred, so any layout gives
 /// the same result.
-fn band_layout(p: &RegisterParams) -> (i64, usize) {
+fn band_layout(p: &RegisterParams) -> BandLayout {
     let (sh, dh) = (f64::from(p.src.height), f64::from(p.height));
     let r = p.r.map(f64::from);
     let (fy, cy) = (f64::from(p.fy), f64::from(p.cy));
@@ -745,7 +806,10 @@ fn band_layout(p: &RegisterParams) -> (i64, usize) {
     } else {
         MIN_BAND_ROWS
     };
-    (offset, rows)
+    BandLayout {
+        offset,
+        band_rows: rows,
+    }
 }
 
 /// Splats every valid source pixel into the z-buffer `zbuf`, whose keys
@@ -783,7 +847,7 @@ fn scatter_rows<T: DepthSample, A: Sync>(
     if w == 0 || sh == 0 || p.width == 0 || p.height == 0 {
         return;
     }
-    let (offset, band_rows) = band_layout(p);
+    let BandLayout { offset, band_rows } = band_layout(p);
     let nb = sh.div_ceil(band_rows);
     let (nb_i, dh_i) = (nb as i64, i64::from(p.height));
     let lo = |i: usize| -> i64 {
@@ -793,12 +857,12 @@ fn scatter_rows<T: DepthSample, A: Sync>(
             (2 * i as i64 - 1) * dh_i / (2 * nb_i) + offset
         }
     };
-    let window = |i: usize| (lo(i), if i + 2 >= nb { i64::MAX } else { lo(i + 2) });
+    let window = |i: usize| lo(i)..if i + 2 >= nb { i64::MAX } else { lo(i + 2) };
     let radius = i64::from(p.radius);
     let neon = cpu_features().has_neon;
 
     let band = |i: usize| -> Vec<Splat> {
-        let (win_lo, win_hi) = window(i);
+        let win = window(i);
         let mut deferred = Vec::new();
         let mut batch = Batch::new();
         let y_end = ((i + 1) * band_rows).min(sh);
@@ -813,10 +877,11 @@ fn scatter_rows<T: DepthSample, A: Sync>(
                         continue;
                     }
                     let v64 = i64::from(v);
-                    if v64 - radius >= win_lo && v64 + radius < win_hi {
-                        splat(zbuf, p, (u, v, key), &load, &store);
+                    let sp = Splat { u, v, key };
+                    if v64 - radius >= win.start && v64 + radius < win.end {
+                        splat(zbuf, p, sp, &load, &store);
                     } else {
-                        deferred.push((u, v, key));
+                        deferred.push(sp);
                     }
                 }
             }

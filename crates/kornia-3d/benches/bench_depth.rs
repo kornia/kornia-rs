@@ -6,13 +6,14 @@
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use kornia_3d::camera::PinholeCamera;
-use kornia_3d::depth::{register_depth, unproject_depth_into};
+use kornia_3d::depth::DepthImage;
 use kornia_3d::pose::Pose3d;
 use kornia_algebra::{Mat3F64, Vec3F64};
 use kornia_image::{Image, ImageSize};
 
 const SIZES: [(usize, usize); 2] = [(640, 480), (1280, 720)];
-const MM: f32 = 0.001;
+/// `meter` of millimetre depth.
+const MM: f32 = 1000.0;
 
 fn camera(w: usize, h: usize) -> PinholeCamera {
     let f = 0.9 * w as f64;
@@ -79,41 +80,47 @@ fn bench_depth(c: &mut Criterion) {
         let id = format!("{w}x{h}");
         let cam = camera(w, h);
         let mm = depth_u16(w, h);
-        let src_u16 = Image::<u16, 1>::new(size, mm.clone()).unwrap();
-        let src_f32 =
-            Image::<f32, 1>::new(size, mm.iter().map(|&d| f32::from(d) * MM).collect()).unwrap();
+        let src_u16 = DepthImage::new(Image::<u16, 1>::new(size, mm.clone()).unwrap(), MM).unwrap();
+        let metres = mm.iter().map(|&d| f32::from(d) * (1.0 / MM)).collect();
+        let src_f32 = DepthImage::new(Image::<f32, 1>::new(size, metres).unwrap(), 1.0).unwrap();
         let pose = dst_from_src();
 
         let mut points = Vec::with_capacity(w * h);
         let mut index = Vec::with_capacity(w * h);
         group.bench_function(BenchmarkId::new("unproject_u16_cpu", &id), |b| {
             b.iter(|| {
-                unproject_depth_into(&src_u16, MM, &cam, None, &mut points, None).unwrap();
+                src_u16
+                    .to_pointcloud_into(&cam, None, &mut points, None)
+                    .unwrap();
                 std::hint::black_box(points.len())
             })
         });
         group.bench_function(BenchmarkId::new("unproject_u16_index_cpu", &id), |b| {
             b.iter(|| {
-                unproject_depth_into(&src_u16, MM, &cam, None, &mut points, Some(&mut index))
+                src_u16
+                    .to_pointcloud_into(&cam, None, &mut points, Some(&mut index))
                     .unwrap();
                 std::hint::black_box(points.len())
             })
         });
         group.bench_function(BenchmarkId::new("unproject_f32_cpu", &id), |b| {
             b.iter(|| {
-                unproject_depth_into(&src_f32, 1.0, &cam, None, &mut points, None).unwrap();
+                src_f32
+                    .to_pointcloud_into(&cam, None, &mut points, None)
+                    .unwrap();
                 std::hint::black_box(points.len())
             })
         });
 
-        let mut dst_u16 = Image::<u16, 1>::from_size_val(size, 0).unwrap();
-        let mut dst_f32 = Image::<f32, 1>::from_size_val(size, 0.0).unwrap();
+        let mut dst_u16 = DepthImage::<u16>::from_size_val(size, 0, MM).unwrap();
+        let mut dst_f32 = DepthImage::<f32>::from_size_val(size, 0.0, 1.0).unwrap();
         for radius in [0usize, 1] {
             group.bench_function(
                 BenchmarkId::new(format!("register_u16_r{radius}_cpu"), &id),
                 |b| {
                     b.iter(|| {
-                        register_depth(&src_u16, MM, &cam, &pose, &cam, radius, &mut dst_u16)
+                        src_u16
+                            .register_into(&cam, &pose, &cam, radius, &mut dst_u16)
                             .unwrap()
                     })
                 },
@@ -122,7 +129,8 @@ fn bench_depth(c: &mut Criterion) {
                 BenchmarkId::new(format!("register_f32_r{radius}_cpu"), &id),
                 |b| {
                     b.iter(|| {
-                        register_depth(&src_f32, 1.0, &cam, &pose, &cam, radius, &mut dst_f32)
+                        src_f32
+                            .register_into(&cam, &pose, &cam, radius, &mut dst_f32)
                             .unwrap()
                     })
                 },
@@ -131,7 +139,11 @@ fn bench_depth(c: &mut Criterion) {
 
         let roll = dst_from_src_roll();
         group.bench_function(BenchmarkId::new("register_u16_r0_roll_cpu", &id), |b| {
-            b.iter(|| register_depth(&src_u16, MM, &cam, &roll, &cam, 0, &mut dst_u16).unwrap())
+            b.iter(|| {
+                src_u16
+                    .register_into(&cam, &roll, &cam, 0, &mut dst_u16)
+                    .unwrap()
+            })
         });
     }
     group.finish();

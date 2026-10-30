@@ -223,7 +223,7 @@ def write_fixtures(out_dir):
 
 def register_reference(depth, src_k, dst_k, rt, dw, dh, depth_scale):
     """Float64 nearest-pixel z-buffer registration, the model of both Open3D
-    `project_to_depth_image` and kornia `register_depth` (radius 0).
+    `project_to_depth_image` and kornia `DepthImage::register_into` (radius 0).
 
     Returns the per-source-pixel destination `(u, v, qz)` (NaN where the
     sample is missing) and the destination depth in units (0 = empty)."""
@@ -255,7 +255,7 @@ def write_register_fixture(out_dir):
     Open3D has no single registration call: the tensor
     `t.geometry.PointCloud.create_from_depth_image` (source intrinsics)
     followed by `project_to_depth_image` (destination intrinsics, extrinsic
-    `dst_from_src`) is the same model as kornia's `register_depth` at splat
+    `dst_from_src`) is the same model as kornia's `DepthImage::register_into` at splat
     radius 0, a nearest-pixel projection into a z-buffer (Open3D keeps the
     output unrounded in `f32`).
 
