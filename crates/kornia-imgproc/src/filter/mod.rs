@@ -22,7 +22,7 @@ pub use bilateral::bilateral_filter;
 
 /// Median blur (cv2/VPI-byte-exact).
 pub mod median;
-pub use median::median_blur;
+pub use median::{median_blur, MedianBlur};
 
 /// Integral image (Summed Area Table).
 pub mod integral;

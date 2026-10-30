@@ -115,6 +115,10 @@ name = "bench_depth"
 
 [[bench]]
 harness = false
+name = "bench_median"
+
+[[bench]]
+harness = false
 name = "bench_label_boundaries"
 
 [[bench]]
