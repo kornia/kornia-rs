@@ -235,8 +235,8 @@ pub trait MedianBlur: sealed::Sealed + Copy + Send + Sync + 'static {
 /// Reference: OpenCV `cv::medianBlur` (`CV_8U`, `CV_16U`, `CV_32F`; ksize 3
 /// or 5; `BORDER_REPLICATE`, the only border it offers). Each output sample
 /// is the exact median of the `ksize²` window samples, so the output is
-/// identical to `cv2.medianBlur(src, ksize)` (pinned against OpenCV
-/// fixtures in the tests). `u8` is also byte-identical with VPI's CUDA
+/// identical to `cv2.medianBlur(src, ksize)` (`tests/opencv_median.rs` pins
+/// `cv2.medianBlur` outputs). `u8` is also byte-identical with VPI's CUDA
 /// `MedianFilter`. Device pairs (feature `cuda`) run CUDA sorting-network
 /// kernels, identical to the CPU path.
 ///
