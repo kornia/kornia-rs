@@ -12,7 +12,13 @@ pub mod refine;
 /// AP3P solver implementation.
 pub mod ap3p;
 
+/// SQPnP solver implementation.
+pub mod sqpnp;
+
 mod ops;
+
+#[cfg(test)]
+mod tests_accuracy;
 
 pub use ap3p::{AP3PParams, AP3P};
 pub use epnp::{EPnP, EPnPParams};
@@ -20,6 +26,7 @@ use kornia_algebra::{Mat3AF32, Vec2F32, Vec3AF32};
 use kornia_imgproc::calibration::distortion::PolynomialDistortion;
 pub use ransac::{solve_pnp_ransac, PnPRansacError, PnPRansacResult, RansacParams};
 pub use refine::{refine_pose_lm, LMRefineParams};
+pub use sqpnp::{SQPnP, SQPnPParams};
 use thiserror::Error;
 
 /// Error types for PnP solvers.
@@ -50,6 +57,18 @@ pub enum PnPError {
     /// Singular value decomposition failed.
     #[error("SVD computation failed: {0}")]
     SvdFailed(String),
+
+    /// The camera matrix `K` is singular or has a non-finite entry.
+    #[error("Camera matrix K is singular or not finite")]
+    InvalidCameraMatrix,
+
+    /// An input point or a value computed from the inputs is not finite.
+    #[error("Non-finite value: {0}")]
+    NonFinite(&'static str),
+
+    /// The correspondences do not determine a pose.
+    #[error("Degenerate correspondences: {0}")]
+    DegenerateConfiguration(&'static str),
 
     /// All returned poses placed the points behind the camera.
     #[error("Cheirality check failed: all mathematically valid poses place the 3D points behind the camera lens.")]
@@ -127,6 +146,10 @@ pub enum PnPMethod {
     AP3P(AP3PParams),
     /// Algebraic Perspective-3-Point solver with the module's default parameters.
     AP3PDefault,
+    /// SQPnP solver with a user-supplied parameter object.
+    SQPnP(SQPnPParams),
+    /// SQPnP solver with the module's default parameters.
+    SQPnPDefault,
 }
 
 /// Dispatch function that routes to the chosen PnP solver.
@@ -142,5 +165,9 @@ pub fn solve_pnp(
         PnPMethod::EPnPDefault => EPnP::solve(world, image, k, distortion, &EPnPParams::default()),
         PnPMethod::AP3P(params) => AP3P::solve(world, image, k, distortion, &params),
         PnPMethod::AP3PDefault => AP3P::solve(world, image, k, distortion, &AP3PParams::default()),
+        PnPMethod::SQPnP(params) => SQPnP::solve(world, image, k, distortion, &params),
+        PnPMethod::SQPnPDefault => {
+            SQPnP::solve(world, image, k, distortion, &SQPnPParams::default())
+        }
     }
 }

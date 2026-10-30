@@ -42,3 +42,6 @@ pub mod stereo;
 
 /// 3D transforms algorithms.
 pub mod transforms;
+
+#[cfg(test)]
+pub(crate) mod test_utils;

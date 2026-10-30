@@ -1,7 +1,13 @@
 #![allow(clippy::op_ref)]
 
 use kornia_algebra::{Mat3AF32, Vec2F32, Vec3AF32};
+use kornia_imgproc::calibration::{
+    distortion::{distort_point_polynomial, PolynomialDistortion},
+    CameraIntrinsic,
+};
 use nalgebra::{DMatrix, DVector, Vector4};
+
+use super::PnPError;
 
 /// Compute the centroid of a set of points.
 pub(crate) fn compute_centroid(pts: &[Vec3AF32]) -> Vec3AF32 {
@@ -19,6 +25,65 @@ pub(crate) fn intrinsics_as_vectors(k: &Mat3AF32) -> (Vec3AF32, Vec3AF32) {
     let cx = k.z_axis().x;
     let cy = k.z_axis().y;
     (Vec3AF32::new(fx, 0.0, cx), Vec3AF32::new(0.0, fy, cy))
+}
+
+/// Root-mean-square reprojection error in pixels.
+pub(crate) fn rmse_px(
+    points_world: &[Vec3AF32],
+    points_image: &[Vec2F32],
+    r: &Mat3AF32,
+    t: &Vec3AF32,
+    k: &Mat3AF32,
+    distortion: Option<&PolynomialDistortion>,
+) -> Result<f32, PnPError> {
+    if points_world.len() != points_image.len() {
+        return Err(PnPError::MismatchedArrayLengths {
+            left_name: "world points",
+            left_len: points_world.len(),
+            right_name: "image points",
+            right_len: points_image.len(),
+        });
+    }
+
+    let (intr_x, intr_y) = intrinsics_as_vectors(k);
+    let fx = k.x_axis().x;
+    let fy = k.y_axis().y;
+    let cx = k.z_axis().x;
+    let cy = k.z_axis().y;
+
+    let mut sum_sq = 0.0;
+    let n = points_world.len() as f32;
+
+    // Prepare camera intrinsic for distortion if needed
+    let cam_intr = CameraIntrinsic {
+        fx: f64::from(fx),
+        fy: f64::from(fy),
+        cx: f64::from(cx),
+        cy: f64::from(cy),
+    };
+
+    for (&pw, &uv) in points_world.iter().zip(points_image.iter()) {
+        let pc = *r * pw + *t; // camera-frame point
+
+        let inv_z = 1.0 / pc.z;
+        let u_undist = intr_x.dot(pc) * inv_z; // (fx * x + cx * z) / z
+        let v_undist = intr_y.dot(pc) * inv_z; // (fy * y + cy * z) / z
+
+        // Apply distortion model if provided
+        let (u_hat, v_hat) = if let Some(d) = distortion {
+            let (ud, vd) =
+                distort_point_polynomial(f64::from(u_undist), f64::from(v_undist), &cam_intr, d);
+            (ud as f32, vd as f32)
+        } else {
+            (u_undist, v_undist)
+        };
+
+        let du = u_hat - uv.x;
+        let dv = v_hat - uv.y;
+        sum_sq += du.mul_add(du, dv * dv); // FMA where available
+    }
+
+    Ok((sum_sq / n).sqrt())
 }
 
 /// Compute squared reprojection error for a single correspondence.
