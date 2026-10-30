@@ -15,6 +15,7 @@
 *   **Geometric Transformations:** Resize, crop, flip, rotate, and warp images.
 *   **Color Space Conversions:** Convert between RGB, BGR, Grayscale, HSV, YUV, and other color spaces.
 *   **Filtering:** Box blur, Gaussian blur, Median filter (`u8`, `u16`, `f32`), Sobel, and custom kernels.
+*   **Depth Filtering:** Flying-pixel detection and removal at depth discontinuities, ignoring missing depth (`u16` zero; `f32` zero, negative, infinite or NaN), CPU and CUDA.
 *   **Morphological Operations:** Dilation, Erosion, Opening, and Closing for structure aware image transformations.
 *   **Label-Boundary Erosion:** Overwrite every pixel within a radius of a differently labelled pixel in `u8` / `u16` label maps (4- or 8-connectivity), CPU and CUDA.
 *   **Calibration:** Camera calibration and image undistortion.

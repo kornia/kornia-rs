@@ -53,6 +53,9 @@ pub mod histogram;
 /// and VPI).
 pub mod median;
 
+/// Flying-pixel mask and removal kernels (bit-identical to the CPU `depth`
+/// ops).
+pub(crate) mod depth;
 /// Label-boundary erosion kernels (identical to the CPU
 /// `morphology::erode_label_boundaries`).
 pub(crate) mod label_boundaries;
