@@ -361,8 +361,8 @@ mod cuda_adapters {
     }
 
     /// `src` / `dst` are a checked device pair launching on `stream`; the
-    /// mask is the third operand and is fenced onto `stream` here when it
-    /// lives on another stream of the same device.
+    /// mask is the third operand and, when it lives on another stream of the
+    /// same device, is fenced onto `stream` before the launch and back after.
     pub(super) fn invalidate_masked_depth<T: CudaDepthPixel>(
         src: &Image<T, 1>,
         mask: &Image<u8, 1>,
@@ -379,7 +379,8 @@ mod cuda_adapters {
         if mask_stream.context().ordinal() != stream.context().ordinal() {
             return Err(ImageError::DeviceMismatch);
         }
-        if mask_stream.cu_stream() != stream.cu_stream() {
+        let cross_stream = mask_stream.cu_stream() != stream.cu_stream();
+        if cross_stream {
             let ev = mask_stream.record_event(None).map_err(err)?;
             stream.wait(&ev).map_err(err)?;
         }
@@ -389,7 +390,14 @@ mod cuda_adapters {
             .ok_or_else(|| untyped_device_err("mask"))?;
         let ctx = stream.context();
         let (s, d) = device_slices!(src, dst);
-        launch_remove_flagged(ctx, stream, s, m, d, src.cols(), src.rows()).map_err(err)
+        launch_remove_flagged(ctx, stream, s, m, d, src.cols(), src.rows()).map_err(err)?;
+        // Fence back so later writes to the mask on its own stream wait for
+        // this kernel's reads.
+        if cross_stream {
+            let done = stream.record_event(None).map_err(err)?;
+            mask_stream.wait(&done).map_err(err)?;
+        }
+        Ok(())
     }
 }
 
