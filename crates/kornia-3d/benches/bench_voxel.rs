@@ -11,8 +11,12 @@
 //! `*_outliers_reused_cpu` run the uniform-cloud filters through one
 //! reused `OutlierFilter` scratch instead of the allocating free functions.
 //!
-//! `voxel_downsample_centroid_attrs_cpu` times `voxel_downsample` on the same
-//! cloud with colors and normals, so it includes the attribute reduction.
+//! `voxel_downsample_*_attrs_cpu` times `voxel_downsample` on the same
+//! cloud with colors and normals, so it includes the attribute reduction
+//! (or copy). `view_*_cpu` times the zero-copy [`VoxelView`] reductions on a
+//! reused scratch (`VoxelDownsampler::view`), `view_first_to_point_cloud_cpu`
+//! adds the copy into an owned cloud, and `remove_sparse_voxels26_*` times
+//! the density filter returning its view, and with the copy.
 //!
 //! `cargo bench -p kornia-3d --bench bench_voxel`
 //! Single-thread numbers: `RAYON_NUM_THREADS=1`.
@@ -24,7 +28,8 @@ use kornia_3d::pointcloud::filter::{
 };
 use kornia_3d::pointcloud::PointCloud;
 use kornia_3d::voxel::{
-    voxel_downsample, DownsampleMode, VoxelConnectivity, VoxelDownsampler, VoxelLayout,
+    remove_sparse_voxels, voxel_downsample, DownsampleMode, VoxelConnectivity, VoxelDownsampler,
+    VoxelLayout, VoxelView,
 };
 
 const SIZES: [usize; 2] = [100_000, 1_000_000];
@@ -124,9 +129,57 @@ fn bench_voxel(c: &mut Criterion) {
             })
             .collect();
         let cloud = PointCloud::new(pts.clone(), Some(colors), Some(normals));
+        for (name, mode) in [
+            (
+                "voxel_downsample_centroid_attrs_cpu",
+                DownsampleMode::Centroid,
+            ),
+            ("voxel_downsample_first_attrs_cpu", DownsampleMode::First),
+            (
+                "voxel_downsample_nearest_attrs_cpu",
+                DownsampleMode::NearestToCentre,
+            ),
+        ] {
+            group.bench_function(BenchmarkId::new(name, &id), |b| {
+                b.iter(|| voxel_downsample(&cloud, &layout, mode).unwrap())
+            });
+        }
+        group.bench_function(BenchmarkId::new("view_first_cpu", &id), |b| {
+            b.iter(|| ds.view(&cloud, &layout).unwrap().first().len())
+        });
+        group.bench_function(BenchmarkId::new("view_nearest_cpu", &id), |b| {
+            b.iter(|| ds.view(&cloud, &layout).unwrap().nearest().len())
+        });
+        group.bench_function(BenchmarkId::new("view_centroids_attrs_cpu", &id), |b| {
+            b.iter(|| ds.view(&cloud, &layout).unwrap().centroids())
+        });
         group.bench_function(
-            BenchmarkId::new("voxel_downsample_centroid_attrs_cpu", &id),
-            |b| b.iter(|| voxel_downsample(&cloud, &layout, DownsampleMode::Centroid).unwrap()),
+            BenchmarkId::new("view_first_to_point_cloud_cpu", &id),
+            |b| b.iter(|| ds.view(&cloud, &layout).unwrap().first().to_point_cloud()),
+        );
+        group.bench_function(BenchmarkId::new("voxel_view_new_cpu", &id), |b| {
+            b.iter(|| VoxelView::new(&cloud, &layout).unwrap().len())
+        });
+        let conn = VoxelConnectivity::TwentySix;
+        group.bench_function(
+            BenchmarkId::new("remove_sparse_voxels26_view_cpu", &id),
+            |b| {
+                b.iter(|| {
+                    remove_sparse_voxels(&cloud, &layout, conn, 3)
+                        .unwrap()
+                        .len()
+                })
+            },
+        );
+        group.bench_function(
+            BenchmarkId::new("remove_sparse_voxels26_attrs_cpu", &id),
+            |b| {
+                b.iter(|| {
+                    remove_sparse_voxels(&cloud, &layout, conn, 3)
+                        .unwrap()
+                        .to_point_cloud()
+                })
+            },
         );
         group.bench_function(BenchmarkId::new("neighbour_counts26_cpu", &id), |b| {
             b.iter(|| {

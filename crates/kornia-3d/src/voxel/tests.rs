@@ -630,9 +630,11 @@ fn remove_sparse_voxels_keeps_order_and_attributes() -> TestResult {
     p.push([20.5, 0.5, 0.5]);
     let colors: Vec<[u8; 3]> = (0..p.len() as u8).map(|i| [i, i, i]).collect();
     let cloud = PointCloud::new(p.clone(), Some(colors), None);
-    let out = remove_sparse_voxels(&cloud, &l, VoxelConnectivity::Six, 2)?;
+    let view = remove_sparse_voxels(&cloud, &l, VoxelConnectivity::Six, 2)?;
     // Six-connectivity counts: centre 6 (two points), (1,0,0) 2, (0,1,0) 2,
     // (1,1,0) 3, the other pattern voxels 1, the isolated point 0.
+    assert_eq!(view.indices(), &[0, 1, 3, 7, 9]);
+    let out = view.to_point_cloud();
     assert_eq!(out.points(), &vec![p[0], p[1], p[3], p[7], p[9]]);
     assert_eq!(
         out.colors(),
@@ -706,5 +708,92 @@ fn open3d_voxel_downsample_parity_fixture() -> TestResult {
             assert!((a[k] - b[k]).abs() <= TOL, "{a:?} vs {b:?}");
         }
     }
+    Ok(())
+}
+
+/// The view's grouping equals the brute-force per-voxel index lists, and
+/// its reductions equal `downsample_into` (points and chosen indices, bit
+/// for bit) and `voxel_downsample`, through both entry points (owned
+/// buffers and a reused scratch).
+#[test]
+fn voxel_view_matches_reference_and_downsample() -> TestResult {
+    let mut ds = VoxelDownsampler::new();
+    for (n, seed) in [(0, 1), (1, 2), (60_000, 3), (5_000, 4)] {
+        let points = random_points(n, -3.0, 3.0, seed);
+        let colors: Vec<[u8; 3]> = (0..n).map(|i| [(i % 256) as u8, 1, 2]).collect();
+        let normals: Vec<[f64; 3]> = points.iter().map(|p| [p[2], p[0], 1.0]).collect();
+        let cloud = PointCloud::new(points.clone(), Some(colors), Some(normals));
+        let l = VoxelLayout::new(0.25, [0.1, -0.2, 0.0])?;
+        let runs = reference_runs(&points, &l);
+
+        let owned = VoxelView::new(&cloud, &l)?;
+        let keys: Vec<VoxelKey> = owned.keys().collect();
+        assert_eq!(keys, runs.keys().copied().collect::<Vec<_>>());
+        assert_eq!(owned.len(), runs.len());
+        assert_eq!(owned.is_empty(), n == 0);
+        for (v, (k, run)) in runs.iter().enumerate() {
+            assert_eq!(owned.key(v), Some(*k));
+            assert_eq!(owned.centre(v), Some(l.centre_from_key(k)));
+            let got: Vec<usize> = owned.voxel(v).ok_or("voxel")?.map(|i| i as usize).collect();
+            assert_eq!(&got, run);
+        }
+        assert!(owned.voxel(runs.len()).is_none());
+        assert!(owned.key(runs.len()).is_none());
+        assert!(owned.centre(runs.len()).is_none());
+
+        for mode in [
+            DownsampleMode::Centroid,
+            DownsampleMode::First,
+            DownsampleMode::NearestToCentre,
+        ] {
+            let (mut want, mut want_index) = (Vec::new(), Vec::new());
+            ds.downsample_into(&points, &l, mode, &mut want, Some(&mut want_index))?;
+            let want_bits: Vec<[u64; 3]> = want.iter().map(|p| p.map(f64::to_bits)).collect();
+            let owned_cloud = voxel_downsample(&cloud, &l, mode)?;
+            let view = ds.view(&cloud, &l)?;
+            let reduced = match mode {
+                DownsampleMode::Centroid => view.centroids(),
+                DownsampleMode::First => {
+                    let first = view.first();
+                    assert_eq!(first.indices(), &want_index[..]);
+                    assert!(std::ptr::eq(first.cloud(), &cloud));
+                    first.to_point_cloud()
+                }
+                DownsampleMode::NearestToCentre => {
+                    let nearest = view.nearest();
+                    assert_eq!(nearest.indices(), &want_index[..]);
+                    nearest.to_point_cloud()
+                }
+            };
+            for got in [&reduced, &owned_cloud] {
+                let bits: Vec<[u64; 3]> =
+                    got.points().iter().map(|p| p.map(f64::to_bits)).collect();
+                assert_eq!(bits, want_bits, "{mode:?} n={n}");
+                assert_eq!(got.colors().map(Vec::len), Some(want.len()));
+                assert_eq!(got.normals().map(Vec::len), Some(want.len()));
+            }
+            assert_eq!(reduced.colors(), owned_cloud.colors());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn voxel_view_rejects_bad_clouds() -> TestResult {
+    let l = unit_layout()?;
+    let bad = PointCloud::new(vec![[0.0; 3]; 2], Some(vec![[0; 3]]), None);
+    assert!(matches!(
+        VoxelView::new(&bad, &l),
+        Err(VoxelError::Filter(_))
+    ));
+    assert!(matches!(
+        VoxelDownsampler::new().view(&bad, &l),
+        Err(VoxelError::Filter(_))
+    ));
+    let nan = PointCloud::new(vec![[0.0; 3], [f64::NAN, 0.0, 0.0]], None, None);
+    assert!(matches!(
+        VoxelView::new(&nan, &l),
+        Err(VoxelError::PointOutOfRange { index: 1 })
+    ));
     Ok(())
 }
