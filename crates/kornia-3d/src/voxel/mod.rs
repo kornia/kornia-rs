@@ -1,6 +1,9 @@
-//! Voxel grids over point clouds: a sparse hash grid ([`VoxelGrid`]),
-//! voxel downsampling ([`voxel_downsample`]) and a voxel neighbour-count
-//! filter ([`remove_sparse_voxels`]), designed after the public APIs of
+//! Voxel grids over point clouds: a sparse hash grid ([`VoxelGrid`]), a
+//! cloud grouped by voxel without copying it ([`VoxelView`]), voxel
+//! downsampling as a reduction over that grouping ([`VoxelView::first`],
+//! [`VoxelView::nearest`], [`VoxelView::centroids`], or the one-call
+//! [`voxel_downsample`]) and a voxel neighbour-count filter
+//! ([`remove_sparse_voxels`]), designed after the public APIs of
 //! Open3D (`geometry.VoxelGrid`, `PointCloud.voxel_down_sample`) and PCL
 //! (`pcl::VoxelGrid`).
 //!
@@ -28,7 +31,7 @@ mod grid;
 
 pub use downsample::{
     remove_sparse_voxels, voxel_downsample, voxel_neighbour_counts, DownsampleMode,
-    VoxelDownsampler,
+    VoxelDownsampler, VoxelView,
 };
 pub use grid::VoxelGrid;
 

@@ -19,7 +19,7 @@
 *   **Fundamental RANSAC:** Seven-point minimal hypotheses (every real solution that satisfies the oriented epipolar constraint on its sample, as in DEGENSAC), with eight-point inlier refinement. `pose::fundamental_7point` exposes the minimal solver; `ransac::estimators::Fundamental8PointEstimator` and `pose::ransac_fundamental_8point` retain the original sampling path for comparisons. The two-view builder also accepts `Fundamental7ptSolver`; its existing `Fundamental8ptSolver` default is preserved.
     `pose::RansacParams::confidence` accepts an explicit sampling target; `None` preserves each model family's default. Exhaustive struct literals must add `confidence: None` or use `..Default::default()`. Adaptive caps use the all-inlier probability for distinct sampling without replacement.
 *   **PnP Solvers:** Solve for camera pose given 3D-2D point correspondences.
-*   **Voxel Grids:** `voxel::VoxelGrid` is a sparse hash voxel grid with 6/18/26-neighbour iteration; `voxel::voxel_downsample` keeps one point per voxel (centroid, first or nearest to the centre) in a deterministic key order; `voxel::remove_sparse_voxels` drops points in voxels with few occupied neighbours.
+*   **Voxel Grids:** `voxel::VoxelGrid` is a sparse hash voxel grid with 6/18/26-neighbour iteration; `voxel::VoxelView` groups a cloud by voxel without copying it and reduces it to one point per voxel (`first` / `nearest` as a zero-copy `pointcloud::PointCloudView`, `centroids` as a new cloud) in a deterministic key order, `voxel::voxel_downsample` is the one-call owned form; `voxel::remove_sparse_voxels` drops points in voxels with few occupied neighbours. `PointCloud::select` gives a `PointCloudView` of the points at given indices.
 
 ## 📦 Installation
 

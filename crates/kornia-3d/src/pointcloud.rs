@@ -1,5 +1,12 @@
-/// Index selection on point clouds.
+/// Errors of the point cloud filters and index selection.
 pub mod filter;
+
+mod view;
+
+use std::borrow::Cow;
+
+use filter::{check_attributes, FilterError};
+pub use view::PointCloudView;
 
 /// A point cloud with points, colors, and normals.
 #[derive(Debug, Clone)]
@@ -51,6 +58,54 @@ impl PointCloud {
     /// Get as reference the normals of the points in the point cloud.
     pub fn normals(&self) -> Option<&Vec<[f64; 3]>> {
         self.normals.as_ref()
+    }
+
+    /// A view of the points at `indices`, with their colors and normals,
+    /// borrowed from this cloud (nothing is copied).
+    ///
+    /// The indices and the attribute lengths are checked once here, so the
+    /// view's accessors cannot fail on a valid position. Call
+    /// [`PointCloudView::to_point_cloud`] for an owned copy.
+    ///
+    /// # Arguments
+    ///
+    /// * `indices` - Indices of the points to select, in view order (repeats
+    ///   allowed): a `Vec<u32>` is moved into the view, a `&[u32]` (or
+    ///   `&Vec<u32>`, `&[u32; N]`) is borrowed.
+    ///
+    /// # Returns
+    ///
+    /// A view with one point per index.
+    ///
+    /// # Errors
+    ///
+    /// * [`FilterError::IndexOutOfRange`] if an index is not a point of the
+    ///   cloud (the first such index).
+    /// * [`FilterError::AttributeLengthMismatch`] if the colors or normals do
+    ///   not have one entry per point.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_3d::pointcloud::PointCloud;
+    ///
+    /// let cloud = PointCloud::new(vec![[0.0; 3], [1.0; 3], [2.0; 3]], None, None);
+    /// let picked = cloud.select(&[2, 0])?;
+    /// assert_eq!(picked.points().collect::<Vec<_>>(), vec![&[2.0; 3], &[0.0; 3]]);
+    /// assert!(cloud.select(vec![3]).is_err());
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn select<'a>(
+        &'a self,
+        indices: impl Into<Cow<'a, [u32]>>,
+    ) -> Result<PointCloudView<'a>, FilterError> {
+        check_attributes(self)?;
+        let indices = indices.into();
+        let len = self.len();
+        if let Some(&index) = indices.iter().find(|&&i| i as usize >= len) {
+            return Err(FilterError::IndexOutOfRange { index, len });
+        }
+        Ok(PointCloudView::from_checked(self, indices))
     }
 }
 
