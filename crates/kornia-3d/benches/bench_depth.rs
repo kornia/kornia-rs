@@ -1,7 +1,9 @@
 //! Depth unprojection and registration on synthetic u16 / f32 depth images
-//! (640x480 and 1280x720) on the CPU.
+//! (640x480 and 1280x720): CPU, and with `--features cuda` the device twins
+//! on device-resident buffers, synchronized per call (latency) and queued
+//! (`_queued`, throughput).
 //!
-//! `cargo bench -p kornia-3d --bench bench_depth`
+//! `cargo bench -p kornia-3d --bench bench_depth [--features cuda]`
 //! Baselines on the same inputs: `benches/bench_depth_baselines.py`.
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
@@ -145,6 +147,120 @@ fn bench_depth(c: &mut Criterion) {
                     .unwrap()
             })
         });
+
+        #[cfg(feature = "cuda")]
+        {
+            use cudarc::driver::CudaContext;
+            use kornia_3d::depth::CudaDepthProjector;
+
+            let ctx = CudaContext::new(0).unwrap();
+            let st = ctx.default_stream();
+            let mut proj = CudaDepthProjector::new(&st).unwrap();
+            let src_u16_dev = DepthImage::new(src_u16.image().to_cuda(&st).unwrap(), MM).unwrap();
+            let src_f32_dev = DepthImage::new(src_f32.image().to_cuda(&st).unwrap(), 1.0).unwrap();
+            let mut cloud = proj.alloc_point_cloud(w * h, false).unwrap();
+            let mut cloud_ix = proj.alloc_point_cloud(w * h, true).unwrap();
+            let dst_u16_dev = Image::<u16, 1>::zeros_cuda(size, &st).unwrap();
+            let mut dst_u16_dev = DepthImage::new(dst_u16_dev, MM).unwrap();
+            let dst_f32_dev = Image::<f32, 1>::zeros_cuda(size, &st).unwrap();
+            let mut dst_f32_dev = DepthImage::new(dst_f32_dev, 1.0).unwrap();
+
+            // Device throughput: `iters` calls are queued and the stream is
+            // synchronized once, so the per-call sync round trip (and the
+            // GPU clock dropping between synced calls) is not counted.
+            let queued = |b: &mut criterion::Bencher, op: &mut dyn FnMut()| {
+                b.iter_custom(|iters| {
+                    st.synchronize().unwrap();
+                    let t = std::time::Instant::now();
+                    for _ in 0..iters {
+                        op();
+                    }
+                    st.synchronize().unwrap();
+                    t.elapsed()
+                })
+            };
+            group.bench_function(BenchmarkId::new("unproject_u16_cuda_queued", &id), |b| {
+                queued(b, &mut || {
+                    proj.to_pointcloud_into(&src_u16_dev, &cam, None, &mut cloud)
+                        .unwrap()
+                })
+            });
+            for radius in [0usize, 1] {
+                group.bench_function(
+                    BenchmarkId::new(format!("register_u16_r{radius}_cuda_queued"), &id),
+                    |b| {
+                        queued(b, &mut || {
+                            proj.register_into(
+                                &src_u16_dev,
+                                &cam,
+                                &pose,
+                                &cam,
+                                radius,
+                                &mut dst_u16_dev,
+                            )
+                            .unwrap()
+                        })
+                    },
+                );
+            }
+            group.bench_function(BenchmarkId::new("unproject_u16_cuda", &id), |b| {
+                b.iter(|| {
+                    proj.to_pointcloud_into(&src_u16_dev, &cam, None, &mut cloud)
+                        .unwrap();
+                    st.synchronize().unwrap();
+                })
+            });
+            group.bench_function(BenchmarkId::new("unproject_u16_index_cuda", &id), |b| {
+                b.iter(|| {
+                    proj.to_pointcloud_into(&src_u16_dev, &cam, None, &mut cloud_ix)
+                        .unwrap();
+                    st.synchronize().unwrap();
+                })
+            });
+            group.bench_function(BenchmarkId::new("unproject_f32_cuda", &id), |b| {
+                b.iter(|| {
+                    proj.to_pointcloud_into(&src_f32_dev, &cam, None, &mut cloud)
+                        .unwrap();
+                    st.synchronize().unwrap();
+                })
+            });
+            for radius in [0usize, 1] {
+                group.bench_function(
+                    BenchmarkId::new(format!("register_u16_r{radius}_cuda"), &id),
+                    |b| {
+                        b.iter(|| {
+                            proj.register_into(
+                                &src_u16_dev,
+                                &cam,
+                                &pose,
+                                &cam,
+                                radius,
+                                &mut dst_u16_dev,
+                            )
+                            .unwrap();
+                            st.synchronize().unwrap();
+                        })
+                    },
+                );
+                group.bench_function(
+                    BenchmarkId::new(format!("register_f32_r{radius}_cuda"), &id),
+                    |b| {
+                        b.iter(|| {
+                            proj.register_into(
+                                &src_f32_dev,
+                                &cam,
+                                &pose,
+                                &cam,
+                                radius,
+                                &mut dst_f32_dev,
+                            )
+                            .unwrap();
+                            st.synchronize().unwrap();
+                        })
+                    },
+                );
+            }
+        }
     }
     group.finish();
 }
