@@ -50,6 +50,7 @@ fn assert_downsample_parity(
     let dev = st.clone_htod(points.as_flattened())?;
     let mut out = filter.alloc_voxel_cloud(points.len())?;
     let mut ds = VoxelDownsampler::new();
+    let cloud = crate::pointcloud::PointCloud::new(points.to_vec(), None, None);
     let (mut host, mut host_index) = (Vec::new(), Vec::new());
     for mode in MODES {
         ds.downsample_into(points, layout, mode, &mut host, Some(&mut host_index))?;
@@ -67,6 +68,17 @@ fn assert_downsample_parity(
             points.len()
         );
         assert_eq!(device_index, host_index, "{mode:?} n={}", points.len());
+        // The same as the host VoxelView reductions.
+        let view = ds.view(&cloud, layout)?;
+        match mode {
+            DownsampleMode::Centroid => {
+                assert_eq!(bits(device.points()), bits(view.centroids().points()));
+            }
+            DownsampleMode::First => assert_eq!(device_index, view.first().indices()),
+            DownsampleMode::NearestToCentre => {
+                assert_eq!(device_index, view.nearest().indices())
+            }
+        }
     }
     Ok(())
 }

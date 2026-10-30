@@ -159,7 +159,7 @@ __device__ __forceinline__ bool axis_key(double v, double o, double s, double r,
 __device__ __forceinline__ double axis_centre(int k, double o, double s) {
     return o + ((double)k + 0.5) * s;
 }
-/* the `dist` closure of VoxelDownsampler::reduce */
+/* the `dist` closure of `reduce_run` (downsample.rs) */
 __device__ __forceinline__ double dist2(const double* p, double cx, double cy, double cz) {
     double dx = p[0] - cx, dy = p[1] - cy, dz = p[2] - cz;
     return dx * dx + dy * dy + dz * dz;
@@ -413,7 +413,7 @@ extern "C" __global__ void run_finalize(const uint4* __restrict__ wa, const uint
 
 /* ---- 4. per-voxel work ---- */
 
-/* VoxelDownsampler::reduce */
+/* reduce_run (downsample.rs) */
 extern "C" __global__ void voxel_reduce(const double* __restrict__ xyz,
                                         const uint4* __restrict__ wa, const uint4* __restrict__ wb,
                                         const unsigned int* __restrict__ range, unsigned int n,
