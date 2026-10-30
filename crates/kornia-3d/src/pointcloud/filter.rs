@@ -7,10 +7,12 @@
 //!
 //! Every filter keeps the surviving points in their input order. The
 //! `*_inlier_indices` forms write the kept indices (ascending) into a
-//! caller-owned buffer; the `remove_*` forms return the filtered
-//! [`PointCloud`] with its colors and normals carried along. Both allocate
-//! their search scratch on every call; [`OutlierFilter`] owns it and reuses
-//! it across calls, which is the allocation-free path for repeated filtering.
+//! caller-owned buffer; the `remove_*` forms return the kept points as a
+//! [`PointCloudView`] of the input (colors and normals read through, nothing
+//! copied; [`PointCloudView::to_point_cloud`] for an owned cloud). Both
+//! allocate their search scratch on every call; [`OutlierFilter`] owns it
+//! and reuses it across calls, which is the allocation-free path for
+//! repeated filtering (`cloud.select(&kept)` then views its result).
 //!
 //! Non-finite points (any coordinate NaN or infinite) are dropped, as PCL
 //! does: they are never inliers, never count as a neighbour, and are left
@@ -30,13 +32,14 @@
 //! cannot (keys outside `i32`, k-NN neighbourhoods beyond three cells).
 //! Both give the same result bit for bit.
 
+use std::borrow::Cow;
 use std::num::NonZero;
 
 use kiddo::immutable::float::kdtree::ImmutableKdTree;
 use kiddo::SquaredEuclidean;
 use rayon::prelude::*;
 
-use super::PointCloud;
+use super::{PointCloud, PointCloudView};
 use grid::CellGrid;
 
 mod grid;
@@ -209,10 +212,14 @@ struct SearchScratch {
 /// and a few small per-task lists (the cell ranges and the k-NN
 /// candidates).
 ///
+/// To get the kept points of a [`PointCloud`] without copying them, select
+/// the kept indices: `cloud.select(&kept)` is a [`PointCloudView`] that
+/// borrows both the cloud and the reused index buffer.
+///
 /// # Example
 ///
 /// ```
-/// use kornia_3d::pointcloud::filter::OutlierFilter;
+/// use kornia_3d::pointcloud::{filter::OutlierFilter, PointCloud};
 ///
 /// let mut filter = OutlierFilter::new();
 /// let mut kept = Vec::new();
@@ -220,7 +227,10 @@ struct SearchScratch {
 ///     vec![[0.0, 0.0, 0.0], [0.1, 0.0, 0.0], [5.0, 0.0, 0.0]],
 ///     vec![[0.0, 0.0, 0.0], [9.0, 0.0, 0.0]],
 /// ] {
-///     filter.radius_inlier_indices_into(&points, 0.5, 1, &mut kept)?;
+///     let cloud = PointCloud::new(points, None, None);
+///     filter.radius_inlier_indices_into(cloud.points(), 0.5, 1, &mut kept)?;
+///     let inliers = cloud.select(&kept)?;
+///     assert!(inliers.points().all(|p| p[0] < 1.0));
 /// }
 /// assert!(kept.is_empty());
 /// # Ok::<(), Box<dyn std::error::Error>>(())
@@ -367,7 +377,8 @@ fn radius_dense_kd(points: &[[f64; 3]], radius_sq: f64, cap: NonZero<usize>, den
 ///
 /// # Returns
 ///
-/// The kept points, in input order.
+/// The kept points, in input order, as a view of `cloud` (nothing is
+/// copied).
 ///
 /// # Errors
 ///
@@ -380,18 +391,21 @@ fn radius_dense_kd(points: &[[f64; 3]], radius_sq: f64, cap: NonZero<usize>, den
 /// use kornia_3d::pointcloud::{filter::remove_radius_outliers, PointCloud};
 ///
 /// let cloud = PointCloud::new(vec![[0.0; 3], [0.1, 0.0, 0.0], [5.0, 0.0, 0.0]], None, None);
-/// assert_eq!(remove_radius_outliers(&cloud, 0.5, 1)?.len(), 2);
+/// let kept = remove_radius_outliers(&cloud, 0.5, 1)?;
+/// assert_eq!(kept.indices(), &[0, 1]);
+/// assert_eq!(kept.to_point_cloud().points(), &vec![[0.0; 3], [0.1, 0.0, 0.0]]);
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
-pub fn remove_radius_outliers(
-    cloud: &PointCloud,
+pub fn remove_radius_outliers<'a>(
+    cloud: &'a PointCloud,
     radius: f64,
     min_neighbours: usize,
-) -> Result<PointCloud, FilterError> {
+) -> Result<PointCloudView<'a>, FilterError> {
     check_attributes(cloud)?;
     let mut kept = Vec::new();
     radius_inlier_indices(cloud.points(), radius, min_neighbours, &mut kept)?;
-    Ok(cloud.select(kept)?.to_point_cloud())
+    // The kept indices are points of `cloud`, whose attributes were checked.
+    Ok(PointCloudView::from_checked(cloud, Cow::Owned(kept)))
 }
 
 /// Indices of the points whose mean distance to their `k` nearest neighbours
@@ -663,7 +677,8 @@ fn knn_mean_kd(tree: &KdTree, p: &[f64; 3], cap: NonZero<usize>) -> f64 {
 ///
 /// # Returns
 ///
-/// The kept points, in input order.
+/// The kept points, in input order, as a view of `cloud` (nothing is
+/// copied).
 ///
 /// # Errors
 ///
@@ -681,15 +696,16 @@ fn knn_mean_kd(tree: &KdTree, p: &[f64; 3], cap: NonZero<usize>) -> f64 {
 /// assert_eq!(remove_statistical_outliers(&cloud, 2, 1.0)?.len(), 10);
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
-pub fn remove_statistical_outliers(
-    cloud: &PointCloud,
+pub fn remove_statistical_outliers<'a>(
+    cloud: &'a PointCloud,
     k: usize,
     std_ratio: f64,
-) -> Result<PointCloud, FilterError> {
+) -> Result<PointCloudView<'a>, FilterError> {
     check_attributes(cloud)?;
     let mut kept = Vec::new();
     statistical_inlier_indices(cloud.points(), k, std_ratio, &mut kept)?;
-    Ok(cloud.select(kept)?.to_point_cloud())
+    // The kept indices are points of `cloud`, whose attributes were checked.
+    Ok(PointCloudView::from_checked(cloud, Cow::Owned(kept)))
 }
 
 #[cfg(test)]

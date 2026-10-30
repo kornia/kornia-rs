@@ -221,10 +221,25 @@ fn remove_carries_attributes() -> TestResult {
         Some(vec![[1, 2, 3], [4, 5, 6], [7, 8, 9]]),
         Some(vec![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]),
     );
-    let out = remove_radius_outliers(&cloud, 0.5, 1)?;
+    let view = remove_radius_outliers(&cloud, 0.5, 1)?;
+    assert!(std::ptr::eq(view.cloud(), &cloud));
+    assert_eq!(view.indices(), &[0, 1]);
+    let out = view.to_point_cloud();
     assert_eq!(out.points(), &vec![[0.0; 3], [0.1, 0.0, 0.0]]);
     assert_eq!(out.colors(), Some(&vec![[1, 2, 3], [4, 5, 6]]));
     assert_eq!(out.normals(), Some(&vec![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]));
+
+    let mut points: Vec<[f64; 3]> = (0..20).map(|i| [i as f64 * 0.1, 0.0, 0.0]).collect();
+    points.push([50.0, 0.0, 0.0]);
+    let colors = (0..points.len() as u8).map(|i| [i; 3]).collect();
+    let cloud = PointCloud::new(points.clone(), Some(colors), None);
+    let mut want = Vec::new();
+    statistical_inlier_indices(&points, 3, 1.0, &mut want)?;
+    let view = remove_statistical_outliers(&cloud, 3, 1.0)?;
+    assert_eq!(view.indices(), &want[..]);
+    assert_eq!(want.len(), 20);
+    let colors: Vec<[u8; 3]> = view.colors().ok_or("colors")?.copied().collect();
+    assert_eq!(colors, (0..20u8).map(|i| [i; 3]).collect::<Vec<_>>());
     Ok(())
 }
 
