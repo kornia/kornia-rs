@@ -10,5 +10,9 @@ pub use kernels::*;
 mod ops;
 pub use ops::*;
 
+/// Label-boundary erosion
+mod label_boundaries;
+pub use label_boundaries::{erode_label_boundaries, LabelPixel};
+
 #[cfg(feature = "cuda")]
 mod cuda;
