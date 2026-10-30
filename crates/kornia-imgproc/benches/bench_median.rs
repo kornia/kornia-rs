@@ -26,7 +26,13 @@ fn bench_one<T: MedianBlur + Default>(
     let id = format!("{}x{}", size.width, size.height);
     for ksize in [3usize, 5] {
         group.bench_function(BenchmarkId::new(format!("{name}_k{ksize}"), &id), |b| {
-            b.iter(|| std::hint::black_box(median_blur(&src, &mut dst, ksize)))
+            b.iter(|| {
+                std::hint::black_box(median_blur(
+                    std::hint::black_box(&src),
+                    std::hint::black_box(&mut dst),
+                    std::hint::black_box(ksize),
+                ))
+            })
         });
     }
     group.finish();

@@ -344,6 +344,9 @@ impl_median_blur!(f32, kernels::median_blur_f32::<C>);
 /// The `u8` CPU path (`ksize` validated by the caller).
 fn median_blur_u8<const C: usize>(src: &Image<u8, C>, dst: &mut Image<u8, C>, ksize: usize) {
     let (w, h) = (src.cols(), src.rows());
+    if w == 0 || h == 0 {
+        return;
+    }
     let s = src.as_slice();
     let r = (ksize / 2) as i64;
 
@@ -1077,6 +1080,29 @@ mod tests {
             width: w,
             height: h,
         }
+    }
+
+    /// Zero-width and zero-height images are a no-op for every pixel type
+    /// (the `u8` path used to hand rayon a zero chunk size).
+    #[test]
+    fn empty_images_are_a_no_op() -> Result<(), ImageError> {
+        for size in [sz(0, 4), sz(4, 0), sz(0, 0)] {
+            for ksize in [3, 5] {
+                let src = Image::<u8, 1>::from_size_val(size, 0)?;
+                let mut dst = Image::<u8, 1>::from_size_val(size, 0)?;
+                median_blur(&src, &mut dst, ksize)?;
+                let src = Image::<u8, 3>::from_size_val(size, 0)?;
+                let mut dst = Image::<u8, 3>::from_size_val(size, 0)?;
+                median_blur(&src, &mut dst, ksize)?;
+                let src = Image::<u16, 1>::from_size_val(size, 0)?;
+                let mut dst = Image::<u16, 1>::from_size_val(size, 0)?;
+                median_blur(&src, &mut dst, ksize)?;
+                let src = Image::<f32, 1>::from_size_val(size, 0.0)?;
+                let mut dst = Image::<f32, 1>::from_size_val(size, 0.0)?;
+                median_blur(&src, &mut dst, ksize)?;
+            }
+        }
+        Ok(())
     }
 
     fn median_naive(win: &mut [u8]) -> u8 {
