@@ -1,4 +1,5 @@
-//! CPU kernels for the valid-aware depth median and the flying-pixel mask.
+//! CPU kernels for the flying-pixel mask: the median of the valid samples
+//! of each 3×3 window, and the deviation test against it.
 //!
 //! Invalid samples are mapped to a sort key above every valid key (see
 //! [`DepthRepr::key`]), so the median of the `n` valid samples of a window
@@ -6,20 +7,16 @@
 //!
 //! Each output row is produced in two passes over a per-task scratch:
 //!
-//! 1. **Vertical**: every source column of the `ksize` window rows is
-//!    sorted ([`COL3`] / [`COL5`]) and its valid count recorded, once per
-//!    column. The `ksize` horizontally adjacent windows that share a column
-//!    reuse it.
-//! 2. **Horizontal**: a window is `ksize` adjacent sorted columns; a
-//!    rank-selection network ([`RANK9`] / [`RANK25`]) brings ranks
-//!    `0..=taps / 2` (every rank `n / 2` can take) into place, and rank
-//!    `n / 2` is selected lane-wise.
+//! 1. **Vertical**: every source column of the 3 window rows is sorted
+//!    ([`COL3`]) and its valid count recorded, once per column. The 3
+//!    horizontally adjacent windows that share a column reuse it.
+//! 2. **Horizontal**: a window is 3 adjacent sorted columns; a
+//!    rank-selection network ([`RANK9`]) brings ranks `0..=4` (every rank
+//!    `n / 2` can take) into place, and rank `n / 2` is selected lane-wise.
 //!
 //! In the NEON and CUDA kernels, a block of windows whose samples are all
-//! valid (the common case away from holes) takes a plain-median network
-//! instead ([`med9`] /
-//! [`crate::filter::median::MED25_SORTED_COLUMNS`]): rank
-//! `taps / 2` is the same value, for fewer exchanges.
+//! valid (the common case away from holes) takes the plain median of 9
+//! instead ([`med9`]): rank 4 is the same value, for fewer exchanges.
 //!
 //! On aarch64, single-channel rows of at least one vector run explicit NEON
 //! kernels (`u16x8` / `f32x4` per wire, module `neon`). Every other case
@@ -77,14 +74,6 @@ network!(
 );
 
 network!(
-    /// Sorts a 5-sample column (optimal, 9 exchanges; Knuth, TAOCP vol. 3,
-    /// 5.3.4).
-    COL5,
-    sort_col5,
-    [(0, 1), (3, 4), (2, 4), (2, 3), (1, 4), (0, 3), (0, 2), (1, 3), (1, 2)]
-);
-
-network!(
     /// Rank selection on a 3×3 window held as 3 sorted columns (wire
     /// `col * 3 + rank`): afterwards wires `0..=4` hold ranks `0..=4`.
     /// Derived from Batcher's odd-even merge sort (Knuth, TAOCP vol. 3,
@@ -97,39 +86,6 @@ network!(
         (3, 7), (2, 4), (3, 5), (1, 2), (3, 4), (4, 8), (2, 4), (3, 4),
     ]
 );
-
-network!(
-    /// Rank selection on a 5×5 window held as 5 sorted columns (wire
-    /// `col * 5 + rank`): afterwards wires `0..=12` hold ranks `0..=12`.
-    /// Derived like [`RANK9`] and proven the same way.
-    RANK25,
-    rank25,
-    [
-        (4, 5), (14, 15), (5, 7), (8, 10), (9, 11), (12, 14), (5, 6), (9, 10),
-        (13, 14), (0, 4), (1, 5), (2, 6), (8, 12), (10, 14), (11, 15), (16, 20),
-        (17, 21), (18, 22), (19, 23), (2, 4), (3, 5), (10, 12), (11, 13), (18, 20),
-        (19, 21), (1, 2), (3, 4), (5, 6), (9, 10), (11, 12), (13, 14), (17, 18),
-        (19, 20), (0, 8), (1, 9), (2, 10), (3, 11), (4, 12), (5, 13), (6, 14),
-        (7, 15), (4, 8), (5, 9), (6, 10), (7, 11), (20, 24), (2, 4), (3, 5),
-        (6, 8), (7, 9), (10, 12), (11, 13), (22, 24), (1, 2), (3, 4), (5, 6),
-        (7, 8), (9, 10), (11, 12), (21, 22), (23, 24), (0, 16), (1, 17), (2, 18),
-        (3, 19), (4, 20), (5, 21), (6, 22), (7, 23), (8, 24), (8, 16), (9, 17),
-        (10, 18), (11, 19), (12, 20), (13, 21), (4, 8), (5, 9), (6, 10), (7, 11),
-        (12, 16), (13, 17), (2, 4), (3, 5), (6, 8), (7, 9), (10, 12), (11, 13),
-        (1, 2), (3, 4), (5, 6), (7, 8), (9, 10), (11, 12),
-    ]
-);
-
-crate::filter::median::with_med25_sorted_columns!(network_fn!(
-    /// Median (wire 12) of a 5×5 window held as 5 sorted columns (wire
-    /// `col * 5 + rank`) when all 25 samples are valid:
-    /// [`crate::filter::median::MED25_SORTED_COLUMNS`], the sorted-column
-    /// network of the `u8` [`crate::filter::median_blur`] 5×5 kernel,
-    /// unrolled.
-    // Only the NEON kernel takes the all-valid shortcut.
-    #[cfg(target_arch = "aarch64")]
-    med25,
-));
 
 /// Median of a 3×3 window held as 3 sorted columns (wire `col * 3 +
 /// rank`) when all 9 samples are valid: the exact identity
@@ -195,10 +151,8 @@ pub(crate) trait DepthRepr: Copy + Send + Sync + 'static {
     type Key: Copy + Send + Sync;
     /// The value that marks a missing measurement.
     const INVALID: Self;
-    /// Lanes per block of the 3×3 kernel.
+    /// Lanes per block of the portable kernel.
     const LANES3: usize;
-    /// Lanes per block of the 5×5 kernel.
-    const LANES5: usize;
     /// True when the sample is a measurement: the public rule
     /// ([`super::is_valid_depth_u16`] / [`super::is_valid_depth_f32`]).
     fn is_valid(self) -> bool;
@@ -214,15 +168,6 @@ pub(crate) trait DepthRepr: Copy + Send + Sync + 'static {
     fn abs_diff_f32(a: Self, b: Self) -> f32;
     /// The sample as `f32`.
     fn as_f32(self) -> f32;
-    /// Valid-aware median over an interleaved `h × w × C` buffer at the
-    /// dtype's lane widths. `ksize` is 3 or 5.
-    fn median_blur<const C: usize>(
-        src: &[Self],
-        dst: &mut [Self],
-        w: usize,
-        h: usize,
-        ksize: usize,
-    );
     /// Flying-pixel mask over a single-channel `h × w` buffer.
     fn flying_mask(src: &[Self], mask: &mut [u8], w: usize, h: usize, rule: FlyingRule);
 }
@@ -241,7 +186,6 @@ impl DepthRepr for u16 {
     // Portable-kernel block widths: 9 or 25 wires of `L` keys stay within
     // the vector register file.
     const LANES3: usize = 16;
-    const LANES5: usize = 8;
     #[inline(always)]
     fn is_valid(self) -> bool {
         super::is_valid_depth_u16(self)
@@ -273,15 +217,6 @@ impl DepthRepr for u16 {
     fn as_f32(self) -> f32 {
         f32::from(self)
     }
-    fn median_blur<const C: usize>(src: &[u16], dst: &mut [u16], w: usize, h: usize, ksize: usize) {
-        if ksize == 3 {
-            let simd = simd_median_row::<u16, C, 3, 9>();
-            median_blur_ks::<u16, C, 3, 9, { u16::LANES3 }>(src, dst, w, h, simd);
-        } else {
-            let simd = simd_median_row::<u16, C, 5, 25>();
-            median_blur_ks::<u16, C, 5, 25, { u16::LANES5 }>(src, dst, w, h, simd);
-        }
-    }
     fn flying_mask(src: &[u16], mask: &mut [u8], w: usize, h: usize, rule: FlyingRule) {
         flying_mask_ks::<u16, { u16::LANES3 }>(src, mask, w, h, rule, simd_flying_row::<u16>());
     }
@@ -291,7 +226,6 @@ impl DepthRepr for f32 {
     type Key = f32;
     const INVALID: f32 = f32::NAN;
     const LANES3: usize = 8;
-    const LANES5: usize = 4;
     #[inline(always)]
     fn is_valid(self) -> bool {
         super::is_valid_depth_f32(self)
@@ -327,15 +261,6 @@ impl DepthRepr for f32 {
     #[inline(always)]
     fn as_f32(self) -> f32 {
         self
-    }
-    fn median_blur<const C: usize>(src: &[f32], dst: &mut [f32], w: usize, h: usize, ksize: usize) {
-        if ksize == 3 {
-            let simd = simd_median_row::<f32, C, 3, 9>();
-            median_blur_ks::<f32, C, 3, 9, { f32::LANES3 }>(src, dst, w, h, simd);
-        } else {
-            let simd = simd_median_row::<f32, C, 5, 25>();
-            median_blur_ks::<f32, C, 5, 25, { f32::LANES5 }>(src, dst, w, h, simd);
-        }
     }
     fn flying_mask(src: &[f32], mask: &mut [u8], w: usize, h: usize, rule: FlyingRule) {
         flying_mask_ks::<f32, { f32::LANES3 }>(src, mask, w, h, rule, simd_flying_row::<f32>());
@@ -394,11 +319,7 @@ fn sort_block<T: DepthRepr, const C: usize, const KS: usize, const B: usize>(
             wire.0[l] = s[l].key();
         }
     }
-    if KS == 3 {
-        sort_col3(&mut v);
-    } else {
-        sort_col5(&mut v);
-    }
+    sort_col3(&mut v);
     let p = x + KS / 2;
     for (r, wire) in v.iter().enumerate() {
         let o = r * cols.stride + p;
@@ -463,11 +384,7 @@ fn window_medians<T: DepthRepr, const KS: usize, const TAPS: usize, const L: usi
             v[dc * KS + r] = Lanes(std::array::from_fn(|l| s[l]));
         }
     }
-    if KS == 3 {
-        rank9(&mut v);
-    } else {
-        rank25(&mut v);
-    }
+    rank9(&mut v);
     let mut m = v[0].0;
     for (i, wire) in v.iter().enumerate().take(TAPS / 2 + 1).skip(1) {
         for l in 0..L {
@@ -490,70 +407,8 @@ fn min_rows(h: usize) -> usize {
     h.div_ceil(rayon::current_num_threads() * 4).max(16)
 }
 
-/// One output row of the median.
-#[inline(always)]
-fn median_row<T: DepthRepr, const C: usize, const KS: usize, const TAPS: usize, const L: usize>(
-    src: &[T],
-    drow: &mut [T],
-    w: usize,
-    h: usize,
-    y: usize,
-    cols: &mut Columns<T::Key>,
-) {
-    let sy = window_rows::<KS>(y, h);
-    for c in 0..C {
-        sort_columns::<T, C, KS>(src, w, &sy, c, cols);
-        for x0 in (0..w).step_by(L) {
-            let (m, n) = window_medians::<T, KS, TAPS, L>(cols, x0);
-            let out: [T; L] = std::array::from_fn(|l| {
-                if n[l] == 0 {
-                    T::INVALID
-                } else {
-                    T::from_key(m[l])
-                }
-            });
-            let lanes = L.min(w - x0);
-            if C == 1 && lanes == L {
-                drow[x0..x0 + L].copy_from_slice(&out);
-            } else {
-                for (l, &o) in out.iter().enumerate().take(lanes) {
-                    drow[(x0 + l) * C + c] = o;
-                }
-            }
-        }
-    }
-}
-
-/// [`median_row`] compiled with AVX2 enabled.
-///
-/// # Safety
-///
-/// The CPU must support AVX2.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
-unsafe fn median_row_avx2<
-    T: DepthRepr,
-    const C: usize,
-    const KS: usize,
-    const TAPS: usize,
-    const L: usize,
->(
-    src: &[T],
-    drow: &mut [T],
-    w: usize,
-    h: usize,
-    y: usize,
-    cols: &mut Columns<T::Key>,
-) {
-    median_row::<T, C, KS, TAPS, L>(src, drow, w, h, y, cols);
-}
-
-/// A SIMD row kernel: computes one output row and returns `true`, or
+/// A SIMD mask row kernel: computes one mask row and returns `true`, or
 /// returns `false` (writing nothing) for a shape it does not cover.
-type MedianRowFn<T> =
-    fn(&[T], &mut [T], usize, usize, usize, &mut Columns<<T as DepthRepr>::Key>) -> bool;
-
-/// See [`MedianRowFn`]; the mask variant.
 type FlyingRowFn<T> = fn(
     &[T],
     &mut [u8],
@@ -564,58 +419,12 @@ type FlyingRowFn<T> = fn(
     &mut Columns<<T as DepthRepr>::Key>,
 ) -> bool;
 
-/// The SIMD median row kernel for this dtype / layout, if any.
-#[allow(unreachable_code)]
-fn simd_median_row<T: SimdDepth, const C: usize, const KS: usize, const TAPS: usize>(
-) -> Option<MedianRowFn<T>> {
-    #[cfg(target_arch = "aarch64")]
-    if C == 1 {
-        return Some(neon::median_row::<T, KS, TAPS>);
-    }
-    None
-}
-
 /// The SIMD flying-pixel row kernel for this dtype, if any.
 #[allow(unreachable_code)]
 fn simd_flying_row<T: SimdDepth>() -> Option<FlyingRowFn<T>> {
     #[cfg(target_arch = "aarch64")]
     return Some(neon::flying_row::<T>);
     None
-}
-
-/// Valid-aware median blur, `KS × KS` window, `L`-lane blocks; rows go to
-/// `simd` when it covers them, else to the portable [`median_row`].
-fn median_blur_ks<
-    T: DepthRepr,
-    const C: usize,
-    const KS: usize,
-    const TAPS: usize,
-    const L: usize,
->(
-    src: &[T],
-    dst: &mut [T],
-    w: usize,
-    h: usize,
-    simd: Option<MedianRowFn<T>>,
-) {
-    dst.par_chunks_mut(w * C)
-        .enumerate()
-        .with_min_len(min_rows(h))
-        .for_each_init(
-            || Columns::new(w, KS, T::INVALID.key()),
-            |cols, (y, drow)| {
-                if simd.is_some_and(|f| f(src, drow, w, h, y, cols)) {
-                    return;
-                }
-                #[cfg(target_arch = "x86_64")]
-                if crate::simd::cpu_features().has_avx2 {
-                    // SAFETY: AVX2 support was just checked.
-                    unsafe { median_row_avx2::<T, C, KS, TAPS, L>(src, drow, w, h, y, cols) };
-                    return;
-                }
-                median_row::<T, C, KS, TAPS, L>(src, drow, w, h, y, cols);
-            },
-        );
 }
 
 /// One output row of the flying-pixel mask.
@@ -696,22 +505,6 @@ fn flying_mask_ks<T: DepthRepr, const L: usize>(
         );
 }
 
-/// Valid-aware median blur over an interleaved `h × w × C` buffer. `ksize`
-/// is 3 or 5 (validated by the caller). An empty image is a no-op.
-pub(crate) fn median_blur_depth<T: DepthRepr, const C: usize>(
-    src: &[T],
-    dst: &mut [T],
-    w: usize,
-    h: usize,
-    ksize: usize,
-) {
-    // The row kernels chunk by `w * C` and clamp to row `h - 1`.
-    if w == 0 || h == 0 {
-        return;
-    }
-    T::median_blur::<C>(src, dst, w, h, ksize);
-}
-
 /// Flying-pixel mask over a single-channel `h × w` buffer. An empty image
 /// is a no-op.
 pub(crate) fn flying_pixel_mask<T: DepthRepr>(
@@ -764,16 +557,13 @@ impl SimdDepth for f32 {}
 
 /// NEON row kernels (single channel): the two passes of the portable
 /// kernels on one 128-bit vector per wire, `u16x8` or `f32x4`. Same
-/// networks, same keys, so bit-identical to [`median_row`] /
-/// [`flying_row`] (pinned in the tests).
+/// networks, same keys, so bit-identical to [`flying_row`] (pinned in the
+/// tests).
 #[cfg(target_arch = "aarch64")]
 mod neon {
     use std::arch::aarch64::*;
 
-    use super::{
-        med25, med9, pad_columns, rank25, rank9, sort_col3, sort_col5, Columns, DepthRepr,
-        Exchange, FlyingRule,
-    };
+    use super::{med9, pad_columns, rank9, sort_col3, Columns, DepthRepr, Exchange, FlyingRule};
 
     /// `u16x8` sort keys.
     #[derive(Clone, Copy)]
@@ -841,12 +631,6 @@ mod neon {
         unsafe fn st_n(p: *mut u16, n: Self::N);
         /// Lane-wise `v[n / 2]` for `n <= TAPS`.
         fn select<const TAPS: usize>(v: &[Self::V; TAPS], n: Self::N) -> Self::V;
-        /// Median output: `from_key(m)`, or invalid where `n == 0`.
-        ///
-        /// # Safety
-        ///
-        /// `p` is valid for writing `W` samples.
-        unsafe fn st_out(p: *mut Self, m: Self::V, n: Self::N);
         /// Flying-pixel flags of the `W` samples at `d` against median keys
         /// `m` and valid counts `n`, written as `W` mask bytes.
         ///
@@ -918,12 +702,6 @@ mod neon {
                 }
                 U16x8(m)
             }
-        }
-        #[inline(always)]
-        unsafe fn st_out(p: *mut u16, m: U16x8, _n: uint16x8_t) {
-            // from_key; an all-invalid window selects key u16::MAX, whose
-            // inverse is the invalid marker 0.
-            vst1q_u16(p, vaddq_u16(m.0, vdupq_n_u16(1)))
         }
         #[inline(always)]
         unsafe fn st_flags(dst: *mut u8, d: *const u16, m: U16x8, n: uint16x8_t, rule: FlyingRule) {
@@ -1028,11 +806,6 @@ mod neon {
             }
         }
         #[inline(always)]
-        unsafe fn st_out(p: *mut f32, m: F32x4, n: uint16x4_t) {
-            let empty = vceqzq_u32(vmovl_u16(n));
-            vst1q_f32(p, vbslq_f32(empty, vdupq_n_f32(f32::NAN), m.0))
-        }
-        #[inline(always)]
         unsafe fn st_flags(dst: *mut u8, d: *const f32, m: F32x4, n: uint16x4_t, rule: FlyingRule) {
             let d = vld1q_f32(d);
             let valid = valid_f32(d);
@@ -1081,11 +854,7 @@ mod neon {
                 *wire = k;
                 n = n2;
             }
-            if KS == 3 {
-                sort_col3(&mut v);
-            } else {
-                sort_col5(&mut v);
-            }
+            sort_col3(&mut v);
             for (i, &wire) in v.iter().enumerate() {
                 T::st_key(rank.add(i * stride + xs + r), wire);
             }
@@ -1120,53 +889,11 @@ mod neon {
         // Fully valid windows (the common case away from holes) only need
         // the plain median, rank `TAPS / 2`; same value, fewer exchanges.
         if T::all_eq(n, TAPS as u16) {
-            let m = if KS == 3 {
-                let w9: [T::V; 9] = std::array::from_fn(|i| v[i]);
-                med9(&w9)
-            } else {
-                let mut v = v;
-                med25(&mut v);
-                v[TAPS / 2]
-            };
-            return (m, n);
+            let w9: [T::V; 9] = std::array::from_fn(|i| v[i]);
+            return (med9(&w9), n);
         }
-        if KS == 3 {
-            rank9(&mut v);
-        } else {
-            rank25(&mut v);
-        }
+        rank9(&mut v);
         (T::select(&v, n), n)
-    }
-
-    /// One single-channel output row of the median; `false` (nothing
-    /// written) when `w < T::W`.
-    pub(super) fn median_row<T: NeonDepth, const KS: usize, const TAPS: usize>(
-        src: &[T],
-        drow: &mut [T],
-        w: usize,
-        h: usize,
-        y: usize,
-        cols: &mut Columns<T::Key>,
-    ) -> bool {
-        if w < T::W {
-            return false;
-        }
-        let sy = super::window_rows::<KS>(y, h);
-        // SAFETY: `src` is the `h × w` image, `drow` one `w`-sample row,
-        // `sy` rows are `< h` and `w >= T::W`; every block starts at
-        // `x0 <= w - T::W`, so its `T::W` outputs lie inside `drow`, and
-        // `cols` (built for `w`, `KS`) is padded for the horizontal reads.
-        unsafe {
-            sort_columns::<T, KS>(src, w, &sy, cols);
-            let mut x = 0;
-            while x < w {
-                let x0 = x.min(w - T::W);
-                let (m, n) = window::<T, KS, TAPS>(cols, x0);
-                T::st_out(drow.as_mut_ptr().add(x0), m, n);
-                x += T::W;
-            }
-        }
-        true
     }
 
     /// One output row of the flying-pixel mask; `false` (nothing written)
@@ -1185,8 +912,10 @@ mod neon {
         }
         const KS: usize = super::FLYING_KSIZE;
         let sy = super::window_rows::<KS>(y, h);
-        // SAFETY: as in `median_row`; the mask row and source row `y` hold
-        // `w` entries and every block reads / writes `T::W` of them from
+        // SAFETY: `src` is the `h × w` image, `sy` rows are `< h` and
+        // `w >= T::W`; `cols` (built for `w`, `KS`) is padded for the
+        // horizontal reads; the mask row and source row `y` hold `w`
+        // entries and every block reads / writes `T::W` of them from
         // `x0 <= w - T::W`.
         unsafe {
             sort_columns::<T, KS>(src, w, &sy, cols);
@@ -1276,22 +1005,12 @@ mod tests {
     }
 
     #[test]
-    fn rank_networks_select_lower_half_of_sorted_columns() {
+    fn rank_network_selects_lower_half_of_sorted_columns() {
         assert_rank_network(RANK9, 3);
-        assert_rank_network(RANK25, 5);
     }
 
     #[test]
-    fn median_networks_exact_on_full_sorted_columns() {
-        // MED25_SORTED_COLUMNS: wire 12 is the rank-12 order statistic.
-        let n = 25;
-        for chunk in column_sorted_inputs(5).chunks(64) {
-            let wires = run_zero_one(&crate::filter::median::MED25_SORTED_COLUMNS, n, chunk);
-            for (j, &input) in chunk.iter().enumerate() {
-                let zeros = n - input.count_ones() as usize;
-                assert_eq!((wires[12] >> j) & 1, u64::from(zeros <= 12), "{input:#x}");
-            }
-        }
+    fn med9_exact_on_full_sorted_columns() {
         // med9 on every column-sorted 0/1 input (min = AND, max = OR).
         #[derive(Clone, Copy)]
         struct Bit(bool);
@@ -1309,7 +1028,7 @@ mod tests {
 
     #[test]
     fn column_networks_sort_all_inputs() {
-        for (net, n) in [(COL3, 3usize), (COL5, 5)] {
+        for (net, n) in [(COL3, 3usize)] {
             let inputs: Vec<u64> = (0..1u64 << n).collect();
             let wires = run_zero_one(net, n, &inputs);
             for i in 1..n {
@@ -1348,32 +1067,22 @@ mod tests {
 
     /// Test-side view of a depth dtype.
     trait TestDepth: SimdDepth + PartialOrd + std::fmt::Debug {
-        /// A value no kernel ever writes (outside the sample range and not
-        /// the canonical invalid marker), to catch unwritten outputs.
-        const POISON: Self;
         /// A random valid sample, with many duplicates.
         fn sample(r: u32) -> Self;
         /// A random invalid sample.
         fn hole(r: u32) -> Self;
-        /// Bit pattern, for exact comparison (NaN included).
-        fn bits(self) -> u32;
     }
 
     impl TestDepth for u16 {
-        const POISON: u16 = 9999;
         fn sample(r: u32) -> u16 {
             1 + (r >> 20) as u16 % 64
         }
         fn hole(_: u32) -> u16 {
             0
         }
-        fn bits(self) -> u32 {
-            u32::from(self)
-        }
     }
 
     impl TestDepth for f32 {
-        const POISON: f32 = -7.0;
         fn sample(r: u32) -> f32 {
             1.0 + ((r >> 8) % 16) as f32 * 0.25
         }
@@ -1382,13 +1091,6 @@ mod tests {
             const HOLES: [f32; 6] = [0.0, -0.0, -1.5, f32::INFINITY, f32::NEG_INFINITY, f32::NAN];
             HOLES[(r >> 8) as usize % HOLES.len()]
         }
-        fn bits(self) -> u32 {
-            self.to_bits()
-        }
-    }
-
-    fn bits<T: TestDepth>(v: &[T]) -> Vec<u32> {
-        v.iter().map(|&x| x.bits()).collect()
     }
 
     /// Valid samples (in window order) of the `ksize × ksize` replicate-border
@@ -1415,27 +1117,6 @@ mod tests {
         // Valid samples are totally ordered (no NaN).
         valid.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         valid
-    }
-
-    /// Scalar reference median: rank `n / 2` of the sorted valid samples,
-    /// or the invalid marker.
-    fn scalar_median<T: TestDepth, const C: usize>(
-        src: &[T],
-        w: usize,
-        h: usize,
-        ksize: usize,
-    ) -> Vec<T> {
-        let mut out = vec![T::POISON; src.len()];
-        for y in 0..h {
-            for x in 0..w {
-                for c in 0..C {
-                    let valid = window_valid::<T, C>(src, (w, h), (x, y, c), ksize);
-                    out[(y * w + x) * C + c] =
-                        valid.get(valid.len() / 2).copied().unwrap_or(T::INVALID);
-                }
-            }
-        }
-        out
     }
 
     /// Scalar reference flying-pixel mask (the rule of [`is_flying`],
@@ -1483,84 +1164,10 @@ mod tests {
         (1..=40).map(|w| (w, 1 + w % 5)).chain([(131, 7), (64, 3)])
     }
 
-    /// Every median row kernel of this build (portable, portable with AVX2,
-    /// the SIMD kernel the dispatcher picks, and the dispatched whole-image
-    /// entry) against [`scalar_median`]. Returns how many shapes the SIMD
-    /// kernel covered.
-    fn check_median_paths<
-        T: TestDepth,
-        const C: usize,
-        const KS: usize,
-        const TAPS: usize,
-        const L: usize,
-    >() -> usize {
-        let mut simd_covered = 0;
-        for (i, (w, h)) in parity_shapes().enumerate() {
-            for holes_pct in HOLE_PCTS {
-                let seed = 1000 * KS as u64 + 10 * i as u64 + u64::from(holes_pct);
-                let src = random_depth::<T>(w * h * C, seed, holes_pct);
-                let want = bits(&scalar_median::<T, C>(&src, w, h, KS));
-                let ctx = format!(
-                    "{} C{C} k={KS} {w}x{h} holes {holes_pct}%",
-                    std::any::type_name::<T>()
-                );
-                let dims = (w, h, w * C, KS);
-
-                let got = run_rows(&src, dims, T::POISON, |s, d, y, cols| {
-                    median_row::<T, C, KS, TAPS, L>(s, d, w, h, y, cols);
-                    true
-                });
-                assert_eq!(got.map(|v| bits(&v)), Some(want.clone()), "portable {ctx}");
-
-                #[cfg(target_arch = "x86_64")]
-                if crate::simd::cpu_features().has_avx2 {
-                    let got = run_rows(&src, dims, T::POISON, |s, d, y, cols| {
-                        // SAFETY: AVX2 support was just checked.
-                        unsafe { median_row_avx2::<T, C, KS, TAPS, L>(s, d, w, h, y, cols) };
-                        true
-                    });
-                    assert_eq!(got.map(|v| bits(&v)), Some(want.clone()), "avx2 {ctx}");
-                }
-
-                if let Some(simd) = simd_median_row::<T, C, KS, TAPS>() {
-                    let got = run_rows(&src, dims, T::POISON, |s, d, y, cols| {
-                        simd(s, d, w, h, y, cols)
-                    });
-                    if let Some(got) = got {
-                        assert_eq!(bits(&got), want, "simd {ctx}");
-                        simd_covered += 1;
-                    }
-                }
-
-                let mut got = vec![T::POISON; src.len()];
-                median_blur_depth::<T, C>(&src, &mut got, w, h, KS);
-                assert_eq!(bits(&got), want, "dispatched {ctx}");
-            }
-        }
-        simd_covered
-    }
-
-    #[test]
-    fn every_median_path_matches_scalar_reference() {
-        let simd = [
-            check_median_paths::<u16, 1, 3, 9, { u16::LANES3 }>(),
-            check_median_paths::<u16, 1, 5, 25, { u16::LANES5 }>(),
-            check_median_paths::<f32, 1, 3, 9, { f32::LANES3 }>(),
-            check_median_paths::<f32, 1, 5, 25, { f32::LANES5 }>(),
-            check_median_paths::<u16, 3, 3, 9, { u16::LANES3 }>(),
-            check_median_paths::<u16, 3, 5, 25, { u16::LANES5 }>(),
-            check_median_paths::<f32, 3, 3, 9, { f32::LANES3 }>(),
-            check_median_paths::<f32, 3, 5, 25, { f32::LANES5 }>(),
-        ];
-        // The SIMD kernels exist for single-channel rows on aarch64 only;
-        // make sure they actually ran there.
-        if cfg!(target_arch = "aarch64") {
-            assert!(simd[..4].iter().all(|&n| n > 0), "{simd:?}");
-        }
-        assert!(simd[4..].iter().all(|&n| n == 0), "{simd:?}");
-    }
-
-    /// [`check_median_paths`] for the flying-pixel mask.
+    /// Every flying-pixel row kernel of this build (portable, portable with
+    /// AVX2, the SIMD kernel the dispatcher picks, and the dispatched
+    /// whole-image entry) against [`scalar_flying`]. Returns how many
+    /// shapes the SIMD kernel covered and how many pixels were flagged.
     fn check_flying_paths<T: TestDepth, const L: usize>(scale: f32) -> (usize, usize) {
         let rules = [(1.0, 0.0, 0), (0.5, 0.1, 5), (0.0, 0.0, 10), (4.0, 0.02, 3)];
         let (mut simd_covered, mut flagged) = (0, 0);

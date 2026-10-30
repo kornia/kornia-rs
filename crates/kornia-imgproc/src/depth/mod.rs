@@ -1,5 +1,5 @@
-//! Depth-image filtering: a median blur that ignores missing measurements,
-//! and detection / removal of flying pixels at depth discontinuities.
+//! Depth-image filtering: detection and removal of flying pixels at depth
+//! discontinuities.
 //!
 //! # Valid depth
 //!
@@ -12,14 +12,13 @@
 //!   values, `±inf` and `NaN` are all missing measurements.
 //!
 //! Invalid samples never take part in a median or a comparison. Where an op
-//! produces an invalid sample (a median window with no valid tap, a masked
-//! pixel) it writes the canonical marker `0` (`u16`) or `NaN` (`f32`);
+//! produces an invalid sample (a masked pixel) it writes the canonical marker `0` (`u16`) or `NaN` (`f32`);
 //! [`invalidate_masked_depth`] copies unmasked pixels, holes included,
 //! unchanged.
 //!
 //! Borders replicate (`BORDER_REPLICATE`, as OpenCV `medianBlur` does):
-//! out-of-image taps repeat the nearest edge pixel, so a window always has
-//! `ksize²` taps and a replicated tap is counted as often as it appears.
+//! out-of-image taps repeat the nearest edge pixel, so a 3×3 window always
+//! has 9 taps and a replicated tap is counted as often as it appears.
 
 pub(crate) mod kernels;
 
@@ -98,13 +97,6 @@ pub fn is_valid_depth_f32(d: f32) -> bool {
 /// invalid marker `NaN`). Sealed.
 pub trait DepthPixel: sealed::Sealed + Copy + Send + Sync + 'static {
     #[doc(hidden)]
-    fn median_blur_depth_impl<const C: usize>(
-        src: &Image<Self, C>,
-        dst: &mut Image<Self, C>,
-        ksize: usize,
-    ) -> Result<(), ImageError>;
-
-    #[doc(hidden)]
     fn flying_pixel_mask_impl(
         src: &Image<Self, 1>,
         mask: &mut Image<u8, 1>,
@@ -121,81 +113,14 @@ pub trait DepthPixel: sealed::Sealed + Copy + Send + Sync + 'static {
     ) -> Result<(), ImageError>;
 }
 
-/// Median blur of a depth image that excludes missing measurements.
-///
-/// Each output sample is the median of the **valid** samples
-/// ([`is_valid_depth_u16`] / [`is_valid_depth_f32`]) in the `ksize × ksize`
-/// window around it, per channel. A pixel whose window holds no valid
-/// sample is written as the invalid marker (`0` / `NaN`); an invalid pixel
-/// with valid neighbours is filled with their median. Every output sample
-/// is therefore either valid or the canonical marker: an `f32` input hole
-/// encoded as `0.0`, a negative value or `±inf` comes out as `NaN` or as a
-/// filled value, never as itself.
-///
-/// Reference: OpenCV `cv::medianBlur` (`CV_16U` / `CV_32F`, ksize 3 or 5,
-/// `BORDER_REPLICATE`). On an image with no invalid sample the output is
-/// identical to `cv2.medianBlur` (pinned in the tests). Departures from
-/// OpenCV:
-///
-/// * OpenCV treats `0` (and, for `f32`, negative and infinite values) as
-///   values and leaves NaN behaviour unspecified; here all of them are
-///   missing measurements and are excluded from the window.
-/// * With an even number `n` of valid samples the upper median (rank
-///   `n / 2` of the sorted valid samples) is returned, not the mean of the
-///   two middle values: the output is always one of the input samples, so
-///   the filter never invents a depth between two surfaces.
-///
-/// The `u8` [`crate::filter::median_blur`] is unchanged by this op.
-///
-/// # Arguments
-///
-/// * `src` - Depth image, `u16` or `f32`, any channel count (each channel is
-///   filtered independently).
-/// * `dst` - Pre-allocated output with the same size as `src`.
-/// * `ksize` - Window side, 3 or 5.
-///
-/// # Returns
-///
-/// `Ok(())` on success; `dst` holds the filtered image.
-/// An image with zero width or height is a valid no-op.
-///
-/// # Errors
-///
-/// * [`ImageError::InvalidImageSize`] if `src` and `dst` sizes differ.
-/// * [`ImageError::InvalidKernelLength`] if `ksize` is not 3 or 5.
-/// * [`ImageError::MixedResidency`] / [`ImageError::Cuda`] for device images
-///   (feature `cuda`) on mixed residency or a launch failure.
-///
-/// # Example
-///
-/// ```rust
-/// use kornia_image::{Image, ImageSize};
-/// use kornia_imgproc::depth::median_blur_depth;
-///
-/// let size = ImageSize { width: 3, height: 3 };
-/// // Centre is a missing measurement, two neighbours are missing too.
-/// let src = Image::<u16, 1>::new(size, vec![10, 0, 12, 11, 0, 13, 0, 14, 15])?;
-/// let mut dst = Image::<u16, 1>::from_size_val(size, 0)?;
-/// median_blur_depth(&src, &mut dst, 3)?;
-/// // Valid samples around the centre: 10, 11, 12, 13, 14, 15 -> rank 3.
-/// assert_eq!(dst.as_slice()[4], 13);
-/// # Ok::<(), Box<dyn std::error::Error>>(())
-/// ```
-pub fn median_blur_depth<T: DepthPixel, const C: usize>(
-    src: &Image<T, C>,
-    dst: &mut Image<T, C>,
-    ksize: usize,
-) -> Result<(), ImageError> {
-    T::median_blur_depth_impl(src, dst, ksize)
-}
-
 /// Flag flying pixels: valid depth samples that disagree with the valid
 /// samples around them.
 ///
 /// For every valid pixel `d` ([`is_valid_depth_u16`] /
-/// [`is_valid_depth_f32`]), let `m` be the median of the valid samples in
-/// its 3×3 window (the pixel itself included, same median as
-/// [`median_blur_depth`] with `ksize = 3`) and `n` their count. The pixel is
+/// [`is_valid_depth_f32`]), let `n` be the number of valid samples in its
+/// 3×3 window (the pixel itself included) and `m` their median: with an
+/// even `n`, the upper median (rank `n / 2` of the sorted valid samples),
+/// so `m` is always one of the samples. The pixel is
 /// flagged (`255`) when
 ///
 /// * `n < min_valid` (too little support), or
@@ -337,29 +262,6 @@ fn check_threshold(name: &'static str, value: f32) -> Result<(), ImageError> {
 macro_rules! impl_depth_pixel {
     ($t:ty) => {
         impl DepthPixel for $t {
-            fn median_blur_depth_impl<const C: usize>(
-                src: &Image<$t, C>,
-                dst: &mut Image<$t, C>,
-                ksize: usize,
-            ) -> Result<(), ImageError> {
-                check_size(src, dst)?;
-                if ksize != 3 && ksize != 5 {
-                    return Err(ImageError::InvalidKernelLength(ksize, ksize));
-                }
-                crate::try_device!(src, dst, |stream| cuda_adapters::median_blur_depth(
-                    src, dst, ksize, stream
-                ));
-                let (w, h) = (src.cols(), src.rows());
-                kernels::median_blur_depth::<$t, C>(
-                    src.as_slice(),
-                    dst.as_slice_mut(),
-                    w,
-                    h,
-                    ksize,
-                );
-                Ok(())
-            }
-
             fn flying_pixel_mask_impl(
                 src: &Image<$t, 1>,
                 mask: &mut Image<u8, 1>,
@@ -427,24 +329,11 @@ mod cuda_adapters {
     use cudarc::driver::CudaStream;
     use kornia_image::{Image, ImageError};
 
-    use crate::cuda::depth::{
-        launch_flying_pixel_mask, launch_median_blur_depth, launch_remove_flagged, CudaDepthPixel,
-    };
+    use crate::cuda::depth::{launch_flying_pixel_mask, launch_remove_flagged, CudaDepthPixel};
     use crate::cuda::dispatch::{device_slices, is_device, untyped_device_err};
 
     fn err(e: impl std::fmt::Display) -> ImageError {
         ImageError::Cuda(e.to_string())
-    }
-
-    pub(super) fn median_blur_depth<T: CudaDepthPixel, const C: usize>(
-        src: &Image<T, C>,
-        dst: &mut Image<T, C>,
-        ksize: usize,
-        stream: &Arc<CudaStream>,
-    ) -> Result<(), ImageError> {
-        let ctx = stream.context();
-        let (s, d) = device_slices!(src, dst);
-        launch_median_blur_depth(ctx, stream, s, d, src.cols(), src.rows(), C, ksize).map_err(err)
     }
 
     pub(super) fn flying_pixel_mask<T: CudaDepthPixel>(

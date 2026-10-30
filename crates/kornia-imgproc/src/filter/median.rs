@@ -166,45 +166,6 @@ pub(crate) fn median25(v: &mut [u8; 25]) -> u8 {
     v[12]
 }
 
-/// Calls `$callback!($($arg)* [pairs])` with the 71-exchange median-of-25
-/// network on five sorted 5-sample columns (wire `col * 5 + rank`), so the
-/// literal list has one definition: it feeds [`MED25_SORTED_COLUMNS`] and
-/// the unrolled all-valid kernel of `depth::kernels`. Derived from Smith's
-/// 99-exchange [`NET25`] by greedy deletion; wire 12 is the exact median
-/// on every column-sorted input (zero-one principle, pinned in the tests).
-/// The NEON `u8` 5×5 kernel below is its hand-unrolled spelling.
-macro_rules! with_med25_sorted_columns {
-    ($callback:ident!($($arg:tt)*)) => {
-        $callback! { $($arg)* [
-            (9, 10), (8, 9), (14, 16), (14, 15), (2, 5), (3, 6), (0, 3), (4, 7),
-            (1, 4), (11, 14), (8, 11), (12, 15), (9, 15), (9, 12), (10, 16), (10, 13),
-            (17, 23), (17, 20), (18, 24), (18, 21), (19, 22), (8, 17), (9, 18), (0, 9),
-            (10, 19), (1, 19), (1, 10), (11, 20), (2, 20), (2, 11), (12, 21), (3, 21),
-            (3, 12), (13, 22), (4, 22), (4, 13), (5, 23), (5, 14), (6, 24), (6, 15),
-            (7, 16), (7, 19), (13, 21), (15, 23), (7, 13), (7, 15), (1, 9), (3, 11),
-            (5, 17), (11, 17), (9, 17), (4, 10), (6, 12), (7, 14), (4, 6), (4, 7),
-            (12, 14), (10, 14), (6, 7), (10, 12), (6, 10), (6, 17), (12, 17), (7, 17),
-            (7, 10), (12, 18), (7, 12), (10, 18), (12, 20), (10, 20), (10, 12),
-        ] }
-    };
-}
-pub(crate) use with_med25_sorted_columns;
-
-/// A literal pair list as an array expression.
-macro_rules! pair_array {
-    ([$(($a:literal, $b:literal)),* $(,)?]) => {
-        [$(($a, $b)),*]
-    };
-}
-
-/// The 71-exchange sorted-column median-of-25 network (see
-/// `with_med25_sorted_columns`): wire 12 holds the median of 25 samples
-/// arranged as five sorted columns.
-// Read by the tests and the CUDA depth code generator.
-#[cfg_attr(not(any(test, feature = "cuda")), allow(dead_code))]
-pub(crate) const MED25_SORTED_COLUMNS: [(usize, usize); 71] =
-    with_med25_sorted_columns!(pair_array!());
-
 /// Median blur for 8-bit images — byte-for-byte with
 /// `cv2.medianBlur(src, ksize)` and VPI's CUDA `MedianFilter` (the two are
 /// themselves bit-identical for these kernel sizes). `ksize` must be 3
@@ -1007,6 +968,79 @@ mod tests {
     #[test]
     fn reduced_net_exact_on_sorted_columns() {
         // Mirrors the NEON median5_row layout: idx = col*5 + rank.
+        const NET71: [(usize, usize); 71] = [
+            (9, 10),
+            (8, 9),
+            (14, 16),
+            (14, 15),
+            (2, 5),
+            (3, 6),
+            (0, 3),
+            (4, 7),
+            (1, 4),
+            (11, 14),
+            (8, 11),
+            (12, 15),
+            (9, 15),
+            (9, 12),
+            (10, 16),
+            (10, 13),
+            (17, 23),
+            (17, 20),
+            (18, 24),
+            (18, 21),
+            (19, 22),
+            (8, 17),
+            (9, 18),
+            (0, 9),
+            (10, 19),
+            (1, 19),
+            (1, 10),
+            (11, 20),
+            (2, 20),
+            (2, 11),
+            (12, 21),
+            (3, 21),
+            (3, 12),
+            (13, 22),
+            (4, 22),
+            (4, 13),
+            (5, 23),
+            (5, 14),
+            (6, 24),
+            (6, 15),
+            (7, 16),
+            (7, 19),
+            (13, 21),
+            (15, 23),
+            (7, 13),
+            (7, 15),
+            (1, 9),
+            (3, 11),
+            (5, 17),
+            (11, 17),
+            (9, 17),
+            (4, 10),
+            (6, 12),
+            (7, 14),
+            (4, 6),
+            (4, 7),
+            (12, 14),
+            (10, 14),
+            (6, 7),
+            (10, 12),
+            (6, 10),
+            (6, 17),
+            (12, 17),
+            (7, 17),
+            (7, 10),
+            (12, 18),
+            (7, 12),
+            (10, 18),
+            (12, 20),
+            (10, 20),
+            (10, 12),
+        ];
         for pattern in 0..6usize.pow(5) {
             let mut v = [0u8; 25];
             let mut ones = 0;
@@ -1019,7 +1053,7 @@ mod tests {
                 }
                 ones += t;
             }
-            for &(a, b) in MED25_SORTED_COLUMNS.iter() {
+            for &(a, b) in NET71.iter() {
                 let (lo, hi) = (v[a].min(v[b]), v[a].max(v[b]));
                 v[a] = lo;
                 v[b] = hi;

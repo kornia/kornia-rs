@@ -1,12 +1,10 @@
-//! Depth ops: valid-aware median blur and the flying-pixel mask, u16 and
-//! f32, CPU and (with `--features cuda`) device-resident CUDA.
-//!
-//! `bench_depth_baselines.py` times `cv2.medianBlur` on the same fixture
-//! (the mask has no third-party equivalent).
+//! Depth ops: the flying-pixel mask, u16 and f32, CPU and (with
+//! `--features cuda`) device-resident CUDA. The mask has no third-party
+//! equivalent to compare against.
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use kornia_image::{Image, ImageSize};
-use kornia_imgproc::depth::{flying_pixel_mask, median_blur_depth};
+use kornia_imgproc::depth::flying_pixel_mask;
 
 const SIZES: [(usize, usize); 2] = [(640, 480), (1280, 720)];
 
@@ -56,43 +54,6 @@ fn bench_depth(c: &mut Criterion) {
         let src = Image::<u16, 1>::new(size, depth).unwrap();
         let id = format!("{w}x{h}");
 
-        for ksize in [3usize, 5] {
-            let mut dst = Image::<u16, 1>::from_size_val(size, 0).unwrap();
-            group.bench_function(
-                BenchmarkId::new(format!("median_u16_k{ksize}_cpu"), &id),
-                |b| b.iter(|| std::hint::black_box(median_blur_depth(&src, &mut dst, ksize))),
-            );
-            let mut dst_f32 = Image::<f32, 1>::from_size_val(size, 0.0).unwrap();
-            group.bench_function(
-                BenchmarkId::new(format!("median_f32_k{ksize}_cpu"), &id),
-                |b| {
-                    b.iter(|| {
-                        std::hint::black_box(median_blur_depth(&src_f32, &mut dst_f32, ksize))
-                    })
-                },
-            );
-        }
-        // Hole-free input: the workload `cv2.medianBlur` sees (it has no
-        // invalid marker), so the two compare like for like.
-        let dense =
-            Image::<u16, 1>::new(size, src.as_slice().iter().map(|&d| d.max(1)).collect()).unwrap();
-        let dense_f32 = Image::<f32, 1>::new(size, depth_f32(dense.as_slice())).unwrap();
-        for ksize in [3usize, 5] {
-            let mut dst = Image::<u16, 1>::from_size_val(size, 0).unwrap();
-            group.bench_function(
-                BenchmarkId::new(format!("median_u16_k{ksize}_dense_cpu"), &id),
-                |b| b.iter(|| std::hint::black_box(median_blur_depth(&dense, &mut dst, ksize))),
-            );
-            let mut dst_f32 = Image::<f32, 1>::from_size_val(size, 0.0).unwrap();
-            group.bench_function(
-                BenchmarkId::new(format!("median_f32_k{ksize}_dense_cpu"), &id),
-                |b| {
-                    b.iter(|| {
-                        std::hint::black_box(median_blur_depth(&dense_f32, &mut dst_f32, ksize))
-                    })
-                },
-            );
-        }
         let mut mask = Image::<u8, 1>::from_size_val(size, 0).unwrap();
         group.bench_function(BenchmarkId::new("flying_mask_u16_cpu", &id), |b| {
             b.iter(|| std::hint::black_box(flying_pixel_mask(&src, &mut mask, 30.0, 0.02, 4)))
@@ -120,50 +81,17 @@ fn bench_depth(c: &mut Criterion) {
                     t.elapsed()
                 })
             };
-            let inputs = [
-                (
-                    "",
-                    src.to_cuda(&stream).unwrap(),
-                    src_f32.to_cuda(&stream).unwrap(),
-                ),
-                (
-                    "_dense",
-                    dense.to_cuda(&stream).unwrap(),
-                    dense_f32.to_cuda(&stream).unwrap(),
-                ),
-            ];
-            for (tag, d_src, d_src_f32) in &inputs {
-                for ksize in [3usize, 5] {
-                    let mut d_dst = Image::<u16, 1>::zeros_cuda(size, &stream).unwrap();
-                    group.bench_function(
-                        BenchmarkId::new(format!("median_u16_k{ksize}{tag}_cuda"), &id),
-                        |b| {
-                            queued(b, &mut || {
-                                median_blur_depth(d_src, &mut d_dst, ksize).unwrap()
-                            })
-                        },
-                    );
-                    let mut d_dst_f32 = Image::<f32, 1>::zeros_cuda(size, &stream).unwrap();
-                    group.bench_function(
-                        BenchmarkId::new(format!("median_f32_k{ksize}{tag}_cuda"), &id),
-                        |b| {
-                            queued(b, &mut || {
-                                median_blur_depth(d_src_f32, &mut d_dst_f32, ksize).unwrap()
-                            })
-                        },
-                    );
-                }
-            }
-            let (_, d_src, d_src_f32) = &inputs[0];
+            let d_src = src.to_cuda(&stream).unwrap();
+            let d_src_f32 = src_f32.to_cuda(&stream).unwrap();
             let mut d_mask = Image::<u8, 1>::zeros_cuda(size, &stream).unwrap();
             group.bench_function(BenchmarkId::new("flying_mask_u16_cuda", &id), |b| {
                 queued(b, &mut || {
-                    flying_pixel_mask(d_src, &mut d_mask, 30.0, 0.02, 4).unwrap()
+                    flying_pixel_mask(&d_src, &mut d_mask, 30.0, 0.02, 4).unwrap()
                 })
             });
             group.bench_function(BenchmarkId::new("flying_mask_f32_cuda", &id), |b| {
                 queued(b, &mut || {
-                    flying_pixel_mask(d_src_f32, &mut d_mask, 0.025, 0.02, 4).unwrap()
+                    flying_pixel_mask(&d_src_f32, &mut d_mask, 0.025, 0.02, 4).unwrap()
                 })
             });
         }

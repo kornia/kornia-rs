@@ -1,17 +1,16 @@
-//! CUDA kernels for the valid-aware depth median, the flying-pixel mask and
-//! flagged-pixel removal — twins of `depth/kernels.rs`.
+//! CUDA kernels for the flying-pixel mask and flagged-pixel removal — twins
+//! of `depth/kernels.rs`.
 //!
-//! One launch per op. A block owns a `tile_w(ksize) × TILE_H` output tile: its
-//! threads first sort the `ksize`-sample columns of the tile plus a
-//! `ksize / 2` apron into shared memory (each column once, shared by the
-//! `ksize` windows that contain it), synchronize, then run the rank-selection
-//! network on `ksize` adjacent sorted columns. A warp whose windows are all
-//! fully valid takes the plain-median network instead (a warp-uniform
-//! branch, so no divergence). The networks are code-generated from the
-//! const arrays the CPU uses (`COL3` / `COL5`, `RANK9` / `RANK25`,
-//! `filter::median::MED25_SORTED_COLUMNS`), keys and the flying-pixel test
-//! are the same expressions, and every selection is exact, so device and
-//! host results are bit-identical.
+//! One launch per op. The mask kernel's block owns a `tile_w(ksize) ×
+//! TILE_H` output tile: its threads first sort the `ksize`-sample columns of
+//! the tile plus a `ksize / 2` apron into shared memory (each column once,
+//! shared by the `ksize` windows that contain it), synchronize, then run
+//! the rank-selection network on `ksize` adjacent sorted columns. A warp
+//! whose windows are all fully valid takes the plain median of 9 instead (a
+//! warp-uniform branch, so no divergence). The networks are code-generated
+//! from the const arrays the CPU uses (`COL3`, `RANK9`), keys and the
+//! flying-pixel test are the same expressions, and every selection is
+//! exact, so device and host results are bit-identical.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -22,8 +21,7 @@ use cudarc::driver::{
 use kornia_tensor::CudaKernel;
 
 use super::try_compile_with_l1;
-use crate::depth::kernels::{COL3, COL5, FLYING_KSIZE, MASK_FLAGGED, RANK25, RANK9};
-use crate::filter::median::MED25_SORTED_COLUMNS;
+use crate::depth::kernels::{COL3, FLYING_KSIZE, MASK_FLAGGED, RANK9};
 
 /// Threads per tile row: one warp (the warp-uniform fast path relies on
 /// it). Each thread sorts exactly one column of the tile plus apron, so a
@@ -92,7 +90,8 @@ fn net_src(net: &[(usize, usize)], v: &str) -> String {
 
 /// `median_tile(src, w, h, c, &n)`: the shared-memory two-pass median of
 /// the calling thread's pixel `(blockIdx.x * tile_w + threadIdx.x,
-/// blockIdx.y * TILE_H + threadIdx.y)`, channel `c` of `channels`; returns
+/// blockIdx.y * TILE_H + threadIdx.y)`, channel `c` of `channels`, for the
+/// 3×3 window (`ksize` is [`FLYING_KSIZE`]); returns
 /// the rank-`n / 2` key, `n` = valid tap count. Every thread of the block
 /// must call it (it synchronizes), including those outside the image and
 /// the apron threads `threadIdx.x >= tile_w` (whose result is discarded).
@@ -103,17 +102,10 @@ fn median_fn_src(ksize: usize, channels: usize) -> String {
     let span = WARP as usize;
     let tile_w = tile_w(ksize);
     let last = tile_w - 1;
-    let col_net = net_src(if ksize == 3 { COL3 } else { COL5 }, "v");
-    let rank_net = net_src(if ksize == 3 { RANK9 } else { RANK25 }, "v");
-    let median = if ksize == 3 {
-        // med3(max(lows), med3(mids), min(highs)) on sorted columns.
-        "        m = med3(max(max(v[0], v[3]), v[6]), med3(v[1], v[4], v[7]), min(min(v[2], v[5]), v[8]));\n".to_string()
-    } else {
-        format!(
-            "{}        m = v[{half}];\n",
-            net_src(&MED25_SORTED_COLUMNS, "v")
-        )
-    };
+    let col_net = net_src(COL3, "v");
+    let rank_net = net_src(RANK9, "v");
+    // med3(max(lows), med3(mids), min(highs)) on sorted columns.
+    let median = "        m = med3(max(max(v[0], v[3]), v[6]), med3(v[1], v[4], v[7]), min(min(v[2], v[5]), v[8]));\n";
     format!(
         r#"
 __device__ __forceinline__ T med3(T a, T b, T c) {{
@@ -178,7 +170,6 @@ __device__ __forceinline__ T median_tile(
 
 #[derive(Clone, Copy, Hash, PartialEq, Eq)]
 enum Kind {
-    Median { ksize: usize, channels: usize },
     FlyingMask,
     RemoveFlagged,
 }
@@ -187,29 +178,6 @@ fn kernel_src<T: CudaDepthPixel>(kind: Kind) -> (String, String) {
     let tag = T::TAG;
     let prelude = T::PRELUDE;
     match kind {
-        Kind::Median { ksize, channels } => {
-            let name = format!("median_depth_{tag}_{ksize}x{ksize}_c{channels}");
-            let helper = median_fn_src(ksize, channels);
-            let tile_w = tile_w(ksize);
-            let src = format!(
-                r#"{prelude}{helper}
-extern "C" __global__ void {name}(
-    const T* __restrict__ src, T* __restrict__ dst, int w, int h
-) {{
-    int x = blockIdx.x * {tile_w} + threadIdx.x;
-    int y = blockIdx.y * blockDim.y + threadIdx.y;
-    bool out = threadIdx.x < {tile_w} && x < w && y < h;
-    // No early return: every thread takes part in the tile's barriers.
-    for (int c = 0; c < {channels}; ++c) {{
-        int n;
-        T m = median_tile(src, w, h, c, &n);
-        if (out) dst[(y * w + x) * {channels} + c] = n == 0 ? invalid_value() : m;
-    }}
-}}
-"#
-            );
-            (name, src)
-        }
         Kind::FlyingMask => {
             let name = format!("flying_pixel_mask_{tag}");
             let helper = median_fn_src(FLYING_KSIZE, 1);
@@ -282,7 +250,7 @@ fn get_kernel<T: CudaDepthPixel>(
     // the driver. The elementwise kernel prefers L1.
     let kernel = match kind {
         Kind::RemoveFlagged => try_compile_with_l1(ctx, &src, &name),
-        Kind::Median { .. } | Kind::FlyingMask => CudaKernel::compile(ctx, &src, &name)
+        Kind::FlyingMask => CudaKernel::compile(ctx, &src, &name)
             .map_err(|e| format!("failed to compile {name}: {e}")),
     }
     .map_err(CudaDepthError::Cuda)?;
@@ -316,43 +284,6 @@ fn dims_i32(width: usize, height: usize) -> Result<(i32, i32), CudaDepthError> {
     let w = i32::try_from(width).map_err(|_| CudaDepthError::Cuda("width exceeds i32".into()))?;
     let h = i32::try_from(height).map_err(|_| CudaDepthError::Cuda("height exceeds i32".into()))?;
     Ok((w, h))
-}
-
-/// Valid-aware median blur on device; same contract as
-/// [`crate::depth::median_blur_depth`]. `ksize` must be 3 or 5.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn launch_median_blur_depth<T: CudaDepthPixel>(
-    ctx: &Arc<CudaContext>,
-    stream: &Arc<CudaStream>,
-    src: &CudaSlice<T>,
-    dst: &mut CudaSlice<T>,
-    width: usize,
-    height: usize,
-    channels: usize,
-    ksize: usize,
-) -> Result<(), CudaDepthError> {
-    if ksize != 3 && ksize != 5 {
-        return Err(CudaDepthError::Cuda("ksize must be 3 or 5".into()));
-    }
-    if !(1..=4).contains(&channels) {
-        return Err(CudaDepthError::Cuda("channels must be in 1..=4".into()));
-    }
-    if is_empty(width, height) {
-        return Ok(());
-    }
-    let (w, h) = dims_i32(width, height)?;
-    CudaDepthError::check_slice("src", src.len(), width * height * channels)?;
-    CudaDepthError::check_slice("dst", dst.len(), width * height * channels)?;
-    let kernel = get_kernel::<T>(ctx, Kind::Median { ksize, channels })?;
-    let cfg = tile_config(w as u32, h as u32, ksize);
-    kernel
-        .launch_builder(stream)
-        .arg(src)
-        .arg(dst)
-        .arg(&w)
-        .arg(&h)
-        .launch_cfg(cfg)
-        .map_err(|e| CudaDepthError::Cuda(e.to_string()))
 }
 
 /// Flying-pixel mask on device; same contract as
