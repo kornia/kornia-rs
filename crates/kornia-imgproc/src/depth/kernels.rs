@@ -31,6 +31,12 @@ use rayon::prelude::*;
 /// Window side of the flying-pixel test.
 pub(crate) const FLYING_KSIZE: usize = 3;
 
+/// Samples per window.
+const TAPS: usize = FLYING_KSIZE * FLYING_KSIZE;
+
+/// Window radius: padding columns on each side of a [`Columns`] row.
+const R: usize = FLYING_KSIZE / 2;
+
 /// Value written to the mask for a flagged pixel.
 pub(crate) const MASK_FLAGGED: u8 = 255;
 
@@ -152,7 +158,7 @@ pub(crate) trait DepthRepr: Copy + Send + Sync + 'static {
     /// The value that marks a missing measurement.
     const INVALID: Self;
     /// Lanes per block of the portable kernel.
-    const LANES3: usize;
+    const LANES: usize;
     /// True when the sample is a measurement: the public rule
     /// ([`super::is_valid_depth_u16`] / [`super::is_valid_depth_f32`]).
     fn is_valid(self) -> bool;
@@ -183,9 +189,9 @@ pub(crate) struct FlyingRule {
 impl DepthRepr for u16 {
     type Key = u16;
     const INVALID: u16 = 0;
-    // Portable-kernel block widths: 9 or 25 wires of `L` keys stay within
-    // the vector register file.
-    const LANES3: usize = 16;
+    // Portable-kernel block widths: 9 wires of `L` keys stay within the
+    // vector register file.
+    const LANES: usize = 16;
     #[inline(always)]
     fn is_valid(self) -> bool {
         super::is_valid_depth_u16(self)
@@ -218,14 +224,14 @@ impl DepthRepr for u16 {
         f32::from(self)
     }
     fn flying_mask(src: &[u16], mask: &mut [u8], w: usize, h: usize, rule: FlyingRule) {
-        flying_mask_ks::<u16, { u16::LANES3 }>(src, mask, w, h, rule, simd_flying_row::<u16>());
+        flying_mask_lanes::<u16, { u16::LANES }>(src, mask, w, h, rule, simd_flying_row::<u16>());
     }
 }
 
 impl DepthRepr for f32 {
     type Key = f32;
     const INVALID: f32 = f32::NAN;
-    const LANES3: usize = 8;
+    const LANES: usize = 8;
     #[inline(always)]
     fn is_valid(self) -> bool {
         super::is_valid_depth_f32(self)
@@ -263,14 +269,14 @@ impl DepthRepr for f32 {
         self
     }
     fn flying_mask(src: &[f32], mask: &mut [u8], w: usize, h: usize, rule: FlyingRule) {
-        flying_mask_ks::<f32, { f32::LANES3 }>(src, mask, w, h, rule, simd_flying_row::<f32>());
+        flying_mask_lanes::<f32, { f32::LANES }>(src, mask, w, h, rule, simd_flying_row::<f32>());
     }
 }
 
-/// Sorted columns of one output row's window rows, for one channel.
+/// Sorted columns of one output row's window rows.
 ///
 /// Rank `r` of padded column `p` lives at `rank[r * stride + p]`, its valid
-/// count at `count[p]`; padded column `p` is image column `p - ksize / 2`,
+/// count at `count[p]`; padded column `p` is image column `p - R`,
 /// replicated beyond the image edges.
 struct Columns<K> {
     rank: Vec<K>,
@@ -279,48 +285,36 @@ struct Columns<K> {
 }
 
 impl<K: Copy> Columns<K> {
-    fn new(w: usize, ksize: usize, fill: K) -> Self {
-        // Horizontal blocks start below `w` and read `L + ksize - 1`
-        // padded columns, `L` dividing `MAX_LANES`.
-        let stride = w.div_ceil(MAX_LANES) * MAX_LANES + ksize;
+    fn new(w: usize, fill: K) -> Self {
+        // Horizontal blocks start below `w` and read `L + 2 * R` padded
+        // columns, `L` dividing `MAX_LANES`.
+        let stride = w.div_ceil(MAX_LANES) * MAX_LANES + 2 * R;
         Self {
-            rank: vec![fill; stride * ksize],
+            rank: vec![fill; stride * FLYING_KSIZE],
             count: vec![0; stride],
             stride,
         }
     }
 }
 
-/// `[T; B]` of channel `c` starting at column `x` of an interleaved row.
-#[inline(always)]
-fn load<T: Copy, const C: usize, const B: usize>(row: &[T], x: usize, c: usize) -> [T; B] {
-    if C == 1 {
-        let s = &row[x..x + B];
-        std::array::from_fn(|l| s[l])
-    } else {
-        std::array::from_fn(|l| row[(x + l) * C + c])
-    }
-}
-
 /// Vertical pass for columns `x..x + B`.
 #[inline(always)]
-fn sort_block<T: DepthRepr, const C: usize, const KS: usize, const B: usize>(
-    rows: &[&[T]; KS],
+fn sort_block<T: DepthRepr, const B: usize>(
+    rows: &[&[T]; FLYING_KSIZE],
     x: usize,
-    c: usize,
     cols: &mut Columns<T::Key>,
 ) {
-    let mut v = [Lanes::<T, B>([T::INVALID.key(); B]); KS];
+    let mut v = [Lanes::<T, B>([T::INVALID.key(); B]); FLYING_KSIZE];
     let mut n = [0u16; B];
     for (wire, row) in v.iter_mut().zip(rows) {
-        let s = load::<T, C, B>(row, x, c);
+        let s = &row[x..x + B];
         for l in 0..B {
             n[l] += u16::from(s[l].is_valid());
             wire.0[l] = s[l].key();
         }
     }
     sort_col3(&mut v);
-    let p = x + KS / 2;
+    let p = x + R;
     for (r, wire) in v.iter().enumerate() {
         let o = r * cols.stride + p;
         cols.rank[o..o + B].copy_from_slice(&wire.0);
@@ -328,60 +322,59 @@ fn sort_block<T: DepthRepr, const C: usize, const KS: usize, const B: usize>(
     cols.count[p..p + B].copy_from_slice(&n);
 }
 
-/// Vertical pass for a whole row (channel `c`), plus replicate padding.
+/// Vertical pass for a whole row, plus replicate padding.
 #[inline(always)]
-fn sort_columns<T: DepthRepr, const C: usize, const KS: usize>(
+fn sort_columns<T: DepthRepr>(
     src: &[T],
     w: usize,
-    sy: &[usize; KS],
-    c: usize,
+    sy: &[usize; FLYING_KSIZE],
     cols: &mut Columns<T::Key>,
 ) {
-    let rows: [&[T]; KS] = std::array::from_fn(|i| &src[sy[i] * w * C..(sy[i] + 1) * w * C]);
+    let rows: [&[T]; FLYING_KSIZE] = std::array::from_fn(|i| &src[sy[i] * w..(sy[i] + 1) * w]);
     let mut x = 0;
     while x + COL_BLOCK <= w {
-        sort_block::<T, C, KS, COL_BLOCK>(&rows, x, c, cols);
+        sort_block::<T, COL_BLOCK>(&rows, x, cols);
         x += COL_BLOCK;
     }
     while x < w {
-        sort_block::<T, C, KS, 1>(&rows, x, c, cols);
+        sort_block::<T, 1>(&rows, x, cols);
         x += 1;
     }
-    pad_columns(cols, w, KS / 2);
+    pad_columns(cols, w);
 }
 
-/// Replicate the edge columns into the `r` padding columns on each side.
+/// Replicate the edge columns into the `R` padding columns on each side.
 #[inline(always)]
-fn pad_columns<K: Copy>(cols: &mut Columns<K>, w: usize, r: usize) {
+fn pad_columns<K: Copy>(cols: &mut Columns<K>, w: usize) {
     let stride = cols.stride;
     for rank in cols.rank.chunks_exact_mut(stride) {
-        let (first, last) = (rank[r], rank[w + r - 1]);
-        rank[..r].fill(first);
-        rank[w + r..w + 2 * r].fill(last);
+        let (first, last) = (rank[R], rank[w + R - 1]);
+        rank[..R].fill(first);
+        rank[w + R..w + 2 * R].fill(last);
     }
-    let (first, last) = (cols.count[r], cols.count[w + r - 1]);
-    cols.count[..r].fill(first);
-    cols.count[w + r..w + 2 * r].fill(last);
+    let (first, last) = (cols.count[R], cols.count[w + R - 1]);
+    cols.count[..R].fill(first);
+    cols.count[w + R..w + 2 * R].fill(last);
 }
 
 /// Horizontal pass: rank-`n / 2` key and valid count `n` of the windows
 /// centred on columns `x0..x0 + L`.
 #[inline(always)]
-fn window_medians<T: DepthRepr, const KS: usize, const TAPS: usize, const L: usize>(
+fn window_medians<T: DepthRepr, const L: usize>(
     cols: &Columns<T::Key>,
     x0: usize,
 ) -> ([T::Key; L], [u16; L]) {
     let mut v = [Lanes::<T, L>([T::INVALID.key(); L]); TAPS];
     let mut n = [0u16; L];
-    for dc in 0..KS {
+    for dc in 0..FLYING_KSIZE {
         let cs = &cols.count[x0 + dc..x0 + dc + L];
         for l in 0..L {
             n[l] += cs[l];
         }
-        for r in 0..KS {
+        for r in 0..FLYING_KSIZE {
             let o = r * cols.stride + x0 + dc;
             let s = &cols.rank[o..o + L];
-            v[dc * KS + r] = Lanes(std::array::from_fn(|l| s[l]));
+            v[dc * FLYING_KSIZE + r] = Lanes(std::array::from_fn(|l| s[l]));
         }
     }
     rank9(&mut v);
@@ -398,8 +391,8 @@ fn window_medians<T: DepthRepr, const KS: usize, const TAPS: usize, const L: usi
 
 /// Source row indices of the window around `y`, replicate border.
 #[inline(always)]
-fn window_rows<const KS: usize>(y: usize, h: usize) -> [usize; KS] {
-    std::array::from_fn(|i| (y + i).saturating_sub(KS / 2).min(h - 1))
+fn window_rows(y: usize, h: usize) -> [usize; FLYING_KSIZE] {
+    std::array::from_fn(|i| (y + i).saturating_sub(R).min(h - 1))
 }
 
 /// Minimum rows per rayon task.
@@ -438,12 +431,10 @@ fn flying_row<T: DepthRepr, const L: usize>(
     rule: FlyingRule,
     cols: &mut Columns<T::Key>,
 ) {
-    const KS: usize = FLYING_KSIZE;
-    let sy = window_rows::<KS>(y, h);
-    sort_columns::<T, 1, KS>(src, w, &sy, 0, cols);
+    sort_columns(src, w, &window_rows(y, h), cols);
     let srow = &src[y * w..(y + 1) * w];
     for x0 in (0..w).step_by(L) {
-        let (m, n) = window_medians::<T, KS, { KS * KS }, L>(cols, x0);
+        let (m, n) = window_medians::<T, L>(cols, x0);
         let lanes = L.min(w - x0);
         for l in 0..lanes {
             let d = srow[x0 + l];
@@ -477,7 +468,7 @@ unsafe fn flying_row_avx2<T: DepthRepr, const L: usize>(
 
 /// Flying-pixel mask, `L`-lane blocks; rows go to `simd` when it covers
 /// them, else to the portable [`flying_row`].
-fn flying_mask_ks<T: DepthRepr, const L: usize>(
+fn flying_mask_lanes<T: DepthRepr, const L: usize>(
     src: &[T],
     mask: &mut [u8],
     w: usize,
@@ -489,7 +480,7 @@ fn flying_mask_ks<T: DepthRepr, const L: usize>(
         .enumerate()
         .with_min_len(min_rows(h))
         .for_each_init(
-            || Columns::new(w, FLYING_KSIZE, T::INVALID.key()),
+            || Columns::new(w, T::INVALID.key()),
             |cols, (y, mrow)| {
                 if simd.is_some_and(|f| f(src, mrow, w, h, y, rule, cols)) {
                     return;
@@ -563,7 +554,10 @@ impl SimdDepth for f32 {}
 mod neon {
     use std::arch::aarch64::*;
 
-    use super::{med9, pad_columns, rank9, sort_col3, Columns, DepthRepr, Exchange, FlyingRule};
+    use super::{
+        med9, pad_columns, rank9, sort_col3, window_rows, Columns, DepthRepr, Exchange, FlyingRule,
+        FLYING_KSIZE, R, TAPS,
+    };
 
     /// `u16x8` sort keys.
     #[derive(Clone, Copy)]
@@ -630,7 +624,7 @@ mod neon {
         /// `p` is valid for writing `W` counts.
         unsafe fn st_n(p: *mut u16, n: Self::N);
         /// Lane-wise `v[n / 2]` for `n <= TAPS`.
-        fn select<const TAPS: usize>(v: &[Self::V; TAPS], n: Self::N) -> Self::V;
+        fn select(v: &[Self::V; TAPS], n: Self::N) -> Self::V;
         /// Flying-pixel flags of the `W` samples at `d` against median keys
         /// `m` and valid counts `n`, written as `W` mask bytes.
         ///
@@ -691,7 +685,7 @@ mod neon {
             vst1q_u16(p, n)
         }
         #[inline(always)]
-        fn select<const TAPS: usize>(v: &[U16x8; TAPS], n: uint16x8_t) -> U16x8 {
+        fn select(v: &[U16x8; TAPS], n: uint16x8_t) -> U16x8 {
             // SAFETY: NEON is architectural on aarch64; register-only ops.
             unsafe {
                 let k = vshrq_n_u16::<1>(n);
@@ -720,7 +714,7 @@ mod neon {
                 far(vget_low_u16(diff), vget_low_u16(d)),
                 far(vget_high_u16(diff), vget_high_u16(d)),
             );
-            // Counts are <= 25; a larger `min_valid` flags every valid lane
+            // Counts are <= TAPS; a larger `min_valid` flags every valid lane
             // either way.
             let min_valid = rule.min_valid.min(usize::from(u16::MAX)) as u16;
             let few = vcltq_u16(n, vdupq_n_u16(min_valid));
@@ -793,7 +787,7 @@ mod neon {
             vst1_u16(p, n)
         }
         #[inline(always)]
-        fn select<const TAPS: usize>(v: &[F32x4; TAPS], n: uint16x4_t) -> F32x4 {
+        fn select(v: &[F32x4; TAPS], n: uint16x4_t) -> F32x4 {
             // SAFETY: NEON is architectural on aarch64; register-only ops.
             unsafe {
                 let k = vmovl_u16(vshr_n_u16::<1>(n));
@@ -830,15 +824,14 @@ mod neon {
     /// # Safety
     ///
     /// `src` holds `h * w` samples, `sy` are rows `< h`, `w >= T::W`, and
-    /// `cols` was built for width `w` and window `KS`.
+    /// `cols` was built for width `w`.
     #[inline(always)]
-    unsafe fn sort_columns<T: NeonDepth, const KS: usize>(
+    unsafe fn sort_columns<T: NeonDepth>(
         src: &[T],
         w: usize,
-        sy: &[usize; KS],
+        sy: &[usize; FLYING_KSIZE],
         cols: &mut Columns<T::Key>,
     ) {
-        let r = KS / 2;
         let stride = cols.stride;
         let rank = cols.rank.as_mut_ptr();
         let count = cols.count.as_mut_ptr();
@@ -848,7 +841,7 @@ mod neon {
             // past the row end; recomputing columns is idempotent.
             let xs = x.min(w - T::W);
             let mut n = T::n_zero();
-            let mut v = [T::v_fill(); KS];
+            let mut v = [T::v_fill(); FLYING_KSIZE];
             for (wire, &row) in v.iter_mut().zip(sy) {
                 let (k, n2) = T::load_src(src.as_ptr().add(row * w + xs), n);
                 *wire = k;
@@ -856,12 +849,12 @@ mod neon {
             }
             sort_col3(&mut v);
             for (i, &wire) in v.iter().enumerate() {
-                T::st_key(rank.add(i * stride + xs + r), wire);
+                T::st_key(rank.add(i * stride + xs + R), wire);
             }
-            T::st_n(count.add(xs + r), n);
+            T::st_n(count.add(xs + R), n);
             x += T::W;
         }
-        pad_columns(cols, w, r);
+        pad_columns(cols, w);
     }
 
     /// Horizontal pass: rank-`n / 2` keys and valid counts of the windows
@@ -871,26 +864,22 @@ mod neon {
     ///
     /// `x0 < w` for the width `cols` was built for.
     #[inline(always)]
-    unsafe fn window<T: NeonDepth, const KS: usize, const TAPS: usize>(
-        cols: &Columns<T::Key>,
-        x0: usize,
-    ) -> (T::V, T::N) {
+    unsafe fn window<T: NeonDepth>(cols: &Columns<T::Key>, x0: usize) -> (T::V, T::N) {
         let stride = cols.stride;
         let rank = cols.rank.as_ptr();
         let count = cols.count.as_ptr();
         let mut v = [T::v_fill(); TAPS];
         let mut n = T::n_zero();
-        for dc in 0..KS {
+        for dc in 0..FLYING_KSIZE {
             n = T::n_add(n, T::ld_n(count.add(x0 + dc)));
-            for r in 0..KS {
-                v[dc * KS + r] = T::ld_key(rank.add(r * stride + x0 + dc));
+            for r in 0..FLYING_KSIZE {
+                v[dc * FLYING_KSIZE + r] = T::ld_key(rank.add(r * stride + x0 + dc));
             }
         }
         // Fully valid windows (the common case away from holes) only need
         // the plain median, rank `TAPS / 2`; same value, fewer exchanges.
         if T::all_eq(n, TAPS as u16) {
-            let w9: [T::V; 9] = std::array::from_fn(|i| v[i]);
-            return (med9(&w9), n);
+            return (med9(&v), n);
         }
         rank9(&mut v);
         (T::select(&v, n), n)
@@ -910,20 +899,19 @@ mod neon {
         if w < T::W {
             return false;
         }
-        const KS: usize = super::FLYING_KSIZE;
-        let sy = super::window_rows::<KS>(y, h);
+        let sy = window_rows(y, h);
         // SAFETY: `src` is the `h × w` image, `sy` rows are `< h` and
-        // `w >= T::W`; `cols` (built for `w`, `KS`) is padded for the
+        // `w >= T::W`; `cols` (built for `w`) is padded for the
         // horizontal reads; the mask row and source row `y` hold `w`
         // entries and every block reads / writes `T::W` of them from
         // `x0 <= w - T::W`.
         unsafe {
-            sort_columns::<T, KS>(src, w, &sy, cols);
+            sort_columns(src, w, &sy, cols);
             let srow = src.as_ptr().add(y * w);
             let mut x = 0;
             while x < w {
                 let x0 = x.min(w - T::W);
-                let (m, n) = window::<T, KS, { KS * KS }>(cols, x0);
+                let (m, n) = window::<T>(cols, x0);
                 T::st_flags(mrow.as_mut_ptr().add(x0), srow.add(x0), m, n, rule);
                 x += T::W;
             }
@@ -1093,22 +1081,20 @@ mod tests {
         }
     }
 
-    /// Valid samples (in window order) of the `ksize × ksize` replicate-border
-    /// window around `(x, y)`, channel `c`: the scalar reference no network
-    /// takes part in.
-    fn window_valid<T: TestDepth, const C: usize>(
+    /// Valid samples of the 3×3 replicate-border window around `(x, y)`,
+    /// sorted: the scalar reference no network takes part in.
+    fn window_valid<T: TestDepth>(
         src: &[T],
         (w, h): (usize, usize),
-        (x, y, c): (usize, usize, usize),
-        ksize: usize,
+        (x, y): (usize, usize),
     ) -> Vec<T> {
-        let r = (ksize / 2) as isize;
+        let r = R as isize;
         let mut valid = Vec::new();
         for dy in -r..=r {
             for dx in -r..=r {
                 let sy = (y as isize + dy).clamp(0, h as isize - 1) as usize;
                 let sx = (x as isize + dx).clamp(0, w as isize - 1) as usize;
-                let v = src[(sy * w + sx) * C + c];
+                let v = src[sy * w + sx];
                 if v.is_valid() {
                     valid.push(v);
                 }
@@ -1129,7 +1115,7 @@ mod tests {
                 if !d.is_valid() {
                     continue;
                 }
-                let valid = window_valid::<T, 1>(src, (w, h), (x, y, 0), FLYING_KSIZE);
+                let valid = window_valid(src, (w, h), (x, y));
                 let m = valid[valid.len() / 2];
                 let threshold = rule.abs_threshold.max(rule.rel_threshold * d.as_f32());
                 if valid.len() < rule.min_valid || T::abs_diff_f32(d, m) > threshold {
@@ -1144,13 +1130,13 @@ mod tests {
     /// row (a SIMD kernel below its minimum width).
     fn run_rows<T: DepthRepr, O: Copy>(
         src: &[T],
-        (w, h, row_len, ksize): (usize, usize, usize, usize),
+        (w, h): (usize, usize),
         poison: O,
         mut row: impl FnMut(&[T], &mut [O], usize, &mut Columns<T::Key>) -> bool,
     ) -> Option<Vec<O>> {
-        let mut out = vec![poison; row_len * h];
-        let mut cols = Columns::new(w, ksize, T::INVALID.key());
-        for (y, orow) in out.chunks_mut(row_len).enumerate() {
+        let mut out = vec![poison; w * h];
+        let mut cols = Columns::new(w, T::INVALID.key());
+        for (y, orow) in out.chunks_mut(w).enumerate() {
             if !row(src, orow, y, &mut cols) {
                 return None;
             }
@@ -1183,7 +1169,7 @@ mod tests {
                 let want = scalar_flying(&src, w, h, rule);
                 flagged += want.iter().filter(|&&v| v != 0).count();
                 let ctx = format!("{} {w}x{h} rule {j}", std::any::type_name::<T>());
-                let dims = (w, h, w, FLYING_KSIZE);
+                let dims = (w, h);
                 const POISON: u8 = 7;
 
                 let got = run_rows(&src, dims, POISON, |s, m, y, cols| {
@@ -1233,8 +1219,8 @@ mod tests {
         // u16 samples are 1..=64, f32 samples 1.0..=4.75: scale the
         // absolute thresholds so both flag a fair share of pixels.
         let runs = [
-            check_flying_paths::<u16, { u16::LANES3 }>(4.0),
-            check_flying_paths::<f32, { f32::LANES3 }>(0.25),
+            check_flying_paths::<u16, { u16::LANES }>(4.0),
+            check_flying_paths::<f32, { f32::LANES }>(0.25),
         ];
         // The fixtures must flag something, or the comparison is vacuous.
         assert!(runs.iter().all(|&(_, flagged)| flagged > 0), "{runs:?}");

@@ -176,6 +176,32 @@ fn invalidate_masked_depth_device_equals_host() -> TestResult {
     Ok(())
 }
 
+/// A mask on another stream is fenced both ways: the removal waits for the
+/// mask, and a later write to the mask on its own stream waits for the
+/// removal, so `dst` reflects the mask as it was at the call.
+#[test]
+fn invalidate_masked_depth_fences_a_mask_on_another_stream() -> TestResult {
+    let ctx = cudarc::driver::CudaContext::new(0)?;
+    let (launch, mask_stream) = (ctx.new_stream()?, ctx.new_stream()?);
+    let (w, h) = (1280, 720);
+    let src = Image::<u16, 1>::new(sz(w, h), depth_u16(w, h, 1, 11))?;
+    let mut mask = Image::<u8, 1>::from_size_val(src.size(), 0)?;
+    flying_pixel_mask(&src, &mut mask, 30.0, 0.0, 4)?;
+    let mut cpu = Image::<u16, 1>::from_size_val(src.size(), 0)?;
+    invalidate_masked_depth(&src, &mask, &mut cpu)?;
+
+    let d_src = src.to_cuda(&launch)?;
+    let d_mask_src = src.to_cuda(&mask_stream)?;
+    let mut d_mask = mask.to_cuda(&mask_stream)?;
+    let mut d_dst = Image::<u16, 1>::zeros_cuda(src.size(), &launch)?;
+    invalidate_masked_depth(&d_src, &d_mask, &mut d_dst)?;
+    // Rewrite the mask on its own stream right away: `min_valid` above 9
+    // flags every valid pixel, a different mask from the one used above.
+    flying_pixel_mask(&d_mask_src, &mut d_mask, 30.0, 0.0, 10)?;
+    assert_eq!(d_dst.to_host_owned()?.as_slice(), cpu.as_slice());
+    Ok(())
+}
+
 #[test]
 fn empty_device_images_are_a_no_op() -> TestResult {
     let stream = default_stream();
