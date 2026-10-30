@@ -233,7 +233,8 @@ impl FastDetector {
                 // scratch and convert lane-by-lane (zeroing lanes that fail
                 // the arc check).
                 #[cfg(target_arch = "aarch64")]
-                if use_neon {
+                // FAST-9 only: other arc lengths use the scalar score.
+                if use_neon && n == 9 {
                     let scale = 1.0f32 / 255.0;
                     let mut scratch = [0u16; 16];
                     unsafe {
@@ -261,7 +262,8 @@ impl FastDetector {
                 }
 
                 #[cfg(target_arch = "x86_64")]
-                if use_avx2 {
+                // FAST-9 only: other arc lengths use the scalar score.
+                if use_avx2 && n == 9 {
                     let scale = 1.0f32 / 255.0;
                     let mut scratch = [0u16; 16];
                     unsafe {
@@ -488,6 +490,17 @@ pub fn fast_detect_rows_u8_serial(
     fast_detect_rows_u8_impl(src, threshold, arc_length, border, rows, false)
 }
 
+/// Shared body of [`fast_detect_rows_u8`] (`parallel = true`, rows split
+/// across rayon) and [`fast_detect_rows_u8_serial`] (`parallel = false`).
+///
+/// Scans `rows`, clamped to the valid area given by `border` (at least 3, the
+/// radius of the FAST ring), and returns `([y, x], score)` for each corner.
+/// The score is the FAST-9 `cornerScore` for `arc_length == 9` and the sum of
+/// absolute differences otherwise, both scaled by `1 / 255`. The AVX2/NEON
+/// 16-pixel block implements FAST-9 only, so it runs only for
+/// `arc_length == 9`; other arc lengths use the scalar path. On the SIMD path,
+/// images 800 px wide and up also get an in-block local-maximum candidate
+/// filter, so they can return fewer corners than the scalar reference.
 fn fast_detect_rows_u8_impl(
     src: &Image<u8, 1>,
     threshold: f32,
@@ -540,7 +553,7 @@ fn fast_detect_rows_u8_impl(
         let mut x = margin;
 
         #[cfg(target_arch = "aarch64")]
-        if use_neon {
+        if use_neon && n == 9 {
             let mut scratch = [0u16; 16];
             let scale = 1.0f32 / 255.0;
             unsafe {
@@ -579,7 +592,7 @@ fn fast_detect_rows_u8_impl(
         }
 
         #[cfg(target_arch = "x86_64")]
-        if use_avx2 {
+        if use_avx2 && n == 9 {
             let mut scratch = [0u16; 16];
             let scale = 1.0f32 / 255.0;
             unsafe {
@@ -723,14 +736,14 @@ fn fast_score_scalar(
     // follows the canonical FAST-9 score. For other arc lengths fall back to
     // the sum-of-absdiffs score; only the n=9 case is used by ORB in practice.
     if n == 9 {
-        return corner_score_9_scalar(src_slice, src_ix, ring) as f32 / 255.0;
+        return corner_score_9_scalar(src_slice, src_ix, ring) as f32 * (1.0f32 / 255.0);
     }
 
     let mut acc: u32 = 0;
     for &v in &ring_vals {
         acc += (v as i32 - curr_pixel as i32).unsigned_abs();
     }
-    acc as f32 / 255.0
+    acc as f32 * (1.0f32 / 255.0)
 }
 
 /// Process 16 consecutive pixels at once using NEON.
@@ -1202,6 +1215,54 @@ mod tests {
     use kornia_image::Image;
     use kornia_io::jpeg::read_image_jpeg_rgb8;
     use std::collections::HashSet;
+
+    /// `fast_detect_rows_u8` must agree with the per-pixel scalar reference for
+    /// every arc length: the AVX2/NEON block path is FAST-9 only, so other arc
+    /// lengths must not take it.
+    #[test]
+    fn fast_detect_rows_u8_matches_scalar_per_arc_length() {
+        let (width, height) = (97usize, 61usize);
+        let mut state = 0x1234_5678u32;
+        let data: Vec<u8> = (0..width * height)
+            .map(|_| {
+                state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+                (state >> 24) as u8
+            })
+            .collect();
+        let img = Image::new([width, height].into(), data).unwrap();
+        const RP: [isize; 16] = [0, 1, 2, 3, 3, 3, 2, 1, 0, -1, -2, -3, -3, -3, -2, -1];
+        const CP: [isize; 16] = [3, 3, 2, 1, 0, -1, -2, -3, -3, -3, -2, -1, 0, 1, 2, 3];
+        let ring: [isize; 16] = std::array::from_fn(|k| RP[k] * width as isize + CP[k]);
+        for n in [9usize, 10, 12] {
+            for threshold in [0.05f32, 0.2] {
+                let t_u8 = (threshold * 255.0).round().clamp(1.0, 255.0) as u8;
+                let mut expected = Vec::new();
+                for y in 3..height - 3 {
+                    for x in 3..width - 3 {
+                        let s = fast_score_scalar(img.as_slice(), y * width + x, &ring, t_u8, n);
+                        if s > 0.0 {
+                            expected.push(([y, x], s));
+                        }
+                    }
+                }
+                let got = fast_detect_rows_u8(&img, threshold, n, 0, 0..height);
+                assert_eq!(got, expected, "n={n} t={threshold}");
+
+                // Dense response (`FastDetector`) takes the same block path.
+                let mut det = FastDetector::new(img.size(), threshold, n, 1).unwrap();
+                det.compute_corner_response_u8(&img);
+                let dense: Vec<([usize; 2], f32)> = det
+                    .corner_response
+                    .as_slice()
+                    .iter()
+                    .enumerate()
+                    .filter(|&(_, &s)| s > 0.0)
+                    .map(|(i, &s)| ([i / width, i % width], s))
+                    .collect();
+                assert_eq!(dense, expected, "dense n={n} t={threshold}");
+            }
+        }
+    }
 
     #[test]
     fn test_fast_feature_detector() -> Result<(), Box<dyn std::error::Error>> {
