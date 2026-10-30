@@ -8,7 +8,10 @@ Times the equivalent pipelines on the same synthetic label maps:
   `cv2.copyTo`; timed
   on one thread and on all of OpenCV's threads.
 * scikit-image: `find_boundaries(L, connectivity, mode="thick")`, then
-  `binary_dilation` with a diamond / square of radius `r - 1`.
+  `binary_dilation` with a diamond / square of radius `r - 1`. Its API
+  returns new arrays (no `out=`), so its timing includes those
+  allocations; it is a correctness reference and an order-of-magnitude
+  point, not an allocation-matched comparison like the OpenCV one.
 
 Both are checked against each other before timing. Run with the system
 python3 (needs numpy, opencv-python; scikit-image optional):

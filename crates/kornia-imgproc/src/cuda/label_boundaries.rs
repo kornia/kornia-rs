@@ -50,6 +50,8 @@ const V_BLOCK: u32 = 128;
 /// Minimum rows per vertical segment; a segment re-reads `t` rows on each
 /// side, so segments are at least `t` rows tall to bound that overhead.
 const V_SEGMENT_MIN_ROWS: i32 = 16;
+/// Largest `gridDim.y` of a CUDA launch.
+const MAX_GRID_Y: u32 = 65535;
 /// Threads per block of the horizontal kernel (one block per row).
 const H_BLOCK: u32 = 128;
 /// Consecutive elements per thread of the horizontal kernel; a tile is
@@ -419,6 +421,21 @@ fn get_kernels<T: CudaLabelPixel>(
         .clone())
 }
 
+/// Rows per thread of the vertical kernel: at least `V_SEGMENT_MIN_ROWS`
+/// and `thr`, and enough that `ceil(h / seg)` fits `gridDim.y`. Rejects
+/// heights where the kernel's row bounds `y0 + seg` or `y1 - 1 + thr` would
+/// overflow `i32`.
+fn vertical_segment_rows(h: i32, thr: i32) -> Result<i32, CudaLabelBoundaryError> {
+    let min_for_grid = (h as u32).div_ceil(MAX_GRID_Y) as i32;
+    let seg = V_SEGMENT_MIN_ROWS.max(thr).max(min_for_grid);
+    if i64::from(h) + i64::from(seg.max(thr)) > i64::from(i32::MAX) {
+        return Err(CudaLabelBoundaryError::Cuda(
+            "height too large for the vertical pass".into(),
+        ));
+    }
+    Ok(seg)
+}
+
 /// Checked `i32` dimensions; rejects zero sizes.
 fn dims_i32(width: usize, height: usize) -> Result<(i32, i32), CudaLabelBoundaryError> {
     if width == 0 || height == 0 {
@@ -463,7 +480,10 @@ pub(crate) fn launch_erode_label_boundaries<T: CudaLabelPixel>(
     let fill = fill.as_i32();
     let kernels = get_kernels::<T>(ctx, connectivity)?;
 
-    if threshold <= FUSED_MAX_THRESHOLD {
+    // The fused kernel tiles rows in blocks of `F_TILE_H`; images too tall
+    // for its grid take the two-launch path, which is exact for any
+    // threshold.
+    if threshold <= FUSED_MAX_THRESHOLD && (h as u32).div_ceil(F_TILE_H) <= MAX_GRID_Y {
         let cfg = LaunchConfig {
             block_dim: (F_TILE, F_ROWS, 1),
             grid_dim: (
@@ -486,7 +506,7 @@ pub(crate) fn launch_erode_label_boundaries<T: CudaLabelPixel>(
             .map_err(|e| CudaLabelBoundaryError::Cuda(e.to_string()));
     }
 
-    let seg = V_SEGMENT_MIN_ROWS.max(thr);
+    let seg = vertical_segment_rows(h, thr)?;
     let (kv, kh) = (&kernels.vertical, &kernels.horizontal);
 
     // SAFETY: every element of `vdist` is written by the vertical kernel
@@ -529,4 +549,23 @@ pub(crate) fn launch_erode_label_boundaries<T: CudaLabelPixel>(
         .arg(&fill)
         .launch_cfg(cfg_h)
         .map_err(|e| CudaLabelBoundaryError::Cuda(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vertical_segment_rows_fits_the_grid() -> Result<(), CudaLabelBoundaryError> {
+        assert_eq!(vertical_segment_rows(720, 9)?, V_SEGMENT_MIN_ROWS);
+        assert_eq!(vertical_segment_rows(720, 40)?, 40);
+        // 1 x 1_048_561 at radius 10: 16-row segments would need 65_536 blocks.
+        let h = 1_048_561;
+        let seg = vertical_segment_rows(h, 9)?;
+        assert!((h as u32).div_ceil(seg as u32) <= MAX_GRID_Y);
+        assert!(vertical_segment_rows(i32::MAX, 9).is_err());
+        assert!(vertical_segment_rows(i32::MAX - 60_000, 65_534).is_err());
+        assert!(vertical_segment_rows(i32::MAX - 70_000, 65_534).is_ok());
+        Ok(())
+    }
 }
