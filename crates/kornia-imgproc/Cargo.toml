@@ -111,7 +111,7 @@ name = "bench_morphology"
 
 [[bench]]
 harness = false
-name = "bench_depth"
+name = "bench_median"
 
 [[bench]]
 harness = false
