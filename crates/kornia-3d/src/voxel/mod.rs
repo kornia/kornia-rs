@@ -23,17 +23,24 @@
 //! Every ordered output is sorted, never in hash order: the downsampled
 //! cloud is in ascending key order (lexicographic on `(x, y, z)`), and the
 //! points of a voxel are reduced in ascending input index. The same input
-//! gives the same output bit for bit, unlike a hash-map reduction whose
+//! gives the same output bit for bit, on the host and on the device
+//! (feature `cuda`, `CudaVoxelFilter`), unlike a hash-map reduction whose
 //! output order depends on the hash table.
 
 mod downsample;
 mod grid;
+
+#[cfg(feature = "cuda")]
+mod cuda;
 
 pub use downsample::{
     remove_sparse_voxels, voxel_downsample, voxel_neighbour_counts, DownsampleMode,
     VoxelDownsampler, VoxelView,
 };
 pub use grid::VoxelGrid;
+
+#[cfg(feature = "cuda")]
+pub use cuda::{CudaNeighbourCounts, CudaVoxelCloud, CudaVoxelFilter, MAX_CUDA_VOXEL_POINTS};
 
 use crate::pointcloud::filter::FilterError;
 
@@ -75,6 +82,35 @@ pub enum VoxelError {
     /// A point cloud operand is malformed (attribute lengths, indices).
     #[error(transparent)]
     Filter(#[from] FilterError),
+
+    /// A device output buffer is smaller than the call needs (feature
+    /// `cuda`).
+    #[error("output capacity {capacity} < {needed}")]
+    CapacityTooSmall {
+        /// Capacity of the buffer.
+        capacity: usize,
+        /// Entries the call needs.
+        needed: usize,
+    },
+
+    /// A device point buffer holds fewer than `3 · n` coordinates (feature
+    /// `cuda`).
+    #[error("device point buffer has {len} coordinates, {needed} needed")]
+    PointBufferTooSmall {
+        /// Coordinates in the buffer.
+        len: usize,
+        /// `3 · n`.
+        needed: usize,
+    },
+
+    /// A device buffer belongs to a different stream than the filter using
+    /// it (feature `cuda`).
+    #[error("device buffer was allocated on a different stream than the filter")]
+    StreamMismatch,
+
+    /// A CUDA driver, compile or launch failure (feature `cuda`).
+    #[error("CUDA error: {0}")]
+    Cuda(String),
 }
 
 /// Voxel edge length and grid origin, shared by every voxel op.
@@ -231,7 +267,8 @@ const KEY_SCREEN_EPS: f64 = 4.0;
 /// max(|qa|, 1)`) away from every integer, `floor(qa) == floor(fl(x))`.
 /// Otherwise (near a voxel boundary, `qa` subnormal or zero, `r == 0`, NaN
 /// or infinity) the division is evaluated. The key is therefore always
-/// exactly `floor(fl((v - o) / s))`.
+/// exactly `floor(fl((v - o) / s))`. Mirrored by `axis_key` in the CUDA
+/// source (which screens with `f32` first); keep the expressions identical.
 #[inline]
 pub(crate) fn axis_key(v: f64, o: f64, s: f64, r: f64) -> Option<i32> {
     let a = v - o;
@@ -251,7 +288,7 @@ pub(crate) fn axis_key(v: f64, o: f64, s: f64, r: f64) -> Option<i32> {
     }
 }
 
-/// `o + (k + 0.5) · s`.
+/// `o + (k + 0.5) · s`. Mirrored by `axis_centre` in the CUDA source.
 #[inline]
 pub(crate) fn axis_centre(k: i32, o: f64, s: f64) -> f64 {
     o + (k as f64 + 0.5) * s
@@ -331,3 +368,6 @@ impl VoxelConnectivity {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, feature = "cuda"))]
+mod cuda_tests;

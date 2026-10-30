@@ -1,7 +1,9 @@
 //! Sort-by-key voxel reductions on the host: every point gets a packed
 //! 128-bit sort word (biased voxel key `x, y, z` in the top 96 bits, point
 //! index in the low 32), the words are sorted, and each run of equal keys is
-//! one voxel, its points in ascending index.
+//! one voxel, its points in ascending index. The CUDA path
+//! (`super::cuda`) sorts the same words and reduces the runs with the same
+//! expressions.
 
 use std::borrow::Cow;
 
@@ -387,7 +389,8 @@ fn voxel_run<'w>(words: &'w [u128], starts: &[u32], v: usize) -> &'w [u128] {
 
 /// The representative point of the voxel whose sort words are `run`
 /// (non-empty, ascending index) and the index of the point it came from
-/// (for [`DownsampleMode::Centroid`], the lowest index).
+/// (for [`DownsampleMode::Centroid`], the lowest index). Mirrored by
+/// `voxel_reduce` in the CUDA source.
 #[inline]
 fn reduce_run(
     run: &[u128],
@@ -442,7 +445,8 @@ fn reduce_run(
 /// consecutive in the sorted keys, found by one search that gallops from
 /// the column's `hints` entry (the previous voxel's result: voxels visited
 /// in ascending order make it amortized O(1)). Columns or `z` values past
-/// the `i32` range do not exist.
+/// the `i32` range do not exist. Mirrored by `adjacent_occupied` in the
+/// CUDA source (by bisection).
 fn adjacent_occupied(unique: &[u128], key: u128, max_l1: i32, hints: &mut [usize; 9]) -> u8 {
     let x = i64::from((key >> 64) as u32);
     let y = i64::from((key >> 32) as u32);
@@ -877,8 +881,9 @@ impl<'a> VoxelView<'a> {
 /// copied into an owned cloud.
 ///
 /// The output is in ascending voxel key order (lexicographic `(x, y, z)`),
-/// the same for any permutation-free rerun. Open3D's `voxel_down_sample`
-/// returns the same centroids in hash-map order; compare with it as sets.
+/// the same for any permutation-free rerun and on the device
+/// (`CudaVoxelFilter::downsample`). Open3D's `voxel_down_sample` returns
+/// the same centroids in hash-map order; compare with it as sets.
 /// For [`DownsampleMode::First`] and [`DownsampleMode::NearestToCentre`]
 /// the chosen points are input points: [`VoxelView::first`] and
 /// [`VoxelView::nearest`] return them as a view, without the copy.
