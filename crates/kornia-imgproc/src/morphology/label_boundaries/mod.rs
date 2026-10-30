@@ -56,8 +56,8 @@ pub trait LabelPixel: sealed::Sealed + Copy + PartialEq + Send + Sync + 'static 
 /// two-sweep min-plus pass (Manhattan), or the same passes on the thresholded
 /// vertical distance (Chebyshev). The cost per pixel is bounded independently
 /// of `radius`: small radii replace the horizontal two-sweep pass by a direct
-/// window of at most eight shifted minima, and no structuring element is
-/// ever scanned.
+/// window of at most 8 (aarch64) or 24 (other targets) shifted minima, and
+/// no structuring element is ever scanned.
 ///
 /// # Reference
 ///

@@ -29,7 +29,7 @@ import cv2
 import numpy as np
 
 SIZES = [(640, 480), (1280, 720)]
-RADII = [1, 2, 5]
+RADII = [1, 2, 5, 8, 12, 16]
 ROUNDS = 5
 ITERS = 50
 
@@ -69,16 +69,37 @@ def footprint(radius: int, eight: bool) -> np.ndarray:
     return (np.abs(yy) + np.abs(xx) <= radius).astype(np.uint8)
 
 
-def opencv_erode(labels: np.ndarray, radius: int, eight: bool, fill: int) -> np.ndarray:
+def opencv_eroder(labels: np.ndarray, radius: int, eight: bool, fill: int):
+    """The OpenCV pipeline with every buffer and footprint allocated up front.
+
+    Returns a zero-argument callable that writes the result into one reused
+    output array and returns it; nothing is allocated per call, matching the
+    Rust bench, which reuses its `dst`.
+    """
     k3 = footprint(1, eight)
-    seeds = cv2.compare(cv2.dilate(labels, k3), cv2.erode(labels, k3), cv2.CMP_NE)
-    if radius > 1:
-        seeds = cv2.dilate(seeds, footprint(radius - 1, eight))
-    # Masked write in OpenCV (cv2.copyTo), not NumPy boolean indexing,
-    # which would add NumPy overhead to the OpenCV timing.
-    out = labels.copy()
-    cv2.copyTo(np.full_like(labels, fill), seeds, out)
-    return out
+    kr = footprint(radius - 1, eight) if radius > 1 else None
+    dil = np.empty_like(labels)
+    ero = np.empty_like(labels)
+    seeds = np.empty(labels.shape, dtype=np.uint8)
+    grown = np.empty_like(seeds)
+    fill_img = np.full_like(labels, fill)
+    out = np.empty_like(labels)
+
+    def run() -> np.ndarray:
+        cv2.dilate(labels, k3, dst=dil)
+        cv2.erode(labels, k3, dst=ero)
+        cv2.compare(dil, ero, cv2.CMP_NE, dst=seeds)
+        mask = seeds
+        if kr is not None:
+            cv2.dilate(seeds, kr, dst=grown)
+            mask = grown
+        # Masked write in OpenCV (cv2.copyTo), not NumPy boolean indexing,
+        # which would add NumPy overhead to the OpenCV timing.
+        np.copyto(out, labels)
+        cv2.copyTo(fill_img, mask, out)
+        return out
+
+    return run
 
 
 def skimage_erode(labels: np.ndarray, radius: int, eight: bool, fill: int) -> np.ndarray:
@@ -150,15 +171,20 @@ def main() -> None:
             tag = "c8" if eight else "c4"
             for radius in RADII:
                 for name, lab in (("u8", l8), ("u16", l16)):
-                    ref = opencv_erode(lab, radius, eight, 0)
+                    run = opencv_eroder(lab, radius, eight, 0)
+                    ref = run().copy()
                     line = f"{w}x{h} {name}_{tag}_r{radius}: "
                     for n in (1, threads):
                         cv2.setNumThreads(n)
-                        ms = best_ms(lambda: opencv_erode(lab, radius, eight, 0))
+                        ms = best_ms(run)
                         line += f"opencv[{n}t] {ms:.3f} ms, "
                     if have_skimage:
                         assert np.array_equal(ref, skimage_erode(lab, radius, eight, 0))
-                        ms = best_ms(lambda: skimage_erode(lab, radius, eight, 0))
+                        ms = best_ms(
+                            lambda lab=lab, radius=radius, eight=eight: skimage_erode(
+                                lab, radius, eight, 0
+                            )
+                        )
                         line += f"skimage {ms:.3f} ms"
                     print(line)
 

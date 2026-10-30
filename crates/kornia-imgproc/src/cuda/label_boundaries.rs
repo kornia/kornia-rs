@@ -377,7 +377,9 @@ struct Kernels {
     horizontal: Arc<CudaKernel>,
     fused: Arc<CudaKernel>,
 }
-type KernelMap = Mutex<HashMap<(&'static str, bool), Kernels>>;
+/// Keyed by device ordinal too: a module is loaded into one context and
+/// cannot be launched on another device's stream.
+type KernelMap = Mutex<HashMap<(usize, &'static str, bool), Kernels>>;
 static KERNELS: OnceLock<KernelMap> = OnceLock::new();
 
 fn get_kernels<T: CudaLabelPixel>(
@@ -385,7 +387,7 @@ fn get_kernels<T: CudaLabelPixel>(
     connectivity: Connectivity,
 ) -> Result<Kernels, CudaLabelBoundaryError> {
     let map = KERNELS.get_or_init(|| Mutex::new(HashMap::new()));
-    let key = (T::TAG, connectivity == Connectivity::Eight);
+    let key = (ctx.ordinal(), T::TAG, connectivity == Connectivity::Eight);
     let lock_err = |_| CudaLabelBoundaryError::Cuda("kernel cache lock poisoned".into());
     if let Some(k) = map.lock().map_err(lock_err)?.get(&key).cloned() {
         return Ok(k);

@@ -7,9 +7,11 @@ use kornia_imgproc::connected_components::Connectivity;
 use kornia_imgproc::morphology::erode_label_boundaries;
 
 const SIZES: [(usize, usize); 2] = [(640, 480), (1280, 720)];
-/// 1, 2, 5: direct window (`t <= 4`); 8: CPU scan, CUDA fused launch;
-/// 12: CPU scan, CUDA two-launch path (`radius >= 10`).
-const RADII: [usize; 5] = [1, 2, 5, 8, 12];
+/// CPU: direct window while `t = radius - 1 <= DIRECT_MAX_THRESHOLD` (4 on
+/// aarch64, 12 elsewhere), scan above: 5 / 8 straddle the aarch64 switch,
+/// 12 / 16 the other one. CUDA: fused launch up to radius 9 (1, 2, 5, 8),
+/// two-launch path above (12, 16).
+const RADII: [usize; 6] = [1, 2, 5, 8, 12, 16];
 const CONNECTIVITIES: [(Connectivity, &str); 2] =
     [(Connectivity::Four, "c4"), (Connectivity::Eight, "c8")];
 
@@ -62,9 +64,9 @@ fn bench_label_boundaries(c: &mut Criterion) {
                     |b| {
                         b.iter(|| {
                             std::hint::black_box(erode_label_boundaries(
-                                &src_u8,
-                                &mut dst_u8,
-                                radius,
+                                std::hint::black_box(&src_u8),
+                                std::hint::black_box(&mut dst_u8),
+                                std::hint::black_box(radius),
                                 conn,
                                 0,
                             ))
@@ -76,9 +78,9 @@ fn bench_label_boundaries(c: &mut Criterion) {
                     |b| {
                         b.iter(|| {
                             std::hint::black_box(erode_label_boundaries(
-                                &src_u16,
-                                &mut dst_u16,
-                                radius,
+                                std::hint::black_box(&src_u16),
+                                std::hint::black_box(&mut dst_u16),
+                                std::hint::black_box(radius),
                                 conn,
                                 0,
                             ))
@@ -124,9 +126,9 @@ fn bench_label_boundaries(c: &mut Criterion) {
                             |b| {
                                 timed(b, queued, &mut || {
                                     erode_label_boundaries(
-                                        &d_src_u8,
-                                        &mut d_dst_u8,
-                                        radius,
+                                        std::hint::black_box(&d_src_u8),
+                                        std::hint::black_box(&mut d_dst_u8),
+                                        std::hint::black_box(radius),
                                         conn,
                                         0,
                                     )
@@ -139,9 +141,9 @@ fn bench_label_boundaries(c: &mut Criterion) {
                             |b| {
                                 timed(b, queued, &mut || {
                                     erode_label_boundaries(
-                                        &d_src_u16,
-                                        &mut d_dst_u16,
-                                        radius,
+                                        std::hint::black_box(&d_src_u16),
+                                        std::hint::black_box(&mut d_dst_u16),
+                                        std::hint::black_box(radius),
                                         conn,
                                         0,
                                     )

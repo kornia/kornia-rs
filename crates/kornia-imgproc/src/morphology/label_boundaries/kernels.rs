@@ -44,7 +44,17 @@ pub(crate) const H_ROWS: usize = 4;
 /// Largest distance threshold whose horizontal pass is the direct window
 /// [`horizontal_window_min_row`] (`2t` shifted minima per pixel) instead of
 /// the two-sweep scan, whose cost does not depend on `t`.
+///
+/// The crossover depends on the scan: on aarch64 it is the NEON log-step
+/// scan, cheaper than the window above `t = 4` (Jetson Orin). Elsewhere the
+/// scan is scalar and the auto-vectorized window stays cheaper up to about
+/// `t = 12` (x86_64, 1280x720: 1.5-2x faster than the scan at radius 8 and
+/// 12, on 1 and 4 threads).
+#[cfg(target_arch = "aarch64")]
 pub(crate) const DIRECT_MAX_THRESHOLD: usize = 4;
+/// See the aarch64 definition.
+#[cfg(not(target_arch = "aarch64"))]
+pub(crate) const DIRECT_MAX_THRESHOLD: usize = 12;
 
 /// Saturating distance lane of the scratch. Every value `>= cap = t + 1`
 /// behaves identically, so a lane type only has to hold `cap`.
