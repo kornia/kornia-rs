@@ -1,4 +1,5 @@
-//! Depth images to 3D: [`DepthImage`] and its unprojection to a point cloud.
+//! Depth images to 3D: [`DepthImage`], its unprojection to a point cloud,
+//! and its registration (reprojection) into a second pinhole camera.
 //!
 //! A [`DepthImage`] is a single-channel `u16` image in integer units (e.g.
 //! millimetres) or an `f32` image, plus its `meter`: the number of depth
@@ -36,6 +37,9 @@ use kornia_image::{Image, ImageError, ImageSize};
 
 use crate::camera::PinholeCamera;
 use crate::pointcloud::PointCloud;
+use crate::pose::Pose3d;
+
+pub use kernels::MAX_SPLAT_RADIUS;
 
 /// Errors of the depth image ops.
 #[derive(Debug, thiserror::Error)]
@@ -62,6 +66,19 @@ pub enum DepthError {
         cx: f64,
         /// Principal point y.
         cy: f64,
+    },
+
+    /// The `dst_from_src` transform has a non-finite entry.
+    #[error("dst_from_src has a non-finite rotation or translation entry")]
+    InvalidTransform,
+
+    /// The splat radius exceeds [`MAX_SPLAT_RADIUS`].
+    #[error("splat radius {radius} exceeds the maximum {max}")]
+    SplatRadiusTooLarge {
+        /// Requested radius.
+        radius: usize,
+        /// Largest accepted radius.
+        max: usize,
     },
 
     /// An image is too large for the index types (`i32` coordinates, `u32`
@@ -100,6 +117,18 @@ pub trait DepthSample: sealed::Sealed + Copy + Send + Sync + 'static {
     /// form.
     #[doc(hidden)]
     fn is_valid_at(self, metres_per_unit: f32) -> bool;
+
+    /// The host registration kernel of this dtype (see
+    /// [`DepthImage::register_into`]).
+    #[doc(hidden)]
+    fn register_impl(
+        src: &DepthImage<Self>,
+        camera: &PinholeCamera,
+        dst_from_src: &Pose3d,
+        dst_camera: &PinholeCamera,
+        splat_radius: usize,
+        dst: &mut DepthImage<Self>,
+    ) -> Result<(), DepthError>;
 }
 
 /// `1 / meter` in `f32`: the multiplier the kernels apply to a sample.
@@ -136,6 +165,19 @@ impl DepthSample for u16 {
     fn is_valid_at(self, _metres_per_unit: f32) -> bool {
         kernels::is_valid_depth_u16(self)
     }
+
+    fn register_impl(
+        src: &DepthImage<Self>,
+        camera: &PinholeCamera,
+        dst_from_src: &Pose3d,
+        dst_camera: &PinholeCamera,
+        splat_radius: usize,
+        dst: &mut DepthImage<Self>,
+    ) -> Result<(), DepthError> {
+        let p = register_checks(src, camera, dst_from_src, dst_camera, splat_radius, dst)?;
+        kernels::register_u16(src.image.as_slice(), dst.image.as_slice_mut(), &p);
+        Ok(())
+    }
 }
 
 impl DepthSample for f32 {
@@ -155,6 +197,19 @@ impl DepthSample for f32 {
     #[inline(always)]
     fn is_valid_at(self, metres_per_unit: f32) -> bool {
         kernels::is_valid_depth_f32(self.metres(metres_per_unit))
+    }
+
+    fn register_impl(
+        src: &DepthImage<Self>,
+        camera: &PinholeCamera,
+        dst_from_src: &Pose3d,
+        dst_camera: &PinholeCamera,
+        splat_radius: usize,
+        dst: &mut DepthImage<Self>,
+    ) -> Result<(), DepthError> {
+        let p = register_checks(src, camera, dst_from_src, dst_camera, splat_radius, dst)?;
+        kernels::register_f32(src.image.as_slice(), dst.image.as_slice_mut(), &p);
+        Ok(())
     }
 }
 
@@ -472,6 +527,194 @@ impl<T: DepthSample> DepthImage<T> {
         );
         Ok(())
     }
+
+    /// Registers (reprojects) the depth image into a second pinhole camera,
+    /// into a new image of `dst_size` with this image's `meter`.
+    ///
+    /// See [`DepthImage::register_into`] for the method; this form
+    /// allocates the destination.
+    ///
+    /// # Arguments
+    ///
+    /// * `camera` - Pinhole intrinsics of this image (distortion ignored).
+    /// * `dst_from_src` - Rigid transform from this camera's frame to the
+    ///   destination camera's frame.
+    /// * `dst_camera` - Pinhole intrinsics of the destination grid.
+    /// * `splat_radius` - Splat footprint radius in destination pixels,
+    ///   `0` (one pixel) to [`MAX_SPLAT_RADIUS`].
+    /// * `dst_size` - Destination grid size.
+    ///
+    /// # Returns
+    ///
+    /// The registered depth image, in this image's units.
+    ///
+    /// # Errors
+    ///
+    /// See [`DepthImage::register_into`].
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use kornia_3d::camera::PinholeCamera;
+    /// use kornia_3d::depth::DepthImage;
+    /// use kornia_3d::pose::Pose3d;
+    /// use kornia_algebra::{Mat3F64, Vec3F64};
+    /// use kornia_image::{Image, ImageSize};
+    ///
+    /// let camera = PinholeCamera {
+    ///     fx: 100.0, fy: 100.0, cx: 2.0, cy: 0.0,
+    ///     k1: 0.0, k2: 0.0, p1: 0.0, p2: 0.0,
+    /// };
+    /// let size = ImageSize { width: 5, height: 1 };
+    /// // A wall 1 m away seen by the centre pixel only, in millimetres.
+    /// let src = DepthImage::new(Image::<u16, 1>::new(size, vec![0, 0, 1000, 0, 0])?, 1000.0)?;
+    /// // The destination camera sits 1 cm to the left: points move 1 px right.
+    /// let dst_from_src = Pose3d::new(Mat3F64::IDENTITY, Vec3F64::new(0.01, 0.0, 0.0));
+    /// let dst = src.register(&camera, &dst_from_src, &camera, 0, size)?;
+    /// assert_eq!(dst.image().as_slice(), &[0, 0, 0, 1000, 0]);
+    /// assert_eq!(dst.meter(), 1000.0);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn register(
+        &self,
+        camera: &PinholeCamera,
+        dst_from_src: &Pose3d,
+        dst_camera: &PinholeCamera,
+        splat_radius: usize,
+        dst_size: ImageSize,
+    ) -> Result<DepthImage<T>, DepthError>
+    where
+        T: Default,
+    {
+        let mut dst = Self::from_size_val(dst_size, T::default(), self.meter)?;
+        self.register_into(camera, dst_from_src, dst_camera, splat_radius, &mut dst)?;
+        Ok(dst)
+    }
+
+    /// Registers (reprojects) the depth image into a second pinhole camera,
+    /// writing `dst` in `dst`'s own units.
+    ///
+    /// Each valid pixel of `self` (`u16` non-zero, `f32` finite and
+    /// positive: same rule as `kornia_imgproc::depth`) is unprojected with
+    /// `camera`, moved into the destination frame by `dst_from_src`
+    /// (`p_dst = R · p_src + t`, metres), and projected with `dst_camera` to
+    /// its nearest destination pixel (`floor(u + 0.5)`, `floor(v + 0.5)`).
+    /// With `splat_radius = r` it is written to every pixel of the
+    /// `(2r + 1)²` square around that pixel (clipped to the image), which
+    /// closes the holes left when the destination samples the scene more
+    /// densely than the source (e.g. a 2× upsample needs `r = 1`). Where
+    /// several points land on one pixel, the nearest (smallest destination
+    /// depth) wins: a z-buffer, so a foreground surface correctly occludes
+    /// the background it moves in front of.
+    ///
+    /// Each image carries its own `meter` (as in rerun): `dst` gets the
+    /// destination depth `z_dst` (metres) in its own units, `z_dst / s` with
+    /// `s = 1 / dst.meter()` rounded to `f32`, the multiplier an
+    /// unprojection of `dst` applies. `u16` values are rounded (`round`,
+    /// half away from zero) and points that round to `0` or above `65534`
+    /// are dropped; points whose `f32` value is not finite and positive are
+    /// dropped. Pixels no point reaches are `0` (both dtypes). The division
+    /// is correctly rounded and inverts the unprojection's multiplication,
+    /// so an `f32` identity registration between equal `meter`s returns
+    /// `(d · s) / s`: `d` itself when `s` is a power of two (e.g.
+    /// `meter = 1`), otherwise `d` or a neighbour 1 ulp away while `d · s`
+    /// is a normal float, since that product is already rounded. Writing
+    /// `z_dst · meter` instead would round-trip far fewer samples (the
+    /// rustdoc of the kernel has the numbers), as `s` is rounded.
+    ///
+    /// The projection restates `camera::pinhole::project_point` in `f32`
+    /// rather than calling it (that function is `f64`): the scalar and NEON
+    /// paths evaluate the same `f32` operations in the same order, which is
+    /// what makes their outputs bit-identical.
+    ///
+    /// The z-buffer holds an inverted depth key (`!value` for `u16`,
+    /// `!bits(value)` for `f32`: positive floats order like their bit
+    /// patterns) in `dst` itself, and every cell keeps its largest key,
+    /// i.e. its nearest point. On the CPU the projection runs 4 lanes at a
+    /// time (NEON) and the source rows are cut into bands processed in two
+    /// alternating parallel phases, each band writing only its own window
+    /// of destination rows with plain stores; splats that leave their
+    /// window are merged with an atomic max afterwards. A per-cell maximum
+    /// does not depend on the update order, so the result is deterministic
+    /// across threads and runs.
+    ///
+    /// Reference: ROS `depth_image_proc/register` (nearest-pixel projection
+    /// with a z-buffer) and Open3D
+    /// `t::geometry::PointCloud::project_to_depth_image`. Departures: ROS
+    /// writes single pixels only (`r = 0`) and uses `f64` arithmetic; here
+    /// an optional fixed `(2r + 1)²` square splat is added and the
+    /// arithmetic is `f32`; distortion is ignored.
+    ///
+    /// # Arguments
+    ///
+    /// * `camera` - Pinhole intrinsics of this image (distortion ignored).
+    /// * `dst_from_src` - Rigid transform from this camera's frame to the
+    ///   destination camera's frame.
+    /// * `dst_camera` - Pinhole intrinsics of the destination grid.
+    /// * `splat_radius` - Splat footprint radius in destination pixels,
+    ///   `0` (one pixel) to [`MAX_SPLAT_RADIUS`].
+    /// * `dst` - Pre-allocated destination depth image; its size is the
+    ///   destination grid, its `meter` the output units, and every pixel is
+    ///   overwritten.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())`; `dst` holds the registered depth.
+    ///
+    /// # Errors
+    ///
+    /// * [`DepthError::InvalidIntrinsics`] (either camera),
+    ///   [`DepthError::InvalidTransform`] for a non-finite transform.
+    /// * [`DepthError::SplatRadiusTooLarge`] if `splat_radius` exceeds
+    ///   [`MAX_SPLAT_RADIUS`].
+    /// * [`DepthError::Image`]`(`[`ImageError::UnsupportedDevice`]`)` for a
+    ///   device-resident image.
+    /// * [`DepthError::ImageTooLarge`] if a side does not fit `i32`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use kornia_3d::camera::PinholeCamera;
+    /// use kornia_3d::depth::DepthImage;
+    /// use kornia_3d::pose::Pose3d;
+    /// use kornia_image::{Image, ImageSize};
+    ///
+    /// let camera = PinholeCamera {
+    ///     fx: 100.0, fy: 100.0, cx: 1.0, cy: 0.0,
+    ///     k1: 0.0, k2: 0.0, p1: 0.0, p2: 0.0,
+    /// };
+    /// let size = ImageSize { width: 3, height: 1 };
+    /// // Millimetres in, metres out: each image carries its own meter.
+    /// let src = DepthImage::new(Image::<f32, 1>::new(size, vec![0.0, 2000.0, 0.0])?, 1000.0)?;
+    /// let mut dst = DepthImage::<f32>::from_size_val(size, 0.0, 1.0)?;
+    /// src.register_into(&camera, &Pose3d::IDENTITY, &camera, 0, &mut dst)?;
+    /// assert_eq!(dst.image().as_slice(), &[0.0, 2.0, 0.0]);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn register_into(
+        &self,
+        camera: &PinholeCamera,
+        dst_from_src: &Pose3d,
+        dst_camera: &PinholeCamera,
+        splat_radius: usize,
+        dst: &mut DepthImage<T>,
+    ) -> Result<(), DepthError> {
+        T::register_impl(self, camera, dst_from_src, dst_camera, splat_radius, dst)
+    }
+}
+
+/// Host residency of both images, then [`kernels::register_params`].
+fn register_checks<T: DepthSample>(
+    src: &DepthImage<T>,
+    camera: &PinholeCamera,
+    dst_from_src: &Pose3d,
+    dst_camera: &PinholeCamera,
+    splat_radius: usize,
+    dst: &DepthImage<T>,
+) -> Result<kernels::RegisterParams, DepthError> {
+    check_host(&src.image)?;
+    check_host(&dst.image)?;
+    kernels::register_params(src, camera, dst_from_src, dst_camera, splat_radius, dst)
 }
 
 /// Host paths read images as slices; device-resident images are rejected.

@@ -1,5 +1,5 @@
 use super::*;
-use kornia_algebra::Vec3F64;
+use kornia_algebra::{Mat3F64, Vec3F64};
 use kornia_image::ImageSize;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -241,7 +241,8 @@ fn unproject_u16_parallel_matches_sequential() -> TestResult {
 }
 
 /// At every accepted `meter`, a u16 sample is valid iff non-zero, and that
-/// equals the metres-value test of the sequential path, from `f32::MAX`
+/// equals the metres-value test of the sequential path and the scatter,
+/// from `f32::MAX`
 /// (a subnormal `1 / meter`) down to the smallest accepted `meter`
 /// (`65535 * (1 / meter)` still finite). Smaller `meter`s are rejected.
 #[test]
@@ -303,7 +304,8 @@ fn accepted_meters_are_the_documented_intervals() {
 /// The validity rule (same as `kornia_imgproc::depth`): u16 valid iff
 /// non-zero; f32 valid iff finite and positive, so `±0`, negative values,
 /// `±inf` and `NaN` are missing while the smallest subnormal is a
-/// measurement. Pinned on the predicates and on `to_pointcloud_into`.
+/// measurement. Pinned on the predicates, on `to_pointcloud_into` and on
+/// `register_into`.
 #[test]
 fn validity_rule_u16_nonzero_f32_finite_positive() -> TestResult {
     let f32_cases = [
@@ -343,12 +345,30 @@ fn validity_rule_u16_nonzero_f32_finite_positive() -> TestResult {
     let depth = depth_image(3, 1, vec![0, 1, u16::MAX], MM)?;
     depth.to_pointcloud_into(&camera, None, &mut points, Some(&mut index))?;
     assert_eq!(index, vec![1, 2]);
+
+    // Registration onto itself skips the same samples. The valid ones are
+    // replaced by an ordinary depth so that each lands on its own pixel
+    // (extreme values such as `f32::MAX` are valid but do not project).
+    let reg: Vec<f32> = f32_cases
+        .iter()
+        .map(|&(d, valid)| if valid { 2.5 } else { d })
+        .collect();
+    let camera = pinhole(4.0, 4.0, n as f64 / 2.0, 0.0);
+    let src = depth_image(n, 1, reg, 1.0)?;
+    let mut dst = DepthImage::<f32>::from_size_val(sz(n, 1), 7.0, 1.0)?;
+    src.register_into(&camera, &Pose3d::IDENTITY, &camera, 0, &mut dst)?;
+    for (i, &o) in dst.image().as_slice().iter().enumerate() {
+        let want = if f32_cases[i].1 { 2.5 } else { 0.0 };
+        assert_eq!(o.to_bits(), f32::to_bits(want), "pixel {i}");
+    }
     Ok(())
 }
 
 /// `DepthImage::new` accepts and rejects `meter` values per dtype: finite,
 /// positive, with a finite reciprocal, and only `u16` rejects `meter`s
-/// whose `65535 · (1 / meter)` overflows. An accepted image unprojects.
+/// whose `65535 · (1 / meter)` overflows. An accepted image both unprojects
+/// and registers (the `meter` is checked once, so both ops accept exactly
+/// the same set).
 #[test]
 fn depth_image_accepts_finite_positive_meters() -> TestResult {
     let camera = pinhole(2.0, 2.0, 1.0, 1.0);
@@ -376,7 +396,10 @@ fn depth_image_accepts_finite_positive_meters() -> TestResult {
         let want = finite_positive && (65535.0 * (1.0 / m)).is_finite();
         assert_eq!(d.is_ok(), want, "u16 meter {m}");
         match d {
-            Ok(d) => assert_eq!(d.to_pointcloud(&camera, None)?.len(), 6),
+            Ok(d) => {
+                assert_eq!(d.to_pointcloud(&camera, None)?.len(), 6);
+                d.register(&camera, &Pose3d::IDENTITY, &camera, 0, sz(3, 2))?;
+            }
             Err(e) => assert!(matches!(e, DepthError::InvalidMeter(_)), "{e}"),
         }
 
@@ -384,9 +407,20 @@ fn depth_image_accepts_finite_positive_meters() -> TestResult {
         assert_eq!(d.is_ok(), finite_positive, "f32 meter {m}");
         if let Ok(d) = d {
             d.to_pointcloud(&camera, None)?;
+            d.register(&camera, &Pose3d::IDENTITY, &camera, 0, sz(3, 2))?;
         }
     }
 
+    // The largest `meter` (a subnormal `1 / meter`) is usable, not just
+    // accepted: 1000 units at `1 / f32::MAX` m (about 2.9e-36 m, a normal
+    // float) register onto themselves.
+    let data = vec![1000u16, 0, 2000, 1500, 0, 1200];
+    let src = depth_image(3, 2, data.clone(), f32::MAX)?;
+    let s = src.metres_per_unit();
+    assert!(s > 0.0 && s < f32::MIN_POSITIVE);
+    let mut dst = DepthImage::<u16>::from_size_val(sz(3, 2), 9, f32::MAX)?;
+    src.register_into(&camera, &Pose3d::IDENTITY, &camera, 0, &mut dst)?;
+    assert_eq!(dst.image().as_slice(), &data[..]);
     Ok(())
 }
 
@@ -468,6 +502,76 @@ fn open3d_unproject_parity_fixture() -> TestResult {
     Ok(())
 }
 
+/// Parity with Open3D 0.20's tensor `PointCloud.create_from_depth_image`
+/// followed by `project_to_depth_image` (a nearest-pixel z-buffer, the model
+/// of `DepthImage::register_into` at radius 0) on a fixture written by
+/// `benches/bench_depth_baselines.py --write-fixtures`: a 40×30 `u16` plane
+/// with a near box (21 destination pixels resolve an occlusion) registered
+/// into a 44×32 camera with other intrinsics across a small rotation and
+/// translation.
+///
+/// `tests/data/register_depth_open3d.bin`, little endian: `u32` width and
+/// height and `f64` fx, fy, cx, cy of the source, the same of the
+/// destination, `f64` `depth_scale`, `f64` row-major `[R | t]` of
+/// `dst_from_src`, the `u16` source pixels, then Open3D's `f32` destination
+/// depth in units (`0` = empty). The generator zeroes the source pixels
+/// whose pixel, rounding or z-buffer decision is within rounding of a tie,
+/// so the coverage and the winning point must match exactly; Open3D keeps
+/// the value unrounded and divides by `depth_scale`, so the `f32` output may
+/// differ by a few ulps and the `u16` output is Open3D's rounded.
+#[test]
+fn open3d_register_parity_fixture() -> TestResult {
+    const ULPS: f32 = 8.0;
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/data/register_depth_open3d.bin");
+    let bytes = std::fs::read(&path)?;
+    let mut f = Fixture(&bytes);
+    let grid = |f: &mut Fixture| -> Result<_, Box<dyn std::error::Error>> {
+        let w = usize::try_from(u32::from_le_bytes(f.take()?))?;
+        let h = usize::try_from(u32::from_le_bytes(f.take()?))?;
+        Ok(((w, h), pinhole(f.f64()?, f.f64()?, f.f64()?, f.f64()?)))
+    };
+    let ((w, h), src_cam) = grid(&mut f)?;
+    let ((dw, dh), dst_cam) = grid(&mut f)?;
+    let depth_scale = f.f64()?;
+    let rt = (0..12).map(|_| f.f64()).collect::<Result<Vec<_>, _>>()?;
+    let pixels = (0..w * h)
+        .map(|_| Ok(u16::from_le_bytes(f.take()?)))
+        .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
+    let expected = (0..dw * dh)
+        .map(|_| Ok(f32::from_le_bytes(f.take()?)))
+        .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
+    assert!(f.0.is_empty(), "trailing fixture bytes");
+    // Column-major for `Mat3F64`.
+    let rotation = Mat3F64::from_cols_array(&[
+        rt[0], rt[4], rt[8], rt[1], rt[5], rt[9], rt[2], rt[6], rt[10],
+    ]);
+    let pose = Pose3d::new(rotation, Vec3F64::new(rt[3], rt[7], rt[11]));
+    // Open3D's `depth_scale` is the `meter`.
+    let meter = depth_scale as f32;
+    let covered = expected.iter().filter(|&&d| d != 0.0).count();
+    assert!(covered > dw * dh / 2, "{covered} covered pixels");
+
+    let src = depth_image(w, h, pixels.clone(), meter)?;
+    let mut dst = DepthImage::<u16>::from_size_val(sz(dw, dh), 9, meter)?;
+    src.register_into(&src_cam, &pose, &dst_cam, 0, &mut dst)?;
+    for (i, (&o, &e)) in dst.image().as_slice().iter().zip(&expected).enumerate() {
+        assert_eq!(f32::from(o), e.round(), "u16 pixel {i}: {o} vs Open3D {e}");
+    }
+
+    let src = depth_image(w, h, pixels.iter().map(|&d| f32::from(d)).collect(), meter)?;
+    let mut dst = DepthImage::<f32>::from_size_val(sz(dw, dh), 9.0, meter)?;
+    src.register_into(&src_cam, &pose, &dst_cam, 0, &mut dst)?;
+    for (i, (&o, &e)) in dst.image().as_slice().iter().zip(&expected).enumerate() {
+        assert_eq!(o == 0.0, e == 0.0, "f32 pixel {i}: {o} vs Open3D {e}");
+        assert!(
+            (o - e).abs() <= ULPS * f32::EPSILON * e,
+            "f32 pixel {i}: {o} vs Open3D {e}"
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn unproject_empty_and_all_invalid() -> TestResult {
     let camera = pinhole(1.0, 1.0, 0.0, 0.0);
@@ -504,5 +608,439 @@ fn unproject_rejects_bad_arguments() -> TestResult {
             Err(DepthError::InvalidIntrinsics { .. })
         ));
     }
+    Ok(())
+}
+
+// ── register ───────────────────────────────────────────────────────────────
+
+fn translation(x: f64, y: f64, z: f64) -> Pose3d {
+    Pose3d::new(Mat3F64::IDENTITY, Vec3F64::new(x, y, z))
+}
+
+/// Identity transform, same camera, no splat: every valid sample lands on
+/// its own pixel with its own value; invalid samples become `0`.
+#[test]
+fn register_identity_reproduces_input() -> TestResult {
+    let (w, h) = (73, 41);
+    let camera = pinhole(70.0, 69.0, 36.2, 20.7);
+
+    let data = random_depth_u16(w, h, 21);
+    let src = depth_image(w, h, data.clone(), MM)?;
+    let mut dst = DepthImage::<u16>::from_size_val(sz(w, h), 7, MM)?;
+    src.register_into(&camera, &Pose3d::IDENTITY, &camera, 0, &mut dst)?;
+    assert_eq!(dst.image().as_slice(), &data[..]);
+    // The allocating form gives the same image, in the source's `meter`.
+    let alloc = src.register(&camera, &Pose3d::IDENTITY, &camera, 0, sz(w, h))?;
+    assert_eq!(alloc.image().as_slice(), &data[..]);
+    assert_eq!(alloc.meter(), MM);
+
+    let data = random_depth_f32(w, h, 22);
+    let src = depth_image(w, h, data.clone(), 1.0)?;
+    let mut dst = DepthImage::<f32>::from_size_val(sz(w, h), 7.0, 1.0)?;
+    src.register_into(&camera, &Pose3d::IDENTITY, &camera, 0, &mut dst)?;
+    for (i, (&o, &d)) in dst.image().as_slice().iter().zip(&data).enumerate() {
+        let want = if d > 0.0 && d.is_finite() { d } else { 0.0 };
+        assert_eq!(o.to_bits(), want.to_bits(), "pixel {i}");
+    }
+    Ok(())
+}
+
+/// An `f32` millimetre image (`meter = 1000`) registered onto itself
+/// returns `(d · s) / s` with `s = 1 / meter` in `f32` bit for bit, as
+/// documented: the input itself wherever that round trip is exact, never
+/// more than 1 ulp away. Every integer millimetre value `1..=65535` is
+/// covered; writing `(d · s) · meter` instead fails on 25 times more of
+/// them, and `(d · s) · (1 / s)` (the old reciprocal form; `1 / s` rounds
+/// to `999.99994`, not `1000`) on several times more, so this pins the
+/// division by the inverse `meter`.
+#[test]
+fn register_f32_mm_identity_divides_by_inverse_meter() -> TestResult {
+    let (w, h) = (256, 256);
+    let data: Vec<f32> = (0..w * h).map(|i| i as f32).collect();
+    let camera = pinhole(200.0, 200.0, 127.5, 127.5);
+    let src = depth_image(w, h, data.clone(), MM)?;
+    let mut dst = DepthImage::<f32>::from_size_val(sz(w, h), 7.0, MM)?;
+    src.register_into(&camera, &Pose3d::IDENTITY, &camera, 0, &mut dst)?;
+    let s = 1.0 / MM;
+    assert_eq!(s, 0.001f32);
+    let (mut exact, mut by_meter, mut by_reciprocal) = (0usize, 0usize, 0usize);
+    for (i, (&o, &d)) in dst.image().as_slice().iter().zip(&data).enumerate() {
+        let want = if d > 0.0 { (d * s) / s } else { 0.0 };
+        assert_eq!(o.to_bits(), want.to_bits(), "pixel {i}");
+        assert!(
+            o.to_bits().abs_diff(d.to_bits()) <= 1,
+            "pixel {i}: {o} vs {d}"
+        );
+        exact += usize::from(o == d);
+        by_meter += usize::from((d * s) * MM == d);
+        by_reciprocal += usize::from((d * s) * (1.0 / s) == d);
+    }
+    // 1510 of the 65535 non-zero values are 1 ulp off with the division,
+    // 38588 with the multiplication by `meter`, 11483 with the reciprocal
+    // (the same counts come out of NumPy float32).
+    assert_eq!(w * h - exact, 1510);
+    assert_eq!(w * h - by_meter, 38588);
+    assert_eq!(w * h - by_reciprocal, 11483);
+    Ok(())
+}
+
+/// Each image carries its own `meter`: the destination is written in its
+/// own units, `z_dst / (1 / dst.meter())`. Millimetre `u16` registered
+/// onto itself at a quarter-millimetre `meter` is `4 d`; millimetre `f32`
+/// into a metric `f32` image is `d · 0.001` (rounded once more).
+#[test]
+fn register_converts_to_dst_meter() -> TestResult {
+    let (w, h) = (64, 32);
+    let camera = pinhole(60.0, 60.0, 31.5, 15.5);
+    let data: Vec<u16> = (0..w * h).map(|i| (i % 16000) as u16).collect();
+    let src = depth_image(w, h, data.clone(), MM)?;
+    let mut dst = DepthImage::<u16>::from_size_val(sz(w, h), 9, 4.0 * MM)?;
+    src.register_into(&camera, &Pose3d::IDENTITY, &camera, 0, &mut dst)?;
+    for (i, (&o, &d)) in dst.image().as_slice().iter().zip(&data).enumerate() {
+        assert_eq!(u32::from(o), 4 * u32::from(d), "pixel {i}");
+    }
+
+    let src = depth_image(w, h, data.iter().map(|&d| f32::from(d)).collect(), MM)?;
+    let mut dst = DepthImage::<f32>::from_size_val(sz(w, h), 9.0, 1.0)?;
+    src.register_into(&camera, &Pose3d::IDENTITY, &camera, 0, &mut dst)?;
+    for (i, (&o, &d)) in dst.image().as_slice().iter().zip(&data).enumerate() {
+        let z = f32::from(d) * (1.0 / MM);
+        assert_eq!(o.to_bits(), (z / 1.0).to_bits(), "pixel {i}");
+    }
+    Ok(())
+}
+
+/// A foreground strip moves further (parallax) than the background behind
+/// it and lands on top of it: the nearer depth must win every shared pixel,
+/// and the background it uncovers is a hole.
+#[test]
+fn register_occlusion_nearer_wins() -> TestResult {
+    let (w, h) = (24, 3);
+    // fx * tx / z: background (4 m) moves 1 px, foreground (1 m) 4 px.
+    let camera = pinhole(100.0, 100.0, 12.0, 1.0);
+    let mut data = vec![4000u16; w * h];
+    for y in 0..h {
+        for x in 10..=13 {
+            data[y * w + x] = 1000;
+        }
+    }
+    let src = depth_image(w, h, data, MM)?;
+    let mut dst = DepthImage::<u16>::from_size_val(sz(w, h), 0, MM)?;
+    src.register_into(&camera, &translation(0.04, 0.0, 0.0), &camera, 0, &mut dst)?;
+    let mut row = vec![0u16; w];
+    row[1..=10].fill(4000); // background src 0..=9
+    row[14..=17].fill(1000); // foreground src 10..=13, over background src 14..=16
+    row[18..].fill(4000); // background src 17..=22; src 23 leaves the image
+    for y in 0..h {
+        assert_eq!(
+            &dst.image().as_slice()[y * w..(y + 1) * w],
+            &row[..],
+            "row {y}"
+        );
+    }
+
+    // The same scene in f32 metres.
+    let metres = src.image().as_slice().iter();
+    let src_f = depth_image(
+        w,
+        h,
+        metres.map(|&d| f32::from(d) * (1.0 / MM)).collect(),
+        1.0,
+    )?;
+    let mut dst_f = DepthImage::<f32>::from_size_val(sz(w, h), 0.0, 1.0)?;
+    src_f.register_into(
+        &camera,
+        &translation(0.04, 0.0, 0.0),
+        &camera,
+        0,
+        &mut dst_f,
+    )?;
+    let dst_f = dst_f.image().as_slice();
+    for (i, (&o, &r)) in dst_f.iter().zip(row.iter().cycle()).enumerate() {
+        assert!(
+            (o - f32::from(r) * (1.0 / MM)).abs() < 1e-6,
+            "pixel {i}: {o}"
+        );
+    }
+    Ok(())
+}
+
+/// A 2x upsample leaves three holes per source pixel without a splat; a
+/// radius-1 splat fills the whole destination.
+#[test]
+fn register_splat_fills_2x_upsample() -> TestResult {
+    let (w, h) = (8, 6);
+    let src_cam = pinhole(10.0, 10.0, 3.5, 2.5);
+    // u_dst = 2 x + 0.25, so source pixel x lands on destination pixel 2x.
+    let dst_cam = pinhole(20.0, 20.0, 7.25, 5.25);
+    let src = DepthImage::<u16>::from_size_val(sz(w, h), 1500, MM)?;
+    let mut dst = DepthImage::<u16>::from_size_val(sz(2 * w, 2 * h), 0, MM)?;
+
+    src.register_into(&src_cam, &Pose3d::IDENTITY, &dst_cam, 0, &mut dst)?;
+    let d = dst.image().as_slice();
+    assert_eq!(d.iter().filter(|&&v| v != 0).count(), w * h);
+    for y in 0..2 * h {
+        for x in 0..2 * w {
+            let want = if x % 2 == 0 && y % 2 == 0 { 1500 } else { 0 };
+            assert_eq!(d[y * 2 * w + x], want, "({x}, {y})");
+        }
+    }
+
+    src.register_into(&src_cam, &Pose3d::IDENTITY, &dst_cam, 1, &mut dst)?;
+    assert!(dst.image().as_slice().iter().all(|&v| v == 1500));
+    Ok(())
+}
+
+/// Points behind the destination camera, or whose depth does not fit the
+/// `u16` output, are dropped.
+#[test]
+fn register_drops_unrepresentable_points() -> TestResult {
+    let camera = pinhole(10.0, 10.0, 1.5, 1.5);
+    let src = DepthImage::<u16>::from_size_val(sz(4, 4), 1000, MM)?;
+    let mut dst = DepthImage::<u16>::from_size_val(sz(4, 4), 9, MM)?;
+    // 1 m in front of the source, 1 m behind the destination.
+    src.register_into(&camera, &translation(0.0, 0.0, -2.0), &camera, 0, &mut dst)?;
+    assert!(dst.image().as_slice().iter().all(|&v| v == 0));
+    // 1000 mm + 65 m = 66000 mm > 65534.
+    src.register_into(&camera, &translation(0.0, 0.0, 65.0), &camera, 0, &mut dst)?;
+    assert!(dst.image().as_slice().iter().all(|&v| v == 0));
+    // 1000 mm + 64 m = 65000 mm still fits (the image shrinks onto the centre).
+    src.register_into(&camera, &translation(0.0, 0.0, 64.0), &camera, 0, &mut dst)?;
+    assert!(dst.image().as_slice().contains(&65000));
+    Ok(())
+}
+
+#[test]
+fn register_rejects_bad_arguments() -> TestResult {
+    let camera = pinhole(1.0, 1.0, 0.0, 0.0);
+    let src = DepthImage::<u16>::from_size_val(sz(4, 3), 1, MM)?;
+    let mut dst = DepthImage::<u16>::from_size_val(sz(4, 3), 0, MM)?;
+    let id = Pose3d::IDENTITY;
+    assert!(matches!(
+        src.register_into(&camera, &id, &camera, MAX_SPLAT_RADIUS + 1, &mut dst),
+        Err(DepthError::SplatRadiusTooLarge { .. })
+    ));
+    assert!(matches!(
+        src.register(&camera, &id, &camera, MAX_SPLAT_RADIUS + 1, sz(4, 3)),
+        Err(DepthError::SplatRadiusTooLarge { .. })
+    ));
+    assert!(matches!(
+        DepthImage::<u16>::from_size_val(sz(4, 3), 0, 0.0),
+        Err(DepthError::InvalidMeter(_))
+    ));
+    assert!(matches!(
+        src.register_into(&camera, &id, &pinhole(0.0, 1.0, 0.0, 0.0), 0, &mut dst),
+        Err(DepthError::InvalidIntrinsics { .. })
+    ));
+    assert!(matches!(
+        src.register_into(&pinhole(0.0, 1.0, 0.0, 0.0), &id, &camera, 0, &mut dst),
+        Err(DepthError::InvalidIntrinsics { .. })
+    ));
+    assert!(matches!(
+        src.register_into(
+            &camera,
+            &translation(f64::NAN, 0.0, 0.0),
+            &camera,
+            0,
+            &mut dst
+        ),
+        Err(DepthError::InvalidTransform)
+    ));
+    Ok(())
+}
+
+/// Straight-line oracle of `DepthImage::register_into` for `u16` at
+/// `meter = 1000` for both images: one sequential pass,
+/// one pixel at a time, writing the smallest depth into each splat cell.
+fn register_u16_oracle(
+    src: &[u16],
+    (w, h): (usize, usize),
+    src_cam: &PinholeCamera,
+    pose: &Pose3d,
+    dst_cam: &PinholeCamera,
+    radius: usize,
+    (dw, dh): (usize, usize),
+) -> Vec<u16> {
+    let (ifx, ify) = ((1.0 / src_cam.fx) as f32, (1.0 / src_cam.fy) as f32);
+    let (scx, scy) = (src_cam.cx as f32, src_cam.cy as f32);
+    let (fx, fy) = (dst_cam.fx as f32, dst_cam.fy as f32);
+    let (dcx, dcy) = (dst_cam.cx as f32, dst_cam.cy as f32);
+    let m = pose.rotation.to_cols_array();
+    let r: [f32; 9] = std::array::from_fn(|k| m[3 * (k % 3) + k / 3] as f32);
+    let t = [
+        pose.translation.x as f32,
+        pose.translation.y as f32,
+        pose.translation.z as f32,
+    ];
+    let rad = radius as i64;
+    let s = 1.0 / MM;
+    let mut out = vec![u16::MAX; dw * dh];
+    for y in 0..h {
+        for x in 0..w {
+            let z = f32::from(src[y * w + x]) * s;
+            if z <= 0.0 {
+                continue;
+            }
+            let px = ((x as f32 - scx) * ifx) * z;
+            let py = ((y as f32 - scy) * ify) * z;
+            let qx = r[0] * px + r[1] * py + r[2] * z + t[0];
+            let qy = r[3] * px + r[4] * py + r[5] * z + t[1];
+            let qz = r[6] * px + r[7] * py + r[8] * z + t[2];
+            if qz <= 0.0 {
+                continue;
+            }
+            let iz = 1.0 / qz;
+            let u = (fx * qx * iz + dcx + 0.5).floor() as i64;
+            let v = (fy * qy * iz + dcy + 0.5).floor() as i64;
+            let q = (qz / s).round();
+            if !(1.0..=65534.0).contains(&q) {
+                continue;
+            }
+            for yy in (v - rad).max(0)..=(v + rad).min(dh as i64 - 1) {
+                for xx in (u - rad).max(0)..=(u + rad).min(dw as i64 - 1) {
+                    let cell = &mut out[yy as usize * dw + xx as usize];
+                    *cell = (*cell).min(q as u16);
+                }
+            }
+        }
+    }
+    out.iter_mut()
+        .filter(|c| **c == u16::MAX)
+        .for_each(|c| *c = 0);
+    out
+}
+
+/// The banded scatter equals the sequential oracle when splats stay in
+/// their band's window and when strong rotations (roll, pitch) and
+/// near-field parallax push them out of it into the deferred path.
+#[test]
+fn register_matches_sequential_oracle() -> TestResult {
+    let rot = |roll: f64, pitch: f64| {
+        let (c, s) = (roll.cos(), roll.sin());
+        let rz = Mat3F64::from_cols_array(&[c, s, 0.0, -s, c, 0.0, 0.0, 0.0, 1.0]);
+        let (c, s) = (pitch.cos(), pitch.sin());
+        let rx = Mat3F64::from_cols_array(&[1.0, 0.0, 0.0, 0.0, c, s, 0.0, -s, c]);
+        Mat3F64::from(rz.0 * rx.0)
+    };
+    let poses = [
+        Pose3d::new(rot(0.0, 0.0), Vec3F64::new(0.05, 0.0, 0.0)),
+        Pose3d::new(rot(0.5, 0.0), Vec3F64::new(0.0, 0.0, 0.0)),
+        Pose3d::new(rot(0.1, 0.25), Vec3F64::new(0.02, 0.3, 0.1)),
+        Pose3d::new(rot(-0.3, -0.2), Vec3F64::new(0.0, -0.4, 0.0)),
+    ];
+    for &((w, h), (dw, dh)) in &[
+        ((160, 130), (160, 130)),
+        ((97, 211), (194, 422)),
+        ((200, 70), (100, 35)),
+    ] {
+        let src_cam = pinhole(
+            0.8 * w as f64,
+            0.8 * w as f64,
+            w as f64 / 2.0,
+            h as f64 / 2.0,
+        );
+        let dst_cam = pinhole(
+            0.8 * dw as f64,
+            0.8 * dw as f64,
+            dw as f64 / 2.0,
+            dh as f64 / 2.0,
+        );
+        let data = random_depth_u16(w, h, (w * h) as u64);
+        let src = depth_image(w, h, data.clone(), MM)?;
+        for pose in &poses {
+            for radius in [0, 1, 3] {
+                let want =
+                    register_u16_oracle(&data, (w, h), &src_cam, pose, &dst_cam, radius, (dw, dh));
+                let mut dst = DepthImage::<u16>::from_size_val(sz(dw, dh), 1, MM)?;
+                src.register_into(&src_cam, pose, &dst_cam, radius, &mut dst)?;
+                let got = dst.image().as_slice();
+                assert_eq!(got, &want[..], "{w}x{h}->{dw}x{dh} r={radius}");
+                assert!(want.iter().any(|&v| v != 0));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The NEON projection equals the scalar one bit for bit, lane by lane:
+/// keys and pixels for both dtypes' keys, on random poses, destination
+/// `meter`s (`1`, `1000`, `7`, so the output division is exercised) and depths that
+/// include missing, negative, infinite, behind-camera and out-of-image
+/// points, and on batch lengths that are not multiples of 4. Only aarch64
+/// has a SIMD projection; elsewhere both calls would run the scalar path.
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn register_projection_simd_matches_scalar() -> TestResult {
+    let mut rng = Lcg(77);
+    let mut splats = 0usize;
+    for case in 0..40 {
+        let (w, h) = (
+            64 + (rng.next() % 300) as usize,
+            2 + (rng.next() % 300) as usize,
+        );
+        let cam = pinhole(
+            20.0 + 900.0 * f64::from(rng.unit()),
+            20.0 + 900.0 * f64::from(rng.unit()),
+            w as f64 * f64::from(rng.unit()),
+            h as f64 * f64::from(rng.unit()),
+        );
+        let (a, b) = (f64::from(rng.unit()) - 0.5, f64::from(rng.unit()) - 0.5);
+        let rot = Mat3F64::from_cols_array(&[
+            a.cos(),
+            0.0,
+            -a.sin(),
+            a.sin() * b.sin(),
+            b.cos(),
+            a.cos() * b.sin(),
+            a.sin() * b.cos(),
+            -b.sin(),
+            a.cos() * b.cos(),
+        ]);
+        let pose = Pose3d::new(
+            rot,
+            Vec3F64::new(
+                f64::from(rng.unit()) - 0.5,
+                f64::from(rng.unit()) - 0.5,
+                2.0 * f64::from(rng.unit()) - 1.0,
+            ),
+        );
+        let radius = (rng.next() % 4) as usize;
+        let src = DepthImage::<f32>::from_size_val(sz(w, h), 0.0, 1.0)?;
+        let dst_meter = [1.0, MM, 7.0][case % 3];
+        let dst = DepthImage::<f32>::from_size_val(sz(w, h), 0.0, dst_meter)?;
+        let p = kernels::register_params(&src, &cam, &pose, &cam, radius, &dst)?;
+        let row: Vec<f32> = (0..kernels::PROJECT_BATCH)
+            .map(|_| match rng.next() % 12 {
+                0 => 0.0,
+                1 => f32::NAN,
+                2 => -1.0,
+                3 => f32::INFINITY,
+                4 => 1e-30,
+                5 => 70_000.0,
+                _ => 0.05 + 20.0 * rng.unit(),
+            })
+            .collect();
+        let len = 1 + (rng.next() as usize % kernels::PROJECT_BATCH);
+        let y = rng.next() as usize % h;
+        for u16_keys in [false, true] {
+            let mut simd = kernels::Batch::new();
+            let mut scalar = kernels::Batch::new();
+            kernels::project_batch(&row[..len], 3, y, &p, u16_keys, true, &mut simd);
+            kernels::project_batch(&row[..len], 3, y, &p, u16_keys, false, &mut scalar);
+            for j in 0..len {
+                assert_eq!(simd.key[j], scalar.key[j], "case {case} lane {j}");
+                if scalar.key[j] != 0 {
+                    assert_eq!(
+                        (simd.u[j], simd.v[j]),
+                        (scalar.u[j], scalar.v[j]),
+                        "case {case} lane {j}"
+                    );
+                }
+            }
+            splats += scalar.key[..len].iter().filter(|&&k| k != 0).count();
+        }
+    }
+    // Not vacuous: plenty of lanes are real splats.
+    assert!(splats > 200, "{splats} splats");
     Ok(())
 }
