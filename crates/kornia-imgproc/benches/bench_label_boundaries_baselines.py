@@ -28,7 +28,6 @@ import struct
 import sys
 import time
 
-import cv2
 import numpy as np
 
 SIZES = [(640, 480), (1280, 720)]
@@ -79,6 +78,7 @@ def opencv_eroder(labels: np.ndarray, radius: int, eight: bool, fill: int):
     output array and returns it; nothing is allocated per call, matching the
     Rust bench, which reuses its `dst`.
     """
+    import cv2  # deferred: `--write-fixture` needs only scikit-image
     k3 = footprint(1, eight)
     kr = footprint(radius - 1, eight) if radius > 1 else None
     dil = np.empty_like(labels)
@@ -159,6 +159,7 @@ def main() -> None:
     if len(sys.argv) == 3 and sys.argv[1] == "--write-fixture":
         write_fixture(sys.argv[2])
         return
+    import cv2
     try:
         import skimage  # noqa: F401
 
