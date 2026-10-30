@@ -9,7 +9,8 @@ use kornia_image::ImageSize;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-const MM: f32 = 0.001;
+/// `meter` of millimetre depth.
+const MM: f32 = 1000.0;
 
 /// A single pixel, a row wider than one 256-pixel tile, a height above one
 /// scan run per thread (1024 rows), and the benchmark size.
@@ -98,7 +99,7 @@ fn check_unproject<T>(
     proj: &mut CudaDepthProjector,
     st: &Arc<CudaStream>,
     data: Vec<T>,
-    scale: f32,
+    meter: f32,
     w: usize,
     h: usize,
 ) -> TestResult
@@ -106,9 +107,10 @@ where
     T: DepthSample + cudarc::driver::DeviceRepr + cudarc::driver::ValidAsZeroBits + Default,
 {
     let camera = camera_for(w, h);
-    let depth = Image::<T, 1>::new(sz(w, h), data)?;
+    let image = Image::<T, 1>::new(sz(w, h), data)?;
     let m = Image::<u8, 1>::new(sz(w, h), mask(w, h, (w + h) as u64))?;
-    let depth_dev = depth.to_cuda(st)?;
+    let depth_dev = DepthImage::new(image.to_cuda(st)?, meter)?;
+    let depth = DepthImage::new(image, meter)?;
     let m_dev = m.to_cuda(st)?;
     for use_mask in [false, true] {
         let (host_mask, dev_mask) = if use_mask {
@@ -117,10 +119,10 @@ where
             (None, None)
         };
         let (mut pts, mut ix) = (Vec::new(), Vec::new());
-        unproject_depth_into(&depth, scale, &camera, host_mask, &mut pts, Some(&mut ix))?;
+        depth.to_pointcloud_into(&camera, host_mask, &mut pts, Some(&mut ix))?;
 
         let mut cloud = proj.alloc_point_cloud(w * h, true)?;
-        proj.unproject_depth(&depth_dev, scale, &camera, dev_mask, &mut cloud)?;
+        proj.to_pointcloud_into(&depth_dev, &camera, dev_mask, &mut cloud)?;
         let dev_pts = cloud.to_host()?;
         assert_eq!(dev_pts.points(), &pts, "{w}x{h} mask={use_mask}");
         assert_eq!(
@@ -130,7 +132,7 @@ where
         );
 
         let mut plain = proj.alloc_point_cloud(w * h, false)?;
-        proj.unproject_depth(&depth_dev, scale, &camera, dev_mask, &mut plain)?;
+        proj.to_pointcloud_into(&depth_dev, &camera, dev_mask, &mut plain)?;
         assert_eq!(plain.to_host()?.points(), &pts);
         assert_eq!(plain.pixel_index_to_host()?, None);
     }
@@ -152,7 +154,7 @@ fn check_register<T>(
     proj: &mut CudaDepthProjector,
     st: &Arc<CudaStream>,
     data: Vec<T>,
-    scale: f32,
+    (meter, dst_meter): (f32, f32),
     (w, h): (usize, usize),
     (dw, dh): (usize, usize),
 ) -> TestResult
@@ -166,26 +168,21 @@ where
 {
     let src_cam = camera_for(w, h);
     let dst_cam = camera_for(dw, dh);
-    let src = Image::<T, 1>::new(sz(w, h), data)?;
-    let src_dev = src.to_cuda(st)?;
+    let image = Image::<T, 1>::new(sz(w, h), data)?;
+    let src_dev = DepthImage::new(image.to_cuda(st)?, meter)?;
+    let src = DepthImage::new(image, meter)?;
     for radius in [0, 1, 2] {
-        let mut want = Image::<T, 1>::from_size_val(sz(dw, dh), T::default())?;
-        register_depth(&src, scale, &src_cam, &pose(), &dst_cam, radius, &mut want)?;
-        let mut got_dev = Image::<T, 1>::zeros_cuda(sz(dw, dh), st)?;
-        proj.register_depth(
-            &src_dev,
-            scale,
-            &src_cam,
-            &pose(),
-            &dst_cam,
-            radius,
-            &mut got_dev,
-        )?;
-        let got = got_dev.to_host_owned()?;
+        let mut want = DepthImage::from_size_val(sz(dw, dh), T::default(), dst_meter)?;
+        src.register_into(&src_cam, &pose(), &dst_cam, radius, &mut want)?;
+        let want = want.into_inner();
+        let got_dev = Image::<T, 1>::zeros_cuda(sz(dw, dh), st)?;
+        let mut got_dev = DepthImage::new(got_dev, dst_meter)?;
+        proj.register_into(&src_dev, &src_cam, &pose(), &dst_cam, radius, &mut got_dev)?;
+        let got = got_dev.into_inner().to_host_owned()?;
         assert_eq!(
             got.as_slice(),
             want.as_slice(),
-            "{w}x{h} -> {dw}x{dh} r={radius}"
+            "{w}x{h} -> {dw}x{dh} r={radius} meters {meter} -> {dst_meter}"
         );
         // Not a vacuous comparison: when both sides span 64+ pixels the
         // rotation of `pose()` moves points by a few pixels only, so they land
@@ -208,10 +205,16 @@ fn cuda_register_matches_cpu() -> TestResult {
     for (w, h) in SIZES {
         // Same grid, a 2x upsample and a downsample.
         for (dw, dh) in [(w, h), (2 * w, 2 * h), (w.div_ceil(2), h.div_ceil(2))] {
-            check_register(&mut proj, &st, depth_u16(w, h, 3), MM, (w, h), (dw, dh))?;
+            let (src, dst) = ((w, h), (dw, dh));
+            check_register(&mut proj, &st, depth_u16(w, h, 3), (MM, MM), src, dst)?;
             let f = depth_f32(w, h, 4);
-            check_register(&mut proj, &st, f, 1.0, (w, h), (dw, dh))?;
+            check_register(&mut proj, &st, f, (1.0, 1.0), src, dst)?;
         }
+        // The output division by the destination's `1 / meter`: millimetres
+        // into quarter millimetres, metres into millimetres.
+        let (src, dst) = ((w, h), (w, h));
+        check_register(&mut proj, &st, depth_u16(w, h, 3), (MM, 4.0 * MM), src, dst)?;
+        check_register(&mut proj, &st, depth_f32(w, h, 4), (1.0, MM), src, dst)?;
     }
     Ok(())
 }
@@ -225,10 +228,13 @@ fn cuda_register_f32_identity_reproduces_input() -> TestResult {
     let (w, h) = (129, 77);
     let data = depth_f32(w, h, 5);
     let camera = camera_for(w, h);
-    let src = Image::<f32, 1>::new(sz(w, h), data.clone())?.to_cuda(&st)?;
-    let mut dst = Image::<f32, 1>::zeros_cuda(sz(w, h), &st)?;
-    proj.register_depth(&src, 1.0, &camera, &Pose3d::IDENTITY, &camera, 0, &mut dst)?;
-    let got = dst.to_host_owned()?;
+    let src = DepthImage::new(
+        Image::<f32, 1>::new(sz(w, h), data.clone())?.to_cuda(&st)?,
+        1.0,
+    )?;
+    let mut dst = DepthImage::new(Image::<f32, 1>::zeros_cuda(sz(w, h), &st)?, 1.0)?;
+    proj.register_into(&src, &camera, &Pose3d::IDENTITY, &camera, 0, &mut dst)?;
+    let got = dst.into_inner().to_host_owned()?;
     for (&o, &d) in got.as_slice().iter().zip(&data) {
         let want = if d > 0.0 && d.is_finite() { d } else { 0.0 };
         assert_eq!(o.to_bits(), want.to_bits());
@@ -241,58 +247,42 @@ fn cuda_rejects_residency_and_capacity_errors() -> TestResult {
     let st = stream()?;
     let mut proj = CudaDepthProjector::new(&st)?;
     let camera = pinhole(10.0, 10.0, 2.0, 2.0);
-    let host = Image::<u16, 1>::from_size_val(sz(4, 4), 1000)?;
-    let dev = host.to_cuda(&st)?;
+    let host = DepthImage::<u16>::from_size_val(sz(4, 4), 1000, MM)?;
+    let dev = DepthImage::new(host.image().to_cuda(&st)?, MM)?;
 
     let mut cloud = proj.alloc_point_cloud(16, false)?;
     assert!(matches!(
-        proj.unproject_depth(&host, MM, &camera, None, &mut cloud),
+        proj.to_pointcloud_into(&host, &camera, None, &mut cloud),
         Err(DepthError::Image(ImageError::HostResident))
     ));
     let mut small = proj.alloc_point_cloud(15, false)?;
     assert!(matches!(
-        proj.unproject_depth(&dev, MM, &camera, None, &mut small),
+        proj.to_pointcloud_into(&dev, &camera, None, &mut small),
         Err(DepthError::CapacityTooSmall {
             capacity: 15,
             needed: 16
         })
     ));
-    // Host functions refuse device images instead of panicking in as_slice.
+    // Host methods refuse device images instead of panicking in as_slice.
     assert!(matches!(
-        unproject_depth(&dev, MM, &camera, None),
+        dev.to_pointcloud(&camera, None),
         Err(DepthError::Image(ImageError::UnsupportedDevice))
     ));
-    let mut dst_dev = Image::<u16, 1>::zeros_cuda(sz(4, 4), &st)?;
+    let mut dst_dev = DepthImage::new(Image::<u16, 1>::zeros_cuda(sz(4, 4), &st)?, MM)?;
     assert!(matches!(
-        register_depth(
-            &dev,
-            MM,
-            &camera,
-            &Pose3d::IDENTITY,
-            &camera,
-            0,
-            &mut dst_dev
-        ),
+        dev.register_into(&camera, &Pose3d::IDENTITY, &camera, 0, &mut dst_dev),
         Err(DepthError::Image(ImageError::UnsupportedDevice))
     ));
-    let mut dst_host = Image::<u16, 1>::from_size_val(sz(4, 4), 0)?;
+    let mut dst_host = DepthImage::<u16>::from_size_val(sz(4, 4), 0, MM)?;
     assert!(matches!(
-        proj.register_depth(
-            &dev,
-            MM,
-            &camera,
-            &Pose3d::IDENTITY,
-            &camera,
-            0,
-            &mut dst_host
-        ),
+        proj.register_into(&dev, &camera, &Pose3d::IDENTITY, &camera, 0, &mut dst_host),
         Err(DepthError::Image(ImageError::HostResident))
     ));
     // A buffer from another stream is rejected.
     let other = st.context().new_stream()?;
     let mut foreign = CudaDepthProjector::new(&other)?.alloc_point_cloud(16, false)?;
     assert!(matches!(
-        proj.unproject_depth(&dev, MM, &camera, None, &mut foreign),
+        proj.to_pointcloud_into(&dev, &camera, None, &mut foreign),
         Err(DepthError::StreamMismatch)
     ));
     Ok(())

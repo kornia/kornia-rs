@@ -1,5 +1,5 @@
-//! CUDA twins of [`unproject_depth_into`](super::unproject_depth_into) and
-//! [`register_depth`](super::register_depth): device-resident images in,
+//! CUDA twins of [`DepthImage::to_pointcloud_into`] and
+//! [`DepthImage::register_into`]: device-resident depth images in,
 //! device-resident points or depth out, no host sync per call.
 //!
 //! The kernels below are textual mirrors of `kernels.rs` compiled with
@@ -26,7 +26,7 @@ use kornia_image::{Image, ImageError};
 use kornia_tensor::CudaKernel;
 
 use super::kernels::{self, RegisterParams, UnprojectParams, KIND_F32};
-use super::{check_same_size, DepthError, DepthSample};
+use super::{check_same_size, DepthError, DepthImage, DepthSample};
 use crate::camera::PinholeCamera;
 use crate::pointcloud::PointCloud;
 use crate::pose::Pose3d;
@@ -55,16 +55,17 @@ struct Reg {
     float t[3];
     float fx, fy, cx, cy;
     int width, height, radius;
+    float dst_scale;
 };
 
 /* ---- mirrors of kernels.rs; keep expression trees identical ---- */
 
-/* DepthSample::metres */
+/* DepthSample::metres; s = 1 / meter in f32 (DepthImage::metres_per_unit) */
 __device__ __forceinline__ float metres(unsigned short d, float s) { return (float)d * s; }
 __device__ __forceinline__ float metres(float d, float s) { return d * s; }
 /* kornia_imgproc::depth::is_valid_depth_f32 (the shared validity rule),
    applied to the value in metres (exact for both dtypes at an accepted
-   scale, see kernels.rs) */
+   meter, see kernels.rs) */
 __device__ __forceinline__ bool valid_z(float z) {
     return isfinite(z) && z > 0.0f;
 }
@@ -178,7 +179,8 @@ extern "C" __global__ void unproject_f32(const float* depth, const unsigned char
 /* ---- registration ---- */
 
 /* kernels.rs::project_batch + key_u16 / key_f32 + scatter_rows. Keys are
-   inverted values: nearer = larger, 0 = empty. */
+   inverted values: nearer = larger, 0 = empty. The output value is in dst's
+   units: qz / dst_scale, dst_scale = 1 / dst.meter in f32. */
 template <typename T, bool U16>
 __device__ void scatter(const T* __restrict__ src, Reg p, unsigned int* __restrict__ zb) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -202,11 +204,11 @@ __device__ void scatter(const T* __restrict__ src, Reg p, unsigned int* __restri
           && vf < (float)(p.height + p.radius))) return;
     unsigned int key;
     if (U16) {
-        float q = roundf(qz / p.src.scale);
+        float q = roundf(qz / p.dst_scale);
         if (!(q >= 1.0f && q <= 65534.0f)) return;
         key = ~(unsigned int)q;
     } else {
-        float o = qz / p.src.scale;
+        float o = qz / p.dst_scale;
         if (!valid_z(o)) return;
         key = ~__float_as_uint(o);
     }
@@ -386,7 +388,7 @@ impl CudaPointCloud {
     /// # Returns
     ///
     /// The points widened to `f64`, identical to the host
-    /// [`unproject_depth`](super::unproject_depth) of the same input.
+    /// [`DepthImage::to_pointcloud`] of the same input.
     ///
     /// # Errors
     ///
@@ -457,8 +459,8 @@ impl CudaDepthProjector {
     ///
     /// # Returns
     ///
-    /// A projector ready for [`unproject_depth`](Self::unproject_depth) and
-    /// [`register_depth`](Self::register_depth).
+    /// A projector ready for [`to_pointcloud_into`](Self::to_pointcloud_into)
+    /// and [`register_into`](Self::register_into).
     ///
     /// # Errors
     ///
@@ -470,7 +472,7 @@ impl CudaDepthProjector {
     /// ```no_run
     /// use cudarc::driver::CudaContext;
     /// use kornia_3d::camera::PinholeCamera;
-    /// use kornia_3d::depth::CudaDepthProjector;
+    /// use kornia_3d::depth::{CudaDepthProjector, DepthImage};
     /// use kornia_image::{Image, ImageSize};
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -482,9 +484,11 @@ impl CudaDepthProjector {
     ///     k1: 0.0, k2: 0.0, p1: 0.0, p2: 0.0,
     /// };
     /// let size = ImageSize { width: 640, height: 480 };
+    /// // Millimetres (`meter = 1000`), uploaded to the device.
     /// let depth = Image::<u16, 1>::from_size_val(size, 1000)?.to_cuda(&stream)?;
+    /// let depth = DepthImage::new(depth, 1000.0)?;
     /// let mut cloud = projector.alloc_point_cloud(size.width * size.height, false)?;
-    /// projector.unproject_depth(&depth, 0.001, &camera, None, &mut cloud)?;
+    /// projector.to_pointcloud_into(&depth, &camera, None, &mut cloud)?;
     /// assert_eq!(cloud.to_host()?.len(), size.width * size.height);
     /// # Ok(())
     /// # }
@@ -565,13 +569,13 @@ impl CudaDepthProjector {
         })
     }
 
-    /// Device twin of [`unproject_depth_into`](super::unproject_depth_into):
-    /// same points, same order, same pixel indices.
+    /// Device twin of [`DepthImage::to_pointcloud_into`]: same points, same
+    /// order, same pixel indices.
     ///
     /// # Arguments
     ///
-    /// * `depth` - Device-resident `u16` or `f32` depth image.
-    /// * `metres_per_unit` - Metres per depth unit.
+    /// * `depth` - Device-resident `u16` or `f32` depth image and its
+    ///   `meter`.
     /// * `camera` - Pinhole intrinsics of the depth image (distortion ignored).
     /// * `mask` - Optional device-resident `u8` mask of the same size;
     ///   non-zero = keep.
@@ -584,7 +588,7 @@ impl CudaDepthProjector {
     ///
     /// # Errors
     ///
-    /// * The argument errors of [`unproject_depth_into`](super::unproject_depth_into).
+    /// * The argument errors of [`DepthImage::to_pointcloud_into`].
     /// * [`DepthError::CapacityTooSmall`] if `out` holds fewer points than
     ///   depth pixels; [`DepthError::StreamMismatch`] if `out` is from
     ///   another projector stream.
@@ -592,10 +596,9 @@ impl CudaDepthProjector {
     /// * [`DepthError::Image`] with [`ImageError::HostResident`] for a host
     ///   image, [`ImageError::DeviceMismatch`] for an image on another
     ///   device, [`ImageError::Cuda`] on a launch failure.
-    pub fn unproject_depth<T>(
+    pub fn to_pointcloud_into<T>(
         &mut self,
-        depth: &Image<T, 1>,
-        metres_per_unit: f32,
+        depth: &DepthImage<T>,
         camera: &PinholeCamera,
         mask: Option<&Image<u8, 1>>,
         out: &mut CudaPointCloud,
@@ -604,9 +607,9 @@ impl CudaDepthProjector {
         T: DepthSample + DeviceRepr + ValidAsZeroBits + Default,
     {
         let (w, h) = (depth.width(), depth.height());
-        let p = kernels::unproject_params::<T>(camera, metres_per_unit, w, h)?;
+        let p = kernels::unproject_params(camera, depth)?;
         if let Some(m) = mask {
-            check_same_size(depth, m)?;
+            check_same_size(depth.image(), m)?;
         }
         // Point counts and pixel indices are u32 on the device.
         kernels::check_pixel_index(w, h)?;
@@ -627,7 +630,7 @@ impl CudaDepthProjector {
             return Err(DepthError::StreamMismatch);
         }
         let ordinal = self.stream.context().ordinal();
-        let d = device_slice(depth, ordinal)?;
+        let d = device_slice(depth.image(), ordinal)?;
         let m = match mask {
             Some(m) => Some(device_slice(m, ordinal)?),
             None => None,
@@ -662,19 +665,20 @@ impl CudaDepthProjector {
         Ok(())
     }
 
-    /// Device twin of [`register_depth`](super::register_depth): identical
-    /// destination depth.
+    /// Device twin of [`DepthImage::register_into`]: identical destination
+    /// depth.
     ///
     /// # Arguments
     ///
-    /// * `src` - Device-resident `u16` or `f32` source depth image.
-    /// * `metres_per_unit` - Metres per depth unit of `src` and `dst`.
-    /// * `src_camera` - Pinhole intrinsics of `src` (distortion ignored).
+    /// * `src` - Device-resident `u16` or `f32` source depth image and its
+    ///   `meter`.
+    /// * `camera` - Pinhole intrinsics of `src` (distortion ignored).
     /// * `dst_from_src` - Rigid transform from the source to the
     ///   destination camera frame.
     /// * `dst_camera` - Pinhole intrinsics of the destination grid.
     /// * `splat_radius` - Splat radius, `0` to [`super::MAX_SPLAT_RADIUS`].
-    /// * `dst` - Device-resident destination image; fully overwritten.
+    /// * `dst` - Device-resident destination image, written in its own
+    ///   `meter`; fully overwritten.
     ///
     /// # Returns
     ///
@@ -682,34 +686,24 @@ impl CudaDepthProjector {
     ///
     /// # Errors
     ///
-    /// * The argument errors of [`register_depth`](super::register_depth).
+    /// * The argument errors of [`DepthImage::register_into`].
     /// * [`DepthError::ImageTooLarge`] above `u32::MAX` destination pixels.
     /// * [`DepthError::Image`] with [`ImageError::HostResident`] for a host
     ///   image, [`ImageError::DeviceMismatch`] for an image on another
     ///   device, [`ImageError::Cuda`] on a launch failure.
-    #[allow(clippy::too_many_arguments)]
-    pub fn register_depth<T>(
+    pub fn register_into<T>(
         &mut self,
-        src: &Image<T, 1>,
-        metres_per_unit: f32,
-        src_camera: &PinholeCamera,
+        src: &DepthImage<T>,
+        camera: &PinholeCamera,
         dst_from_src: &Pose3d,
         dst_camera: &PinholeCamera,
         splat_radius: usize,
-        dst: &mut Image<T, 1>,
+        dst: &mut DepthImage<T>,
     ) -> Result<(), DepthError>
     where
         T: DepthSample + DeviceRepr + ValidAsZeroBits + Default,
     {
-        let p = kernels::register_params::<T>(
-            src_camera,
-            metres_per_unit,
-            dst_from_src,
-            dst_camera,
-            splat_radius,
-            src.size(),
-            dst.size(),
-        )?;
+        let p = kernels::register_params(src, camera, dst_from_src, dst_camera, splat_radius, dst)?;
         let n = dst.width() * dst.height();
         if n > u32::MAX as usize {
             return Err(DepthError::ImageTooLarge {
@@ -718,12 +712,13 @@ impl CudaDepthProjector {
             });
         }
         let ordinal = self.stream.context().ordinal();
-        let s = device_slice(src, ordinal)?;
-        check_device(dst, ordinal)?;
+        let s = device_slice(src.image(), ordinal)?;
+        check_device(dst.image(), ordinal)?;
         if n == 0 {
             return Ok(());
         }
         let d = dst
+            .image_mut()
             .as_cudaslice_mut()
             .ok_or(DepthError::Image(ImageError::HostResident))?;
         let st = self.stream.clone();
