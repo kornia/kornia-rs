@@ -24,6 +24,7 @@ use thiserror::Error;
 
 /// Error types for PnP solvers.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum PnPError {
     /// Invalid input data - insufficient correspondences for the specific solver.
     #[error("PnP solver requires at least {required} 2D-3D correspondences, got {actual}")]
@@ -50,6 +51,10 @@ pub enum PnPError {
     /// Singular value decomposition failed.
     #[error("SVD computation failed: {0}")]
     SvdFailed(String),
+
+    /// An invalid or unsupported configuration value was supplied.
+    #[error("Invalid PnP parameter: {0}")]
+    InvalidParams(String),
 
     /// All returned poses placed the points behind the camera.
     #[error("Cheirality check failed: all mathematically valid poses place the 3D points behind the camera lens.")]
