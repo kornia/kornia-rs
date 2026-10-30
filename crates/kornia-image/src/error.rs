@@ -124,6 +124,15 @@ pub enum ImageError {
         got: crate::image::PixelFormat,
     },
 
+    /// A radius is larger than an operation supports for the image size.
+    #[error("radius {radius} exceeds the supported maximum {max} for this image")]
+    RadiusTooLarge {
+        /// The requested radius.
+        radius: usize,
+        /// The largest radius the operation supports.
+        max: usize,
+    },
+
     /// A DLPack tensor had an invalid or unsupported shape (e.g. ndim != 3, non-positive dim).
     #[cfg(feature = "dlpack")]
     #[error("dlpack shape error: {0}")]

@@ -52,6 +52,10 @@ pub mod histogram;
 /// Median-blur sorting-network kernels (byte-exact vs the CPU path, cv2
 /// and VPI).
 pub mod median;
+
+/// Label-boundary erosion kernels (identical to the CPU
+/// `morphology::erode_label_boundaries`).
+pub(crate) mod label_boundaries;
 /// Native CUDA u8 morphology kernels (dilate / erode, byte-exact with the
 /// CPU ops).
 pub mod morphology;

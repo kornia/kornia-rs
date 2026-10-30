@@ -115,6 +115,10 @@ name = "bench_median"
 
 [[bench]]
 harness = false
+name = "bench_label_boundaries"
+
+[[bench]]
+harness = false
 name = "bench_distance_transform"
 required-features = ["opencv_bench"]
 
