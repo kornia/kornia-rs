@@ -4,7 +4,7 @@ use std::mem::MaybeUninit;
 
 use rayon::prelude::*;
 
-use super::{DepthError, DepthSample};
+use super::{DepthError, DepthImage, DepthSample};
 use crate::camera::PinholeCamera;
 
 /// Upper bound on the rayon tasks of one unprojection: the per-task counts
@@ -22,7 +22,7 @@ pub(crate) struct UnprojectParams {
     pub cx: f32,
     /// Principal point y (pixels).
     pub cy: f32,
-    /// Metres per depth unit.
+    /// Metres per depth unit, `1 / meter` in `f32`.
     pub scale: f32,
     /// Depth image width.
     pub width: i32,
@@ -35,61 +35,89 @@ pub(crate) struct UnprojectParams {
 // positive.
 //
 // The kernels also apply `is_valid_depth_f32` to a value in metres
-// (`d · metres_per_unit`): for a finite positive
-// scale `s`, the product is valid iff the sample is valid and `d · s`
-// neither overflows nor underflows to `0`, and for a `u16` sample (whose
-// scale passed [`DepthSample::scale_is_valid`]) iff the sample is non-zero.
+// (`d · s`, `s = 1 / meter`): for a finite positive `s`, the product is
+// valid iff the sample is valid and `d · s` neither overflows nor
+// underflows to `0`, and for a `u16` sample (whose `meter` passed
+// [`DepthSample::meter_is_valid`]) iff the sample is non-zero.
 pub(crate) use kornia_imgproc::depth::{is_valid_depth_f32, is_valid_depth_u16};
 
-/// Checked `i32` image dimensions.
-fn dims_i32(width: usize, height: usize) -> Result<(i32, i32), DepthError> {
-    let fits = |v: usize| i32::try_from(v).is_ok();
-    if !fits(width) || !fits(height) {
-        return Err(DepthError::ImageTooLarge { width, height });
-    }
-    Ok((width as i32, height as i32))
+/// Image dimensions checked to fit `i32`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Dims {
+    /// Width in pixels.
+    pub width: i32,
+    /// Height in pixels.
+    pub height: i32,
 }
 
-/// Rejects a camera whose `f32` constants would not be finite and non-zero.
-fn check_camera(camera: &PinholeCamera) -> Result<(f32, f32, f32, f32), DepthError> {
-    let inv_fx = (1.0 / camera.fx) as f32;
-    let inv_fy = (1.0 / camera.fy) as f32;
-    let (cx, cy) = (camera.cx as f32, camera.cy as f32);
-    let finite = [camera.fx as f32, camera.fy as f32, inv_fx, inv_fy, cx, cy]
-        .iter()
-        .all(|v| v.is_finite());
-    if !finite || inv_fx == 0.0 || inv_fy == 0.0 {
-        return Err(DepthError::InvalidIntrinsics {
-            fx: camera.fx,
-            fy: camera.fy,
-            cx: camera.cx,
-            cy: camera.cy,
-        });
+impl Dims {
+    /// Checks that both sides fit `i32`.
+    fn new(width: usize, height: usize) -> Result<Self, DepthError> {
+        match (i32::try_from(width), i32::try_from(height)) {
+            (Ok(width), Ok(height)) => Ok(Self { width, height }),
+            _ => Err(DepthError::ImageTooLarge { width, height }),
+        }
     }
-    Ok((inv_fx, inv_fy, cx, cy))
 }
 
-/// Builds the unprojection constants of a `T` depth image after validating
-/// every argument.
+/// The `f32` pinhole constants of the CPU kernels: reciprocal focal lengths
+/// and principal point, all finite and the reciprocals non-zero.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Intrinsics32 {
+    /// `1 / fx`.
+    pub inv_fx: f32,
+    /// `1 / fy`.
+    pub inv_fy: f32,
+    /// Principal point x (pixels).
+    pub cx: f32,
+    /// Principal point y (pixels).
+    pub cy: f32,
+}
+
+impl Intrinsics32 {
+    /// Rejects a camera whose `f32` constants would not be finite and
+    /// non-zero.
+    fn new(camera: &PinholeCamera) -> Result<Self, DepthError> {
+        let inv_fx = (1.0 / camera.fx) as f32;
+        let inv_fy = (1.0 / camera.fy) as f32;
+        let (cx, cy) = (camera.cx as f32, camera.cy as f32);
+        let finite = [camera.fx as f32, camera.fy as f32, inv_fx, inv_fy, cx, cy]
+            .iter()
+            .all(|v| v.is_finite());
+        if !finite || inv_fx == 0.0 || inv_fy == 0.0 {
+            return Err(DepthError::InvalidIntrinsics {
+                fx: camera.fx,
+                fy: camera.fy,
+                cx: camera.cx,
+                cy: camera.cy,
+            });
+        }
+        Ok(Self {
+            inv_fx,
+            inv_fy,
+            cx,
+            cy,
+        })
+    }
+}
+
+/// Builds the unprojection constants of `depth` after validating the
+/// camera and the image size; `depth`'s `meter` was validated by its
+/// constructor.
 pub(crate) fn unproject_params<T: DepthSample>(
     camera: &PinholeCamera,
-    metres_per_unit: f32,
-    width: usize,
-    height: usize,
+    depth: &DepthImage<T>,
 ) -> Result<UnprojectParams, DepthError> {
-    if !T::scale_is_valid(metres_per_unit) {
-        return Err(DepthError::InvalidDepthScale(metres_per_unit));
-    }
-    let (inv_fx, inv_fy, cx, cy) = check_camera(camera)?;
-    let (w, h) = dims_i32(width, height)?;
+    let k = Intrinsics32::new(camera)?;
+    let dims = Dims::new(depth.width(), depth.height())?;
     Ok(UnprojectParams {
-        inv_fx,
-        inv_fy,
-        cx,
-        cy,
-        scale: metres_per_unit,
-        width: w,
-        height: h,
+        inv_fx: k.inv_fx,
+        inv_fy: k.inv_fy,
+        cx: k.cx,
+        cy: k.cy,
+        scale: depth.metres_per_unit(),
+        width: dims.width,
+        height: dims.height,
     })
 }
 
