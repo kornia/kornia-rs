@@ -14,6 +14,30 @@ struct FrameBuffer {
     caps: gstreamer::Caps,
 }
 
+#[derive(Clone, Copy)]
+enum GrabFormat {
+    Rgb8,
+    Gray8,
+}
+
+impl From<GrabFormat> for gstreamer_video::VideoFormat {
+    fn from(format: GrabFormat) -> Self {
+        match format {
+            GrabFormat::Rgb8 => Self::Rgb,
+            GrabFormat::Gray8 => Self::Gray8,
+        }
+    }
+}
+
+impl std::fmt::Display for GrabFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Rgb8 => "grab_rgb8",
+            Self::Gray8 => "grab_gray8",
+        })
+    }
+}
+
 /// A enum representing the state of [VideoReader] pipeline.
 ///
 /// For more info, refer to <https://gstreamer.freedesktop.org/documentation/additional/design/states.html?gi-language=c>
@@ -150,6 +174,52 @@ impl StreamCapture {
     /// [`StreamCaptureError::GetBufferError`] if it cannot be mapped, and
     /// [`StreamCaptureError::MutexPoisonError`] if the frame queue lock is poisoned.
     pub fn grab_rgb8(&mut self) -> Result<Option<Image<u8, 3>>, StreamCaptureError> {
+        self.grab_image::<3>(GrabFormat::Rgb8)
+    }
+
+    /// Grabs the oldest captured frame as a grayscale image.
+    ///
+    /// Tightly packed rows are borrowed read-only from the GStreamer buffer. Padded rows are
+    /// copied into an owned image. Call `.clone()` for a writable image in either case.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The mutable stream capture.
+    ///
+    /// # Returns
+    ///
+    /// The oldest captured image, or `None` if no frame is buffered yet.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StreamCaptureError::InvalidImageFormat`] if the frame is not `GRAY8` or its
+    /// layout is invalid. Other caps, mapping, buffer size, and lock errors are returned as by
+    /// [`Self::grab_rgb8`].
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use kornia_io::gstreamer::StreamCapture;
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let pipeline = "videotestsrc ! video/x-raw,format=GRAY8 ! appsink name=sink sync=false";
+    /// let mut capture = StreamCapture::new(pipeline)?;
+    /// capture.start()?;
+    /// if let Some(frame) = capture.grab_gray8()? {
+    ///     println!("{}x{}", frame.width(), frame.height());
+    /// }
+    /// capture.close()?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn grab_gray8(&mut self) -> Result<Option<Image<u8, 1>>, StreamCaptureError> {
+        self.grab_image::<1>(GrabFormat::Gray8)
+    }
+
+    fn grab_image<const C: usize>(
+        &mut self,
+        grab_format: GrabFormat,
+    ) -> Result<Option<Image<u8, C>>, StreamCaptureError> {
         // Pop in its own statement so the lock is released before the frame is mapped or
         // repacked: the appsink streaming thread needs it to push the next sample.
         let frame_buffer = self
@@ -163,9 +233,10 @@ impl StreamCapture {
 
         let info = gstreamer_video::VideoInfo::from_caps(&caps)
             .map_err(|e| StreamCaptureError::GetCapsError(e.to_string()))?;
-        if info.format() != gstreamer_video::VideoFormat::Rgb {
+        let expected_format: gstreamer_video::VideoFormat = grab_format.into();
+        if info.format() != expected_format {
             return Err(StreamCaptureError::InvalidImageFormat(format!(
-                "grab_rgb8 needs RGB frames, but the pipeline produces {} frames",
+                "{grab_format} needs {expected_format} frames, but the pipeline produces {} frames",
                 info.format()
             )));
         }
@@ -211,7 +282,7 @@ impl StreamCapture {
 
         // A missing framerate means a variable or unknown rate, which GStreamer writes as 0/1.
         // Failing here would silently end the stream: errors in this callback never reach the
-        // caller, so every other check on the caps happens in `grab_rgb8`.
+        // caller, so every other check on the caps happens in `grab_image`.
         let fps = caps
             .structure(0)
             .and_then(|structure| structure.get::<gstreamer::Fraction>("framerate").ok())

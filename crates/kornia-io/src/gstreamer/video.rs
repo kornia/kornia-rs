@@ -508,6 +508,48 @@ impl VideoReader {
             .map_err(VideoReaderError::StreamCaptureError)
     }
 
+    /// Grabs the oldest decoded frame as a grayscale image.
+    ///
+    /// The reader must have been created with [`ImageFormat::Mono8`]. As with
+    /// [`StreamCapture::grab_gray8`], tightly packed rows are borrowed read-only and padded
+    /// rows are copied. Call `.clone()` for a writable image.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The mutable video reader.
+    ///
+    /// # Returns
+    ///
+    /// The oldest decoded image, or `None` if no frame is buffered yet.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VideoReaderError::StreamCaptureError`] wrapping
+    /// [`StreamCaptureError::InvalidImageFormat`] if the pipeline produces a different format,
+    /// or any other error of [`StreamCapture::grab_gray8`].
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use kornia_io::gstreamer::video::{ImageFormat, VideoReader};
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut reader = VideoReader::new("input.mp4", ImageFormat::Mono8)?;
+    /// reader.start()?;
+    /// if let Some(frame) = reader.grab_gray8()? {
+    ///     println!("{}x{}", frame.width(), frame.height());
+    /// }
+    /// reader.close()?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[inline]
+    pub fn grab_gray8(&mut self) -> Result<Option<Image<u8, 1>>, VideoReaderError> {
+        self.0
+            .grab_gray8()
+            .map_err(VideoReaderError::StreamCaptureError)
+    }
+
     /// Gets the current state of the video pipeline
     #[inline]
     pub fn get_state(&self) -> StreamerState {
@@ -726,6 +768,38 @@ mod tests {
         writer.start()?;
         write_and_close(writer, &[0, 40, 80, 120, 160])?;
         assert_eq!(frame_values(&file_path)?, [0, 40, 80, 120, 160]);
+        Ok(())
+    }
+
+    #[test]
+    fn video_reader_grabs_mono8_frames() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp_dir = tempfile::tempdir()?;
+        let file_path = tmp_dir.path().join("gray-read.mov");
+        let mut writer = VideoWriter::from_pipeline_description(
+            RAW_MOV,
+            &file_path,
+            ImageFormat::Rgb8,
+            30,
+            SIZE,
+        )?;
+        writer.start()?;
+        write_and_close(writer, &[80])?;
+
+        let mut reader = VideoReader::new(&file_path, ImageFormat::Mono8)?;
+        assert!(reader.grab_gray8()?.is_none());
+        reader.start()?;
+        let mut image = None;
+        for _ in 0..200 {
+            image = reader.grab_gray8()?;
+            if image.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        reader.close()?;
+        let image = image.ok_or("no grayscale frame received")?;
+        assert_eq!(image.size(), SIZE);
+        assert_eq!(image.as_slice(), vec![80; SIZE.width * SIZE.height]);
         Ok(())
     }
 
