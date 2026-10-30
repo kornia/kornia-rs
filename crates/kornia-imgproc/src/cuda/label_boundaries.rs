@@ -50,6 +50,9 @@ const V_BLOCK: u32 = 128;
 /// Minimum rows per vertical segment; a segment re-reads `t` rows on each
 /// side, so segments are at least `t` rows tall to bound that overhead.
 const V_SEGMENT_MIN_ROWS: i32 = 16;
+/// Largest image width: the horizontal kernel's last `H_BLOCK * H_ITEMS`
+/// tile must end inside `i32`.
+const MAX_WIDTH: usize = i32::MAX as usize - (H_BLOCK * H_ITEMS) as usize;
 /// Largest `gridDim.y` of a CUDA launch.
 const MAX_GRID_Y: u32 = 65535;
 /// Threads per block of the horizontal kernel (one block per row).
@@ -445,6 +448,13 @@ fn dims_i32(width: usize, height: usize) -> Result<(i32, i32), CudaLabelBoundary
     }
     let w = i32::try_from(width)
         .map_err(|_| CudaLabelBoundaryError::Cuda("width exceeds i32".into()))?;
+    // Tile coordinates (`x + TILE`, halo offsets) are `int` in the kernels;
+    // keep the last tile's end representable.
+    if width > MAX_WIDTH {
+        return Err(CudaLabelBoundaryError::Cuda(
+            "width too large for the label-boundary kernels".into(),
+        ));
+    }
     let h = i32::try_from(height)
         .map_err(|_| CudaLabelBoundaryError::Cuda("height exceeds i32".into()))?;
     Ok((w, h))
@@ -566,6 +576,14 @@ mod tests {
         assert!(vertical_segment_rows(i32::MAX, 9).is_err());
         assert!(vertical_segment_rows(i32::MAX - 60_000, 65_534).is_err());
         assert!(vertical_segment_rows(i32::MAX - 70_000, 65_534).is_ok());
+        Ok(())
+    }
+
+    #[test]
+    fn dims_reject_widths_past_the_last_tile() -> Result<(), CudaLabelBoundaryError> {
+        assert_eq!(dims_i32(MAX_WIDTH, 1)?, (MAX_WIDTH as i32, 1));
+        assert!(dims_i32(MAX_WIDTH + 1, 1).is_err());
+        assert!(dims_i32(i32::MAX as usize, 1).is_err());
         Ok(())
     }
 }
