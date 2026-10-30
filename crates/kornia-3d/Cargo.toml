@@ -44,7 +44,6 @@ log = { workspace = true }
 nalgebra = { workspace = true }
 rand = { workspace = true }
 rayon = { workspace = true }
-rustc-hash = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 

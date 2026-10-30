@@ -1,13 +1,13 @@
-use rustc_hash::FxHashMap;
+use std::collections::HashMap;
 
 use super::{VoxelConnectivity, VoxelKey, VoxelLayout};
 
 /// A sparse voxel grid: one value of type `T` per occupied voxel, stored in
-/// a hash map keyed by [`VoxelKey`] (FxHash: fast and seed-free).
+/// a [`HashMap`] keyed by [`VoxelKey`].
 ///
 /// [`iter`](Self::iter) visits the voxels in hash order, which is not part
-/// of the API; [`sorted_keys`](Self::sorted_keys) gives a deterministic
-/// order.
+/// of the API and changes between runs (the map is randomly seeded);
+/// [`sorted_keys`](Self::sorted_keys) gives a deterministic order.
 ///
 /// # Example
 ///
@@ -27,7 +27,7 @@ use super::{VoxelConnectivity, VoxelKey, VoxelLayout};
 #[derive(Debug, Clone)]
 pub struct VoxelGrid<T> {
     layout: VoxelLayout,
-    cells: FxHashMap<VoxelKey, T>,
+    cells: HashMap<VoxelKey, T>,
 }
 
 impl<T> VoxelGrid<T> {
@@ -47,7 +47,7 @@ impl<T> VoxelGrid<T> {
     pub fn new(layout: VoxelLayout) -> Self {
         Self {
             layout,
-            cells: FxHashMap::default(),
+            cells: HashMap::new(),
         }
     }
 
@@ -68,7 +68,7 @@ impl<T> VoxelGrid<T> {
     pub fn with_capacity(layout: VoxelLayout, capacity: usize) -> Self {
         Self {
             layout,
-            cells: FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
+            cells: HashMap::with_capacity(capacity),
         }
     }
 

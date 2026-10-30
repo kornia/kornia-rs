@@ -5,13 +5,15 @@
 //! (`super::cuda`) sorts the same words and reduces the runs with the same
 //! expressions.
 
+use std::borrow::Cow;
+
 use rayon::prelude::*;
 
 use super::{
     axis_centre, axis_key, VoxelConnectivity, VoxelError, VoxelKey, VoxelLayout, MAX_VOXEL_POINTS,
 };
-use crate::pointcloud::filter::{check_attributes, select_points};
-use crate::pointcloud::PointCloud;
+use crate::pointcloud::filter::check_attributes;
+use crate::pointcloud::{PointCloud, PointCloudView};
 
 /// Smallest number of points or voxels handed to one rayon task.
 const MIN_ITEMS_PER_TASK: usize = 4096;
@@ -175,12 +177,64 @@ impl VoxelDownsampler {
     /// Sort words of voxel `v`, in ascending point index.
     #[inline]
     fn run(&self, v: usize) -> &[u128] {
-        &self.words[self.starts[v] as usize..self.starts[v + 1] as usize]
+        voxel_run(&self.words, &self.starts, v)
+    }
+
+    /// Groups `cloud` by the voxels of `layout` into this scratch and
+    /// returns the grouping as a [`VoxelView`] that borrows it: a reused
+    /// scratch does not reallocate its buffers for clouds no larger than an
+    /// earlier one. See [`VoxelView`] for the layout of the view.
+    ///
+    /// # Arguments
+    ///
+    /// * `cloud` - Input cloud; borrowed by the view, nothing is copied.
+    /// * `layout` - Voxel size and origin.
+    ///
+    /// # Returns
+    ///
+    /// The cloud grouped by voxel, voxels in ascending key order.
+    ///
+    /// # Errors
+    ///
+    /// * [`VoxelError::PointOutOfRange`] for a non-finite point or a key
+    ///   outside `i32` (the smallest such index).
+    /// * [`VoxelError::TooManyPoints`] above [`MAX_VOXEL_POINTS`] points.
+    /// * [`VoxelError::Filter`] if the colors or normals do not have one
+    ///   entry per point.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_3d::pointcloud::PointCloud;
+    /// use kornia_3d::voxel::{VoxelDownsampler, VoxelLayout};
+    ///
+    /// let layout = VoxelLayout::new(1.0, [0.0; 3])?;
+    /// let mut ds = VoxelDownsampler::new();
+    /// for (points, voxels) in [(vec![[0.5; 3], [3.5; 3], [0.2; 3]], 2), (vec![[0.5; 3]], 1)] {
+    ///     let cloud = PointCloud::new(points, None, None);
+    ///     let view = ds.view(&cloud, &layout)?;
+    ///     assert_eq!(view.len(), voxels);
+    /// }
+    /// # Ok::<(), kornia_3d::voxel::VoxelError>(())
+    /// ```
+    pub fn view<'a>(
+        &'a mut self,
+        cloud: &'a PointCloud,
+        layout: &VoxelLayout,
+    ) -> Result<VoxelView<'a>, VoxelError> {
+        check_attributes(cloud)?;
+        self.sort_and_segment(cloud.points(), layout)?;
+        Ok(VoxelView {
+            cloud,
+            layout: *layout,
+            words: Cow::Borrowed(&self.words),
+            starts: Cow::Borrowed(&self.starts),
+        })
     }
 
     /// The representative point of voxel `v` and the index of the point it
     /// came from (for [`DownsampleMode::Centroid`], the lowest index).
-    /// Mirrored by `voxel_reduce` in the CUDA source.
+    #[inline]
     fn reduce(
         &self,
         v: usize,
@@ -188,45 +242,7 @@ impl VoxelDownsampler {
         layout: &VoxelLayout,
         mode: DownsampleMode,
     ) -> ([f64; 3], u32) {
-        let run = self.run(v);
-        let first = run[0];
-        match mode {
-            DownsampleMode::First => (points[index_from_word(first)], first as u32),
-            DownsampleMode::Centroid => {
-                let mut sum = [0.0f64; 3];
-                for &w in run {
-                    let p = points[index_from_word(w)];
-                    sum[0] += p[0];
-                    sum[1] += p[1];
-                    sum[2] += p[2];
-                }
-                let c = run.len() as f64;
-                ([sum[0] / c, sum[1] / c, sum[2] / c], first as u32)
-            }
-            DownsampleMode::NearestToCentre => {
-                let key = key_from_word(first);
-                let (s, o) = (layout.voxel_size(), layout.origin());
-                let centre = [
-                    axis_centre(key[0], o[0], s),
-                    axis_centre(key[1], o[1], s),
-                    axis_centre(key[2], o[2], s),
-                ];
-                let dist = |p: &[f64; 3]| {
-                    let d = [p[0] - centre[0], p[1] - centre[1], p[2] - centre[2]];
-                    d[0] * d[0] + d[1] * d[1] + d[2] * d[2]
-                };
-                let mut best = first;
-                let mut best_d = dist(&points[index_from_word(first)]);
-                for &w in &run[1..] {
-                    let d = dist(&points[index_from_word(w)]);
-                    if d < best_d {
-                        best_d = d;
-                        best = w;
-                    }
-                }
-                (points[index_from_word(best)], best as u32)
-            }
-        }
+        reduce_run(self.run(v), points, layout, mode)
     }
 
     /// Downsamples `points` to one point per occupied voxel, into
@@ -365,6 +381,63 @@ impl VoxelDownsampler {
     }
 }
 
+/// Sort words of voxel `v`: `words[starts[v]..starts[v + 1]]`.
+#[inline]
+fn voxel_run<'w>(words: &'w [u128], starts: &[u32], v: usize) -> &'w [u128] {
+    &words[starts[v] as usize..starts[v + 1] as usize]
+}
+
+/// The representative point of the voxel whose sort words are `run`
+/// (non-empty, ascending index) and the index of the point it came from
+/// (for [`DownsampleMode::Centroid`], the lowest index). Mirrored by
+/// `voxel_reduce` in the CUDA source.
+#[inline]
+fn reduce_run(
+    run: &[u128],
+    points: &[[f64; 3]],
+    layout: &VoxelLayout,
+    mode: DownsampleMode,
+) -> ([f64; 3], u32) {
+    let first = run[0];
+    match mode {
+        DownsampleMode::First => (points[index_from_word(first)], first as u32),
+        DownsampleMode::Centroid => {
+            let mut sum = [0.0f64; 3];
+            for &w in run {
+                let p = points[index_from_word(w)];
+                sum[0] += p[0];
+                sum[1] += p[1];
+                sum[2] += p[2];
+            }
+            let c = run.len() as f64;
+            ([sum[0] / c, sum[1] / c, sum[2] / c], first as u32)
+        }
+        DownsampleMode::NearestToCentre => {
+            let key = key_from_word(first);
+            let (s, o) = (layout.voxel_size(), layout.origin());
+            let centre = [
+                axis_centre(key[0], o[0], s),
+                axis_centre(key[1], o[1], s),
+                axis_centre(key[2], o[2], s),
+            ];
+            let dist = |p: &[f64; 3]| {
+                let d = [p[0] - centre[0], p[1] - centre[1], p[2] - centre[2]];
+                d[0] * d[0] + d[1] * d[1] + d[2] * d[2]
+            };
+            let mut best = first;
+            let mut best_d = dist(&points[index_from_word(first)]);
+            for &w in &run[1..] {
+                let d = dist(&points[index_from_word(w)]);
+                if d < best_d {
+                    best_d = d;
+                    best = w;
+                }
+            }
+            (points[index_from_word(best)], best as u32)
+        }
+    }
+}
+
 /// Occupied neighbours of the voxel with packed biased key `key` among the
 /// sorted unique keys `unique`, counting offsets with L1 norm `1..=max_l1`.
 ///
@@ -410,13 +483,410 @@ fn adjacent_occupied(unique: &[u128], key: u128, max_l1: i32, hints: &mut [usize
     count
 }
 
+/// A point cloud grouped by voxel, borrowing the cloud: the voxels in
+/// ascending key order (lexicographic `(x, y, z)`), and for each voxel the
+/// indices of its points in ascending order. No point data is copied.
+///
+/// Internally this is the sort of [`VoxelDownsampler`]: one sort word per
+/// point (voxel key, then point index), sorted, plus the start of each
+/// voxel's run, a compressed list of point indices per voxel.
+///
+/// Downsampling is a reduction over this grouping:
+/// [`first`](Self::first) and [`nearest`](Self::nearest) pick one input
+/// point per voxel and return a [`PointCloudView`] of the cloud (zero copy);
+/// [`centroids`](Self::centroids) averages each voxel and returns an owned
+/// [`PointCloud`], since the averages are new points.
+///
+/// Built by [`VoxelView::new`] (owns its buffers) or
+/// [`VoxelDownsampler::view`] (borrows the scratch, for reuse across
+/// calls). [`voxel_downsample`] is the one-call form returning an owned
+/// cloud.
+///
+/// # Example
+///
+/// ```
+/// use kornia_3d::pointcloud::PointCloud;
+/// use kornia_3d::voxel::{VoxelLayout, VoxelView};
+///
+/// let points = vec![[1.5, 0.5, 0.5], [0.25, 0.5, 0.5], [0.75, 0.5, 0.5]];
+/// let cloud = PointCloud::new(points, Some(vec![[0; 3], [10; 3], [20; 3]]), None);
+/// let view = VoxelView::new(&cloud, &VoxelLayout::new(1.0, [0.0; 3])?)?;
+/// assert_eq!(view.keys().collect::<Vec<_>>(), vec![[0, 0, 0], [1, 0, 0]]);
+/// assert_eq!(view.voxel(0).map(|v| v.collect::<Vec<_>>()), Some(vec![1, 2]));
+///
+/// let first = view.first();
+/// assert_eq!(first.indices(), &[1, 0]);
+/// assert_eq!(first.color(0), Some(&[10; 3]));
+///
+/// let centroids = view.centroids();
+/// assert_eq!(centroids.points(), &vec![[0.5, 0.5, 0.5], [1.5, 0.5, 0.5]]);
+/// assert_eq!(centroids.colors(), Some(&vec![[15; 3], [0; 3]]));
+/// # Ok::<(), kornia_3d::voxel::VoxelError>(())
+/// ```
+#[derive(Debug, Clone)]
+pub struct VoxelView<'a> {
+    cloud: &'a PointCloud,
+    layout: VoxelLayout,
+    /// Sorted sort words, one per point.
+    words: Cow<'a, [u128]>,
+    /// Run starts into `words`, plus a final `words.len()`.
+    starts: Cow<'a, [u32]>,
+}
+
+impl<'a> VoxelView<'a> {
+    /// Groups `cloud` by the voxels of `layout`, in buffers owned by the
+    /// view. To reuse the buffers across calls, use
+    /// [`VoxelDownsampler::view`].
+    ///
+    /// # Arguments
+    ///
+    /// * `cloud` - Input cloud; borrowed by the view, nothing is copied.
+    /// * `layout` - Voxel size and origin.
+    ///
+    /// # Returns
+    ///
+    /// The cloud grouped by voxel, voxels in ascending key order.
+    ///
+    /// # Errors
+    ///
+    /// As [`VoxelDownsampler::view`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_3d::pointcloud::PointCloud;
+    /// use kornia_3d::voxel::{VoxelLayout, VoxelView};
+    ///
+    /// let cloud = PointCloud::new(vec![[0.1; 3], [-0.1; 3], [0.2; 3]], None, None);
+    /// let view = VoxelView::new(&cloud, &VoxelLayout::new(0.5, [0.0; 3])?)?;
+    /// assert_eq!(view.len(), 2);
+    /// assert_eq!(view.key(0), Some([-1, -1, -1]));
+    /// assert_eq!(view.centre(1), Some([0.25; 3]));
+    /// # Ok::<(), kornia_3d::voxel::VoxelError>(())
+    /// ```
+    pub fn new(cloud: &'a PointCloud, layout: &VoxelLayout) -> Result<Self, VoxelError> {
+        check_attributes(cloud)?;
+        let mut ds = VoxelDownsampler::new();
+        ds.sort_and_segment(cloud.points(), layout)?;
+        Ok(Self {
+            cloud,
+            layout: *layout,
+            words: Cow::Owned(ds.words),
+            starts: Cow::Owned(ds.starts),
+        })
+    }
+
+    /// Number of occupied voxels.
+    ///
+    /// # Arguments
+    ///
+    /// This method takes no arguments beyond `self`.
+    ///
+    /// # Returns
+    ///
+    /// The number of voxels holding at least one point.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.starts.len().saturating_sub(1)
+    }
+
+    /// Whether no voxel is occupied (the cloud is empty).
+    ///
+    /// # Arguments
+    ///
+    /// This method takes no arguments beyond `self`.
+    ///
+    /// # Returns
+    ///
+    /// `true` when [`len`](Self::len) is `0`.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The grouped cloud.
+    ///
+    /// # Arguments
+    ///
+    /// This method takes no arguments beyond `self`.
+    ///
+    /// # Returns
+    ///
+    /// The borrowed input cloud.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible.
+    #[inline]
+    pub fn cloud(&self) -> &'a PointCloud {
+        self.cloud
+    }
+
+    /// The voxel size and origin the cloud was grouped with.
+    ///
+    /// # Arguments
+    ///
+    /// This method takes no arguments beyond `self`.
+    ///
+    /// # Returns
+    ///
+    /// The layout.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible.
+    #[inline]
+    pub fn layout(&self) -> &VoxelLayout {
+        &self.layout
+    }
+
+    /// The key of voxel `v`.
+    ///
+    /// # Arguments
+    ///
+    /// * `v` - Voxel position, `0..len()`, in ascending key order.
+    ///
+    /// # Returns
+    ///
+    /// The key, or `None` when `v >= len()`.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible.
+    #[inline]
+    pub fn key(&self, v: usize) -> Option<VoxelKey> {
+        if v >= self.len() {
+            return None;
+        }
+        Some(key_from_word(self.words[self.starts[v] as usize]))
+    }
+
+    /// The keys of the occupied voxels, ascending (lexicographic `(x, y, z)`).
+    ///
+    /// # Arguments
+    ///
+    /// This method takes no arguments beyond `self`.
+    ///
+    /// # Returns
+    ///
+    /// An iterator over [`len`](Self::len) keys; it does not allocate.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible.
+    pub fn keys(&self) -> impl ExactSizeIterator<Item = VoxelKey> + '_ {
+        let words = &*self.words;
+        self.starts[..self.len()]
+            .iter()
+            .map(move |&s| key_from_word(words[s as usize]))
+    }
+
+    /// The centre of voxel `v`.
+    ///
+    /// # Arguments
+    ///
+    /// * `v` - Voxel position, `0..len()`.
+    ///
+    /// # Returns
+    ///
+    /// [`VoxelLayout::centre_from_key`] of the voxel's key, or `None` when
+    /// `v >= len()`.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible.
+    #[inline]
+    pub fn centre(&self, v: usize) -> Option<[f64; 3]> {
+        self.key(v).map(|k| self.layout.centre_from_key(&k))
+    }
+
+    /// The indices of the points in voxel `v`, ascending.
+    ///
+    /// # Arguments
+    ///
+    /// * `v` - Voxel position, `0..len()`.
+    ///
+    /// # Returns
+    ///
+    /// An iterator over the voxel's point indices into [`cloud`](Self::cloud)
+    /// (it does not allocate), or `None` when `v >= len()`.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible.
+    pub fn voxel(
+        &self,
+        v: usize,
+    ) -> Option<impl ExactSizeIterator<Item = u32> + DoubleEndedIterator + '_> {
+        if v >= self.len() {
+            return None;
+        }
+        Some(self.run(v).iter().map(|&w| w as u32))
+    }
+
+    /// Sort words of voxel `v`, in ascending point index.
+    #[inline]
+    fn run(&self, v: usize) -> &[u128] {
+        voxel_run(&self.words, &self.starts, v)
+    }
+
+    /// Per voxel, the input index of the point `mode` picks.
+    fn representatives(&self, mode: DownsampleMode) -> PointCloudView<'a> {
+        let points = self.cloud.points();
+        let indices = (0..self.len())
+            .into_par_iter()
+            .with_min_len(MIN_ITEMS_PER_TASK)
+            .map(|v| reduce_run(self.run(v), points, &self.layout, mode).1)
+            .collect();
+        // Every index comes from a sort word of this cloud, and the
+        // attribute lengths were checked when the view was built.
+        PointCloudView::from_checked(self.cloud, Cow::Owned(indices))
+    }
+
+    /// Per voxel, the point with the lowest input index
+    /// ([`DownsampleMode::First`]), as a view of the cloud: no point is
+    /// copied, only one index per voxel is allocated.
+    ///
+    /// # Arguments
+    ///
+    /// This method takes no arguments beyond `self`.
+    ///
+    /// # Returns
+    ///
+    /// A [`PointCloudView`] with one point per voxel, in ascending key
+    /// order; [`PointCloudView::to_point_cloud`] gives the owned cloud of
+    /// [`voxel_downsample`] with [`DownsampleMode::First`].
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_3d::pointcloud::PointCloud;
+    /// use kornia_3d::voxel::{VoxelLayout, VoxelView};
+    ///
+    /// let cloud = PointCloud::new(vec![[0.7; 3], [0.2; 3], [1.5; 3]], None, None);
+    /// let view = VoxelView::new(&cloud, &VoxelLayout::new(1.0, [0.0; 3])?)?;
+    /// assert_eq!(view.first().indices(), &[0, 2]);
+    /// # Ok::<(), kornia_3d::voxel::VoxelError>(())
+    /// ```
+    pub fn first(&self) -> PointCloudView<'a> {
+        self.representatives(DownsampleMode::First)
+    }
+
+    /// Per voxel, the point nearest to the voxel centre, ties to the lowest
+    /// input index ([`DownsampleMode::NearestToCentre`]), as a view of the
+    /// cloud: no point is copied, only one index per voxel is allocated.
+    ///
+    /// # Arguments
+    ///
+    /// This method takes no arguments beyond `self`.
+    ///
+    /// # Returns
+    ///
+    /// A [`PointCloudView`] with one point per voxel, in ascending key
+    /// order.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_3d::pointcloud::PointCloud;
+    /// use kornia_3d::voxel::{VoxelLayout, VoxelView};
+    ///
+    /// let cloud = PointCloud::new(vec![[0.7; 3], [0.2; 3], [1.5; 3]], None, None);
+    /// let view = VoxelView::new(&cloud, &VoxelLayout::new(1.0, [0.0; 3])?)?;
+    /// assert_eq!(view.nearest().indices(), &[0, 2]);
+    /// # Ok::<(), kornia_3d::voxel::VoxelError>(())
+    /// ```
+    pub fn nearest(&self) -> PointCloudView<'a> {
+        self.representatives(DownsampleMode::NearestToCentre)
+    }
+
+    /// Per voxel, the mean of its points ([`DownsampleMode::Centroid`]):
+    /// colors averaged and rounded half up, normals averaged and
+    /// renormalized (a zero mean stays zero). Each voxel is summed in
+    /// ascending point index, so the result does not depend on the thread
+    /// count.
+    ///
+    /// # Arguments
+    ///
+    /// This method takes no arguments beyond `self`.
+    ///
+    /// # Returns
+    ///
+    /// An owned cloud with one point per voxel, in ascending key order,
+    /// with colors and normals when the input has them.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_3d::pointcloud::PointCloud;
+    /// use kornia_3d::voxel::{VoxelLayout, VoxelView};
+    ///
+    /// let cloud = PointCloud::new(vec![[0.2; 3], [0.6; 3], [1.5; 3]], None, None);
+    /// let view = VoxelView::new(&cloud, &VoxelLayout::new(1.0, [0.0; 3])?)?;
+    /// assert_eq!(view.centroids().points(), &vec![[0.4; 3], [1.5; 3]]);
+    /// # Ok::<(), kornia_3d::voxel::VoxelError>(())
+    /// ```
+    pub fn centroids(&self) -> PointCloud {
+        let m = self.len();
+        let points = self.cloud.points();
+        let layout = &self.layout;
+        let centroids = (0..m)
+            .into_par_iter()
+            .with_min_len(MIN_ITEMS_PER_TASK)
+            .map(|v| reduce_run(self.run(v), points, layout, DownsampleMode::Centroid).0)
+            .collect();
+        // Parallel over the voxels, each one reduced sequentially in
+        // ascending point index (as `reduce_run`), so the result is the same
+        // as a serial pass.
+        let colors = self.cloud.colors().map(|c| {
+            (0..m)
+                .into_par_iter()
+                .with_min_len(MIN_ITEMS_PER_TASK)
+                .map(|v| mean_color(self.run(v), c))
+                .collect()
+        });
+        let normals = self.cloud.normals().map(|n| {
+            (0..m)
+                .into_par_iter()
+                .with_min_len(MIN_ITEMS_PER_TASK)
+                .map(|v| mean_normal(self.run(v), n))
+                .collect()
+        });
+        PointCloud::new(centroids, colors, normals)
+    }
+}
+
 /// Downsamples a point cloud to one point per occupied voxel (voxel grid
-/// filter).
+/// filter): [`VoxelView::new`] followed by the reduction `mode` names,
+/// copied into an owned cloud.
 ///
 /// The output is in ascending voxel key order (lexicographic `(x, y, z)`),
 /// the same for any permutation-free rerun and on the device
 /// (`CudaVoxelFilter::downsample`). Open3D's `voxel_down_sample` returns
 /// the same centroids in hash-map order; compare with it as sets.
+/// For [`DownsampleMode::First`] and [`DownsampleMode::NearestToCentre`]
+/// the chosen points are input points: [`VoxelView::first`] and
+/// [`VoxelView::nearest`] return them as a view, without the copy.
 ///
 /// # Arguments
 ///
@@ -431,11 +901,7 @@ fn adjacent_occupied(unique: &[u128], key: u128, max_l1: i32, hints: &mut [usize
 ///
 /// # Errors
 ///
-/// * [`VoxelError::PointOutOfRange`] for a non-finite point or a key
-///   outside `i32` (the smallest such index).
-/// * [`VoxelError::TooManyPoints`] above [`MAX_VOXEL_POINTS`] points.
-/// * [`VoxelError::Filter`] if the colors or normals do not have one entry
-///   per point.
+/// As [`VoxelDownsampler::view`].
 ///
 /// # Example
 ///
@@ -455,41 +921,12 @@ pub fn voxel_downsample(
     layout: &VoxelLayout,
     mode: DownsampleMode,
 ) -> Result<PointCloud, VoxelError> {
-    check_attributes(cloud)?;
-    let mut ds = VoxelDownsampler::new();
-    let mut points = Vec::new();
-    let mut index = Vec::new();
-    ds.downsample_into(cloud.points(), layout, mode, &mut points, Some(&mut index))?;
-    let m = points.len();
-    let pick = |v: usize| index[v] as usize;
-    let (colors, normals) = match mode {
-        DownsampleMode::First | DownsampleMode::NearestToCentre => (
-            cloud.colors().map(|c| (0..m).map(|v| c[pick(v)]).collect()),
-            cloud
-                .normals()
-                .map(|n| (0..m).map(|v| n[pick(v)]).collect()),
-        ),
-        // Parallel over the voxels, each one reduced sequentially in
-        // ascending point index (as `reduce`), so the result is the same as
-        // a serial pass.
-        DownsampleMode::Centroid => (
-            cloud.colors().map(|c| {
-                (0..m)
-                    .into_par_iter()
-                    .with_min_len(MIN_ITEMS_PER_TASK)
-                    .map(|v| mean_color(ds.run(v), c))
-                    .collect()
-            }),
-            cloud.normals().map(|n| {
-                (0..m)
-                    .into_par_iter()
-                    .with_min_len(MIN_ITEMS_PER_TASK)
-                    .map(|v| mean_normal(ds.run(v), n))
-                    .collect()
-            }),
-        ),
-    };
-    Ok(PointCloud::new(points, colors, normals))
+    let view = VoxelView::new(cloud, layout)?;
+    Ok(match mode {
+        DownsampleMode::Centroid => view.centroids(),
+        DownsampleMode::First => view.first().to_point_cloud(),
+        DownsampleMode::NearestToCentre => view.nearest().to_point_cloud(),
+    })
 }
 
 /// Per-channel mean of a voxel's colors, rounded half up.
@@ -577,7 +1014,8 @@ pub fn voxel_neighbour_counts(
 ///
 /// # Returns
 ///
-/// The kept points, in input order.
+/// The kept points, in input order, as a view of `cloud` (nothing is
+/// copied; [`PointCloudView::to_point_cloud`] gives an owned cloud).
 ///
 /// # Errors
 ///
@@ -592,15 +1030,16 @@ pub fn voxel_neighbour_counts(
 /// let cloud = PointCloud::new(vec![[0.5; 3], [1.5, 0.5, 0.5], [9.5, 0.5, 0.5]], None, None);
 /// let layout = VoxelLayout::new(1.0, [0.0; 3])?;
 /// let out = remove_sparse_voxels(&cloud, &layout, VoxelConnectivity::TwentySix, 1)?;
-/// assert_eq!(out.points(), &vec![[0.5; 3], [1.5, 0.5, 0.5]]);
+/// assert_eq!(out.indices(), &[0, 1]);
+/// assert_eq!(out.to_point_cloud().points(), &vec![[0.5; 3], [1.5, 0.5, 0.5]]);
 /// # Ok::<(), kornia_3d::voxel::VoxelError>(())
 /// ```
-pub fn remove_sparse_voxels(
-    cloud: &PointCloud,
+pub fn remove_sparse_voxels<'a>(
+    cloud: &'a PointCloud,
     layout: &VoxelLayout,
     connectivity: VoxelConnectivity,
     min_neighbours: usize,
-) -> Result<PointCloud, VoxelError> {
+) -> Result<PointCloudView<'a>, VoxelError> {
     check_attributes(cloud)?;
     let counts = voxel_neighbour_counts(cloud.points(), layout, connectivity)?;
     let kept: Vec<u32> = counts
@@ -609,7 +1048,8 @@ pub fn remove_sparse_voxels(
         .filter(|&(_, &c)| usize::from(c) >= min_neighbours)
         .map(|(i, _)| i as u32)
         .collect();
-    select_points(cloud, &kept).map_err(VoxelError::from)
+    // Every kept index is a point of `cloud`, whose attributes were checked.
+    Ok(PointCloudView::from_checked(cloud, Cow::Owned(kept)))
 }
 
 /// The first index of the ascending `keys` whose key is `>= first`,

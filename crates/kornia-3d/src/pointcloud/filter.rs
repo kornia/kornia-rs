@@ -1,5 +1,5 @@
-//! Index selection on point clouds: [`select_points`] copies the points at
-//! given indices, with their colors and normals.
+//! Errors of the point cloud filters and of index selection
+//! ([`PointCloud::select`]).
 
 use super::PointCloud;
 
@@ -50,51 +50,6 @@ pub(crate) fn check_attributes(cloud: &PointCloud) -> Result<(), FilterError> {
         }
     }
     Ok(())
-}
-
-/// Copies the points of `cloud` at `indices`, with their colors and normals.
-///
-/// # Arguments
-///
-/// * `cloud` - Source cloud.
-/// * `indices` - Indices of the points to keep, in output order (repeats
-///   allowed).
-///
-/// # Returns
-///
-/// A cloud with one point per index.
-///
-/// # Errors
-///
-/// * [`FilterError::IndexOutOfRange`] if an index is not a point of `cloud`.
-/// * [`FilterError::AttributeLengthMismatch`] if `cloud`'s colors or normals
-///   do not have one entry per point.
-///
-/// # Example
-///
-/// ```
-/// use kornia_3d::pointcloud::{filter::select_points, PointCloud};
-///
-/// let cloud = PointCloud::new(vec![[0.0; 3], [1.0; 3], [2.0; 3]], None, None);
-/// let picked = select_points(&cloud, &[2, 0])?;
-/// assert_eq!(picked.points(), &vec![[2.0; 3], [0.0; 3]]);
-/// # Ok::<(), Box<dyn std::error::Error>>(())
-/// ```
-pub fn select_points(cloud: &PointCloud, indices: &[u32]) -> Result<PointCloud, FilterError> {
-    check_attributes(cloud)?;
-    let len = cloud.len();
-    if let Some(&index) = indices.iter().find(|&&i| i as usize >= len) {
-        return Err(FilterError::IndexOutOfRange { index, len });
-    }
-    let pick = |i: &u32| *i as usize;
-    let points = indices.iter().map(|i| cloud.points()[pick(i)]).collect();
-    let colors = cloud
-        .colors()
-        .map(|c| indices.iter().map(|i| c[pick(i)]).collect());
-    let normals = cloud
-        .normals()
-        .map(|n| indices.iter().map(|i| n[pick(i)]).collect());
-    Ok(PointCloud::new(points, colors, normals))
 }
 
 #[cfg(test)]
