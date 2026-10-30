@@ -1,6 +1,7 @@
 //! Input/output types for multi-camera calibration.
 
 use kornia_3d::pose::Pose3d;
+use kornia_3d::ransac::SPRTConfig;
 use kornia_algebra::{Vec2F64, Vec3F64};
 
 use crate::error::CalibError;
@@ -183,6 +184,13 @@ pub struct ReconstructionConfig {
     /// Called after each view is registered, as `(registered_so_far, total_views)`. `None` by
     /// default.
     pub progress: Option<std::sync::Arc<dyn Fn(usize, usize) + Send + Sync>>,
+    /// Optional Wald's SPRT configuration for the per-view PnP-RANSAC
+    /// registration. `None` (the default) runs plain RANSAC to its full
+    /// iteration budget. Enabling SPRT streams residuals one at a time and
+    /// rejects a candidate pose as soon as the evidence says it cannot reach
+    /// `min_registration_inliers`, which speeds up registration when many
+    /// camera candidates fail PnP (e.g. noisy ORB tracks).
+    pub sprt: Option<SPRTConfig>,
 }
 
 impl ReconstructionConfig {
@@ -208,6 +216,7 @@ impl ReconstructionConfig {
             sparse_reduced_system: true,
             complete_tracks: true,
             progress: None,
+            sprt: None,
         }
     }
 
