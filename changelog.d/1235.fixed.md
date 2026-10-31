@@ -1,0 +1,1 @@
+Fixed numerical cancellation in `SO3F32::left_jacobian` and `SO3F32::right_jacobian` for small angles below 0.1 rad. At small angles, `(1 − cos θ)/θ²` and `(θ − sin θ)/θ³` evaluate via their Taylor series rather than closed form, preventing catastrophic floating-point cancellation in single precision.
