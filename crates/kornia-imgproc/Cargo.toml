@@ -45,6 +45,11 @@ required-features = ["cuda"]
 
 [[bench]]
 harness = false
+name = "bench_cuda_oxide"
+required-features = ["cuda"]
+
+[[bench]]
+harness = false
 name = "bench_unified_memory"
 required-features = ["cuda"]
 
@@ -145,6 +150,8 @@ cudarc = { workspace = true, features = ["f16"], optional = true }
 half = { workspace = true, optional = true }
 kornia-algebra = { workspace = true }
 kornia-image = { workspace = true }
+# The cuda-oxide kernels: real PTX plus their loader.
+kornia-oxide-kernels = { workspace = true, features = ["cuda", "ptx"], optional = true }
 kornia-tensor = { workspace = true }
 num-traits = { workspace = true }
 opencv = { version = "0.100", optional = true }
@@ -165,7 +172,15 @@ ndarray = { workspace = true, features = ["rayon"] }
 rand = { workspace = true }
 
 [features]
-# CUDA device backend + custom CUDA kernels (via the cudarc crate).
-# Enables the `preprocess` module and the `cuda` kernels module.
-cuda = ["dep:cudarc", "dep:half", "kornia-image/cuda", "kornia-tensor/cuda"]
+# CUDA device backend + custom CUDA kernels (via the cudarc crate). Enables the
+# `preprocess` and `cuda` modules. The kornia-oxide-kernels kernels ship as PTX
+# in that crate (a checkout builds it with cuda-oxide, docs/cuda-oxide.md); the
+# rest are NVRTC-compiled at runtime.
+cuda = [
+  "dep:cudarc",
+  "dep:half",
+  "dep:kornia-oxide-kernels",
+  "kornia-image/cuda",
+  "kornia-tensor/cuda",
+]
 opencv_bench = ["dep:opencv"]

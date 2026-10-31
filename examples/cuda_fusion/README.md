@@ -18,7 +18,7 @@ multi-operand operations, reduction patterns). Within this transform-chain
 scope, per-stage code is arbitrary CUDA.
 
 ```bash
-cargo run -p cuda-fusion --release
+cargo run -p cuda-fusion --release --features cuda
 ```
 
 The example composes:

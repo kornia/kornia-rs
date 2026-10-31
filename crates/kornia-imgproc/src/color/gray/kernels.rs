@@ -5,8 +5,9 @@ pub(super) const BW_F32: f32 = 0.114;
 
 /// BT.601 luma weights in OpenCV's Q14 fixed point — `(R·4899 + G·9617 +
 /// B·1868 + 8192) >> 14` is byte-for-byte what `cv2.cvtColor(RGB2GRAY)`
-/// computes for u8, so kornia's u8 gray (CPU and CUDA, which share these
-/// constants) matches OpenCV exactly.
+/// computes for u8, so kornia's u8 gray matches OpenCV exactly. The CUDA
+/// kernel keeps its own copy (`crates/kornia-oxide-kernels/device/src/color.rs`);
+/// `gray_from_rgb_u8_bit_exact` in `cuda/color/gray.rs` pins the two together.
 pub(crate) const RW_Q14: u32 = 4899;
 pub(crate) const GW_Q14: u32 = 9617;
 pub(crate) const BW_Q14: u32 = 1868;

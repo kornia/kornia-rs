@@ -8088,6 +8088,7 @@ dependencies = [
  "kornia-algebra",
  "kornia-image",
  "kornia-io",
+ "kornia-oxide-kernels",
  "kornia-tensor",
  "ndarray 0.17.2",
  "num-traits",
@@ -8122,6 +8123,15 @@ dependencies = [
  "turbojpeg",
  "v4l 0.14.0",
  "zune-jpeg",
+]
+
+[[package]]
+name = "kornia-oxide-kernels"
+version = "0.2.0"
+dependencies = [
+ "cudarc 0.19.9",
+ "kornia-tensor",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

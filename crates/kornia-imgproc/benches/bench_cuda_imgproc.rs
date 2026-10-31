@@ -1642,6 +1642,7 @@ fn main() {
     }
 
     // ── color: gray_from_rgb u8 ───────────────────────────────────────────────
+    // End-to-end with transfers; kernel-only A/B is `bench_cuda_oxide`.
 
     for &(sw, sh) in &[(1920u32, 1080u32), (3840, 2160)] {
         let n_src = sw as usize * sh as usize * NC;

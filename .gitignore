@@ -21,3 +21,7 @@ target
 # Cases mined from history by `skill_evals.py mine --make` (held out, never committed)
 .claude/skills/*/evals/heldout/
 __pycache__/
+
+# cuda-oxide PTX (crates/kornia-oxide-kernels/kernels.ptx) is built by its
+# examples/build_ptx.rs and shipped in the published crate, never committed
+*.ptx

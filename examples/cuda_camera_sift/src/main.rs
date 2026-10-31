@@ -28,7 +28,7 @@
 //! ```
 //!
 //! ```text
-//! cargo run -p cuda-camera-sift --release -- [--device /dev/video0] [--frames 200]
+//! cargo run -p cuda-camera-sift --release --features cuda -- [--device /dev/video0] [--frames 200]
 //!                                            [--features 500] [--fast] [--ratio 0.8]
 //! ```
 

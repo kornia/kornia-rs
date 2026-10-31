@@ -700,6 +700,14 @@ pub struct CudaKernel {
     func: CudaFunction,
 }
 
+impl From<CudaFunction> for CudaKernel {
+    /// Wrap a function already loaded from a module, e.g. one loaded from
+    /// precompiled PTX instead of compiled from CUDA C by [`CudaKernel::compile`].
+    fn from(func: CudaFunction) -> Self {
+        CudaKernel { func }
+    }
+}
+
 impl CudaKernel {
     /// Compile a CUDA C source string and return a ready-to-launch kernel.
     ///

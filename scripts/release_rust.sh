@@ -49,7 +49,8 @@ done
 # already be on crates.io (or appear earlier in this list).
 #
 # Tier 0 (no kornia-* deps):       kornia-algebra, kornia-bow, kornia-tensor
-# Tier 1 (-> tensor):              kornia-tensor-ops, kornia-image
+# Tier 1 (-> tensor):              kornia-oxide-kernels (opt., `cuda` loader),
+#                                  kornia-tensor-ops, kornia-image
 # Tier 2 (-> image, tensor):       kornia-io
 # Tier 3 (-> algebra/image/tensor/io): kornia-imgproc
 # Tier 4 (-> everything above):    kornia-3d
@@ -58,6 +59,7 @@ PUBLISH_ORDER=(
   kornia-algebra
   kornia-bow
   kornia-tensor
+  kornia-oxide-kernels
   kornia-tensor-ops
   kornia-image
   kornia-io
@@ -80,9 +82,16 @@ TIER_0=(kornia-algebra kornia-bow kornia-tensor)
 # kornia-io's gstreamer feature requires glib/gobject dev headers, and
 # the published Cargo.toml already declares features so users can opt in.
 declare -A CRATE_FEATURES=(
-  # Empty by design — see comment above.
-  # Add per-crate flags here if a crate needs them.
-  [_placeholder]=""
+  # `ptx` makes the verify build check the packaged kernels.ptx's stamp.
+  [kornia-oxide-kernels]="--features ptx"
+)
+
+# Crates that ship a generated, gitignored file, which cargo counts as dirty:
+# they publish with --allow-dirty, after publish_flags has confirmed that file
+# (path relative to the crate) is the package's only uncommitted one.
+declare -A ALLOW_DIRTY=(
+  # examples/build_ptx.rs, run by the release workflow first.
+  [kornia-oxide-kernels]="kernels.ptx"
 )
 
 local_version() {
@@ -145,6 +154,49 @@ for p in json.load(sys.stdin)["packages"]:
   fi
 }
 
+# `cargo publish` flags for a crate. For an ALLOW_DIRTY crate, first abort
+# unless the generated file exists and no other packaged file is modified,
+# untracked or ignored: --allow-dirty would ship those silently.
+publish_flags() {
+  local crate="$1"
+  local flags="${CRATE_FEATURES[$crate]:-}"
+  local allowed="${ALLOW_DIRTY[$crate]:-}"
+  if [[ -z "$allowed" ]]; then
+    echo "$flags"
+    return 0
+  fi
+  local crate_dir listed dirty
+  crate_dir=$(cargo metadata --format-version 1 --no-deps \
+    | python3 -c "import sys,json,os; print(next(os.path.dirname(p['manifest_path']) for p in json.load(sys.stdin)['packages'] if p['name'] == '$crate'))")
+  if [[ ! -f "$crate_dir/$allowed" ]]; then
+    echo "ERROR: $crate ships the generated $allowed, which is missing; build it first." >&2
+    exit 1
+  fi
+  listed=$(cargo package -p "$crate" --list --allow-dirty)
+  # -z, no renames, every untracked and ignored file listed individually.
+  dirty=$(git -C "$crate_dir" status --porcelain=v1 -z --no-renames \
+      --untracked-files=all --ignored=traditional -- . \
+    | LISTED="$listed" python3 -c '
+import os, subprocess, sys
+crate_dir, allowed = sys.argv[1], sys.argv[2]
+top = subprocess.check_output(["git", "-C", crate_dir, "rev-parse", "--show-toplevel"], text=True).strip()
+listed = set(os.environ["LISTED"].splitlines())
+for entry in sys.stdin.read().split("\0"):
+    if not entry:
+        continue
+    rel = os.path.relpath(os.path.join(top, entry[3:]), os.path.realpath(crate_dir))
+    if rel in listed and rel != allowed:
+        print(f"{entry[:2]} {rel}")
+' "$crate_dir" "$allowed")
+  if [[ -n "$dirty" ]]; then
+    echo "ERROR: $crate publishes with --allow-dirty only to ship $allowed, but these" >&2
+    echo "       packaged files are uncommitted too; commit or remove them:" >&2
+    echo "$dirty" | sed 's/^/  /' >&2
+    exit 1
+  fi
+  echo "$flags --allow-dirty"
+}
+
 check_coverage
 if [[ "$MODE" == "check" ]]; then
   echo "==> All publishable crates are covered by PUBLISH_ORDER / NOT_PUBLISHED."
@@ -160,7 +212,7 @@ if [[ "$MODE" == "plan" ]]; then
     if [[ "$local_v" == "$remote_v" ]]; then
       echo "      $crate: $remote_v already published, would SKIP"
     else
-      echo "      $crate: $remote_v -> $local_v   cargo publish -p $crate $features"
+      echo "      $crate: $remote_v -> $local_v   cargo publish -p $crate $features${ALLOW_DIRTY[$crate]:+ --allow-dirty}"
     fi
   done
   echo
@@ -172,7 +224,7 @@ if [[ "$MODE" == "plan" ]]; then
       echo "==> $crate: $remote_v already published, skipping dry-run"
       continue
     fi
-    features="${CRATE_FEATURES[$crate]:-}"
+    features=$(publish_flags "$crate")
     echo "==> cargo publish -p $crate $features --dry-run"
     cargo publish -p "$crate" $features --dry-run
   done
@@ -207,7 +259,7 @@ for crate in "${PUBLISH_ORDER[@]}"; do
     continue
   fi
 
-  features="${CRATE_FEATURES[$crate]:-}"
+  features=$(publish_flags "$crate")
   echo "==> $crate: $remote_v -> $local_v"
   echo "    cargo publish -p $crate $features"
   cargo publish -p "$crate" $features

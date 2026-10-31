@@ -22,8 +22,13 @@ Before publishing wheels, confirm the GPU story:
 - The validation smoke test (below) checks the linux wheels import with no CUDA
   present and that `kornia_rs.cuda.is_available()` returns False there.
 - Runtime requirements to put in the release notes: NVIDIA driver (`libcuda.so`)
-  **and** `nvrtc` (kernels are JIT-compiled), matching arch (x86_64 / aarch64 /
-  Jetson Tegra). Without nvrtc the GPU path can't compile kernels.
+  **and** `nvrtc` (most kernels are JIT-compiled; the cuda-oxide ones, e.g.
+  `gray_from_rgb_u8`, ship as PTX and need an sm_75+ GPU), matching arch
+  (x86_64 / aarch64 / Jetson Tegra). Without nvrtc the NVRTC kernels can't
+  compile.
+- `--features cuda` needs kornia-oxide-kernels' PTX: the wheel and Rust
+  release workflows build it first (`.github/actions/cuda-oxide-ptx`), and
+  the published kornia-oxide-kernels crate ships it.
 - Verify on a GPU box before announcing: `bench_cuda_warp_affine --features
   gpu-cuda` (Rust) and `import kornia_rs; kornia_rs.cuda...` (Python).
 
@@ -34,6 +39,7 @@ Before publishing wheels, confirm the GPU story:
 - Publish script: `scripts/release_rust.sh` — topological, idempotent, skips
   already-published versions. The publish set is its `PUBLISH_ORDER` /
   `NOT_PUBLISHED` arrays; `--check` fails if a publishable crate is in neither.
+  For the cuda-oxide kernel crate's publish, see `docs/cuda-oxide.md`.
 - CI publish: `.github/workflows/rust_release.yml` (`workflow_dispatch`, guarded
   by typing `publish`) and `.github/workflows/python_release.yml` (wheels).
 - Wheel build matrix lives in `.github/workflows/python_wheels.yml`, shared by
