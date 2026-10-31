@@ -12,15 +12,17 @@ is the pattern cuda-oxide suggests for library crates
 and keep working under the same feature. Roadmap:
 [#1135](https://github.com/kornia/kornia-rs/issues/1135).
 
-`kornia-oxide-kernels` owns the kernels and the PTX build; it is host-only data
-with no dependencies. kornia-tensor's `cuda` feature owns the loader
-(`kornia_tensor::cuda::oxide`), so every crate with kernels, kornia-tensor
-included, reaches it without a cycle. The PTX is real only when a crate in the
-build turns on `kornia-oxide-kernels/ptx`. Rule: a crate's `cuda` feature
-turns on `ptx` exactly when that crate ships oxide kernels (kornia-imgproc
-today; kornia-tensor's `cuda` joins when its `ops.rs` kernels migrate). Users
-only ever set `cuda`; crates using kornia-tensor for device memory alone stay
-on stable without the toolchain.
+`kornia-oxide-kernels` owns the kernels, the PTX build and, behind its `cuda`
+feature, the loader (`kornia_oxide_kernels::kernel`), which wraps the loaded
+functions in kornia-tensor's `CudaKernel`. Without `cuda` it is host-only,
+`no_std` data with no dependencies. Because the loader depends on
+kornia-tensor, kornia-tensor itself cannot use oxide kernels (that would be a
+cycle); tensor kernels that migrate go to a crate above it. The PTX is real
+only when a crate in the build turns on `kornia-oxide-kernels/ptx`. Rule: a
+crate's `cuda` feature turns on `kornia-oxide-kernels/cuda` and `ptx` exactly
+when that crate ships oxide kernels (kornia-imgproc today). Users only ever
+set `cuda`; crates using kornia-tensor for device memory alone stay on stable
+without the toolchain.
 
 | Path | Role |
 |---|---|
@@ -28,7 +30,7 @@ on stable without the toolchain.
 | `crates/kornia-oxide-kernels/examples/build_ptx.rs` | Builds `device/` with cuda-oxide, gates the PTX and writes the stamped `kernels.ptx` (gitignored; the published crate ships it). |
 | `crates/kornia-oxide-kernels/build.rs` | Scans `device/src` for `#[kernel]` items; with `ptx`, checks the stamp of `kernels.ptx` against `device/` and gates it. Writes `$OUT_DIR/kernels.ptx` + `$OUT_DIR/entries.rs`. Needs no toolchain. |
 | `crates/kornia-oxide-kernels/src/lib.rs` | `PTX`, `IS_STUB`, `ENTRIES` and `entry::<NAME>` (the PTX entry name). |
-| `crates/kornia-tensor/src/cuda/oxide.rs` | Loader: one module per device, `kernel(stream, entry::<NAME>) -> &'static CudaKernel`, lock-free after the first load. |
+| `crates/kornia-oxide-kernels/src/loader.rs` | Loader (`cuda` feature): one module per device, `kernel(stream, entry::<NAME>) -> &'static CudaKernel`, lock-free after the first load; `load_ptx_many` for any PTX. |
 | `crates/kornia-imgproc/src/cuda/<family>/` | The family's existing public launchers; only their kernel fetch changes. |
 | `crates/kornia-imgproc/benches/bench_cuda_oxide.rs` | Every oxide kernel vs its CPU path; one `CASES` row per op and size. |
 | `scripts/cuda-oxide/install-toolchain.sh` | Installs the toolchain below (local and CI share it). |
@@ -150,16 +152,16 @@ A second kernel PR (e.g. bicubic resize) does exactly this; nothing else:
      does not compile (use `as`); no `__ldg` (a no-op on sm_87 anyway).
 2. **Launcher.** In the family's public launcher replace the NVRTC kernel fetch
    with `oxide::kernel(stream, oxide::entry::<NAME>)?` (`use
-   kornia_tensor::cuda::oxide`; add `From<OxideError>` for the family error if
+   kornia_oxide_kernels as oxide`; add `From<OxideError>` for the family error if
    it lacks one; a crate other than kornia-imgproc also enables
-   `kornia-oxide-kernels/ptx` in its `cuda` feature) and **delete the NVRTC source** for that op. Validation and
+   `kornia-oxide-kernels/cuda` and `ptx` in its `cuda` feature) and **delete the NVRTC source** for that op. Validation and
    launch geometry stay; no new public API, no `_nvrtc` twin, no fallback.
 3. **Tests.** A family test named `<name>_bit_exact` on the public launcher,
    with the CPU path as the reference (never a test-written one): every tail
    length of the per-thread vector width, 1xN / Nx1 / odd sizes, at least one HD
    size, a sentinel-filled oversized `dst`, and the degenerate inputs (zero
    size, overflowing size -> `Err`). `orin-test-bench.sh` fails if an entry has
-   no passing `<name>*bit_exact` test, and kornia-tensor's `oxide` loader tests
+   no passing `<name>*bit_exact` test, and the kornia-oxide-kernels loader tests
    must pass with real PTX.
 4. **Bench.** One `CASES` row per size in
    `crates/kornia-imgproc/benches/bench_cuda_oxide.rs`.

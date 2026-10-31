@@ -1,12 +1,9 @@
-//! Loader for the CUDA kernels written in Rust in the `kornia-oxide-kernels`
-//! crate, which ships them as PTX compiled by
-//! [cuda-oxide](https://github.com/NVIDIA/cuda-rust); see `docs/cuda-oxide.md`.
+//! Loader for this crate's PTX (`cuda` feature).
 //!
 //! This is a kernel source, not an op API: each op keeps its public launcher
 //! and fetches its kernel with [`kernel`]. All entries live in one module,
 //! loaded once per device; the PTX targets `sm_75`, so the driver JITs it for
-//! any Turing-or-newer GPU. It lives here, not in a consumer crate, so every
-//! crate with kernels (this one included) reaches it without a cycle.
+//! any Turing-or-newer GPU.
 //!
 //! The PTX is real only when some crate in the build enables
 //! `kornia-oxide-kernels/ptx` (kornia-imgproc's `cuda` does); otherwise
@@ -15,10 +12,9 @@
 use std::sync::{Arc, OnceLock};
 
 use cudarc::driver::{CudaContext, CudaStream};
-pub use kornia_oxide_kernels::entry;
-use kornia_oxide_kernels::{ENTRIES, IS_STUB, PTX};
+use kornia_tensor::CudaKernel;
 
-use super::CudaKernel;
+use crate::{ENTRIES, IS_STUB, PTX};
 
 /// One slot per device ordinal: a `CUfunction` belongs to the context that
 /// loaded it, so a module cached for device 0 cannot launch on device 1. After
@@ -38,14 +34,66 @@ pub enum OxideError {
     Stub,
 }
 
-/// The kernel named `name` (an [`entry`] const) on `stream`'s device, loading
+/// Load `ptx` **once** and return one [`CudaKernel`] per entry in
+/// `fn_names`, in order. The driver JITs the PTX for `ctx`'s device, so PTX
+/// targeting an older `sm_XY` runs on newer GPUs.
+///
+/// # Arguments
+///
+/// * `ctx` - CUDA context to load the module on.
+/// * `ptx` - PTX assembly text.
+/// * `fn_names` - Names of the `.entry` functions to load.
+///
+/// # Returns
+///
+/// One kernel per name, in the order of `fn_names`.
+///
+/// # Errors
+///
+/// Returns [`OxideError::Load`] if the driver rejects the PTX (e.g. its
+/// `.version` is newer than the driver supports) or an entry is missing.
+///
+/// # Example
+///
+/// ```no_run
+/// use cudarc::driver::CudaContext;
+/// use kornia_oxide_kernels::{load_ptx_many, ENTRIES, PTX};
+///
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let ctx = CudaContext::new(0)?;
+/// let kernels = load_ptx_many(&ctx, PTX, ENTRIES)?;
+/// assert_eq!(kernels.len(), ENTRIES.len());
+/// # Ok(())
+/// # }
+/// ```
+pub fn load_ptx_many(
+    ctx: &Arc<CudaContext>,
+    ptx: &str,
+    fn_names: &[&str],
+) -> Result<Vec<CudaKernel>, OxideError> {
+    let load_err = |e: cudarc::driver::DriverError| OxideError::Load(e.to_string());
+    let module = ctx
+        .load_module(cudarc::nvrtc::Ptx::from_src(ptx))
+        .map_err(load_err)?;
+    fn_names
+        .iter()
+        .map(|name| {
+            module
+                .load_function(name)
+                .map(CudaKernel::from)
+                .map_err(load_err)
+        })
+        .collect()
+}
+
+/// The kernel named `name` (an [`entry`](crate::entry) const) on `stream`'s device, loading
 /// the module on first use there. A load failure is cached per device and
 /// returned on every call.
 ///
 /// # Arguments
 ///
 /// * `stream` - Stream whose device the kernel is loaded on.
-/// * `name` - The entry name, an [`entry`] const.
+/// * `name` - The entry name, an [`entry`](crate::entry) const.
 ///
 /// # Returns
 ///
@@ -60,7 +108,7 @@ pub enum OxideError {
 ///
 /// ```no_run
 /// use cudarc::driver::CudaContext;
-/// use kornia_tensor::cuda::oxide::{entry, kernel};
+/// use kornia_oxide_kernels::{entry, kernel};
 ///
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let stream = CudaContext::new(0)?.default_stream();
@@ -89,17 +137,15 @@ pub fn kernel(stream: &Arc<CudaStream>, name: &str) -> Result<&'static CudaKerne
     // never re-enters `kernel`, so this cannot deadlock.
     let module = slot
         .get_or_init(|| {
-            CudaKernel::load_ptx_many(ctx, PTX, ENTRIES)
-                .map(|kernels| {
-                    kernels
-                        .into_iter()
-                        .inspect(|k| {
-                            // Same carveout as kornia's NVRTC kernels; best effort.
-                            let _ = k.prefer_l1_cache();
-                        })
-                        .collect()
-                })
-                .map_err(|e| OxideError::Load(e.to_string()))
+            load_ptx_many(ctx, PTX, ENTRIES).map(|kernels| {
+                kernels
+                    .into_iter()
+                    .inspect(|k| {
+                        // Same carveout as kornia's NVRTC kernels; best effort.
+                        let _ = k.prefer_l1_cache();
+                    })
+                    .collect()
+            })
         })
         .as_ref()
         .map_err(Clone::clone)?;
@@ -111,7 +157,7 @@ pub fn kernel(stream: &Arc<CudaStream>, name: &str) -> Result<&'static CudaKerne
         .ok_or_else(|| OxideError::Load(format!("no entry `{name}`")))
 }
 
-// Real PTX: `cargo test -p kornia-tensor --features cuda,kornia-oxide-kernels/ptx`
+// Real PTX: `cargo test -p kornia-oxide-kernels --features cuda,ptx`
 // (scripts/cuda-oxide/orin-test-bench.sh); without `ptx` they check the stub.
 #[cfg(test)]
 mod tests {
@@ -119,6 +165,26 @@ mod tests {
 
     fn stream() -> Arc<CudaStream> {
         CudaContext::new(0).unwrap().default_stream()
+    }
+
+    /// `load_ptx_many` loads entries by name, in order, and returns
+    /// `OxideError::Load` for PTX the driver rejects and for a missing entry.
+    #[test]
+    fn load_ptx_many_entries_and_errors() {
+        const PTX: &str = ".version 6.3\n.target sm_75\n.address_size 64\n\
+                           .visible .entry a()\n{\n\tret;\n}\n\
+                           .visible .entry b()\n{\n\tret;\n}\n";
+        let ctx = CudaContext::new(0).unwrap();
+        let kernels = load_ptx_many(&ctx, PTX, &["b", "a"]).unwrap();
+        assert_eq!(kernels.len(), 2);
+        assert!(matches!(
+            load_ptx_many(&ctx, PTX, &["a", "missing"]),
+            Err(OxideError::Load(_))
+        ));
+        assert!(matches!(
+            load_ptx_many(&ctx, "not ptx", &["a"]),
+            Err(OxideError::Load(_))
+        ));
     }
 
     #[test]

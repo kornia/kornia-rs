@@ -93,7 +93,7 @@ kornia-cpp/         ← C++ bindings
 | `kornia-apriltag` | (standalone) | AprilTag detection |
 | `kornia-calib` | (standalone) | Multi-camera extrinsic calibration (AprilTag BA) |
 | `kornia-bow` | (standalone) | Bag of words |
-| `kornia-oxide-kernels` | (not re-exported; dependency of `kornia-imgproc` `cuda`) | CUDA kernels written in Rust (cuda-oxide), shipped as PTX; loaded by `kornia_tensor::cuda::oxide` |
+| `kornia-oxide-kernels` | (not re-exported; dependency of `kornia-imgproc` `cuda`) | CUDA kernels written in Rust (cuda-oxide), shipped as PTX, with its loader behind `cuda` |
 
 ### Feature Flags
 

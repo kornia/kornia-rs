@@ -26,7 +26,14 @@ include = [
 ]
 publish = true
 
+[dependencies]
+cudarc = { workspace = true, optional = true }
+kornia-tensor = { workspace = true, optional = true }
+thiserror = { workspace = true, optional = true }
+
 [features]
+# The loader (`kernel`, `load_ptx_many`): loads the PTX on a CUDA device.
+cuda = ["dep:cudarc", "dep:kornia-tensor", "dep:thiserror", "kornia-tensor/cuda"]
 # Ship the prebuilt `kernels.ptx` (in the published crate; in a checkout, made by
 # `examples/build_ptx.rs`, docs/cuda-oxide.md). Off: `PTX` is empty and
 # `IS_STUB` is true.

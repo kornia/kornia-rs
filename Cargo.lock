@@ -8128,6 +8128,11 @@ dependencies = [
 [[package]]
 name = "kornia-oxide-kernels"
 version = "0.2.0"
+dependencies = [
+ "cudarc 0.19.9",
+ "kornia-tensor",
+ "thiserror 2.0.21",
+]
 
 [[package]]
 name = "kornia-py"
@@ -8157,7 +8162,6 @@ dependencies = [
  "criterion 0.8.2",
  "cudarc 0.19.9",
  "dlpack-rs",
- "kornia-oxide-kernels",
  "num-traits",
  "rayon",
  "serde",

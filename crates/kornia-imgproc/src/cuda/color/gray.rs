@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use cudarc::driver::{CudaSlice, CudaStream};
-use kornia_tensor::cuda::oxide;
+use kornia_oxide_kernels as oxide;
 
 use super::{get_kernel, launch_map, CudaColorError, KernelCell, PxPerThread};
 

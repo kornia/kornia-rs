@@ -1,9 +1,15 @@
 //! kornia's CUDA kernels written in Rust (`device/`), compiled to one PTX
 //! module by [cuda-oxide](https://github.com/NVIDIA/cuda-rust) ahead of time
-//! and shipped in this crate (`ptx` feature). Host-only data: loading is the
-//! consumer's job (`kornia_tensor::cuda::oxide`). See `docs/cuda-oxide.md`.
-#![no_std]
+//! and shipped in this crate (`ptx` feature). Without `cuda` this is
+//! host-only, `no_std` data; the `cuda` feature adds the loader ([`kernel`],
+//! [`load_ptx_many`]). See `docs/cuda-oxide.md`.
+#![cfg_attr(not(feature = "cuda"), no_std)]
 #![deny(missing_docs)]
+
+#[cfg(feature = "cuda")]
+mod loader;
+#[cfg(feature = "cuda")]
+pub use loader::{kernel, load_ptx_many, OxideError};
 
 /// The PTX module (target `sm_75`) holding every entry in [`ENTRIES`].
 /// Empty when [`IS_STUB`].

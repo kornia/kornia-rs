@@ -173,8 +173,8 @@ impl From<CudaColorError> for kornia_image::ImageError {
     }
 }
 
-impl From<kornia_tensor::cuda::oxide::OxideError> for CudaColorError {
-    fn from(e: kornia_tensor::cuda::oxide::OxideError) -> Self {
+impl From<kornia_oxide_kernels::OxideError> for CudaColorError {
+    fn from(e: kornia_oxide_kernels::OxideError) -> Self {
         CudaColorError::Compile(e.to_string())
     }
 }

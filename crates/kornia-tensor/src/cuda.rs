@@ -53,8 +53,6 @@
 //! - `miri` cannot execute CUDA driver calls; device tests are guarded by
 //!   `#[cfg(all(test, feature = "cuda"))]` and run on the real Jetson Orin.
 
-pub mod oxide;
-
 use std::{
     any::Any,
     collections::HashMap,
@@ -702,6 +700,14 @@ pub struct CudaKernel {
     func: CudaFunction,
 }
 
+impl From<CudaFunction> for CudaKernel {
+    /// Wrap a function already loaded from a module, e.g. one loaded from
+    /// precompiled PTX instead of compiled from CUDA C by [`CudaKernel::compile`].
+    fn from(func: CudaFunction) -> Self {
+        CudaKernel { func }
+    }
+}
+
 impl CudaKernel {
     /// Compile a CUDA C source string and return a ready-to-launch kernel.
     ///
@@ -736,56 +742,6 @@ impl CudaKernel {
         fn_names: &[&str],
     ) -> Result<Vec<Self>, CudaError> {
         let module = Self::load_module(ctx, src)?;
-        Self::functions(&module, fn_names)
-    }
-
-    /// Load precompiled PTX **once** and return one [`CudaKernel`] per entry in
-    /// `fn_names`, in order. The driver JITs the PTX for `ctx`'s device, so PTX
-    /// targeting an older `sm_XY` runs on newer GPUs.
-    ///
-    /// # Arguments
-    ///
-    /// * `ctx`      — CUDA context to load the module on.
-    /// * `ptx`      — PTX assembly text.
-    /// * `fn_names` — names of the `.entry` functions to load.
-    ///
-    /// # Returns
-    ///
-    /// One kernel per name, in the order of `fn_names`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CudaError::Driver`] if the driver rejects the PTX (e.g. its
-    /// `.version` is newer than the driver supports) or an entry is missing.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// use cudarc::driver::CudaContext;
-    /// use kornia_tensor::CudaKernel;
-    ///
-    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let ctx = CudaContext::new(0)?;
-    /// // The cuda-oxide PTX and its entry names, as `cuda::oxide` loads them.
-    /// let kernels =
-    ///     CudaKernel::load_ptx_many(&ctx, kornia_oxide_kernels::PTX, kornia_oxide_kernels::ENTRIES)?;
-    /// assert_eq!(kernels.len(), kornia_oxide_kernels::ENTRIES.len());
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn load_ptx_many(
-        ctx: &Arc<CudaContext>,
-        ptx: &str,
-        fn_names: &[&str],
-    ) -> Result<Vec<Self>, CudaError> {
-        let module = ctx
-            .load_module(cudarc::nvrtc::Ptx::from_src(ptx))
-            .map_err(|e| CudaError::Driver(e.to_string()))?;
-        Self::functions(&module, fn_names)
-    }
-
-    /// One [`CudaKernel`] per name in `fn_names`, loaded from `module`, in order.
-    fn functions(module: &Arc<CudaModule>, fn_names: &[&str]) -> Result<Vec<Self>, CudaError> {
         fn_names
             .iter()
             .map(|name| {
@@ -1551,26 +1507,6 @@ where
 mod tests {
     use super::*;
     use crate::Tensor;
-
-    /// `load_ptx_many` loads entries by name, in order, and returns
-    /// `CudaError::Driver` for PTX the driver rejects and for a missing entry.
-    #[test]
-    fn load_ptx_many_entries_and_errors() {
-        const PTX: &str = ".version 6.3\n.target sm_75\n.address_size 64\n\
-                           .visible .entry a()\n{\n\tret;\n}\n\
-                           .visible .entry b()\n{\n\tret;\n}\n";
-        let ctx = CudaContext::new(0).unwrap();
-        let kernels = CudaKernel::load_ptx_many(&ctx, PTX, &["b", "a"]).unwrap();
-        assert_eq!(kernels.len(), 2);
-        assert!(matches!(
-            CudaKernel::load_ptx_many(&ctx, PTX, &["a", "missing"]),
-            Err(CudaError::Driver(_))
-        ));
-        assert!(matches!(
-            CudaKernel::load_ptx_many(&ctx, "not ptx", &["a"]),
-            Err(CudaError::Driver(_))
-        ));
-    }
 
     /// Device round-trip: host → GPU → host, bytes must match exactly.
     /// Also verifies domain is Device and as_cudaslice is Some.

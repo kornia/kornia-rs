@@ -22,7 +22,6 @@ required-features = ["cuda"]
 [dependencies]
 bincode = { workspace = true, optional = true }
 dlpack-rs = { version = "0.3.3", default-features = false, optional = true }
-kornia-oxide-kernels = { workspace = true, optional = true }
 num-traits = { workspace = true }
 rayon = { workspace = true }
 serde = { workspace = true, optional = true }
@@ -50,8 +49,6 @@ bincode = ["dep:bincode"]
 # CUDA device-memory integration (via the cudarc crate) — default OFF.
 # Enables CudaResource / CudaAllocator and Tensor::to_cuda / to_host etc.
 # Verify absence: `cargo tree -p kornia-tensor -e features | grep -i cudarc`
-# Also the cuda-oxide kernel loader (`cuda::oxide`): stub PTX unless a crate
-# in the build enables `kornia-oxide-kernels/ptx`.
-cuda = ["dep:cudarc", "dep:kornia-oxide-kernels"]
+cuda = ["dep:cudarc"]
 dlpack = ["dep:dlpack-rs"]
 serde = ["dep:serde"]

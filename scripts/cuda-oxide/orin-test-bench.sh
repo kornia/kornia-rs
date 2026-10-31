@@ -59,12 +59,12 @@ echo "entries: ${entries[*]}"
 log="$(mktemp)"
 cargo test --release -p kornia-imgproc --features cuda --lib -- "${entries[@]}" \
   --test-threads=1 2>&1 | tee "$log"
-# The loader lives in kornia-tensor; `ptx` makes its tests load the real PTX.
-cargo test --release -p kornia-tensor --features cuda,kornia-oxide-kernels/ptx --lib -- \
-  cuda::oxide 2>&1 | tee -a "$log"
+# The loader is kornia-oxide-kernels' `cuda` feature; `ptx` loads the real PTX.
+cargo test --release -p kornia-oxide-kernels --features cuda,ptx --lib -- \
+  loader 2>&1 | tee -a "$log"
 # cargo skips targets with unmet features silently: check names, not "ok".
-for t in all_entries_load concurrent_calls_share_one_module; do
-  grep -q "^test cuda::oxide::tests::$t \.\.\. ok$" "$log" || die "$t did not pass"
+for t in load_ptx_many_entries_and_errors all_entries_load concurrent_calls_share_one_module; do
+  grep -q "^test loader::tests::$t \.\.\. ok$" "$log" || die "$t did not pass"
 done
 for e in "${entries[@]}"; do
   grep -Eq "^test .*::${e}[a-z0-9_]*bit_exact \.\.\. ok$" "$log" || die "no passing ${e}*bit_exact test"
