@@ -61,12 +61,9 @@ pub(crate) fn init_poses(
         }
         let cam = &cameras[*cam_idx];
         // Undistort corners so the planar pose init is distortion-correct too.
-        let image_pts = [
-            cam.undistort(corners[3].x, corners[3].y),
-            cam.undistort(corners[2].x, corners[2].y),
-            cam.undistort(corners[1].x, corners[1].y),
-            cam.undistort(corners[0].x, corners[0].y),
-        ];
+        let Some(image_pts) = undistort_corners_reversed(cam, corners) else {
+            continue;
+        };
         let result = estimate_tag_pose(&object_pts, &image_pts, cam, 50)?;
         branches.push((*cam_idx, result.best.pose, result.second.map(|s| s.pose)));
     }
@@ -127,9 +124,18 @@ pub(crate) fn init_poses(
     }
     // Normalized coords depend only on (camera, pixel), not the branch combo — compute once
     // (undistort is an iterative Brown-Conrady inversion, so recomputing it per combo is waste).
-    let corr_norm: Vec<(Vec2F64, Vec2F64)> = corr
+    // Correspondences either camera cannot undistort are dropped; the camera indices travel with
+    // the normalized coords so nothing below pairs the two lists by position.
+    let corr_norm: Vec<(usize, Vec2F64, usize, Vec2F64)> = corr
         .iter()
-        .map(|&(ca, ua, cb, ub)| (cameras[ca].normalize(ua), cameras[cb].normalize(ub)))
+        .filter_map(|&(ca, ua, cb, ub)| {
+            Some((
+                ca,
+                cameras[ca].normalize(ua)?,
+                cb,
+                cameras[cb].normalize(ub)?,
+            ))
+        })
         .collect();
     let mut best_combo = (f64::INFINITY, 0u32);
     let mut ps = vec![Pose3d::IDENTITY; n_cams];
@@ -152,11 +158,10 @@ pub(crate) fn init_poses(
         }
         let mut err = 0.0f64;
         let mut cnt = 0usize;
-        for (i, &(ca, _, cb, _)) in corr.iter().enumerate() {
+        for &(ca, na, cb, nb2) in &corr_norm {
             if !hv[ca] || !hv[cb] {
                 continue;
             }
-            let (na, nb2) = corr_norm[i];
             cnt += 2;
             let tri = triangulate_matched_points(&[na], &[nb2], &ps[ca], &ps[cb], &idcam, &tcfg);
             let pts = match &tri {
@@ -255,12 +260,9 @@ pub(crate) fn measure_tag_corners(
             continue;
         }
         let cam = &cameras[*c];
-        let image_pts = [
-            cam.undistort(corners[3].x, corners[3].y),
-            cam.undistort(corners[2].x, corners[2].y),
-            cam.undistort(corners[1].x, corners[1].y),
-            cam.undistort(corners[0].x, corners[0].y),
-        ];
+        let Some(image_pts) = undistort_corners_reversed(cam, corners) else {
+            continue;
+        };
         let Ok(result) = estimate_tag_pose(&object_pts, &image_pts, cam, 50) else {
             continue;
         };
@@ -301,6 +303,17 @@ pub(crate) fn measure_tag_corners(
     Some(acc.map(|v| v * inv))
 }
 
+/// Undistort a tag's four aruco-wound corners (TL, TR, BR, BL) into reversed order
+/// (BL, BR, TR, TL), or `None` when any corner cannot be undistorted: the planar pose needs all four.
+fn undistort_corners_reversed(cam: &PinholeCamera, corners: &[Vec2F64; 4]) -> Option<[Vec2F64; 4]> {
+    Some([
+        cam.undistort(corners[3].x, corners[3].y)?,
+        cam.undistort(corners[2].x, corners[2].y)?,
+        cam.undistort(corners[1].x, corners[1].y)?,
+        cam.undistort(corners[0].x, corners[0].y)?,
+    ])
+}
+
 /// Mean squared reprojection error (px²) of every board corner this camera observes, under a
 /// candidate `T_cam_board` pose. Points behind the camera are heavily penalised.
 fn board_reproj_err(
@@ -316,6 +329,10 @@ fn board_reproj_err(
             continue;
         };
         for k in 0..4 {
+            // A corner the camera cannot undistort says nothing about the pose; skip it uncounted.
+            let Some(obs) = cam.undistort(corners[k].x, corners[k].y) else {
+                continue;
+            };
             let pc = t_cam_board.transform_point(&op[k]);
             n += 1;
             if pc.z <= 1e-6 {
@@ -326,7 +343,6 @@ fn board_reproj_err(
             let v = cam.fy * pc.y / pc.z + cam.cy;
             // Compare in UNDISTORTED pixel space (the projection above is plain pinhole) so a distorted
             // camera doesn't bias the branch ranking.
-            let obs = cam.undistort(corners[k].x, corners[k].y);
             e += (u - obs.x).powi(2) + (v - obs.y).powi(2);
         }
     }
@@ -387,12 +403,9 @@ pub(crate) fn init_poses_board(
                 op[0] - center, // TL
             ];
             // Undistort corners; feed reversed (aruco TL,TR,BR,BL → BL,BR,TR,TL).
-            let img = [
-                cam.undistort(corners[3].x, corners[3].y),
-                cam.undistort(corners[2].x, corners[2].y),
-                cam.undistort(corners[1].x, corners[1].y),
-                cam.undistort(corners[0].x, corners[0].y),
-            ];
+            let Some(img) = undistort_corners_reversed(cam, corners) else {
+                continue;
+            };
             let Ok(pair) = estimate_tag_pose(&object_centered, &img, cam, 50) else {
                 continue;
             };
