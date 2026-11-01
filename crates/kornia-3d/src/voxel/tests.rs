@@ -698,6 +698,29 @@ fn voxel_reductions_do_not_depend_on_the_thread_count() -> TestResult {
     Ok(())
 }
 
+/// [`VoxelError::PointOutOfRange`] names the **smallest** offending index,
+/// whatever the order the parallel fill visits the points in.
+#[test]
+fn out_of_range_reports_the_smallest_index() -> TestResult {
+    let l = unit_layout()?;
+    let mut points = random_points(20_000, -3.0, 3.0, 13);
+    points[17_000] = [1e300, 0.0, 0.0];
+    points[9_000] = [f64::INFINITY, 0.0, 0.0];
+    points[5] = [f64::NAN; 3];
+    let cloud = PointCloud::new(points.clone(), None, None);
+    for err in [
+        VoxelView::new(&cloud, &l).unwrap_err(),
+        voxel_downsample(&cloud, &l, DownsampleMode::First).unwrap_err(),
+        voxel_neighbour_counts(&points, &l, VoxelConnectivity::TwentySix).unwrap_err(),
+    ] {
+        assert!(
+            matches!(err, VoxelError::PointOutOfRange { index: 5 }),
+            "{err:?}"
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn remove_sparse_voxels_keeps_order_and_attributes() -> TestResult {
     let l = unit_layout()?;
