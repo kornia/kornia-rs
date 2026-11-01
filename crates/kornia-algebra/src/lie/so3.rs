@@ -34,8 +34,9 @@
 //!
 //! The left and right Jacobians describe how the exponential map distorts
 //! infinitesimal tangent vectors. They are essential for optimization on the
-//! rotation manifold (Levenberg-Marquardt, Gauss-Newton). Both use Taylor series
-//! approximations for small angles (θ < 1e-8) to maintain numerical stability.
+//! rotation manifold (Levenberg-Marquardt, Gauss-Newton). They use Taylor series
+//! approximations at small angles (θ² < 1e-2 in f32, θ < 1e-10 in f64) to maintain
+//! numerical stability and prevent catastrophic cancellation.
 
 use crate::{
     param::{Param, ParamError},
@@ -44,11 +45,9 @@ use crate::{
 use rand::RngExt;
 const SMALL_ANGLE_EPSILON: f32 = 1.0e-8;
 const SMALL_ANGLE_EPSILON_F64: f64 = 1.0e-10;
-/// Threshold on θ² below which the Taylor series is used for SO(3) Jacobian
-/// coefficients in single precision (`f32`). At `θ² = 1e-2` (`θ = 0.1` rad), the 4th-order
-/// Taylor series truncation error (`θ⁶ / 40320 ≈ 2.5e-11`) is four orders
-/// of magnitude smaller than `f32::EPSILON` (~1.19e-7), while preventing catastrophic
-/// cancellation in `(1 - cos θ)/θ²` below `θ = 0.1` rad.
+/// Threshold on θ² below which Taylor expansion is used for f32 Jacobians.
+/// In f32, `1.0 - cos(θ)` cancels to 0.0 for θ < 1e-4. Below θ² = 1e-2 (θ < 0.1 rad),
+/// 4th-order Taylor series avoids cancellation with truncation error (< 1e-9) well below f32::EPSILON.
 const JACOBIAN_TAYLOR_THRESHOLD_F32: f32 = 1.0e-2;
 
 /// A 3D rotation, stored as a unit quaternion.
