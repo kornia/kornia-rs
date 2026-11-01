@@ -877,7 +877,8 @@ impl<'a> VoxelView<'a> {
 /// copied into an owned cloud.
 ///
 /// The output is in ascending voxel key order (lexicographic `(x, y, z)`),
-/// the same for any permutation-free rerun. Open3D's `voxel_down_sample`
+/// so rerunning on the same input gives the same cloud. Open3D's
+/// `voxel_down_sample`
 /// returns the same centroids in hash-map order; compare with it as sets.
 /// For [`DownsampleMode::First`] and [`DownsampleMode::NearestToCentre`]
 /// the chosen points are input points: [`VoxelView::first`] and
