@@ -21,9 +21,17 @@ pub struct AdaptiveThresholdMeanWorkspace {
 impl AdaptiveThresholdMeanWorkspace {
     /// Create an empty workspace without allocating.
     ///
+    /// # Arguments
+    ///
+    /// None.
+    ///
     /// # Returns
     ///
     /// Scratch buffers that are sized by [`adaptive_threshold_mean`] on use.
+    ///
+    /// # Errors
+    ///
+    /// This constructor is infallible.
     pub fn new() -> Self {
         Self::default()
     }
