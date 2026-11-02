@@ -330,6 +330,9 @@ impl Mat3F64 {
 
     /// Round each element to `f32`.
     ///
+    /// Not a `From` impl on purpose: it rounds like `as f32`, so it keeps glam's `as_*` name;
+    /// `From` is kept for lossless conversions such as `f32` to `f64`.
+    ///
     /// # Returns
     ///
     /// The `f32` matrix; values outside the `f32` range become `±inf`.
@@ -343,6 +346,10 @@ impl Mat3F64 {
     /// For the SVD `M = U·Σ·Vᵀ` this is `U·diag(1, 1, det(U·Vᵀ))·Vᵀ`. When `U·Vᵀ` is a
     /// reflection, negating a column of `U·Vᵀ` instead gives a rotation that is in general not the
     /// nearest.
+    ///
+    /// nalgebra's 3x3 SVD works on `MᵀM`, so singular values below about `1e-8` of the largest are
+    /// lost and the rotation is not reliable in their plane (e.g. the covariance of a nearly flat
+    /// point cloud).
     ///
     /// # Returns
     ///

@@ -281,6 +281,9 @@ impl From<Vec3AF32> for Vec3F64 {
 impl Vec3F64 {
     /// Round each component to `f32`.
     ///
+    /// Not a `From` impl on purpose: it rounds like `as f32`, so it keeps glam's `as_*` name;
+    /// `From` is kept for lossless conversions such as `f32` to `f64`.
+    ///
     /// # Returns
     ///
     /// The `f32` vector; values outside the `f32` range become `±inf`.

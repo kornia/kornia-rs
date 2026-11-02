@@ -25,6 +25,12 @@
 //!   of the constraints.
 //! - Degenerate image points are found by a relative test on `S = Σ Q_i`; OpenCV checks the
 //!   variance of the points against an absolute threshold.
+//! - `rank_tolerance` is relative to the largest eigenvalue of `Ω` (`1e-10`); OpenCV's
+//!   `RANK_TOLERANCE` is absolute (`1e-7`).
+//! - It returns one pose; OpenCV keeps every solution within `1e-6` of the best error.
+//! - The world points are centred before `Ω` is built; OpenCV uses them as given.
+//! - The search can also start from the eigenvector of the largest eigenvalue; OpenCV's stops
+//!   before it.
 
 use kornia_algebra::{Mat3AF32, Mat3F64, Vec2F32, Vec2F64, Vec3AF32, Vec3F64, SO3F32};
 use kornia_imgproc::calibration::{
@@ -52,7 +58,7 @@ type Mat69 = SMatrix<f64, NUM_CONSTRAINTS, VEC_R_LEN>;
 type MatKkt = SMatrix<f64, KKT_LEN, KKT_LEN>;
 type VecKkt = SVector<f64, KKT_LEN>;
 
-/// Minimum number of correspondences.
+/// Minimum number of correspondences (`solve_pnp_ransac` needs 4, see `ransac.rs`).
 const MIN_CORRESPONDENCES: usize = 3;
 
 /// `√3`: the norm of `vec(R)` for any rotation `R`.

@@ -14,7 +14,7 @@ use kornia_algebra::{Mat3AF32, Vec2F32, Vec3AF32};
 use kornia_imgproc::calibration::distortion::PolynomialDistortion;
 use thiserror::Error;
 
-const MIN_CORRESPONDENCES: usize = 4; // Minimum 2D-3D pairs required by EPnP (and by any refit)
+const MIN_CORRESPONDENCES: usize = 4; // For EPnP and the 4+ point samples (SQPnP alone needs 3)
 const AP3P_SAMPLE_SIZE: usize = 3; // AP3P is an exact 3-point solver: it rejects any other count
 const PNP_MIN_SAMPLE_SIZE: usize = 5; // EPnP and SQPnP sample size (4 if only 4 points exist)
 
@@ -49,8 +49,9 @@ pub enum PnPRansacError {
     /// AP3P consumes bearing vectors obtained by inverting `K` alone, so a distortion model
     /// cannot be honoured while generating hypotheses. Silently ignoring it would score the
     /// consensus set under an ideal-pinhole model and then refit it under a distorted one —
-    /// two different camera models for one answer. SQPnP would solve under the distortion model
-    /// while the scoring stays pinhole. Undistort the image points up front and pass
+    /// two different camera models for one answer. SQPnP, like EPnP, would solve under the
+    /// distortion model while the scoring stays pinhole; it is rejected so a new kernel does not
+    /// take on that mismatch. Undistort the image points up front and pass
     /// `distortion = None`, or use an EPnP kernel.
     #[error("AP3P or SQPnP inside RANSAC cannot honour a distortion model: undistort the image points first and pass `distortion = None`, or use an EPnP kernel")]
     DistortionUnsupportedByKernel,
@@ -254,8 +255,9 @@ pub struct PnPRansacResult {
 ///
 /// Returns [`PnPRansacError::DistortionUnsupportedByKernel`] when an AP3P or SQPnP kernel is
 /// combined with `distortion = Some(..)`: AP3P inverts `K` alone and cannot consume a distortion
-/// model, so it would generate hypotheses from distorted pixels treated as ideal; SQPnP would
-/// solve under the distortion model while the scoring below stays pinhole.
+/// model, so it would generate hypotheses from distorted pixels treated as ideal; SQPnP, like
+/// EPnP (see below), would solve under the distortion model while the scoring stays pinhole, and
+/// is rejected so a new kernel does not take on that mismatch.
 ///
 /// Rejecting is a stopgap, not the reference design. OpenCV and COLMAP both UNDISTORT the
 /// correspondences before sampling and then work in a pure pinhole downstream; this crate has no
@@ -293,7 +295,8 @@ pub fn solve_pnp_ransac(
 
     // AP3P consumes bearing vectors from K alone; it has nowhere to put a distortion model.
     // Accepting one would score hypotheses under an ideal pinhole and then refit the very same
-    // consensus set under a distorted model. Reject rather than silently mis-model.
+    // consensus set under a distorted model. Reject rather than silently mis-model; SQPnP too,
+    // so a new kernel does not repeat EPnP's distorted solve with pinhole scoring.
     if (is_ap3p || is_sqpnp) && distortion.is_some() {
         return Err(PnPRansacError::DistortionUnsupportedByKernel);
     }

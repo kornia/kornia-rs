@@ -21,7 +21,7 @@ cargo test --release -p kornia-3d --lib -- --ignored --nocapture pnp_accuracy_re
 | Scenes (`bench_pnp`) | random points in a 2 m cube, or a 2 m square for `planar`, seen from 6 m; uniform noise of up to 1 px; fixed seed |
 | Batch | each `pnp` iteration solves 20 scenes, each `pnp_ransac` iteration 5 (100 inliers + 100 outliers); times below are per single solve |
 | Failing cases | every scene is solved once before timing; a case that fails is reported as skipped, never timed |
-| Timing | criterion defaults (3 s warm-up, 5 s measurement, 100 samples); the time shown is criterion's point estimate divided by the batch size |
+| Timing | criterion defaults (3 s warm-up, 5 s measurement, 100 samples); the time shown is criterion's median divided by the batch size |
 | Accuracy (`pnp_accuracy_report`) | 200 random scenes per row, fixed seeds; Gaussian pixel noise with the σ given in each table; failure = rotation error above 5° or no pose. The RANSAC rows add random outlier correspondences and use a 3 px threshold |
 
 **Note:** plain EPnP still has #1181 (wrong pose on noise-free data), which is why it fails in
@@ -43,8 +43,23 @@ EPnP + LM numbers to change when that is fixed.
 
 ### Speed
 
-Not measured yet for this code: the machine was under heavy load (load average above 100). Run
-`cargo bench -p kornia-3d --bench bench_pnp` on an idle machine and add the tables here.
+Measured on 2026-11-02 on the same machine (macOS 27.2) at commit b192dbb4, with
+`cargo bench -p kornia-3d --bench bench_pnp`, run twice. Each value is the faster of the two
+criterion medians, per single solve, in µs. The machine was not idle (load average 4 to 8), and
+the two runs differed by up to 3x on some cases, so read these as rough sizes, not exact numbers.
+
+| Solver | n = 6 | n = 20 | n = 100 | n = 500 |
+|--------|-------|--------|---------|---------|
+| EPnP | 9.6 | 10.3 | 15.4 | 43.0 |
+| EPnP + LM | 101 | 277 | 1436 | 5891 |
+| SQPnP | 13.5 | 10.6 | 12.3 | 18.0 |
+| EPnP, planar | 8.1 | 11.9 | 13.6 | 34.7 |
+| EPnP + LM, planar | 103 | skipped | 1656 | 7203 |
+| SQPnP, planar | 43.3 | 41.9 | 50.8 | 50.6 |
+
+`solve_pnp_ransac` (100 inliers + 100 outliers), per scene: AP3P 1344 µs, SQPnP 13138 µs. EPnP is
+skipped (too few inliers on one scene), and so is EPnP + LM, planar, n = 20 (the LM step fails on one
+scene); both are likely #1181.
 
 ### Accuracy
 
