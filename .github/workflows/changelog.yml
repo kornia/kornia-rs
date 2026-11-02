@@ -30,5 +30,8 @@ jobs:
           if [[ "$NO_CHANGELOG" == "true" ]]; then args+=(--skip-presence); fi
           python3 scripts/changelog.py check "${args[@]}"
 
+      - name: Test changelog script
+        run: python3 scripts/test_changelog.py
+
       - name: Preview release notes
         run: python3 scripts/changelog.py preview
