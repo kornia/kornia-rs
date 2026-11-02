@@ -39,7 +39,7 @@ INTERNAL_PREFIXES = (
     "scripts/",
     "ci/",
 )
-INTERNAL_ROOT_FILES = {
+INTERNAL_FILES = {
     ".coderabbit.yaml",
     ".gitignore",
     ".gitmodules",
@@ -50,6 +50,7 @@ INTERNAL_ROOT_FILES = {
     "CONTRIBUTING.md",
     "SECURITY.md",
     "best_practices.md",
+    "changelog.d/README.md",
     "Cross.toml",
     "pixi.toml",
     "pixi.lock",
@@ -65,7 +66,7 @@ def is_internal(path: str) -> bool:
     parts = p.split("/")
     if "tests" in parts or "benches" in parts:
         return True
-    if p in INTERNAL_ROOT_FILES:
+    if p in INTERNAL_FILES:
         return True
     return p.startswith(INTERNAL_PREFIXES)
 

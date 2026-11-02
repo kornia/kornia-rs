@@ -34,7 +34,7 @@ class TestInternalOnly(unittest.TestCase):
             with self.subTest(path=p):
                 self.assert_internal([p])
 
-    def test_internal_root_files(self):
+    def test_internal_files(self):
         for p in (
             ".coderabbit.yaml",
             ".gitignore",
@@ -46,6 +46,7 @@ class TestInternalOnly(unittest.TestCase):
             "CONTRIBUTING.md",
             "SECURITY.md",
             "best_practices.md",
+            "changelog.d/README.md",
             "Cross.toml",
             "pixi.toml",
             "pixi.lock",

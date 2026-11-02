@@ -22,8 +22,11 @@ it matters. No heading or outer bullet (the build adds them and the PR link);
 inner lists, tables and code blocks are fine. A PR may add one file per type. To
 credit several PRs for one change, give each the same text in the same type.
 
-Internal refactors, tests and CI-only changes need no fragment: say so in the
-PR and ask a maintainer for the `no-changelog` label.
+Internal refactors, tests and CI-only changes need no fragment. The check
+detects PRs whose diff touches only internal paths (CI, tooling, dev config,
+tests, benches) and skips the fragment requirement for them; for anything it
+cannot classify, say so in the PR and ask a maintainer for the `no-changelog`
+label.
 
 ```bash
 pixi run changelog-preview   # print pending notes, changes nothing
