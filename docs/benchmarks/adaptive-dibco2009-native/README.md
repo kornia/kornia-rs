@@ -18,9 +18,19 @@ round times. Speedups divide OpenCV's aggregate time by Rust's aggregate time;
 the two minima need not occur in the same round. Raw rounds, per-image results,
 source/binary/input hashes and build information are in [results.json](results.json).
 
-<!-- RESULTS_START -->
-Results will be refreshed for the stateful API before the revision is pushed.
-<!-- RESULTS_END -->
+| Window | Rust median ms | OpenCV median ms | Speedup | Rust best ms | OpenCV best ms | Speedup |
+|---|---:|---:|---:|---:|---:|---:|
+| 3 × 3 | 0.242515 | 0.615696 | 2.54× | 0.220622 | 0.555480 | 2.52× |
+| 5 × 5 | 0.316364 | 0.568691 | 1.80× | 0.315713 | 0.567286 | 1.80× |
+| 15 × 15 | 0.621216 | 0.868408 | 1.40× | 0.618732 | 0.866052 | 1.40× |
+| 31 × 31 | 0.645189 | 1.167659 | 1.81× | 0.643927 | 1.164640 | 1.81× |
+| 51 × 51 | 0.677054 | 1.213215 | 1.79× | 0.673570 | 1.183887 | 1.76× |
+| 67 × 67 | 0.676901 | 1.196212 | 1.77× | 0.674161 | 1.193741 | 1.77× |
+| 101 × 101 | 0.720646 | 1.274039 | 1.77× | 0.704285 | 1.229585 | 1.75× |
+
+All **70 image/window cases** match OpenCV pixel for pixel across
+**44,014,824 comparisons**. Rust is faster in all 70 cases using either statistic.
+
 
 ## API and timing boundaries
 

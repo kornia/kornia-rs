@@ -11,13 +11,13 @@
     "rounds": 5,
     "iterations_per_round": 200,
     "paired_round_order": true,
-    "git_head": "a183d34f45d71d6880c05b7c8c46e2751869af8d",
-    "git_status": " M .claude/skills/kornia-simd/SKILL.md\n M crates/kornia-imgproc/README.md\n M crates/kornia-imgproc/benches/bench_filters.rs\n M crates/kornia-imgproc/src/threshold.rs\n?? changelog.d/+adaptive-mean.added.md\n?? crates/kornia-imgproc/benches/bench_adaptive_dataset.py\n?? crates/kornia-imgproc/benches/bench_adaptive_opencv.cpp\n?? crates/kornia-imgproc/examples/bench_adaptive_dataset.rs\n?? docs/benchmark-adaptive-threshold.md\n?? docs/benchmarks/\n",
+    "git_head": "26f54e3254a7ec69a7598cdd28c5be2ff21cd8e1",
+    "git_status": "",
     "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
     "rust_binary": "/Users/choudhry347/Desktop/Projects/kornia-rs-adaptive/target/release/examples/bench_adaptive_dataset",
-    "rust_binary_sha256": "984e3b1a1d9c300a5368ff3fda838dabf8be644220afe45c983f0876cb2d672d",
+    "rust_binary_sha256": "b05d52a9d9292cb6e8cd6740d0d2331e2473af4b32d7331374ddfa3bf31e76fe",
     "threshold_source": "/Users/choudhry347/Desktop/Projects/kornia-rs-adaptive/crates/kornia-imgproc/src/threshold.rs",
-    "threshold_source_sha256": "44f6287dea1c94565fece689088f3ec9397f3182e3afb8c62c81b281c8c3f33f",
+    "threshold_source_sha256": "622f0a581590dd86aff700aadfd9f41b970e1c06b7db5865ccccf413015b77d9",
     "inputs": [
       {
         "image": "DIBC02009_Test_images-handwritten/H01.bmp",
@@ -91,11 +91,14 @@
       }
     ],
     "reference_call_boundary": "native-cpp",
-    "rust_scratch": "caller-owned workspace reused across timed calls",
+    "rust_scratch": "AdaptiveThresholdMean owns scratch reused across timed calls",
+    "rust_worker_source_sha256": "cadbd426224668bcf619939896c9fbdf358077868364ac9997044546e9b0a507",
+    "runner_source_sha256": "7fa2a471ffc6f879fcbb8cea6bdbfcad484c922bced1a961027f9a301c10e6aa",
     "opencv_binary": "/private/tmp/kornia-opencv-worker",
     "opencv_binary_sha256": "15113f039e4b56a2fdaa90f5c1c1a27f1225d9daccef474ac1f232a58315c0ed",
     "decoder_opencv": "4.11.0",
-    "opencv_worker_source_sha256": "9f17fba2eb507179bf2fb127f96c43083eef194527a985407ccafead6686fe09"
+    "opencv_worker_source_sha256": "0b2d8a7629dd1ceb1b256a5d6ecba02a9939859a91647dcb6dc0ce2526659371",
+    "opencv_build_information": "\nGeneral configuration for OpenCV 4.11.0 =====================================\n  Version control:               unknown\n\n  Platform:\n    Timestamp:                   2026-11-01T21:09:12Z\n    Host:                        Darwin 25.6.0 arm64\n    CMake:                       4.4.4\n    CMake generator:             Ninja\n    CMake build tool:            /Users/choudhry347/Desktop/Projects/.venv/bin/ninja\n    Configuration:               Release\n    Algorithm Hint:              ALGO_HINT_ACCURATE\n\n  CPU/HW features:\n    Baseline:                    NEON FP16 NEON_DOTPROD NEON_FP16\n      requested:                 DETECT\n    Dispatched code generation:  NEON_BF16\n      requested:                 NEON_FP16 NEON_BF16 NEON_DOTPROD\n      NEON_BF16 (0 files):       + NEON_BF16\n\n  C/C++:\n    Built as dynamic libs?:      YES\n    C++ standard:                11\n    C++ Compiler:                /usr/bin/c++  (ver 21.0.0.21000101)\n    C++ flags (Release):         -fsigned-char -W -Wall -Wreturn-type -Wnon-virtual-dtor -Waddress -Wsequence-point -Wformat -Wformat-security -Wmissing-declarations -Wmissing-prototypes -Wstrict-prototypes -Wundef -Winit-self -Wpointer-arith -Wshadow -Wsign-promo -Wuninitialized -Wno-delete-non-virtual-dtor -Wno-unnamed-type-template-args -Wno-comment -fdiagnostics-show-option -Qunused-arguments -Wno-semicolon-before-method-body -ffunction-sections -fdata-sections  -fvisibility=hidden -fvisibility-inlines-hidden -O3 -DNDEBUG  -DNDEBUG\n    C++ flags (Debug):           -fsigned-char -W -Wall -Wreturn-type -Wnon-virtual-dtor -Waddress -Wsequence-point -Wformat -Wformat-security -Wmissing-declarations -Wmissing-prototypes -Wstrict-prototypes -Wundef -Winit-self -Wpointer-arith -Wshadow -Wsign-promo -Wuninitialized -Wno-delete-non-virtual-dtor -Wno-unnamed-type-template-args -Wno-comment -fdiagnostics-show-option -Qunused-arguments -Wno-semicolon-before-method-body -ffunction-sections -fdata-sections  -fvisibility=hidden -fvisibility-inlines-hidden -g  -O0 -DDEBUG -D_DEBUG\n    C Compiler:                  /usr/bin/cc\n    C flags (Release):           -fsigned-char -W -Wall -Wreturn-type -Wnon-virtual-dtor -Waddress -Wsequence-point -Wformat -Wformat-security -Wmissing-declarations -Wmissing-prototypes -Wstrict-prototypes -Wundef -Winit-self -Wpointer-arith -Wshadow -Wsign-promo -Wuninitialized -Wno-delete-non-virtual-dtor -Wno-unnamed-type-template-args -Wno-comment -fdiagnostics-show-option -Qunused-arguments -Wno-semicolon-before-method-body -ffunction-sections -fdata-sections  -fvisibility=hidden -fvisibility-inlines-hidden -O3 -DNDEBUG  -DNDEBUG\n    C flags (Debug):             -fsigned-char -W -Wall -Wreturn-type -Wnon-virtual-dtor -Waddress -Wsequence-point -Wformat -Wformat-security -Wmissing-declarations -Wmissing-prototypes -Wstrict-prototypes -Wundef -Winit-self -Wpointer-arith -Wshadow -Wsign-promo -Wuninitialized -Wno-delete-non-virtual-dtor -Wno-unnamed-type-template-args -Wno-comment -fdiagnostics-show-option -Qunused-arguments -Wno-semicolon-before-method-body -ffunction-sections -fdata-sections  -fvisibility=hidden -fvisibility-inlines-hidden -g  -O0 -DDEBUG -D_DEBUG\n    Linker flags (Release):      -Wl,-dead_strip  \n    Linker flags (Debug):        -Wl,-dead_strip  \n    ccache:                      NO\n    Precompiled headers:         NO\n    Extra dependencies:\n    3rdparty dependencies:\n\n  OpenCV modules:\n    To be built:                 core imgproc\n    Disabled:                    world\n    Disabled by dependency:      calib3d dnn features2d flann highgui imgcodecs java_bindings_generator js_bindings_generator ml objc_bindings_generator objdetect photo python_bindings_generator python_tests stitching video videoio\n    Unavailable:                 gapi java python2 python3 ts\n    Applications:                -\n    Documentation:               NO\n    Non-free algorithms:         NO\n\n  GUI: \n    Cocoa:                       YES\n    VTK support:                 NO\n\n  Media I/O: \n    ZLib:                        build (ver 1.3.1)\n    JPEG:                        build-libjpeg-turbo (ver 3.0.3-70)\n      SIMD Support Request:      YES\n      SIMD Support:              YES\n    WEBP:                        build (ver decoder: 0x0209, encoder: 0x020f, demux: 0x0107)\n    AVIF:                        NO\n    PNG:                         build (ver 1.6.43)\n      SIMD Support Request:      YES\n      SIMD Support:              YES (Arm NEON)\n    TIFF:                        build (ver 42 - 4.6.0)\n    JPEG 2000:                   build (ver 2.5.0)\n    OpenEXR:                     OpenEXR::OpenEXR (ver 3.4.15)\n    GIF:                         NO\n    HDR:                         YES\n    SUNRASTER:                   YES\n    PXM:                         YES\n    PFM:                         YES\n\n  Video I/O:\n    FFMPEG:                      YES\n      avcodec:                   YES (63.1.101)\n      avformat:                  YES (63.1.101)\n      avutil:                    YES (61.1.101)\n      swscale:                   YES (10.1.101)\n      avresample:                NO\n    GStreamer:                   NO\n    AVFoundation:                YES\n\n  Parallel framework:            GCD\n\n  Trace:                         YES (built-in)\n\n  Other third-party libraries:\n    Custom HAL:                  YES (carotene (ver 0.0.1))\n    Protobuf:                    build (3.19.1)\n    Flatbuffers:                 builtin/3rdparty (23.5.9)\n\n  OpenCL:                        YES (no extra features)\n    Include path:                NO\n    Link libraries:              -framework OpenCL\n\n  Python (for build):            /opt/homebrew/bin/python3\n\n  Install to:                    /private/tmp/opencv-4.11.0-install\n-----------------------------------------------------------------\n\n"
   },
   "results": [
     {
@@ -104,23 +107,26 @@
       "height": 426,
       "window": 3,
       "offset": 10,
-      "kornia_ms": 0.175494585,
-      "opencv_ms": 0.43651271,
-      "opencv_over_kornia": 2.4873286546134743,
+      "kornia_ms": 0.51031729,
+      "opencv_ms": 1.328145205,
+      "opencv_over_kornia": 2.6025871179085467,
+      "kornia_best_ms": 0.306883125,
+      "opencv_best_ms": 0.76021792,
+      "best_opencv_over_kornia": 2.4772229492905486,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.17632771,
-        0.175494585,
-        0.174860835,
-        0.17478375,
-        0.17649625
+        1.287350415,
+        0.63956083,
+        0.51031729,
+        0.309095,
+        0.306883125
       ],
       "opencv_rounds_ms": [
-        0.43677333,
-        0.43651271,
-        0.43544833,
-        0.43702521,
-        0.43609875
+        1.328145205,
+        2.197427915,
+        2.39369708,
+        1.13018,
+        0.76021792
       ]
     },
     {
@@ -129,23 +135,26 @@
       "height": 426,
       "window": 5,
       "offset": 10,
-      "kornia_ms": 0.25053625,
-      "opencv_ms": 0.447104375,
-      "opencv_over_kornia": 1.784589555403659,
+      "kornia_ms": 0.43572042,
+      "opencv_ms": 0.76958625,
+      "opencv_over_kornia": 1.7662386582662342,
+      "kornia_best_ms": 0.434856875,
+      "opencv_best_ms": 0.769008125,
+      "best_opencv_over_kornia": 1.7684166198361244,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.25251708,
-        0.25085292,
-        0.25053625,
-        0.250292915,
-        0.24978104
+        0.434856875,
+        0.437325,
+        0.436287915,
+        0.43572042,
+        0.435004165
       ],
       "opencv_rounds_ms": [
-        0.442693955,
-        0.44261396,
-        0.450014795,
-        0.447104375,
-        0.465185
+        0.76958625,
+        0.77848271,
+        0.76962104,
+        0.769318125,
+        0.769008125
       ]
     },
     {
@@ -154,23 +163,26 @@
       "height": 426,
       "window": 15,
       "offset": 10,
-      "kornia_ms": 0.497865625,
-      "opencv_ms": 0.682145,
-      "opencv_over_kornia": 1.3701387799167697,
+      "kornia_ms": 0.87516667,
+      "opencv_ms": 1.18597479,
+      "opencv_over_kornia": 1.355141632621818,
+      "kornia_best_ms": 0.86129396,
+      "opencv_best_ms": 1.182766665,
+      "best_opencv_over_kornia": 1.3732438864426728,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.497788335,
-        0.496905625,
-        0.497865625,
-        0.498653125,
-        0.499718335
+        0.87516667,
+        0.86129396,
+        0.863309585,
+        0.88119146,
+        0.879700835
       ],
       "opencv_rounds_ms": [
-        0.682113545,
-        0.681044795,
-        0.684804375,
-        0.682145,
-        0.68428583
+        1.21734146,
+        1.182766665,
+        1.18458208,
+        1.21196125,
+        1.18597479
       ]
     },
     {
@@ -179,23 +191,26 @@
       "height": 426,
       "window": 31,
       "offset": 10,
-      "kornia_ms": 0.50438896,
-      "opencv_ms": 0.919315415,
-      "opencv_over_kornia": 1.8226319128792987,
+      "kornia_ms": 0.875604165,
+      "opencv_ms": 1.60017333,
+      "opencv_over_kornia": 1.827507672944886,
+      "kornia_best_ms": 0.8746825,
+      "opencv_best_ms": 1.59434125,
+      "best_opencv_over_kornia": 1.8227656892643902,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.50387354,
-        0.50438896,
-        0.510892915,
-        0.505339375,
-        0.50340896
+        0.875604165,
+        0.879600415,
+        0.87576458,
+        0.87503083,
+        0.8746825
       ],
       "opencv_rounds_ms": [
-        0.918938335,
-        0.91764979,
-        0.919315415,
-        0.919868125,
-        0.92062021
+        1.602796665,
+        1.600809795,
+        1.60017333,
+        1.59434125,
+        1.59713521
       ]
     },
     {
@@ -204,23 +219,26 @@
       "height": 426,
       "window": 51,
       "offset": 10,
-      "kornia_ms": 0.511393125,
-      "opencv_ms": 0.931986045,
-      "opencv_over_kornia": 1.8224453936489664,
+      "kornia_ms": 0.888346875,
+      "opencv_ms": 1.624710205,
+      "opencv_over_kornia": 1.8289141896289105,
+      "kornia_best_ms": 0.888154585,
+      "opencv_best_ms": 1.6123025,
+      "best_opencv_over_kornia": 1.8153399500831267,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.513596875,
-        0.51087625,
-        0.511393125,
-        0.51163,
-        0.510797705
+        0.888154585,
+        0.888345835,
+        0.899981875,
+        0.888346875,
+        0.894815835
       ],
       "opencv_rounds_ms": [
-        0.932287295,
-        0.931986045,
-        0.93481604,
-        0.930651665,
-        0.929015835
+        1.624710205,
+        1.6123025,
+        1.62736708,
+        1.626670625,
+        1.61758021
       ]
     },
     {
@@ -229,23 +247,26 @@
       "height": 426,
       "window": 67,
       "offset": 10,
-      "kornia_ms": 0.523374165,
-      "opencv_ms": 0.941436665,
-      "opencv_over_kornia": 1.7987832185029615,
+      "kornia_ms": 0.911577915,
+      "opencv_ms": 1.63183729,
+      "opencv_over_kornia": 1.7901237657781564,
+      "kornia_best_ms": 0.90671708,
+      "opencv_best_ms": 1.62536167,
+      "best_opencv_over_kornia": 1.792578639855334,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.520037085,
-        0.523374165,
-        0.525575415,
-        0.523145415,
-        0.524018125
+        0.926596665,
+        0.90769042,
+        0.911577915,
+        0.94959146,
+        0.90671708
       ],
       "opencv_rounds_ms": [
-        0.937285835,
-        0.939195,
-        0.943323545,
-        0.941963125,
-        0.941436665
+        1.63183729,
+        1.62536167,
+        1.630774585,
+        2.55649229,
+        1.688214165
       ]
     },
     {
@@ -254,23 +275,26 @@
       "height": 426,
       "window": 101,
       "offset": 10,
-      "kornia_ms": 0.53427042,
-      "opencv_ms": 0.958518125,
-      "opencv_over_kornia": 1.7940692374472087,
+      "kornia_ms": 0.930182085,
+      "opencv_ms": 1.741265415,
+      "opencv_over_kornia": 1.8719618912032692,
+      "kornia_best_ms": 0.928109795,
+      "opencv_best_ms": 1.671846665,
+      "best_opencv_over_kornia": 1.8013457825859922,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.535930415,
-        0.54339479,
-        0.534026665,
-        0.53427042,
-        0.53284979
+        0.928109795,
+        0.92862042,
+        0.930182085,
+        0.95268875,
+        1.22459875
       ],
       "opencv_rounds_ms": [
-        0.95729729,
-        0.959711455,
-        0.959410835,
-        0.958518125,
-        0.956761455
+        1.741265415,
+        1.671846665,
+        1.683322295,
+        1.822174585,
+        2.462748955
       ]
     },
     {
@@ -279,23 +303,26 @@
       "height": 1366,
       "window": 3,
       "offset": 10,
-      "kornia_ms": 0.259036875,
-      "opencv_ms": 0.6631725,
-      "opencv_over_kornia": 2.5601470833061897,
+      "kornia_ms": 0.448935625,
+      "opencv_ms": 1.146594165,
+      "opencv_over_kornia": 2.5540280190506155,
+      "kornia_best_ms": 0.448569375,
+      "opencv_best_ms": 1.1461375,
+      "best_opencv_over_kornia": 2.5550952960174778,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.258649795,
-        0.260241665,
-        0.258745,
-        0.259036875,
-        0.259393955
+        0.448569375,
+        0.44900583,
+        0.4487,
+        0.4489875,
+        0.448935625
       ],
       "opencv_rounds_ms": [
-        0.663654795,
-        0.6619,
-        0.6631725,
-        0.662426045,
-        0.66385229
+        1.1465375,
+        1.15007792,
+        1.1461375,
+        1.146594165,
+        1.147620625
       ]
     },
     {
@@ -304,23 +331,26 @@
       "height": 1366,
       "window": 5,
       "offset": 10,
-      "kornia_ms": 0.372128335,
-      "opencv_ms": 0.679829585,
-      "opencv_over_kornia": 1.8268686392827358,
+      "kornia_ms": 0.65005771,
+      "opencv_ms": 1.180995205,
+      "opencv_over_kornia": 1.8167544001593336,
+      "kornia_best_ms": 0.64953854,
+      "opencv_best_ms": 1.17576771,
+      "best_opencv_over_kornia": 1.810158501141441,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.372788125,
-        0.37240396,
-        0.372128335,
-        0.37189146,
-        0.371661665
+        0.65005771,
+        0.65066146,
+        0.64961875,
+        0.64953854,
+        0.650265625
       ],
       "opencv_rounds_ms": [
-        0.68103729,
-        0.675534585,
-        0.679829585,
-        0.67791208,
-        0.680798125
+        1.183475415,
+        1.180995205,
+        1.18395979,
+        1.17576771,
+        1.180899375
       ]
     },
     {
@@ -329,23 +359,26 @@
       "height": 1366,
       "window": 15,
       "offset": 10,
-      "kornia_ms": 0.725132295,
-      "opencv_ms": 1.034570835,
-      "opencv_over_kornia": 1.4267339106721209,
+      "kornia_ms": 1.25488292,
+      "opencv_ms": 1.794914585,
+      "opencv_over_kornia": 1.430344262714166,
+      "kornia_best_ms": 1.251555835,
+      "opencv_best_ms": 1.78044167,
+      "best_opencv_over_kornia": 1.4225826928448622,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.72015771,
-        0.719620415,
-        0.726120625,
-        0.726123545,
-        0.725132295
+        1.25958979,
+        1.251555835,
+        1.25488292,
+        1.25427625,
+        1.284276875
       ],
       "opencv_rounds_ms": [
-        1.03519625,
-        1.02545375,
-        1.030596665,
-        1.034703335,
-        1.034570835
+        1.78752854,
+        1.78044167,
+        1.807683335,
+        1.86399917,
+        1.794914585
       ]
     },
     {
@@ -354,23 +387,26 @@
       "height": 1366,
       "window": 31,
       "offset": 10,
-      "kornia_ms": 0.769559375,
-      "opencv_ms": 1.37922125,
-      "opencv_over_kornia": 1.7922220101600348,
+      "kornia_ms": 1.33879479,
+      "opencv_ms": 2.39706708,
+      "opencv_over_kornia": 1.7904663940319039,
+      "kornia_best_ms": 1.337537915,
+      "opencv_best_ms": 2.392652915,
+      "best_opencv_over_kornia": 1.788848666020806,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.769559375,
-        0.77039583,
-        0.769105,
-        0.76819396,
-        0.770678335
+        1.33971917,
+        1.338672085,
+        1.33879479,
+        1.33899104,
+        1.337537915
       ],
       "opencv_rounds_ms": [
-        1.37649604,
-        1.38261104,
-        1.37922125,
-        1.37902104,
-        1.380387915
+        2.434944375,
+        2.398072085,
+        2.39335708,
+        2.39706708,
+        2.392652915
       ]
     },
     {
@@ -379,23 +415,26 @@
       "height": 1366,
       "window": 51,
       "offset": 10,
-      "kornia_ms": 0.792493125,
-      "opencv_ms": 1.402793125,
-      "opencv_over_kornia": 1.7701013179136413,
+      "kornia_ms": 1.379532915,
+      "opencv_ms": 2.43365958,
+      "opencv_over_kornia": 1.7641185313798766,
+      "kornia_best_ms": 1.37785896,
+      "opencv_best_ms": 2.432499585,
+      "best_opencv_over_kornia": 1.7654198692440917,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.791894585,
-        0.792760835,
-        0.792297915,
-        0.79257167,
-        0.792493125
+        1.379532915,
+        1.378120415,
+        1.37785896,
+        1.38074396,
+        1.38102104
       ],
       "opencv_rounds_ms": [
-        1.40270854,
-        1.40372667,
-        1.401586045,
-        1.402793125,
-        1.406459585
+        2.452382915,
+        2.432499585,
+        2.433103125,
+        2.433814375,
+        2.43365958
       ]
     },
     {
@@ -404,23 +443,26 @@
       "height": 1366,
       "window": 67,
       "offset": 10,
-      "kornia_ms": 0.812639375,
-      "opencv_ms": 1.416074375,
-      "opencv_over_kornia": 1.7425618528513953,
+      "kornia_ms": 1.412304375,
+      "opencv_ms": 2.452518335,
+      "opencv_over_kornia": 1.7365366690165498,
+      "kornia_best_ms": 1.41004917,
+      "opencv_best_ms": 2.45082604,
+      "best_opencv_over_kornia": 1.7381138843548272,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.81174292,
-        0.814457085,
-        0.812533335,
-        0.812639375,
-        0.814070625
+        1.42203833,
+        1.41241146,
+        1.412304375,
+        1.41004917,
+        1.41226479
       ],
       "opencv_rounds_ms": [
-        1.4143025,
-        1.416074375,
-        1.41534729,
-        1.456624165,
-        1.42184479
+        2.46299292,
+        2.452518335,
+        2.454971665,
+        2.45082604,
+        2.451321875
       ]
     },
     {
@@ -429,23 +471,26 @@
       "height": 1366,
       "window": 101,
       "offset": 10,
-      "kornia_ms": 0.859867705,
-      "opencv_ms": 1.45674604,
-      "opencv_over_kornia": 1.6941513578533574,
+      "kornia_ms": 1.638772705,
+      "opencv_ms": 2.88672146,
+      "opencv_over_kornia": 1.7615142424525554,
+      "kornia_best_ms": 1.48561021,
+      "opencv_best_ms": 2.52420854,
+      "best_opencv_over_kornia": 1.6991055412846148,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.8758975,
-        0.859867705,
-        0.85833396,
-        0.862428955,
-        0.85654417
+        1.48561021,
+        1.492390205,
+        1.638772705,
+        1.655667915,
+        1.9418325
       ],
       "opencv_rounds_ms": [
-        1.45715208,
-        1.45771646,
-        1.45674604,
-        1.45528896,
-        1.455098955
+        2.52420854,
+        4.051302705,
+        2.638510205,
+        2.88672146,
+        4.272755625
       ]
     },
     {
@@ -454,23 +499,26 @@
       "height": 492,
       "window": 3,
       "offset": 10,
-      "kornia_ms": 0.057871665,
-      "opencv_ms": 0.149155625,
-      "opencv_over_kornia": 2.577351541553193,
+      "kornia_ms": 0.112920625,
+      "opencv_ms": 0.293448955,
+      "opencv_over_kornia": 2.5987188345796,
+      "kornia_best_ms": 0.100018125,
+      "opencv_best_ms": 0.27022042,
+      "best_opencv_over_kornia": 2.7017145142442933,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.05764417,
-        0.05738521,
-        0.057871665,
-        0.05938875,
-        0.059691875
+        0.100018125,
+        0.10107583,
+        0.112920625,
+        0.227403335,
+        0.184511455
       ],
       "opencv_rounds_ms": [
-        0.149155625,
-        0.149005,
-        0.149070415,
-        0.153296455,
-        0.159610835
+        0.293448955,
+        0.27022042,
+        0.27866875,
+        0.298623335,
+        0.46126417
       ]
     },
     {
@@ -479,23 +527,26 @@
       "height": 492,
       "window": 5,
       "offset": 10,
-      "kornia_ms": 0.083933335,
-      "opencv_ms": 0.155859165,
-      "opencv_over_kornia": 1.856939975040906,
+      "kornia_ms": 0.14753646,
+      "opencv_ms": 0.26698104,
+      "opencv_over_kornia": 1.8095936421410679,
+      "kornia_best_ms": 0.14738354,
+      "opencv_best_ms": 0.266866875,
+      "best_opencv_over_kornia": 1.8106966015336583,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.083933335,
-        0.0839975,
-        0.083924795,
-        0.0838975,
-        0.08402104
+        0.14738354,
+        0.147829165,
+        0.14753646,
+        0.147764375,
+        0.14744167
       ],
       "opencv_rounds_ms": [
-        0.15599021,
-        0.156256875,
-        0.155859165,
-        0.155583955,
-        0.15585354
+        0.26698104,
+        0.266866875,
+        0.267398125,
+        0.267549375,
+        0.266949165
       ]
     },
     {
@@ -504,23 +555,26 @@
       "height": 492,
       "window": 15,
       "offset": 10,
-      "kornia_ms": 0.16369604,
-      "opencv_ms": 0.23505396,
-      "opencv_over_kornia": 1.4359172036171433,
+      "kornia_ms": 0.28554875,
+      "opencv_ms": 0.40839771,
+      "opencv_over_kornia": 1.4302206190711744,
+      "kornia_best_ms": 0.28537354,
+      "opencv_best_ms": 0.40806479,
+      "best_opencv_over_kornia": 1.42993211634127,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.164764375,
-        0.163944795,
-        0.163384585,
-        0.163666875,
-        0.16369604
+        0.28551854,
+        0.285570835,
+        0.285881455,
+        0.28537354,
+        0.28554875
       ],
       "opencv_rounds_ms": [
-        0.23541979,
-        0.23497333,
-        0.235054585,
-        0.23505396,
-        0.235038125
+        0.408225415,
+        0.40806479,
+        0.409909375,
+        0.4084675,
+        0.40839771
       ]
     },
     {
@@ -529,23 +583,26 @@
       "height": 492,
       "window": 31,
       "offset": 10,
-      "kornia_ms": 0.174206875,
-      "opencv_ms": 0.3116775,
-      "opencv_over_kornia": 1.7891228460415238,
+      "kornia_ms": 0.30181875,
+      "opencv_ms": 0.53897083,
+      "opencv_over_kornia": 1.7857433641879439,
+      "kornia_best_ms": 0.300840625,
+      "opencv_best_ms": 0.53843271,
+      "best_opencv_over_kornia": 1.789760641535697,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.174206875,
-        0.173915835,
-        0.174269165,
-        0.174449375,
-        0.173804585
+        0.30212875,
+        0.300840625,
+        0.30151646,
+        0.30181875,
+        0.301957295
       ],
       "opencv_rounds_ms": [
-        0.3116775,
-        0.311801875,
-        0.311608125,
-        0.312078955,
-        0.31128667
+        0.540750835,
+        0.539439375,
+        0.53897083,
+        0.53879875,
+        0.53843271
       ]
     },
     {
@@ -554,23 +611,26 @@
       "height": 492,
       "window": 51,
       "offset": 10,
-      "kornia_ms": 0.185143125,
-      "opencv_ms": 0.326007705,
-      "opencv_over_kornia": 1.7608415381343487,
+      "kornia_ms": 0.32420604,
+      "opencv_ms": 0.55930021,
+      "opencv_over_kornia": 1.7251381559701973,
+      "kornia_best_ms": 0.322244375,
+      "opencv_best_ms": 0.557729375,
+      "best_opencv_over_kornia": 1.7307652771285764,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.185143125,
-        0.18486542,
-        0.184681875,
-        0.197244375,
-        0.18928167
+        0.323992915,
+        0.322244375,
+        0.32534396,
+        0.32572646,
+        0.32420604
       ],
       "opencv_rounds_ms": [
-        0.32956,
-        0.326007705,
-        0.32097521,
-        0.32669479,
-        0.32124896
+        0.55930021,
+        0.557729375,
+        0.56303833,
+        0.56981146,
+        0.55845229
       ]
     },
     {
@@ -579,23 +639,26 @@
       "height": 492,
       "window": 67,
       "offset": 10,
-      "kornia_ms": 0.192636875,
-      "opencv_ms": 0.326479585,
-      "opencv_over_kornia": 1.694792780458051,
+      "kornia_ms": 0.344474585,
+      "opencv_ms": 0.573356875,
+      "opencv_over_kornia": 1.6644388293551466,
+      "kornia_best_ms": 0.33370229,
+      "opencv_best_ms": 0.564496455,
+      "best_opencv_over_kornia": 1.6916169649300279,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.192519795,
-        0.19255229,
-        0.19295875,
-        0.192735415,
-        0.192636875
+        0.33370229,
+        0.37178875,
+        1.178266045,
+        0.344474585,
+        0.334381875
       ],
       "opencv_rounds_ms": [
-        0.326479585,
-        0.327260835,
-        0.32532125,
-        0.32652708,
-        0.32580146
+        0.56510854,
+        0.77739854,
+        0.573356875,
+        0.577688955,
+        0.564496455
       ]
     },
     {
@@ -604,23 +667,26 @@
       "height": 492,
       "window": 101,
       "offset": 10,
-      "kornia_ms": 0.211354585,
-      "opencv_ms": 0.343515,
-      "opencv_over_kornia": 1.6253018594321007,
+      "kornia_ms": 0.36843854,
+      "opencv_ms": 0.596432295,
+      "opencv_over_kornia": 1.6188108198452853,
+      "kornia_best_ms": 0.36345146,
+      "opencv_best_ms": 0.59252979,
+      "best_opencv_over_kornia": 1.6302858984250606,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.21133875,
-        0.21182,
-        0.211354585,
-        0.21155375,
-        0.211174165
+        0.37021,
+        0.36843854,
+        0.36345146,
+        0.377867295,
+        0.36731792
       ],
       "opencv_rounds_ms": [
-        0.34294083,
-        0.343327915,
-        0.343515,
-        0.34352,
-        0.3442325
+        0.59273875,
+        0.59846104,
+        0.59252979,
+        0.596432295,
+        0.59776271
       ]
     },
     {
@@ -629,23 +695,26 @@
       "height": 581,
       "window": 3,
       "offset": 10,
-      "kornia_ms": 0.12776792,
-      "opencv_ms": 0.32268146,
-      "opencv_over_kornia": 2.525528004212638,
+      "kornia_ms": 0.220818125,
+      "opencv_ms": 0.558084165,
+      "opencv_over_kornia": 2.5273476305443676,
+      "kornia_best_ms": 0.22064875,
+      "opencv_best_ms": 0.55578479,
+      "best_opencv_over_kornia": 2.518866705567106,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.12788875,
-        0.12776792,
-        0.127460835,
-        0.127851875,
-        0.12759771
+        0.220906665,
+        0.221019795,
+        0.220711875,
+        0.220818125,
+        0.22064875
       ],
       "opencv_rounds_ms": [
-        0.32329417,
-        0.32285896,
-        0.32268146,
-        0.32268,
-        0.322394375
+        0.562338125,
+        0.558084165,
+        0.56193479,
+        0.55578479,
+        0.55591375
       ]
     },
     {
@@ -654,23 +723,26 @@
       "height": 581,
       "window": 5,
       "offset": 10,
-      "kornia_ms": 0.183094165,
-      "opencv_ms": 0.333082915,
-      "opencv_over_kornia": 1.8191891314504751,
+      "kornia_ms": 0.319729375,
+      "opencv_ms": 0.57885646,
+      "opencv_over_kornia": 1.8104575471052669,
+      "kornia_best_ms": 0.319634795,
+      "opencv_best_ms": 0.57630625,
+      "best_opencv_over_kornia": 1.8030147500055491,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.18591729,
-        0.183094165,
-        0.183275,
-        0.182983335,
-        0.183043545
+        0.319729375,
+        0.319634795,
+        0.319852085,
+        0.31965521,
+        0.32937708
       ],
       "opencv_rounds_ms": [
-        0.33246979,
-        0.333082915,
-        0.333393955,
-        0.33324229,
-        0.33249021
+        0.57885646,
+        0.57630625,
+        0.576499585,
+        0.58447771,
+        0.723036665
       ]
     },
     {
@@ -679,23 +751,26 @@
       "height": 581,
       "window": 15,
       "offset": 10,
-      "kornia_ms": 0.35332521,
-      "opencv_ms": 0.505154375,
-      "opencv_over_kornia": 1.4297150633548057,
+      "kornia_ms": 0.61963854,
+      "opencv_ms": 0.87584083,
+      "opencv_over_kornia": 1.413470553332593,
+      "kornia_best_ms": 0.6185075,
+      "opencv_best_ms": 0.874584795,
+      "best_opencv_over_kornia": 1.41402455912014,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.35382896,
-        0.35332521,
-        0.352179585,
-        0.352886875,
-        0.354562705
+        0.6185075,
+        0.619679165,
+        0.621056045,
+        0.619191455,
+        0.61963854
       ],
       "opencv_rounds_ms": [
-        0.50543979,
-        0.50252146,
-        0.502994165,
-        0.50597917,
-        0.505154375
+        0.876412915,
+        0.87586354,
+        0.87584083,
+        0.87508396,
+        0.874584795
       ]
     },
     {
@@ -704,23 +779,26 @@
       "height": 581,
       "window": 31,
       "offset": 10,
-      "kornia_ms": 0.37771396,
-      "opencv_ms": 0.680386875,
-      "opencv_over_kornia": 1.8013283782256815,
+      "kornia_ms": 0.653303125,
+      "opencv_ms": 1.17893896,
+      "opencv_over_kornia": 1.8045818470560662,
+      "kornia_best_ms": 0.65298375,
+      "opencv_best_ms": 1.17805229,
+      "best_opencv_over_kornia": 1.8041065953019504,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.37771396,
-        0.37645979,
-        0.378644165,
-        0.379816875,
-        0.375768125
+        0.65298375,
+        0.653194585,
+        0.653645,
+        0.808731875,
+        0.653303125
       ],
       "opencv_rounds_ms": [
-        0.68103583,
-        0.680495625,
-        0.679161875,
-        0.680386875,
-        0.679308955
+        1.178869795,
+        1.17805229,
+        1.17893896,
+        1.179077705,
+        1.18017354
       ]
     },
     {
@@ -729,23 +807,26 @@
       "height": 581,
       "window": 51,
       "offset": 10,
-      "kornia_ms": 0.385698335,
-      "opencv_ms": 0.6896725,
-      "opencv_over_kornia": 1.788113759941432,
+      "kornia_ms": 0.67076375,
+      "opencv_ms": 1.197036045,
+      "opencv_over_kornia": 1.7845866670642234,
+      "kornia_best_ms": 0.669610625,
+      "opencv_best_ms": 1.196750625,
+      "best_opencv_over_kornia": 1.7872336255118413,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.38574146,
-        0.386547915,
-        0.385698335,
-        0.38544104,
-        0.38563625
+        0.670830625,
+        0.669610625,
+        0.670128125,
+        0.67076375,
+        0.67110229
       ],
       "opencv_rounds_ms": [
-        0.689654375,
-        0.689238125,
-        0.6899975,
-        0.6896725,
-        0.69036354
+        1.19705542,
+        1.196750625,
+        1.19706583,
+        1.196782085,
+        1.197036045
       ]
     },
     {
@@ -754,23 +835,26 @@
       "height": 581,
       "window": 67,
       "offset": 10,
-      "kornia_ms": 0.393686875,
-      "opencv_ms": 0.69640583,
-      "opencv_over_kornia": 1.7689333178811206,
+      "kornia_ms": 0.68385625,
+      "opencv_ms": 1.2068,
+      "opencv_over_kornia": 1.7646983558313607,
+      "kornia_best_ms": 0.683407705,
+      "opencv_best_ms": 1.206477085,
+      "best_opencv_over_kornia": 1.7653840835757038,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.39363146,
-        0.394447295,
-        0.393686875,
-        0.3934675,
-        0.39475396
+        0.68385625,
+        0.683407705,
+        0.684869375,
+        0.683468335,
+        0.68445625
       ],
       "opencv_rounds_ms": [
-        0.695945625,
-        0.69645917,
-        0.705401045,
-        0.696174585,
-        0.69640583
+        1.206810625,
+        1.206601455,
+        1.206477085,
+        1.2068,
+        1.220089585
       ]
     },
     {
@@ -779,23 +863,26 @@
       "height": 581,
       "window": 101,
       "offset": 10,
-      "kornia_ms": 0.41507771,
-      "opencv_ms": 0.71687375,
-      "opencv_over_kornia": 1.7270832249700905,
+      "kornia_ms": 0.71718604,
+      "opencv_ms": 1.241855625,
+      "opencv_over_kornia": 1.73156692369528,
+      "kornia_best_ms": 0.71679354,
+      "opencv_best_ms": 1.240474165,
+      "best_opencv_over_kornia": 1.7305878133332508,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.41501167,
-        0.41494021,
-        0.41507771,
-        0.41635625,
-        0.415092705
+        0.71679354,
+        0.7170475,
+        0.717553545,
+        0.71718604,
+        0.717472085
       ],
       "opencv_rounds_ms": [
-        0.71687375,
-        0.71688979,
-        0.716958335,
-        0.715167705,
-        0.71532896
+        1.241314585,
+        1.241855625,
+        1.243060625,
+        1.244540205,
+        1.240474165
       ]
     },
     {
@@ -804,23 +891,26 @@
       "height": 713,
       "window": 3,
       "offset": 10,
-      "kornia_ms": 0.19346729,
-      "opencv_ms": 0.486870625,
-      "opencv_over_kornia": 2.5165526689292026,
+      "kornia_ms": 0.339633335,
+      "opencv_ms": 0.845537085,
+      "opencv_over_kornia": 2.4895585852902222,
+      "kornia_best_ms": 0.339224375,
+      "opencv_best_ms": 0.84437771,
+      "best_opencv_over_kornia": 2.489142208604555,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.19418625,
-        0.19346729,
-        0.19407417,
-        0.19314917,
-        0.193267085
+        0.34018021,
+        0.33983604,
+        0.339275415,
+        0.339633335,
+        0.339224375
       ],
       "opencv_rounds_ms": [
-        0.48727021,
-        0.486598125,
-        0.489280205,
-        0.485965415,
-        0.486870625
+        0.845537085,
+        0.845170835,
+        0.84437771,
+        0.845634795,
+        0.845733125
       ]
     },
     {
@@ -829,23 +919,26 @@
       "height": 713,
       "window": 5,
       "offset": 10,
-      "kornia_ms": 0.274467705,
-      "opencv_ms": 0.497693335,
-      "opencv_over_kornia": 1.813303809276942,
+      "kornia_ms": 0.478044375,
+      "opencv_ms": 0.863400415,
+      "opencv_over_kornia": 1.8061093491582239,
+      "kornia_best_ms": 0.47789646,
+      "opencv_best_ms": 0.861746875,
+      "best_opencv_over_kornia": 1.8032083246651376,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.27430833,
-        0.275009375,
-        0.27383083,
-        0.274467705,
-        0.2757425
+        0.47828979,
+        0.47789646,
+        0.478630835,
+        0.477979165,
+        0.478044375
       ],
       "opencv_rounds_ms": [
-        0.500712085,
-        0.49808792,
-        0.49651979,
-        0.49701354,
-        0.497693335
+        0.861746875,
+        0.866065,
+        0.863400415,
+        0.86207771,
+        0.86772417
       ]
     },
     {
@@ -854,23 +947,26 @@
       "height": 713,
       "window": 15,
       "offset": 10,
-      "kornia_ms": 0.546425625,
-      "opencv_ms": 0.75895479,
-      "opencv_over_kornia": 1.3889443599940978,
+      "kornia_ms": 0.945525205,
+      "opencv_ms": 1.31721646,
+      "opencv_over_kornia": 1.3931056020870431,
+      "kornia_best_ms": 0.94328854,
+      "opencv_best_ms": 1.31564979,
+      "best_opencv_over_kornia": 1.3947479845350395,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.54596375,
-        0.546425625,
-        0.545427705,
-        0.65527479,
-        0.585395415
+        0.945525205,
+        0.94434375,
+        0.952662085,
+        0.94328854,
+        0.95814833
       ],
       "opencv_rounds_ms": [
-        0.75830271,
-        0.759099585,
-        0.75882375,
-        0.75895479,
-        0.761381045
+        1.31564979,
+        1.316459375,
+        1.32184354,
+        1.31721646,
+        1.355719795
       ]
     },
     {
@@ -879,23 +975,26 @@
       "height": 713,
       "window": 31,
       "offset": 10,
-      "kornia_ms": 0.564049585,
-      "opencv_ms": 1.02731208,
-      "opencv_over_kornia": 1.8213151951880258,
+      "kornia_ms": 0.97937333,
+      "opencv_ms": 1.777341455,
+      "opencv_over_kornia": 1.8147742036226369,
+      "kornia_best_ms": 0.97332625,
+      "opencv_best_ms": 1.76483646,
+      "best_opencv_over_kornia": 1.813201339222075,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.569284375,
-        0.564739585,
-        0.562144375,
-        0.564049585,
-        0.56112521
+        0.97937333,
+        0.97332625,
+        0.9738575,
+        0.99974125,
+        0.992853335
       ],
       "opencv_rounds_ms": [
-        1.038922085,
-        1.137954585,
-        1.02094896,
-        1.019461665,
-        1.02731208
+        2.508179165,
+        1.76483646,
+        1.777341455,
+        1.782465625,
+        1.76642271
       ]
     },
     {
@@ -904,23 +1003,26 @@
       "height": 713,
       "window": 51,
       "offset": 10,
-      "kornia_ms": 0.57892125,
-      "opencv_ms": 1.03143625,
-      "opencv_over_kornia": 1.781652081349579,
+      "kornia_ms": 0.996435625,
+      "opencv_ms": 1.80573979,
+      "opencv_over_kornia": 1.812199147335785,
+      "kornia_best_ms": 0.994665,
+      "opencv_best_ms": 1.78561146,
+      "best_opencv_over_kornia": 1.7951887922064211,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.573369585,
-        0.60468729,
-        0.59884271,
-        0.57313979,
-        0.57892125
+        1.049278955,
+        1.025207295,
+        0.996435625,
+        0.995346665,
+        0.994665
       ],
       "opencv_rounds_ms": [
-        1.03143625,
-        1.029009375,
-        1.05310146,
-        1.030703125,
-        1.048853955
+        1.80756458,
+        1.88224125,
+        1.790524585,
+        1.80573979,
+        1.78561146
       ]
     },
     {
@@ -929,23 +1031,26 @@
       "height": 713,
       "window": 67,
       "offset": 10,
-      "kornia_ms": 0.58455396,
-      "opencv_ms": 1.03890583,
-      "opencv_over_kornia": 1.7772624960063566,
+      "kornia_ms": 1.01336354,
+      "opencv_ms": 1.803314375,
+      "opencv_over_kornia": 1.7795335077873435,
+      "kornia_best_ms": 1.00992229,
+      "opencv_best_ms": 1.800208125,
+      "best_opencv_over_kornia": 1.782521430435999,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.58455396,
-        0.589511665,
-        0.584215205,
-        0.584843955,
-        0.583638335
+        1.011264585,
+        1.01336354,
+        1.00992229,
+        1.02530771,
+        1.017705625
       ],
       "opencv_rounds_ms": [
-        1.048505625,
-        1.068581875,
-        1.03867292,
-        1.03890583,
-        1.03722771
+        1.82278104,
+        1.819667085,
+        1.803314375,
+        1.800208125,
+        1.8008875
       ]
     },
     {
@@ -954,23 +1059,26 @@
       "height": 713,
       "window": 101,
       "offset": 10,
-      "kornia_ms": 0.61606875,
-      "opencv_ms": 1.06880292,
-      "opencv_over_kornia": 1.734876050765438,
+      "kornia_ms": 1.05453042,
+      "opencv_ms": 1.848687085,
+      "opencv_over_kornia": 1.753090332851659,
+      "kornia_best_ms": 1.05369896,
+      "opencv_best_ms": 1.84472625,
+      "best_opencv_over_kornia": 1.7507146917939447,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.60970604,
-        0.61606875,
-        0.61776333,
-        0.62478167,
-        0.61268625
+        1.05453042,
+        1.05369896,
+        1.29634146,
+        1.05407875,
+        1.054556665
       ],
       "opencv_rounds_ms": [
-        1.07805396,
-        1.06880292,
-        1.067265625,
-        1.06447104,
-        1.07741229
+        1.848687085,
+        1.84472625,
+        1.863499795,
+        1.852510835,
+        1.848443125
       ]
     },
     {
@@ -979,23 +1087,26 @@
       "height": 263,
       "window": 3,
       "offset": 10,
-      "kornia_ms": 0.067275835,
-      "opencv_ms": 0.168285835,
-      "opencv_over_kornia": 2.501430639991313,
+      "kornia_ms": 0.116989375,
+      "opencv_ms": 0.292246665,
+      "opencv_over_kornia": 2.4980615974741296,
+      "kornia_best_ms": 0.11688292,
+      "opencv_best_ms": 0.2918575,
+      "best_opencv_over_kornia": 2.497007261625565,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.06744042,
-        0.06709708,
-        0.06736292,
-        0.067275835,
-        0.067204375
+        0.11688292,
+        0.116989375,
+        0.116921665,
+        0.117035,
+        0.1170175
       ],
       "opencv_rounds_ms": [
-        0.168285835,
-        0.1681775,
-        0.168418125,
-        0.16817625,
-        0.1685125
+        0.292246665,
+        0.29259646,
+        0.29291729,
+        0.2918575,
+        0.291990625
       ]
     },
     {
@@ -1004,23 +1115,26 @@
       "height": 263,
       "window": 5,
       "offset": 10,
-      "kornia_ms": 0.09488229,
-      "opencv_ms": 0.173321875,
-      "opencv_over_kornia": 1.8267041720852226,
+      "kornia_ms": 0.167331875,
+      "opencv_ms": 0.30120646,
+      "opencv_over_kornia": 1.800054293301859,
+      "kornia_best_ms": 0.16630271,
+      "opencv_best_ms": 0.300535835,
+      "best_opencv_over_kornia": 1.8071613805932567,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.09462521,
-        0.09488229,
-        0.094885,
-        0.09470417,
-        0.09500458
+        0.167331875,
+        0.16630271,
+        0.16754375,
+        0.16699604,
+        0.167383125
       ],
       "opencv_rounds_ms": [
-        0.17379,
-        0.17337979,
-        0.173239585,
-        0.173321875,
-        0.17330333
+        0.301837705,
+        0.30120646,
+        0.301016455,
+        0.300535835,
+        0.301604585
       ]
     },
     {
@@ -1029,23 +1143,26 @@
       "height": 263,
       "window": 15,
       "offset": 10,
-      "kornia_ms": 0.189857085,
-      "opencv_ms": 0.264255835,
-      "opencv_over_kornia": 1.3918671246848648,
+      "kornia_ms": 0.327655835,
+      "opencv_ms": 0.460149375,
+      "opencv_over_kornia": 1.4043680162143306,
+      "kornia_best_ms": 0.326846045,
+      "opencv_best_ms": 0.459918955,
+      "best_opencv_over_kornia": 1.407142482020855,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.190513125,
-        0.189857085,
-        0.18998521,
-        0.18959521,
-        0.18958521
+        0.32819479,
+        0.32805271,
+        0.326846045,
+        0.327655835,
+        0.32748
       ],
       "opencv_rounds_ms": [
-        0.2647775,
-        0.264255835,
-        0.264257915,
-        0.263563335,
-        0.263842085
+        0.46058875,
+        0.46092646,
+        0.460149375,
+        0.459948125,
+        0.459918955
       ]
     },
     {
@@ -1054,23 +1171,26 @@
       "height": 263,
       "window": 31,
       "offset": 10,
-      "kornia_ms": 0.195883545,
-      "opencv_ms": 0.35680042,
-      "opencv_over_kornia": 1.8214925607967736,
+      "kornia_ms": 0.341046875,
+      "opencv_ms": 0.619804795,
+      "opencv_over_kornia": 1.8173595491822052,
+      "kornia_best_ms": 0.34080854,
+      "opencv_best_ms": 0.618652295,
+      "best_opencv_over_kornia": 1.8152488050915625,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.195560625,
-        0.19566271,
-        0.19600479,
-        0.196178955,
-        0.195883545
+        0.34084625,
+        0.34080854,
+        0.341269375,
+        0.341046875,
+        0.34345729
       ],
       "opencv_rounds_ms": [
-        0.3566525,
-        0.35680042,
-        0.357133955,
-        0.356925835,
-        0.356230625
+        0.618652295,
+        0.61982396,
+        0.618668335,
+        0.619804795,
+        0.630645
       ]
     },
     {
@@ -1079,23 +1199,26 @@
       "height": 263,
       "window": 51,
       "offset": 10,
-      "kornia_ms": 0.20153854,
-      "opencv_ms": 0.36395917,
-      "opencv_over_kornia": 1.805903575564257,
+      "kornia_ms": 0.50208083,
+      "opencv_ms": 0.89361125,
+      "opencv_over_kornia": 1.7798155129722837,
+      "kornia_best_ms": 0.47668333,
+      "opencv_best_ms": 0.638980625,
+      "best_opencv_over_kornia": 1.340471933432201,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.20174521,
-        0.20153854,
-        0.20161333,
-        0.201305835,
-        0.201493335
+        0.56884646,
+        0.47668333,
+        0.50208083,
+        0.58919875,
+        0.48771271
       ],
       "opencv_rounds_ms": [
-        0.36395917,
-        0.36381125,
-        0.36403604,
-        0.363685205,
-        0.36409896
+        1.56239396,
+        0.638980625,
+        0.68599604,
+        0.924483335,
+        0.89361125
       ]
     },
     {
@@ -1104,23 +1227,26 @@
       "height": 263,
       "window": 67,
       "offset": 10,
-      "kornia_ms": 0.205085,
-      "opencv_ms": 0.36804,
-      "opencv_over_kornia": 1.79457298193432,
+      "kornia_ms": 0.357128545,
+      "opencv_ms": 0.63840125,
+      "opencv_over_kornia": 1.7875951360874835,
+      "kornia_best_ms": 0.35614146,
+      "opencv_best_ms": 0.63815396,
+      "best_opencv_over_kornia": 1.791855292557064,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.213489375,
-        0.205338335,
-        0.205085,
-        0.20483875,
-        0.204931875
+        0.356975205,
+        0.35614146,
+        0.36051792,
+        0.357128545,
+        0.36307979
       ],
       "opencv_rounds_ms": [
-        0.41153875,
-        0.367987705,
-        0.368186045,
-        0.36804,
-        0.36775625
+        0.64056479,
+        0.639243125,
+        0.63840125,
+        0.63835729,
+        0.63815396
       ]
     },
     {
@@ -1129,23 +1255,26 @@
       "height": 263,
       "window": 101,
       "offset": 10,
-      "kornia_ms": 0.214445835,
-      "opencv_ms": 0.37984375,
-      "opencv_over_kornia": 1.7712806126544727,
+      "kornia_ms": 0.37242854,
+      "opencv_ms": 0.660800625,
+      "opencv_over_kornia": 1.7743017895459894,
+      "kornia_best_ms": 0.3714975,
+      "opencv_best_ms": 0.66000604,
+      "best_opencv_over_kornia": 1.7766096407109064,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.21376125,
-        0.215535415,
-        0.213936875,
-        0.214445835,
-        0.21465396
+        0.372129585,
+        0.37242854,
+        0.3714975,
+        0.37277021,
+        0.575855625
       ],
       "opencv_rounds_ms": [
-        0.380608125,
-        0.37971021,
-        0.380884375,
-        0.37984375,
-        0.379191875
+        0.66527604,
+        0.660800625,
+        0.66009854,
+        0.66000604,
+        0.697871875
       ]
     },
     {
@@ -1154,23 +1283,26 @@
       "height": 310,
       "window": 3,
       "offset": 10,
-      "kornia_ms": 0.07587667,
-      "opencv_ms": 0.193249165,
-      "opencv_over_kornia": 2.5468851624616633,
+      "kornia_ms": 0.134440835,
+      "opencv_ms": 0.34034104,
+      "opencv_over_kornia": 2.5315302452562123,
+      "kornia_best_ms": 0.13343625,
+      "opencv_best_ms": 0.335139375,
+      "best_opencv_over_kornia": 2.5116066661046004,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.07583833,
-        0.07607083,
-        0.07587667,
-        0.075923955,
-        0.07573396
+        0.134440835,
+        0.13343625,
+        0.13371604,
+        0.16275208,
+        0.149435625
       ],
       "opencv_rounds_ms": [
-        0.193174375,
-        0.19386896,
-        0.193736665,
-        0.19288104,
-        0.193249165
+        0.335139375,
+        0.33731708,
+        0.34034104,
+        0.38436417,
+        0.365457915
       ]
     },
     {
@@ -1179,23 +1311,26 @@
       "height": 310,
       "window": 5,
       "offset": 10,
-      "kornia_ms": 0.1088375,
-      "opencv_ms": 0.19700125,
-      "opencv_over_kornia": 1.8100493855518547,
+      "kornia_ms": 0.19395375,
+      "opencv_ms": 0.34440375,
+      "opencv_over_kornia": 1.7757003924904777,
+      "kornia_best_ms": 0.19090625,
+      "opencv_best_ms": 0.343548335,
+      "best_opencv_over_kornia": 1.7995656768701915,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.108995205,
-        0.10919521,
-        0.1088375,
-        0.108716875,
-        0.108525
+        0.19663396,
+        0.194225,
+        0.19395375,
+        0.19090625,
+        0.19153354
       ],
       "opencv_rounds_ms": [
-        0.196836045,
-        0.19700125,
-        0.19667625,
-        0.19783458,
-        0.197245625
+        0.34440375,
+        0.349045625,
+        0.343548335,
+        0.34414375,
+        0.34484625
       ]
     },
     {
@@ -1204,23 +1339,26 @@
       "height": 310,
       "window": 15,
       "offset": 10,
-      "kornia_ms": 0.21468125,
-      "opencv_ms": 0.299663545,
-      "opencv_over_kornia": 1.3958533639989519,
+      "kornia_ms": 0.376279375,
+      "opencv_ms": 0.52126021,
+      "opencv_over_kornia": 1.3853010412808302,
+      "kornia_best_ms": 0.37473521,
+      "opencv_best_ms": 0.520714165,
+      "best_opencv_over_kornia": 1.3895522787944052,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.21531396,
-        0.2155325,
-        0.21446354,
-        0.21450375,
-        0.21468125
+        0.627137085,
+        0.37473521,
+        0.375676455,
+        0.376279375,
+        0.376821875
       ],
       "opencv_rounds_ms": [
-        0.30073042,
-        0.299610415,
-        0.29953896,
-        0.29977521,
-        0.299663545
+        0.73570042,
+        0.520714165,
+        0.521719795,
+        0.52121271,
+        0.52126021
       ]
     },
     {
@@ -1229,23 +1367,26 @@
       "height": 310,
       "window": 31,
       "offset": 10,
-      "kornia_ms": 0.22303396,
-      "opencv_ms": 0.40564021,
-      "opencv_over_kornia": 1.8187374245608157,
+      "kornia_ms": 0.3891525,
+      "opencv_ms": 0.70480479,
+      "opencv_over_kornia": 1.8111274885809545,
+      "kornia_best_ms": 0.388345625,
+      "opencv_best_ms": 0.703370835,
+      "best_opencv_over_kornia": 1.8111980404053731,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.22303396,
-        0.22304583,
-        0.22300375,
-        0.222927085,
-        0.223206045
+        0.3891525,
+        0.389205835,
+        0.38915729,
+        0.388435835,
+        0.388345625
       ],
       "opencv_rounds_ms": [
-        0.40558667,
-        0.405888335,
-        0.405013335,
-        0.40564021,
-        0.405928955
+        0.705481045,
+        0.70433104,
+        0.70480479,
+        0.703370835,
+        0.70496521
       ]
     },
     {
@@ -1254,23 +1395,26 @@
       "height": 310,
       "window": 51,
       "offset": 10,
-      "kornia_ms": 0.22875896,
-      "opencv_ms": 0.41276646,
-      "opencv_over_kornia": 1.8043728647830886,
+      "kornia_ms": 0.39946729,
+      "opencv_ms": 0.716568545,
+      "opencv_over_kornia": 1.7938103142312354,
+      "kornia_best_ms": 0.39874792,
+      "opencv_best_ms": 0.715197085,
+      "best_opencv_over_kornia": 1.7936070613233546,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.22875896,
-        0.228527705,
-        0.228746875,
-        0.23012917,
-        0.228773125
+        0.39874792,
+        0.41760167,
+        0.428309165,
+        0.39946729,
+        0.398899585
       ],
       "opencv_rounds_ms": [
-        0.41278646,
-        0.41276646,
-        0.412573125,
-        0.41305646,
-        0.412677705
+        0.715197085,
+        0.715543955,
+        0.743871045,
+        0.71697104,
+        0.716568545
       ]
     },
     {
@@ -1279,23 +1423,26 @@
       "height": 310,
       "window": 67,
       "offset": 10,
-      "kornia_ms": 0.233763125,
-      "opencv_ms": 0.418048545,
-      "opencv_over_kornia": 1.7883425583055497,
+      "kornia_ms": 0.406790835,
+      "opencv_ms": 0.72536521,
+      "opencv_over_kornia": 1.783140492828458,
+      "kornia_best_ms": 0.40649625,
+      "opencv_best_ms": 0.724796875,
+      "best_opencv_over_kornia": 1.7830345913400185,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.233763125,
-        0.235021665,
-        0.23446,
-        0.233603955,
-        0.233171665
+        0.406790835,
+        0.40654979,
+        0.40649625,
+        0.406931665,
+        0.406923335
       ],
       "opencv_rounds_ms": [
-        0.418372915,
-        0.418048545,
-        0.41833417,
-        0.41786333,
-        0.417623545
+        0.72536521,
+        0.72481,
+        0.724796875,
+        0.72598396,
+        0.725399585
       ]
     },
     {
@@ -1304,23 +1451,26 @@
       "height": 310,
       "window": 101,
       "offset": 10,
-      "kornia_ms": 0.24550396,
-      "opencv_ms": 0.43200125,
-      "opencv_over_kornia": 1.7596508422919126,
+      "kornia_ms": 0.42542521,
+      "opencv_ms": 0.74917979,
+      "opencv_over_kornia": 1.7610140922302184,
+      "kornia_best_ms": 0.42536771,
+      "opencv_best_ms": 0.748867085,
+      "best_opencv_over_kornia": 1.760517000691002,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.245039795,
-        0.36539083,
-        0.24550396,
-        0.245642085,
-        0.244758125
+        0.42536771,
+        0.42571771,
+        0.425580205,
+        0.42542521,
+        0.425383955
       ],
       "opencv_rounds_ms": [
-        0.431470205,
-        0.43200125,
-        0.431804375,
-        0.432530205,
-        0.43253417
+        0.749302915,
+        0.75219,
+        0.749115205,
+        0.748867085,
+        0.74917979
       ]
     },
     {
@@ -1329,23 +1479,26 @@
       "height": 493,
       "window": 3,
       "offset": 10,
-      "kornia_ms": 0.11643646,
-      "opencv_ms": 0.284005625,
-      "opencv_over_kornia": 2.439146853142048,
+      "kornia_ms": 0.19998875,
+      "opencv_ms": 0.496613335,
+      "opencv_over_kornia": 2.483206355357489,
+      "kornia_best_ms": 0.199869375,
+      "opencv_best_ms": 0.49547333,
+      "best_opencv_over_kornia": 2.478985737559844,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.11643646,
-        0.11623333,
-        0.1165175,
-        0.116951455,
-        0.11588146
+        0.19998875,
+        0.199907085,
+        0.199869375,
+        0.20000729,
+        0.200388955
       ],
       "opencv_rounds_ms": [
-        0.283731875,
-        0.284005625,
-        0.283372915,
-        0.28420354,
-        0.28434146
+        0.496136875,
+        0.49547333,
+        0.496837915,
+        0.496613335,
+        0.496673955
       ]
     },
     {
@@ -1354,23 +1507,26 @@
       "height": 493,
       "window": 5,
       "offset": 10,
-      "kornia_ms": 0.164574375,
-      "opencv_ms": 0.292165835,
-      "opencv_over_kornia": 1.775281449496618,
+      "kornia_ms": 0.284695835,
+      "opencv_ms": 0.509539165,
+      "opencv_over_kornia": 1.7897668401084967,
+      "kornia_best_ms": 0.284522295,
+      "opencv_best_ms": 0.508130415,
+      "best_opencv_over_kornia": 1.7859071992934685,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.16451604,
-        0.164574375,
-        0.165029375,
-        0.1641075,
-        0.16473604
+        0.284695835,
+        0.284522295,
+        0.284739585,
+        0.284865,
+        0.284587915
       ],
       "opencv_rounds_ms": [
-        0.29177375,
-        0.292920415,
-        0.292165835,
-        0.291934375,
-        0.292168545
+        0.508130415,
+        0.508449585,
+        0.510510625,
+        0.510968335,
+        0.509539165
       ]
     },
     {
@@ -1379,23 +1535,26 @@
       "height": 493,
       "window": 15,
       "offset": 10,
-      "kornia_ms": 0.32792771,
-      "opencv_ms": 0.44649896,
-      "opencv_over_kornia": 1.3615774037515769,
+      "kornia_ms": 0.561735,
+      "opencv_ms": 0.7798375,
+      "opencv_over_kornia": 1.388265819292015,
+      "kornia_best_ms": 0.56045021,
+      "opencv_best_ms": 0.77941375,
+      "best_opencv_over_kornia": 1.3906922258089618,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.328441455,
-        0.32777667,
-        0.328615625,
-        0.327870625,
-        0.32792771
+        0.56045021,
+        0.560785415,
+        0.562358335,
+        0.561735,
+        0.56295708
       ],
       "opencv_rounds_ms": [
-        0.446731665,
-        0.446495625,
-        0.446561045,
-        0.44649896,
-        0.446202915
+        0.7798375,
+        0.78034021,
+        0.78061396,
+        0.779683125,
+        0.77941375
       ]
     },
     {
@@ -1404,23 +1563,26 @@
       "height": 493,
       "window": 31,
       "offset": 10,
-      "kornia_ms": 0.341784375,
-      "opencv_ms": 0.602650205,
-      "opencv_over_kornia": 1.7632467985114886,
+      "kornia_ms": 0.58111917,
+      "opencv_ms": 1.054118335,
+      "opencv_over_kornia": 1.8139452102397517,
+      "kornia_best_ms": 0.580598125,
+      "opencv_best_ms": 1.05276146,
+      "best_opencv_over_kornia": 1.81323606582436,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.341784375,
-        0.34221625,
-        0.341890625,
-        0.341193125,
-        0.33985729
+        0.58111917,
+        0.58227729,
+        0.58203021,
+        0.581110625,
+        0.580598125
       ],
       "opencv_rounds_ms": [
-        0.602087085,
-        0.6036025,
-        0.603026875,
-        0.602071875,
-        0.602650205
+        1.05276146,
+        1.0560825,
+        1.054895625,
+        1.05357417,
+        1.054118335
       ]
     },
     {
@@ -1429,23 +1591,26 @@
       "height": 493,
       "window": 51,
       "offset": 10,
-      "kornia_ms": 0.35045875,
-      "opencv_ms": 0.61160271,
-      "opencv_over_kornia": 1.7451489226620822,
+      "kornia_ms": 0.598934585,
+      "opencv_ms": 1.068901875,
+      "opencv_over_kornia": 1.784672152468871,
+      "kornia_best_ms": 0.59795479,
+      "opencv_best_ms": 1.068463125,
+      "best_opencv_over_kornia": 1.7868627241868906,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.3508375,
-        0.35045875,
-        0.35057979,
-        0.35008792,
-        0.349688335
+        0.598934585,
+        0.599172705,
+        0.60054021,
+        0.598868955,
+        0.59795479
       ],
       "opencv_rounds_ms": [
-        0.61160271,
-        0.611348335,
-        0.610656665,
-        0.61259646,
-        0.611943335
+        1.069711875,
+        1.068821875,
+        1.068463125,
+        1.068901875,
+        1.086365415
       ]
     },
     {
@@ -1454,23 +1619,26 @@
       "height": 493,
       "window": 67,
       "offset": 10,
-      "kornia_ms": 0.357163955,
-      "opencv_ms": 0.61736625,
-      "opencv_over_kornia": 1.728523389209306,
+      "kornia_ms": 0.610049375,
+      "opencv_ms": 1.07710646,
+      "opencv_over_kornia": 1.7656053823512237,
+      "kornia_best_ms": 0.609170415,
+      "opencv_best_ms": 1.076083955,
+      "best_opencv_over_kornia": 1.7664744191491966,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.356752705,
-        0.357504375,
-        0.357163955,
-        0.35402854,
-        0.358277295
+        0.610589375,
+        0.609170415,
+        0.609881455,
+        0.610049375,
+        0.612329585
       ],
       "opencv_rounds_ms": [
-        0.617232915,
-        0.61736625,
-        0.61809083,
-        0.617484585,
-        0.616780205
+        1.07710646,
+        1.07682854,
+        1.076083955,
+        1.077374795,
+        1.079444375
       ]
     },
     {
@@ -1479,23 +1647,26 @@
       "height": 493,
       "window": 101,
       "offset": 10,
-      "kornia_ms": 0.37360125,
-      "opencv_ms": 0.64061979,
-      "opencv_over_kornia": 1.7147153281740894,
+      "kornia_ms": 0.637153335,
+      "opencv_ms": 1.11067021,
+      "opencv_over_kornia": 1.7431756988292308,
+      "kornia_best_ms": 0.63685896,
+      "opencv_best_ms": 1.11012604,
+      "best_opencv_over_kornia": 1.7431269868606387,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.37155896,
-        0.37360125,
-        0.37353854,
-        0.37511125,
-        0.37558771
+        0.637343335,
+        0.6371325,
+        0.637153335,
+        0.63685896,
+        0.63810604
       ],
       "opencv_rounds_ms": [
-        0.640924795,
-        0.640559795,
-        0.64061979,
-        0.64061271,
-        0.64107458
+        1.110493125,
+        1.11012604,
+        1.110761875,
+        1.11067021,
+        1.11186646
       ]
     },
     {
@@ -1504,23 +1675,26 @@
       "height": 357,
       "window": 3,
       "offset": 10,
-      "kornia_ms": 0.132406665,
-      "opencv_ms": 0.33112854,
-      "opencv_over_kornia": 2.5008449536886985,
+      "kornia_ms": 0.230565,
+      "opencv_ms": 0.580074165,
+      "opencv_over_kornia": 2.5158812699238826,
+      "kornia_best_ms": 0.2302925,
+      "opencv_best_ms": 0.579796875,
+      "best_opencv_over_kornia": 2.5176541789246283,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.132308125,
-        0.13232208,
-        0.132406665,
-        0.13284604,
-        0.13245021
+        0.23053771,
+        0.230857085,
+        0.2302925,
+        0.230645415,
+        0.230565
       ],
       "opencv_rounds_ms": [
-        0.33261,
-        0.33112854,
-        0.331004375,
-        0.330634165,
-        0.331399795
+        0.579796875,
+        0.580523955,
+        0.580074165,
+        0.58034458,
+        0.579963955
       ]
     },
     {
@@ -1529,23 +1703,26 @@
       "height": 357,
       "window": 5,
       "offset": 10,
-      "kornia_ms": 0.18872479,
-      "opencv_ms": 0.338493955,
-      "opencv_over_kornia": 1.7935850133943718,
+      "kornia_ms": 0.328334585,
+      "opencv_ms": 0.588251665,
+      "opencv_over_kornia": 1.7916226065554441,
+      "kornia_best_ms": 0.327939165,
+      "opencv_best_ms": 0.587731875,
+      "best_opencv_over_kornia": 1.7921978760908295,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.188158335,
-        0.18872479,
-        0.188903335,
-        0.188842085,
-        0.188207915
+        0.328755625,
+        0.32843354,
+        0.327939165,
+        0.328160835,
+        0.328334585
       ],
       "opencv_rounds_ms": [
-        0.33871875,
-        0.33763896,
-        0.338493955,
-        0.33775146,
-        0.338755205
+        0.587731875,
+        0.588251665,
+        0.58840875,
+        0.5882025,
+        0.590007085
       ]
     },
     {
@@ -1554,23 +1731,26 @@
       "height": 357,
       "window": 15,
       "offset": 10,
-      "kornia_ms": 0.37728375,
-      "opencv_ms": 0.520271455,
-      "opencv_over_kornia": 1.378992482448555,
+      "kornia_ms": 0.6544625,
+      "opencv_ms": 0.90627417,
+      "opencv_over_kornia": 1.3847610367286132,
+      "kornia_best_ms": 0.654155,
+      "opencv_best_ms": 0.90545729,
+      "best_opencv_over_kornia": 1.3841632181975219,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.376715,
-        0.376870415,
-        0.37728375,
-        0.37855354,
-        0.37788625
+        0.65550521,
+        0.65440229,
+        0.655557915,
+        0.654155,
+        0.6544625
       ],
       "opencv_rounds_ms": [
-        0.525911665,
-        0.523047915,
-        0.519602705,
-        0.51912854,
-        0.520271455
+        0.906370625,
+        0.90545729,
+        0.90627417,
+        0.90668958,
+        0.905465
       ]
     },
     {
@@ -1579,23 +1759,26 @@
       "height": 357,
       "window": 31,
       "offset": 10,
-      "kornia_ms": 0.385299375,
-      "opencv_ms": 0.7031275,
-      "opencv_over_kornia": 1.8248861680608748,
+      "kornia_ms": 0.667566875,
+      "opencv_ms": 1.2187825,
+      "opencv_over_kornia": 1.8257084730275153,
+      "kornia_best_ms": 0.66642479,
+      "opencv_best_ms": 1.216955835,
+      "best_opencv_over_kornia": 1.8260962876245945,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.385870205,
-        0.385299375,
-        0.385271665,
-        0.385168125,
-        0.38533375
+        0.66695229,
+        0.667645835,
+        0.66945792,
+        0.667566875,
+        0.66642479
       ],
       "opencv_rounds_ms": [
-        0.7031275,
-        0.70270521,
-        0.703024165,
-        0.703369165,
-        0.70506833
+        1.21775104,
+        1.2187825,
+        1.216955835,
+        1.219579375,
+        1.22089229
       ]
     },
     {
@@ -1604,23 +1787,26 @@
       "height": 357,
       "window": 51,
       "offset": 10,
-      "kornia_ms": 0.394846875,
-      "opencv_ms": 0.72164375,
-      "opencv_over_kornia": 1.827654707916835,
+      "kornia_ms": 0.67786854,
+      "opencv_ms": 1.23446604,
+      "opencv_over_kornia": 1.8210994715878097,
+      "kornia_best_ms": 0.677208335,
+      "opencv_best_ms": 1.23389083,
+      "best_opencv_over_kornia": 1.822025462814187,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.392326665,
-        0.395822705,
-        0.394846875,
-        0.39681604,
-        0.392198335
+        0.67856375,
+        0.67786854,
+        0.677208335,
+        0.678861875,
+        0.677863545
       ],
       "opencv_rounds_ms": [
-        0.72164375,
-        0.72322,
-        0.723542705,
-        0.719826665,
-        0.715364585
+        1.23446604,
+        1.235209585,
+        1.23389083,
+        1.23454625,
+        1.23413625
       ]
     },
     {
@@ -1629,23 +1815,26 @@
       "height": 357,
       "window": 67,
       "offset": 10,
-      "kornia_ms": 0.398227085,
-      "opencv_ms": 0.72020958,
-      "opencv_over_kornia": 1.8085399188756839,
+      "kornia_ms": 0.6898725,
+      "opencv_ms": 1.248573335,
+      "opencv_over_kornia": 1.8098610033013345,
+      "kornia_best_ms": 0.68669396,
+      "opencv_best_ms": 1.24653125,
+      "best_opencv_over_kornia": 1.815264619482018,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.398290415,
-        0.397199165,
-        0.3972775,
-        0.39844854,
-        0.398227085
+        0.68669396,
+        0.7559225,
+        0.700974585,
+        0.68859875,
+        0.6898725
       ],
       "opencv_rounds_ms": [
-        0.71971667,
-        0.72052792,
-        0.719604375,
-        0.72020958,
-        0.72022292
+        1.24653125,
+        1.404711455,
+        1.440084165,
+        1.248383125,
+        1.248573335
       ]
     },
     {
@@ -1654,23 +1843,26 @@
       "height": 357,
       "window": 101,
       "offset": 10,
-      "kornia_ms": 0.41092917,
-      "opencv_ms": 0.73880146,
-      "opencv_over_kornia": 1.7978803013667781,
+      "kornia_ms": 0.70949917,
+      "opencv_ms": 1.27851771,
+      "opencv_over_kornia": 1.8020002898664422,
+      "kornia_best_ms": 0.708778335,
+      "opencv_best_ms": 1.276995,
+      "best_opencv_over_kornia": 1.8016845845041245,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.410603545,
-        0.41074875,
-        0.41092917,
-        0.417226875,
-        0.745506875
+        0.70949917,
+        0.709143125,
+        0.708778335,
+        0.715340625,
+        0.78728167
       ],
       "opencv_rounds_ms": [
-        0.73909,
-        0.73880146,
-        0.73824604,
-        0.73690375,
-        1.20437396
+        1.279862085,
+        1.27851771,
+        1.276995,
+        1.278280415,
+        2.44653708
       ]
     },
     {
@@ -1679,23 +1871,26 @@
       "height": 259,
       "window": 3,
       "offset": 10,
-      "kornia_ms": 0.06493583,
-      "opencv_ms": 0.16221875,
-      "opencv_over_kornia": 2.498139316922568,
+      "kornia_ms": 0.11054333,
+      "opencv_ms": 0.27587354,
+      "opencv_over_kornia": 2.495614525091654,
+      "kornia_best_ms": 0.110393125,
+      "opencv_best_ms": 0.275793335,
+      "best_opencv_over_kornia": 2.4982836114114897,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.06493583,
-        0.065481045,
-        0.070018335,
-        0.0646475,
-        0.063637915
+        0.110881875,
+        0.110855625,
+        0.11054333,
+        0.11049542,
+        0.110393125
       ],
       "opencv_rounds_ms": [
-        0.162734165,
-        0.16056042,
-        0.16519875,
-        0.16221875,
-        0.160275835
+        0.27621292,
+        0.275793335,
+        0.27587354,
+        0.27592229,
+        0.27581979
       ]
     },
     {
@@ -1704,23 +1899,26 @@
       "height": 259,
       "window": 5,
       "offset": 10,
-      "kornia_ms": 0.092069585,
-      "opencv_ms": 0.16671125,
-      "opencv_over_kornia": 1.8107092586547449,
+      "kornia_ms": 0.15823229,
+      "opencv_ms": 0.283687295,
+      "opencv_over_kornia": 1.7928533739858028,
+      "kornia_best_ms": 0.15814583,
+      "opencv_best_ms": 0.283214375,
+      "best_opencv_over_kornia": 1.7908431414220662,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.09466375,
-        0.092798545,
-        0.092069585,
-        0.09185854,
-        0.091776045
+        0.158171455,
+        0.15814583,
+        0.15823229,
+        0.15888833,
+        0.158361875
       ],
       "opencv_rounds_ms": [
-        0.179430625,
-        0.166987085,
-        0.16671125,
-        0.163820205,
-        0.163754585
+        0.283214375,
+        0.2839525,
+        0.283531875,
+        0.283687295,
+        0.28385521
       ]
     },
     {
@@ -1729,23 +1927,26 @@
       "height": 259,
       "window": 15,
       "offset": 10,
-      "kornia_ms": 0.18063875,
-      "opencv_ms": 0.25295979,
-      "opencv_over_kornia": 1.400362823591284,
+      "kornia_ms": 0.311268125,
+      "opencv_ms": 0.43421375,
+      "opencv_over_kornia": 1.3949830230769693,
+      "kornia_best_ms": 0.311116875,
+      "opencv_best_ms": 0.433507085,
+      "best_opencv_over_kornia": 1.3933898153226179,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.17928417,
-        0.17873792,
-        0.194863955,
-        0.18736771,
-        0.18063875
+        0.311176045,
+        0.311268125,
+        0.311450625,
+        0.311116875,
+        0.311436665
       ],
       "opencv_rounds_ms": [
-        0.272799375,
-        0.250565415,
-        0.255360835,
-        0.252905835,
-        0.25295979
+        0.43421375,
+        0.43459625,
+        0.43368229,
+        0.433507085,
+        0.434575835
       ]
     },
     {
@@ -1754,23 +1955,26 @@
       "height": 259,
       "window": 31,
       "offset": 10,
-      "kornia_ms": 0.186840625,
-      "opencv_ms": 0.337874585,
-      "opencv_over_kornia": 1.8083571760691766,
+      "kornia_ms": 0.32410625,
+      "opencv_ms": 0.58658354,
+      "opencv_over_kornia": 1.8098495169408182,
+      "kornia_best_ms": 0.323717915,
+      "opencv_best_ms": 0.58634729,
+      "best_opencv_over_kornia": 1.8112908270770245,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.186840625,
-        0.186737705,
-        0.186833125,
-        0.186862085,
-        0.18702375
+        0.331555835,
+        0.32453396,
+        0.32410625,
+        0.32393375,
+        0.323717915
       ],
       "opencv_rounds_ms": [
-        0.337866045,
-        0.33888854,
-        0.338024375,
-        0.337874585,
-        0.33783646
+        0.604538335,
+        0.58634729,
+        0.58658354,
+        0.58655146,
+        0.586599795
       ]
     },
     {
@@ -1779,23 +1983,26 @@
       "height": 259,
       "window": 51,
       "offset": 10,
-      "kornia_ms": 0.191768335,
-      "opencv_ms": 0.344121875,
-      "opencv_over_kornia": 1.7944666151479074,
+      "kornia_ms": 0.332899165,
+      "opencv_ms": 0.598155,
+      "opencv_over_kornia": 1.7968053479497312,
+      "kornia_best_ms": 0.332574375,
+      "opencv_best_ms": 0.59744271,
+      "best_opencv_over_kornia": 1.7964183500307265,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.192084165,
-        0.191895415,
-        0.191768335,
-        0.19154792,
-        0.191466875
+        0.332769375,
+        0.332899165,
+        0.34366625,
+        0.332939375,
+        0.332574375
       ],
       "opencv_rounds_ms": [
-        0.34405479,
-        0.34435333,
-        0.34471646,
-        0.343875835,
-        0.344121875
+        0.59832354,
+        0.597566875,
+        0.59744271,
+        0.598747705,
+        0.598155
       ]
     },
     {
@@ -1804,23 +2011,26 @@
       "height": 259,
       "window": 67,
       "offset": 10,
-      "kornia_ms": 0.195762915,
-      "opencv_ms": 0.34811479,
-      "opencv_over_kornia": 1.7782468656027113,
+      "kornia_ms": 0.33958958,
+      "opencv_ms": 0.60485104,
+      "opencv_over_kornia": 1.7811236728759463,
+      "kornia_best_ms": 0.33931146,
+      "opencv_best_ms": 0.604469795,
+      "best_opencv_over_kornia": 1.7814600043275872,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.195762915,
-        0.195608125,
-        0.19553208,
-        0.19703667,
-        0.196092915
+        0.339665625,
+        0.33958958,
+        0.33946521,
+        0.34010896,
+        0.33931146
       ],
       "opencv_rounds_ms": [
-        0.34811479,
-        0.34796792,
-        0.348267085,
-        0.348141665,
-        0.34780417
+        0.605677915,
+        0.60485104,
+        0.604469795,
+        0.605451875,
+        0.60476792
       ]
     },
     {
@@ -1829,23 +2039,26 @@
       "height": 259,
       "window": 101,
       "offset": 10,
-      "kornia_ms": 0.203900625,
-      "opencv_ms": 0.359991875,
-      "opencv_over_kornia": 1.7655260988042583,
+      "kornia_ms": 0.352844165,
+      "opencv_ms": 0.626259375,
+      "opencv_over_kornia": 1.7748894189592166,
+      "kornia_best_ms": 0.35268,
+      "opencv_best_ms": 0.62606646,
+      "best_opencv_over_kornia": 1.7751685947601226,
       "mismatch_pixels": 0,
       "kornia_rounds_ms": [
-        0.203987085,
-        0.203859375,
-        0.203991045,
-        0.20386333,
-        0.203900625
+        0.352927915,
+        0.352844165,
+        0.35268,
+        0.35291875,
+        0.35279417
       ],
       "opencv_rounds_ms": [
-        0.35999146,
-        0.359835,
-        0.359991875,
-        0.3607775,
-        0.36024458
+        0.62606646,
+        0.626924585,
+        0.62619917,
+        0.626259375,
+        0.626520205
       ]
     }
   ]
