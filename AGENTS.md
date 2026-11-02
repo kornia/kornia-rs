@@ -8,6 +8,29 @@ Guidance for AI AGENTS and human contributors working in this repository.
 
 ---
 
+## Required Skills
+
+Skills live in `.claude/skills/` (also exposed at `.agents/skills/`). **Read the
+relevant skill before starting a task; this is mandatory for contributors and
+agents.** `pixi run skills-check` (CI: `skills_check.yml`) validates their
+structure and the facts they restate (MSRV, pixi tasks, crates, publish set,
+cited paths); it cannot check that a skill was applied — review does that.
+`pixi run pr-check` is the pre-PR gate.
+
+| Skill | Read when |
+|---|---|
+| `kornia-arch` | navigating crates, features, core types |
+| `kornia-workflow` | before committing/PR; build, lint, test, PR rules |
+| `kornia-coding-style` | any Rust edit |
+| `kornia-api-flavor` | designing new public API |
+| `kornia-code-review` | mandatory self-review before every PR; reviewing a PR: scope, copies, latency, benchmarks |
+| `kornia-curation` | changing a fact the guidance describes; editing skills |
+| `kornia-simd` | SIMD / performance work in `kornia-imgproc` |
+| `kornia-bindings` | Python / C++ binding changes |
+| `release` | cutting a release |
+
+---
+
 ## Build & Development Commands
 
 The project uses [pixi](https://pixi.sh) for environment management.
@@ -23,7 +46,7 @@ pixi run rust-fmt                     # Format with rustfmt
 pixi run rust-check                   # Check compilation
 
 # Without pixi (direct cargo)
-cargo test --features ci
+cargo test --features ci,kornia-algebra/approx
 cargo test -p kornia-imgproc
 cargo clippy --workspace --no-deps --all-targets --features ci -- -D warnings
 ```
@@ -198,24 +221,28 @@ Err(KorniaError::SizeMismatch {
 
 ### Pull Requests
 
-1. **Keep PRs focused** — one concern per PR. Multiple features → multiple PRs.
-2. **Test locally first** — all of the following must pass before opening a PR:
+1. **Keep PRs small and in scope** — one concern per PR, only what the linked issue asks. Out-of-scope hunks are a blocking review finding (`kornia-code-review`).
+2. **Test locally first** — `pixi run pr-check` must pass, plus:
 
    ```bash
-   pixi run rust-lint   # formatting + clippy
-   pixi run rust-test   # full test suite
    pixi run py-test     # Python binding tests (if py code changed)
    pixi run cpp-test    # C++ binding tests (if C++ code changed)
    ```
+
+   Agents posting comments or reviews for someone end them with `Posted on behalf of @<handle> by <Agent> (<actual model>).`
+
+   Then self-review with `kornia-code-review` and paste its output in the PR's Self-review section (required; the PR check fails without it).
 
 3. **Update documentation** — any new or changed public API must have updated doc comments. New features need an entry in the relevant crate's `README.md` or module-level doc.
 
 4. **Write tests** — new functionality requires unit tests. Bug fixes require a regression test that would have caught the bug.
 
-5. **PR description** — include:
+5. **PR description** — fill in `.github/pull_request_template.md` (`gh pr create --body-file <filled copy>`; `--body` skips the template). It covers:
    - What changed and why
    - Any breaking changes
-   - Benchmarks or profiling data for performance-sensitive changes
+   - Benchmarks or profiling data for performance-sensitive changes (before/after, see `kornia-code-review`)
+   - AI disclosure: agent + version, model, effort level, skills applied, human vs AI part
+   - A `changelog.d/<PR>.<type>.md` fragment for user-visible changes (see `changelog.d/README.md`); never edit `CHANGELOG.md` outside a release PR
    - What use case does this pr address which you use yourself
 
 ### Contributing to Documentation

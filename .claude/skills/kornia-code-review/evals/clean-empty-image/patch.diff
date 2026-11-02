@@ -1,0 +1,6 @@
+diff --git a/changelog.d/1166.fixed.md b/changelog.d/1166.fixed.md
+new file mode 100644
+--- /dev/null
++++ b/changelog.d/1166.fixed.md
+@@ -0,0 +1 @@
++`DistanceTransformExecutor::execute` and `compute_histogram` return an empty result for zero-width or zero-height images instead of panicking.

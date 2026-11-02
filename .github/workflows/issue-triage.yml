@@ -29,8 +29,8 @@ jobs:
         with:
           script: |
             const welcomeMessage = '## ⚠️ Before Submitting a PR\n\n' +
-              'Please wait for a maintainer to approve and assign this issue to you or someone else before submitting a PR. ' +
-              'PRs submitted without prior approval and assignment may be closed. ' +
+              'If you plan to work on this, say so here so others do not duplicate it, then link this issue from your PR. ' +
+              'PRs need a pasted `kornia-code-review` self-review before a maintainer reviews them. ' +
               'See our [Contributing Guide](CONTRIBUTING.md) for details.';
 
             await github.rest.issues.createComment({

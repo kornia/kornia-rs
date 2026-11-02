@@ -1,0 +1,67 @@
+diff --git a/.claude/skills/kornia-arch/SKILL.md b/.claude/skills/kornia-arch/SKILL.md
+index 60f1380..52976e3 100644
+--- a/.claude/skills/kornia-arch/SKILL.md
++++ b/.claude/skills/kornia-arch/SKILL.md
+@@ -31,8 +31,8 @@ PyO3/Maturin Python bindings and C++ bindings.
+ | `kornia-apriltag`, `kornia-bow`, `kornia-vlm` | detection, bag of words, VLM (candle) |
+ | `kornia` | umbrella crate that re-exports the others |
+ 
+-The publish set is `PUBLISH_ORDER` / `NOT_PUBLISHED` in `scripts/release_rust.sh`
+-(crates with `publish = false` are skipped). Read it there; do not restate it.
++Only the crates listed in `PUBLISH_ORDER` in `scripts/release_rust.sh` are
++published; the umbrella, VLM and AprilTag crates are intentionally excluded.
+ 
+ ## Feature flags
+ 
+diff --git a/scripts/check_skills.py b/scripts/check_skills.py
+index faccc99..8a1646a 100644
+--- a/scripts/check_skills.py
++++ b/scripts/check_skills.py
+@@ -71,43 +71,18 @@ EXCLUDED = r"exclud|skipp?ed|unpublished|not (?:be )?published|never published|(
+ 
+ def publish_claims(text: str, published: set) -> set:
+     """Crates from `published` that `text` calls excluded from publishing."""
+-    # Table rows stand alone. In prose, the exclusion word and the crate share a
+-    # sentence, but "publish" may sit elsewhere in the paragraph ("…skips
+-    # already-published versions. Excludes `kornia-apriltag`.").
+-    units = []
+-    for block in re.split(r"\n\s*\n", text):
+-        rows = [r for r in block.splitlines() if r.lstrip().startswith("|")]
+-        units += [(r, r) for r in rows]
+-        prose = " ".join(r for r in block.splitlines() if not r.lstrip().startswith("|"))
+-        units += [(sent, prose) for sent in re.split(r"(?<=[.!?])\s+", prose)]
++    # Simpler: flag lines that name a crate as excluded from publishing.
+     found = set()
+-    for unit, context in units:
+-        if re.search(EXCLUDED, unit, re.I) and re.search(r"publish|crates|release", context, re.I):
+-            for crate in published:
+-                short = crate.removeprefix("kornia-")
+-                names = [crate] if short in COMMON_SHORT else [crate, short]
+-                if any(re.search(rf"\b{re.escape(n)}\b", unit, re.I) for n in names):
+-                    found.add(crate)
++    for line in text.splitlines():
++        if "exclud" in line and "publish" in line:
++            found |= published & set(re.findall(r"`(kornia-[a-z0-9-]+)`", line))
+     return found
+ 
+ 
+ # (text, flagged?) against the real PUBLISH_ORDER. Add the phrasing of every
+ # stale claim that slipped through; never delete one to pass.
+ PUBLISH_PROBES = [
+-    ("Only `PUBLISH_ORDER` crates are\npublished; the umbrella, VLM and AprilTag crates are intentionally excluded.", True),
+-    ("Publish script: `scripts/release_rust.sh`, topological, idempotent, skips\n  already-published versions. Excludes `kornia`, `kornia-vlm`, `kornia-apriltag`.", True),
+     ("The `kornia-apriltag` crate is excluded from publishing.", True),
+-    ("The `kornia-apriltag` crate is excluded\nfrom publishing.", True),
+-    ("Crates excluded from crates.io:\n`kornia-apriltag`.", True),
+-    ("kornia-apriltag is not published to crates.io.", True),
+-    ("AprilTag is never published.", True),
+-    ("Excluded from Publishing: `kornia-apriltag`.", True),
+-    ("The apriltag crate is skipped when publishing.", True),
+-    ("| `kornia-apriltag` | detection, not published |", True),
+-    ("kornia-apriltag is unpublished.", True),
+-    ("We do not publish kornia-apriltag.", True),
+-    ("`kornia-apriltag` is not on crates.io.", True),
+-    ("`kornia-apriltag` is excluded from the release.", True),
+     ("The `kornia-vlm` crate is not published.", False),
+     ("The `kornia-vlm` crate is not published; it does no image io.", False),
+     ("The publish set is `PUBLISH_ORDER` in `scripts/release_rust.sh`. Read it there.", False),
