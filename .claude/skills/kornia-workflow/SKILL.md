@@ -25,7 +25,7 @@ Equivalent pieces:
 pixi run skills-check                 # validate .claude/skills (scripts/check_skills.py)
 pixi run rust-fmt-check               # cargo fmt --all -- --check
 pixi run rust-clippy                  # clippy --workspace --no-deps --all-targets --features ci -D warnings
-pixi run rust-test                    # cargo test --features ci
+pixi run rust-test                    # cargo test --features ci,kornia-algebra/approx
 pixi run rust-test-package <crate>    # single crate (cargo test -p)
 cargo test --doc -p <crate>           # doctests for public docs
 ```
@@ -38,7 +38,7 @@ Conditional gates:
   and `bash scripts/release_rust.sh --check` (also pre-commit hooks).
 - New dependency: check advisories (`security_audit.yml` runs in CI).
 
-Without pixi: `cargo test --features ci`, `cargo test -p kornia-imgproc`,
+Without pixi: `cargo test --features ci,kornia-algebra/approx`, `cargo test -p kornia-imgproc`,
 `cargo clippy --workspace --no-deps --all-targets --features ci -- -D warnings`.
 
 ## PR rules (checked in review; `pr-validation.yml` fails on a missing Self-review and warns on missing fields)

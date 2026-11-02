@@ -46,7 +46,7 @@ pixi run rust-fmt                     # Format with rustfmt
 pixi run rust-check                   # Check compilation
 
 # Without pixi (direct cargo)
-cargo test --features ci
+cargo test --features ci,kornia-algebra/approx
 cargo test -p kornia-imgproc
 cargo clippy --workspace --no-deps --all-targets --features ci -- -D warnings
 ```

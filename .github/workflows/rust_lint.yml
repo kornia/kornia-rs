@@ -10,6 +10,7 @@ on:
       - "examples/**"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "pixi.toml"
       - ".github/workflows/rust_lint.yml"
   pull_request:
     branches:
@@ -19,6 +20,7 @@ on:
       - "examples/**"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "pixi.toml"
       - ".github/workflows/rust_lint.yml"
 
 permissions:

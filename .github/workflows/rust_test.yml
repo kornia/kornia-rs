@@ -49,9 +49,6 @@ jobs:
           - name: Test Debug - aarch64
             runner: ubuntu-24.04-arm
             command: rust-test
-          - name: Test Algebra - approx
-            runner: ubuntu-24.04
-            command: rust-test-algebra-approx
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
