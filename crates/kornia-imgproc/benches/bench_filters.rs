@@ -90,5 +90,43 @@ fn bench_filters(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_filters);
+fn bench_adaptive_mean(c: &mut Criterion) {
+    use kornia_imgproc::threshold::{adaptive_threshold_mean, AdaptiveThresholdMeanWorkspace};
+
+    let mut group = c.benchmark_group("adaptive_mean");
+    for (width, height) in [(640, 480), (1920, 1080)] {
+        let src = Image::<u8, 1>::new(
+            [width, height].into(),
+            (0..width * height)
+                .map(|i| ((i * 73 + i / width * 11) % 256) as u8)
+                .collect(),
+        )
+        .unwrap();
+        let mut dst = Image::from_size_val(src.size(), 0).unwrap();
+        group.throughput(criterion::Throughput::Elements((width * height) as u64));
+        let mut workspace = AdaptiveThresholdMeanWorkspace::new();
+        for block_size in [3, 5, 15, 31, 51, 67, 101] {
+            group.bench_function(
+                BenchmarkId::new(format!("{width}x{height}"), block_size),
+                |b| {
+                    b.iter(|| {
+                        adaptive_threshold_mean(
+                            std::hint::black_box(&src),
+                            &mut dst,
+                            &mut workspace,
+                            block_size,
+                            10,
+                            255,
+                        )
+                        .unwrap();
+                        std::hint::black_box(dst.as_slice());
+                    });
+                },
+            );
+        }
+    }
+    group.finish();
+}
+
+criterion_group!(benches, bench_filters, bench_adaptive_mean);
 criterion_main!(benches);

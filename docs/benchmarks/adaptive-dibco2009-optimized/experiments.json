@@ -1,0 +1,853 @@
+{
+  "image": "DIBC02009_Test_images-handwritten/H02.bmp",
+  "width": 946,
+  "height": 1366,
+  "grayscale_sha256": "7fedae3c63440a42115ee3e20b521e14a438bb4dacb3754a0e2aa4810faf2d70",
+  "offset": 10,
+  "max_value": 255,
+  "rounds": 5,
+  "iterations_per_round": 20,
+  "warning": "Exploratory unpaired screening with substantial scheduling noise; use full paired dataset results for performance conclusions. Source and binary snapshots remain local temporary artifacts, not redistributed.",
+  "variants": [
+    {
+      "name": "division-free",
+      "source_sha256": "57f69dcbeaab087efce45da2a58b077a4cfdb1962461bf082cf3fa1400fd2047",
+      "binary_sha256": "8f0060fc0a51700beb2fe459d6b2d101084a69b1bc0ef4ffa779a721308750ce",
+      "results": [
+        {
+          "window": 3,
+          "rounds_ms": [
+            0.25790625,
+            0.25852915,
+            0.26129375,
+            0.2578104,
+            0.26174795
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 5,
+          "rounds_ms": [
+            1.6659229,
+            1.6637,
+            1.6701667,
+            1.66740415,
+            1.6697625
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 15,
+          "rounds_ms": [
+            1.67651875,
+            1.67013955,
+            1.66963125,
+            1.68221665,
+            1.7258729
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 31,
+          "rounds_ms": [
+            1.6941396,
+            1.69054375,
+            1.69215625,
+            1.6922521,
+            1.6932625
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 51,
+          "rounds_ms": [
+            1.70166455,
+            1.69957085,
+            1.6948458,
+            1.6998125,
+            1.6963292
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 67,
+          "rounds_ms": [
+            1.67782085,
+            1.7110875,
+            1.7126229,
+            1.7109375,
+            1.7012646
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 101,
+          "rounds_ms": [
+            1.76015625,
+            1.76026665,
+            1.7537021,
+            1.76370625,
+            1.75466045
+          ],
+          "mismatch_pixels": 0
+        }
+      ]
+    },
+    {
+      "name": "u32-prefix",
+      "source_sha256": "4509e58a5d640f11fbbc24546e41d1613e2965a79d0447d49da3b258c620187b",
+      "binary_sha256": "9682a7da31eef1ce3fc7306caa5ee91064d0b8119f8464e74cb7f03fb5904fa9",
+      "results": [
+        {
+          "window": 3,
+          "rounds_ms": [
+            0.25830835,
+            0.25810415,
+            0.25898955,
+            0.26075,
+            0.26078125
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 5,
+          "rounds_ms": [
+            0.3746708,
+            0.37194795,
+            0.37625,
+            0.3737292,
+            0.3728271
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 15,
+          "rounds_ms": [
+            1.89347915,
+            1.90094165,
+            1.91098335,
+            1.8971771,
+            1.8934083
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 31,
+          "rounds_ms": [
+            1.9063729,
+            1.9024396,
+            1.9033229,
+            1.90170625,
+            1.90384165
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 51,
+          "rounds_ms": [
+            1.88394795,
+            1.88613335,
+            1.8858,
+            1.90710415,
+            1.88964165
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 67,
+          "rounds_ms": [
+            1.86771455,
+            1.88182085,
+            1.86835,
+            1.87080415,
+            1.87135835
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 101,
+          "rounds_ms": [
+            1.8420396,
+            1.8425083,
+            1.8426375,
+            1.8396854,
+            1.8426167
+          ],
+          "mismatch_pixels": 0
+        }
+      ]
+    },
+    {
+      "name": "u32-rolling",
+      "source_sha256": "35e2255e10a2434a6d6fb2f44eb2f4552b476d7c5ccfaaa5d03256794ab089f4",
+      "binary_sha256": "54b3b10256b01ac8840e5fa5ace5fcca7b556c14f83dc6d2d55fbdca9af5358c",
+      "results": [
+        {
+          "window": 3,
+          "rounds_ms": [
+            0.2586104,
+            0.25907915,
+            0.2565,
+            0.25906665,
+            0.2588646
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 5,
+          "rounds_ms": [
+            1.54762295,
+            1.58829375,
+            1.5947146,
+            1.60172915,
+            1.59731875
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 15,
+          "rounds_ms": [
+            1.57491875,
+            1.58018955,
+            1.58360835,
+            1.5948042,
+            1.5895958
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 31,
+          "rounds_ms": [
+            1.58885415,
+            1.58683125,
+            1.5861583,
+            1.58530835,
+            1.5848604
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 51,
+          "rounds_ms": [
+            1.58525,
+            1.59150625,
+            1.5850979,
+            1.5617146,
+            1.61704795
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 67,
+          "rounds_ms": [
+            1.6198896,
+            1.61650415,
+            1.6223354,
+            1.62007915,
+            1.61575625
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 101,
+          "rounds_ms": [
+            1.62776875,
+            1.59022915,
+            1.6097,
+            1.6158208,
+            1.5813646
+          ],
+          "mismatch_pixels": 0
+        }
+      ]
+    },
+    {
+      "name": "u32-row-prefix",
+      "source_sha256": "36d1025a85b3dce9b4ed8dda341ba7bbc640a558a8a70868b7ab532d9ef1eb8a",
+      "binary_sha256": "2344b660ded0afced935fea1c7f90efe0326615cf603e58af8bc2ff9e129fb16",
+      "results": [
+        {
+          "window": 3,
+          "rounds_ms": [
+            0.27470835,
+            0.288925,
+            0.2695875,
+            0.4472,
+            0.45673335
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 5,
+          "rounds_ms": [
+            1.7725292,
+            1.978325,
+            0.8806229,
+            4.98964375,
+            1.83445
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 15,
+          "rounds_ms": [
+            0.76592915,
+            0.97422085,
+            0.87308545,
+            0.8555417,
+            0.79857705
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 31,
+          "rounds_ms": [
+            2.22914585,
+            2.10180625,
+            3.04700415,
+            1.23452085,
+            0.84462085
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 51,
+          "rounds_ms": [
+            0.8929979,
+            0.8792,
+            0.88395415,
+            0.8837271,
+            0.8431375
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 67,
+          "rounds_ms": [
+            1.4803958,
+            1.04142915,
+            1.39675415,
+            2.04268955,
+            1.500675
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 101,
+          "rounds_ms": [
+            1.58596875,
+            2.0947104,
+            3.37715625,
+            1.63260415,
+            1.37725
+          ],
+          "mismatch_pixels": 0
+        }
+      ]
+    },
+    {
+      "name": "u32-separable-border",
+      "source_sha256": "577d98c9b330b01e0026963fba8fbd752b8e1449ae18f98420aefb98130829bb",
+      "binary_sha256": "1610d41dd88515dac0450300398d988c0fc16c329d3db73ff0cc94a85bc6833f",
+      "results": [
+        {
+          "window": 3,
+          "rounds_ms": [
+            0.36510625,
+            0.39493955,
+            0.33494585,
+            0.30547085,
+            0.3395708
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 5,
+          "rounds_ms": [
+            0.5373146,
+            0.4412229,
+            0.4518729,
+            0.4553167,
+            0.4205479
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 15,
+          "rounds_ms": [
+            1.0142,
+            1.028875,
+            1.03824165,
+            1.0011,
+            0.97242295
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 31,
+          "rounds_ms": [
+            0.96819375,
+            0.9500021,
+            0.98750625,
+            1.02274795,
+            1.0319542
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 51,
+          "rounds_ms": [
+            1.0053979,
+            1.3490021,
+            1.07719375,
+            1.07442085,
+            0.96835
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 67,
+          "rounds_ms": [
+            2.12662295,
+            1.6061104,
+            2.13893125,
+            1.74706665,
+            1.08445415
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 101,
+          "rounds_ms": [
+            1.15618955,
+            1.0378896,
+            1.0659083,
+            1.07369165,
+            1.0555896
+          ],
+          "mismatch_pixels": 0
+        }
+      ]
+    },
+    {
+      "name": "u32-separable",
+      "source_sha256": "d5f382ac0311f68c1f35fbe398cd2ba665c518a080566ceb0967f1e6892e286f",
+      "binary_sha256": "ddf51c9009b80e3b548fe7dd7c4289a336336c365664296e5c4b6f6c87f62973",
+      "results": [
+        {
+          "window": 3,
+          "rounds_ms": [
+            0.2577271,
+            0.2570292,
+            0.25877915,
+            0.2589083,
+            0.2577771
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 5,
+          "rounds_ms": [
+            0.95150415,
+            0.9556542,
+            0.91401875,
+            0.9523021,
+            0.94962085
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 15,
+          "rounds_ms": [
+            0.9451104,
+            0.9189708,
+            0.98197085,
+            0.97365,
+            0.95934585
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 31,
+          "rounds_ms": [
+            0.9638333,
+            1.11576875,
+            1.02872915,
+            0.98799375,
+            0.9652854
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 51,
+          "rounds_ms": [
+            0.96129585,
+            0.96155205,
+            0.96847295,
+            0.9604792,
+            0.9603979
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 67,
+          "rounds_ms": [
+            0.95236455,
+            0.9587875,
+            0.953375,
+            0.95559585,
+            0.9589042
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 101,
+          "rounds_ms": [
+            0.95923125,
+            0.96908955,
+            0.96247085,
+            0.96082915,
+            0.9643292
+          ],
+          "mismatch_pixels": 0
+        }
+      ]
+    },
+    {
+      "name": "u32-streaming-border",
+      "source_sha256": "b57265484b2f90b1ef65da6ef36362174f503777376c2150a5f4a06a8270089c",
+      "binary_sha256": "94867b2689a78ddc77f0929e34b7af6ff5e7f5d05c9c8617c0cc65588572aa7a",
+      "results": [
+        {
+          "window": 3,
+          "rounds_ms": [
+            0.26025,
+            0.25917915,
+            0.2574104,
+            0.2612875,
+            0.26279165
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 5,
+          "rounds_ms": [
+            0.37324375,
+            0.3733146,
+            0.37062085,
+            0.37302915,
+            0.3720354
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 15,
+          "rounds_ms": [
+            0.95544795,
+            0.9549854,
+            0.95341875,
+            0.95465835,
+            0.95335625
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 31,
+          "rounds_ms": [
+            0.98669375,
+            0.9858896,
+            0.98615835,
+            0.98722705,
+            0.98642915
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 51,
+          "rounds_ms": [
+            0.93442085,
+            0.97424165,
+            0.98525205,
+            0.98742295,
+            0.98670205
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 67,
+          "rounds_ms": [
+            0.98931665,
+            0.98803335,
+            0.99093955,
+            0.99031045,
+            0.98914165
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 101,
+          "rounds_ms": [
+            1.0022354,
+            0.9578375,
+            0.98474165,
+            0.99032915,
+            0.99190835
+          ],
+          "mismatch_pixels": 0
+        }
+      ]
+    },
+    {
+      "name": "u32-streaming-five",
+      "source_sha256": "47a5bea50d9f6d90786c77afa3ae9c2bfd51a6047b8a60adf53124f3033f21b6",
+      "binary_sha256": "c8cc0dba49db1ff977f34f5f729d36b89c5ac0a6a8be20f7749f38bc9caf9b21",
+      "results": [
+        {
+          "window": 3,
+          "rounds_ms": [
+            0.2584792,
+            0.25812295,
+            0.26072705,
+            0.25921045,
+            0.2571167
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 5,
+          "rounds_ms": [
+            0.38422085,
+            0.3958979,
+            0.38514165,
+            0.38487915,
+            0.3710542
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 15,
+          "rounds_ms": [
+            1.02209165,
+            1.0416979,
+            1.0434229,
+            1.05142915,
+            1.0482979
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 31,
+          "rounds_ms": [
+            1.0488542,
+            1.0510583,
+            1.05130415,
+            1.05201045,
+            1.05245625
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 51,
+          "rounds_ms": [
+            1.052275,
+            1.05201665,
+            1.05204585,
+            1.05015835,
+            1.0526583
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 67,
+          "rounds_ms": [
+            1.04743125,
+            1.053575,
+            1.0523708,
+            1.05249165,
+            1.0530646
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 101,
+          "rounds_ms": [
+            1.0552021,
+            1.0536958,
+            1.0621875,
+            1.05606875,
+            1.0654854
+          ],
+          "mismatch_pixels": 0
+        }
+      ]
+    },
+    {
+      "name": "u32-streaming-fused",
+      "source_sha256": "ca148989b3f90b6b1953c52d417bae73f405c7e8a034aee6a2a3b2f4d1310a40",
+      "binary_sha256": "a45e0a8d0cc7156147722dfcf6b1ea05b244d760309ad1d9cf98ba1ab269dd01",
+      "results": [
+        {
+          "window": 3,
+          "rounds_ms": [
+            0.3862396,
+            0.34238545,
+            0.3743917,
+            0.38880835,
+            0.4035604
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 5,
+          "rounds_ms": [
+            0.43728335,
+            0.40931665,
+            0.41861875,
+            0.4677875,
+            0.4044667
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 15,
+          "rounds_ms": [
+            1.16523955,
+            1.12076665,
+            1.16599585,
+            1.3480146,
+            1.27347915
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 31,
+          "rounds_ms": [
+            1.2329833,
+            1.19484165,
+            1.1763854,
+            1.16565625,
+            1.3750583
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 51,
+          "rounds_ms": [
+            1.1531354,
+            1.22033125,
+            1.18102705,
+            1.18825415,
+            1.19766665
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 67,
+          "rounds_ms": [
+            1.2452083,
+            1.18706875,
+            1.1808979,
+            1.24906875,
+            1.2073875
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 101,
+          "rounds_ms": [
+            1.07965415,
+            1.0896729,
+            1.092225,
+            1.11290415,
+            1.0781125
+          ],
+          "mismatch_pixels": 0
+        }
+      ]
+    },
+    {
+      "name": "u32-streaming",
+      "source_sha256": "8f3bdbd422702d865d628d7d43043aebc0fc223c5caf8b36344e3e2eb635909f",
+      "binary_sha256": "1324c179d6b8729cf3f17d97b3c690755a74d77680b9a2ca1e3a6ecbeb706b43",
+      "results": [
+        {
+          "window": 3,
+          "rounds_ms": [
+            0.25870835,
+            0.25754165,
+            0.2613896,
+            0.2592375,
+            0.2585354
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 5,
+          "rounds_ms": [
+            1.01687085,
+            1.0206854,
+            1.0209604,
+            1.0203479,
+            1.0227375
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 15,
+          "rounds_ms": [
+            1.0287875,
+            1.0319979,
+            1.01900625,
+            1.02848955,
+            1.03457085
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 31,
+          "rounds_ms": [
+            1.0704729,
+            1.065275,
+            1.0679479,
+            1.06425415,
+            1.0636875
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 51,
+          "rounds_ms": [
+            1.0677229,
+            1.0658833,
+            1.0679271,
+            1.06830835,
+            1.0644375
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 67,
+          "rounds_ms": [
+            1.061225,
+            1.0614875,
+            1.06100205,
+            1.0538979,
+            1.0688229
+          ],
+          "mismatch_pixels": 0
+        },
+        {
+          "window": 101,
+          "rounds_ms": [
+            1.0690896,
+            1.06535205,
+            1.07204375,
+            1.0671833,
+            1.0659375
+          ],
+          "mismatch_pixels": 0
+        }
+      ]
+    }
+  ]
+}

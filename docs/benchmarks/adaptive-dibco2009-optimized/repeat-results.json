@@ -1,0 +1,1845 @@
+{
+  "metadata": {
+    "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+    "python": "3.13.3",
+    "opencv": "4.11.0",
+    "opencv_threads": 8,
+    "opencl_enabled": false,
+    "warmup_min_calls": 10,
+    "warmup_min_seconds": 0.25,
+    "rounds": 5,
+    "iterations_per_round": 200,
+    "paired_round_order": true,
+    "git_head": "a183d34f45d71d6880c05b7c8c46e2751869af8d",
+    "git_status": " M crates/kornia-imgproc/README.md\n M crates/kornia-imgproc/benches/bench_filters.rs\n M crates/kornia-imgproc/src/threshold.rs\n?? changelog.d/+adaptive-mean.added.md\n?? crates/kornia-imgproc/benches/bench_adaptive_dataset.py\n?? crates/kornia-imgproc/examples/bench_adaptive_dataset.rs\n?? docs/benchmark-adaptive-threshold.md\n?? docs/benchmarks/\n",
+    "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+    "rust_binary": "/Users/choudhry347/Desktop/Projects/kornia-rs-adaptive/target/release/examples/bench_adaptive_dataset",
+    "rust_binary_sha256": "75e100c3356f7ebfd5279301c41c9842f5c98f81078f335accac869f088ab624",
+    "threshold_source": "/Users/choudhry347/Desktop/Projects/kornia-rs-adaptive/crates/kornia-imgproc/src/threshold.rs",
+    "threshold_source_sha256": "36d1025a85b3dce9b4ed8dda341ba7bbc640a558a8a70868b7ab532d9ef1eb8a",
+    "inputs": [
+      {
+        "image": "DIBC02009_Test_images-handwritten/H01.bmp",
+        "width": 2025,
+        "height": 426,
+        "file_sha256": "1787886fd9780b7daa0303742fd9935d64e134d58e6b31f3d6d62f1714613ae6",
+        "grayscale_sha256": "0a244ae27224f8961114c79a7e442f9c56b3d1f65303450bb3c9fcf4f01a9db3"
+      },
+      {
+        "image": "DIBC02009_Test_images-handwritten/H02.bmp",
+        "width": 946,
+        "height": 1366,
+        "file_sha256": "541cb94190c5d2855f00693adc4e338f269ed07aee6623f7a35298eadc2937d7",
+        "grayscale_sha256": "7fedae3c63440a42115ee3e20b521e14a438bb4dacb3754a0e2aa4810faf2d70"
+      },
+      {
+        "image": "DIBC02009_Test_images-handwritten/H03.bmp",
+        "width": 582,
+        "height": 492,
+        "file_sha256": "7002bf1c91da9391def690ca95f2af96f44b7ff65f306bac7ac104b5a88065ac",
+        "grayscale_sha256": "e1d9585963112c357cdd31ad8b289b2597ee2e75049ba5f9a4d00ca0f5b96633"
+      },
+      {
+        "image": "DIBC02009_Test_images-handwritten/H04.bmp",
+        "width": 1091,
+        "height": 581,
+        "file_sha256": "0b039263e7d36365fadf92f49e2f93f966f4c0bcc7b1fbb3210f3a89c38dede6",
+        "grayscale_sha256": "bec69bf0b8f790d771a2081effdeca3304598d81307a129e43dcb3c960e0d4a8"
+      },
+      {
+        "image": "DIBC02009_Test_images-handwritten/H05.bmp",
+        "width": 1341,
+        "height": 713,
+        "file_sha256": "4ba825066fb2143d61628db93a3853f3a586f6dd01c2e7390a0e7328c3d3b764",
+        "grayscale_sha256": "6a581a0a3c62706bab2c08df131b0746c00a5d9e406dcbc16660e79a79defaba"
+      },
+      {
+        "image": "DIBCO2009_Test_images-printed/P01.bmp",
+        "width": 1268,
+        "height": 263,
+        "file_sha256": "c4c6f2ec0b4d6bd57d00ae639101addc3d2bec14d4cccbc5459684a81ea14ed9",
+        "grayscale_sha256": "0cde727f51d4ee952ac760598f6735a8bd163e374e68d2ccc1d377c58692245e"
+      },
+      {
+        "image": "DIBCO2009_Test_images-printed/P02.bmp",
+        "width": 1223,
+        "height": 310,
+        "file_sha256": "d6ff0fd1961d194e54e25f72ffada4e4cabcaf90e8c1e3560654a0e0e19e2ba2",
+        "grayscale_sha256": "5f03e72f05de47e99d6739a81b629cdb0a75ac83c92884bdedf51fec49a90421"
+      },
+      {
+        "image": "DIBCO2009_Test_images-printed/P03.bmp",
+        "width": 1153,
+        "height": 493,
+        "file_sha256": "80ca99ca362cf307a519bef6bda9ec5117085eba66f9051aa0d40857e9c59e8e",
+        "grayscale_sha256": "e9250e2397d7c314ea896efa2cbe28c943bd6c42f0eb8ea7280b0f04d070e891"
+      },
+      {
+        "image": "DIBCO2009_Test_images-printed/P04.bmp",
+        "width": 1849,
+        "height": 357,
+        "file_sha256": "7555155995ede280cf0d1af5e60f437f8a88dd7d297e6ecc2a3bd3d924e57d33",
+        "grayscale_sha256": "87b888da06f0d3780392c158f5a36a86d9974141888588735d8f831af05bbf57"
+      },
+      {
+        "image": "DIBCO2009_Test_images-printed/P05.bmp",
+        "width": 1218,
+        "height": 259,
+        "file_sha256": "3237248a6f64a03f366ab4a0a154503e19d0e7401b00a0d3786cbee8f7e754ab",
+        "grayscale_sha256": "c4686cf6a893b94a4357af72e0936cfa2e6dbde9ba22f956d588712fd1e87587"
+      }
+    ]
+  },
+  "results": [
+    {
+      "image": "DIBC02009_Test_images-handwritten/H01.bmp",
+      "width": 2025,
+      "height": 426,
+      "window": 3,
+      "offset": 10,
+      "kornia_ms": 0.17404521,
+      "opencv_ms": 0.421503125,
+      "opencv_over_kornia": 2.421802501775257,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.175232085,
+        0.17404521,
+        0.17386729,
+        0.173964165,
+        0.174495415
+      ],
+      "opencv_rounds_ms": [
+        0.43669479,
+        0.422923125,
+        0.421413335,
+        0.42102833500000003,
+        0.421503125
+      ]
+    },
+    {
+      "image": "DIBC02009_Test_images-handwritten/H01.bmp",
+      "width": 2025,
+      "height": 426,
+      "window": 5,
+      "offset": 10,
+      "kornia_ms": 0.250555835,
+      "opencv_ms": 0.429083955,
+      "opencv_over_kornia": 1.7125282873575864,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.250496665,
+        0.25037167,
+        0.250555835,
+        0.250583335,
+        0.25092021
+      ],
+      "opencv_rounds_ms": [
+        0.42885667,
+        0.428913125,
+        0.42912958500000004,
+        0.429362295,
+        0.429083955
+      ]
+    },
+    {
+      "image": "DIBC02009_Test_images-handwritten/H01.bmp",
+      "width": 2025,
+      "height": 426,
+      "window": 15,
+      "offset": 10,
+      "kornia_ms": 0.50196729,
+      "opencv_ms": 0.664998545,
+      "opencv_over_kornia": 1.3247846189340347,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.499753335,
+        0.49991729,
+        0.50196729,
+        0.504215835,
+        0.50436458
+      ],
+      "opencv_rounds_ms": [
+        0.66457125,
+        0.6640325,
+        0.66576417,
+        0.665373335,
+        0.664998545
+      ]
+    },
+    {
+      "image": "DIBC02009_Test_images-handwritten/H01.bmp",
+      "width": 2025,
+      "height": 426,
+      "window": 31,
+      "offset": 10,
+      "kornia_ms": 0.51079854,
+      "opencv_ms": 0.689760835,
+      "opencv_over_kornia": 1.3503578827770337,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.51075479,
+        0.51074271,
+        0.51079854,
+        0.513266875,
+        0.51081292
+      ],
+      "opencv_rounds_ms": [
+        0.694098125,
+        0.68985833,
+        0.689553545,
+        0.689760835,
+        0.6882020849999999
+      ]
+    },
+    {
+      "image": "DIBC02009_Test_images-handwritten/H01.bmp",
+      "width": 2025,
+      "height": 426,
+      "window": 51,
+      "offset": 10,
+      "kornia_ms": 0.51597417,
+      "opencv_ms": 0.70818125,
+      "opencv_over_kornia": 1.3725129883924228,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.5392175,
+        0.51597417,
+        0.515330835,
+        0.529526665,
+        0.51366604
+      ],
+      "opencv_rounds_ms": [
+        0.70818125,
+        0.6991329150000001,
+        1.060810415,
+        0.9182420849999999,
+        0.698104165
+      ]
+    },
+    {
+      "image": "DIBC02009_Test_images-handwritten/H01.bmp",
+      "width": 2025,
+      "height": 426,
+      "window": 67,
+      "offset": 10,
+      "kornia_ms": 0.525118125,
+      "opencv_ms": 0.705996665,
+      "opencv_over_kornia": 1.3444530504446024,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.525118125,
+        0.52593729,
+        0.525108545,
+        0.526156875,
+        0.5248225
+      ],
+      "opencv_rounds_ms": [
+        0.70797625,
+        0.7054377049999999,
+        0.709900625,
+        0.705996665,
+        0.705965415
+      ]
+    },
+    {
+      "image": "DIBC02009_Test_images-handwritten/H01.bmp",
+      "width": 2025,
+      "height": 426,
+      "window": 101,
+      "offset": 10,
+      "kornia_ms": 0.54135896,
+      "opencv_ms": 0.72252042,
+      "opencv_over_kornia": 1.3346420275375144,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.5415,
+        0.54151125,
+        0.54053604,
+        0.54135896,
+        0.540804375
+      ],
+      "opencv_rounds_ms": [
+        0.7232916650000001,
+        0.72252042,
+        0.722316875,
+        0.7402439599999999,
+        0.72233083
+      ]
+    },
+    {
+      "image": "DIBC02009_Test_images-handwritten/H02.bmp",
+      "width": 946,
+      "height": 1366,
+      "window": 3,
+      "offset": 10,
+      "kornia_ms": 0.25763104,
+      "opencv_ms": 0.6408170799999999,
+      "opencv_over_kornia": 2.4873442268447157,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.25787146,
+        0.25754521,
+        0.25771,
+        0.257542295,
+        0.25763104
+      ],
+      "opencv_rounds_ms": [
+        0.637034795,
+        0.6418933299999999,
+        0.6406077099999999,
+        0.641004375,
+        0.6408170799999999
+      ]
+    },
+    {
+      "image": "DIBC02009_Test_images-handwritten/H02.bmp",
+      "width": 946,
+      "height": 1366,
+      "window": 5,
+      "offset": 10,
+      "kornia_ms": 0.370818545,
+      "opencv_ms": 0.65183979,
+      "opencv_over_kornia": 1.75784032052658,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.370818545,
+        0.371165205,
+        0.370738335,
+        0.37088729,
+        0.3706975
+      ],
+      "opencv_rounds_ms": [
+        0.65105875,
+        0.652144375,
+        0.6519614549999999,
+        0.65183979,
+        0.651631665
+      ]
+    },
+    {
+      "image": "DIBC02009_Test_images-handwritten/H02.bmp",
+      "width": 946,
+      "height": 1366,
+      "window": 15,
+      "offset": 10,
+      "kornia_ms": 0.718732295,
+      "opencv_ms": 1.00538875,
+      "opencv_over_kornia": 1.3988361967232876,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.72225229,
+        0.718732295,
+        0.718550625,
+        0.71876125,
+        0.717259375
+      ],
+      "opencv_rounds_ms": [
+        1.00513458,
+        1.00497083,
+        1.005935835,
+        1.00538875,
+        1.00552729
+      ]
+    },
+    {
+      "image": "DIBC02009_Test_images-handwritten/H02.bmp",
+      "width": 946,
+      "height": 1366,
+      "window": 31,
+      "offset": 10,
+      "kornia_ms": 0.765745,
+      "opencv_ms": 1.0570489550000002,
+      "opencv_over_kornia": 1.3804190102449252,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.765745,
+        0.764873545,
+        0.767311455,
+        0.776579375,
+        0.76564333
+      ],
+      "opencv_rounds_ms": [
+        1.05337708,
+        1.052605835,
+        1.0570489550000002,
+        1.057850625,
+        1.057259165
+      ]
+    },
+    {
+      "image": "DIBC02009_Test_images-handwritten/H02.bmp",
+      "width": 946,
+      "height": 1366,
+      "window": 51,
+      "offset": 10,
+      "kornia_ms": 0.796645,
+      "opencv_ms": 1.08385146,
+      "opencv_over_kornia": 1.3605200057742155,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.79166083,
+        0.796645,
+        1.45568625,
+        0.819930835,
+        0.79262771
+      ],
+      "opencv_rounds_ms": [
+        1.082098955,
+        1.083554375,
+        1.08385146,
+        1.232997085,
+        1.0847333300000002
+      ]
+    },
+    {
+      "image": "DIBC02009_Test_images-handwritten/H02.bmp",
+      "width": 946,
+      "height": 1366,
+      "window": 67,
+      "offset": 10,
+      "kornia_ms": 0.82068604,
+      "opencv_ms": 1.09218646,
+      "opencv_over_kornia": 1.3308212967775106,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.84699979,
+        0.81351771,
+        0.84247625,
+        0.82068604,
+        0.813176045
+      ],
+      "opencv_rounds_ms": [
+        1.089303125,
+        1.086418335,
+        1.111295,
+        1.0995216650000001,
+        1.09218646
+      ]
+    },
+    {
+      "image": "DIBC02009_Test_images-handwritten/H02.bmp",
+      "width": 946,
+      "height": 1366,
+      "window": 101,
+      "offset": 10,
+      "kornia_ms": 0.85672708,
+      "opencv_ms": 1.1247352099999999,
+      "opencv_over_kornia": 1.3128278961370055,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.8578075,
+        0.85658667,
+        0.85654271,
+        0.85672708,
+        0.85687771
+      ],
+      "opencv_rounds_ms": [
+        1.1249372949999998,
+        1.1247352099999999,
+        1.125685625,
+        1.120362085,
+        1.120518125
+      ]
+    },
+    {
+      "image": "DIBC02009_Test_images-handwritten/H03.bmp",
+      "width": 582,
+      "height": 492,
+      "window": 3,
+      "offset": 10,
+      "kornia_ms": 0.057335625,
+      "opencv_ms": 0.14631645999999998,
+      "opencv_over_kornia": 2.5519292760827144,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.05738,
+        0.057335625,
+        0.057280835,
+        0.0573775,
+        0.05724229
+      ],
+      "opencv_rounds_ms": [
+        0.146128125,
+        0.14631354000000002,
+        0.146407085,
+        0.14631645999999998,
+        0.146543125
+      ]
+    },
+    {
+      "image": "DIBC02009_Test_images-handwritten/H03.bmp",
+      "width": 582,
+      "height": 492,
+      "window": 5,
+      "offset": 10,
+      "kornia_ms": 0.084022705,
+      "opencv_ms": 0.15005229,
+      "opencv_over_kornia": 1.7858540736102224,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.083899795,
+        0.08422,
+        0.084016875,
+        0.084022705,
+        0.0842675
+      ],
+      "opencv_rounds_ms": [
+        0.15014,
+        0.150135625,
+        0.14989604,
+        0.14998271,
+        0.15005229
+      ]
+    },
+    {
+      "image": "DIBC02009_Test_images-handwritten/H03.bmp",
+      "width": 582,
+      "height": 492,
+      "window": 15,
+      "offset": 10,
+      "kornia_ms": 0.163604375,
+      "opencv_ms": 0.23040582999999998,
+      "opencv_over_kornia": 1.408310933005306,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.16412604,
+        0.16375104,
+        0.163604375,
+        0.163495,
+        0.163429375
+      ],
+      "opencv_rounds_ms": [
+        0.230473335,
+        0.23040582999999998,
+        0.22918729000000002,
+        0.230787295,
+        0.23024854
+      ]
+    },
+    {
+      "image": "DIBC02009_Test_images-handwritten/H03.bmp",
+      "width": 582,
+      "height": 492,
+      "window": 31,
+      "offset": 10,
+      "kornia_ms": 0.17316167,
+      "opencv_ms": 0.241705625,
+      "opencv_over_kornia": 1.395837918403074,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.17366479,
+        0.173135625,
+        0.172860415,
+        0.17316167,
+        0.17425667
+      ],
+      "opencv_rounds_ms": [
+        0.24154333,
+        0.241705625,
+        0.241310625,
+        0.24485832999999999,
+        0.24261021
+      ]
+    },
+    {
+      "image": "DIBC02009_Test_images-handwritten/H03.bmp",
+      "width": 582,
+      "height": 492,
+      "window": 51,
+      "offset": 10,
+      "kornia_ms": 0.185925415,
+      "opencv_ms": 0.25249520999999997,
+      "opencv_over_kornia": 1.3580456980558573,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.186018955,
+        0.186316665,
+        0.185806455,
+        0.185925415,
+        0.185856875
+      ],
+      "opencv_rounds_ms": [
+        0.25265229,
+        0.25243083499999996,
+        0.25249520999999997,
+        0.252515,
+        0.25232604000000003
+      ]
+    },
+    {
+      "image": "DIBC02009_Test_images-handwritten/H03.bmp",
+      "width": 582,
+      "height": 492,
+      "window": 67,
+      "offset": 10,
+      "kornia_ms": 0.19594125,
+      "opencv_ms": 0.256767915,
+      "opencv_over_kornia": 1.3104331783123768,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.19609958,
+        0.19594125,
+        0.195857705,
+        0.196121875,
+        0.19405625
+      ],
+      "opencv_rounds_ms": [
+        0.256842915,
+        0.256716455,
+        0.256877705,
+        0.256767915,
+        0.256520625
+      ]
+    },
+    {
+      "image": "DIBC02009_Test_images-handwritten/H03.bmp",
+      "width": 582,
+      "height": 492,
+      "window": 101,
+      "offset": 10,
+      "kornia_ms": 0.212427915,
+      "opencv_ms": 0.270232085,
+      "opencv_over_kornia": 1.2721119302988029,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.212094795,
+        0.212440835,
+        0.215016455,
+        0.21188875,
+        0.212427915
+      ],
+      "opencv_rounds_ms": [
+        0.270561665,
+        0.270232085,
+        0.28636521000000004,
+        0.269993335,
+        0.26973625
+      ]
+    },
+    {
+      "image": "DIBC02009_Test_images-handwritten/H04.bmp",
+      "width": 1091,
+      "height": 581,
+      "window": 3,
+      "offset": 10,
+      "kornia_ms": 0.126938545,
+      "opencv_ms": 0.31100208500000004,
+      "opencv_over_kornia": 2.4500208742742404,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.12815125,
+        0.12676333,
+        0.12682854,
+        0.126938545,
+        0.127075835
+      ],
+      "opencv_rounds_ms": [
+        0.31088646000000003,
+        0.31121416999999996,
+        0.31074229,
+        0.31100208500000004,
+        0.31101208
+      ]
+    },
+    {
+      "image": "DIBC02009_Test_images-handwritten/H04.bmp",
+      "width": 1091,
+      "height": 581,
+      "window": 5,
+      "offset": 10,
+      "kornia_ms": 0.182706875,
+      "opencv_ms": 0.318328125,
+      "opencv_over_kornia": 1.7422887069794173,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.18260854,
+        0.18282833,
+        0.182706875,
+        0.18275875,
+        0.18260521
+      ],
+      "opencv_rounds_ms": [
+        0.31859625,
+        0.31846853999999997,
+        0.318328125,
+        0.31827228999999996,
+        0.31812375
+      ]
+    },
+    {
+      "image": "DIBC02009_Test_images-handwritten/H04.bmp",
+      "width": 1091,
+      "height": 581,
+      "window": 15,
+      "offset": 10,
+      "kornia_ms": 0.353716455,
+      "opencv_ms": 0.49104083000000004,
+      "opencv_over_kornia": 1.388232927981821,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.353777085,
+        0.35367146,
+        0.35367604,
+        0.353854375,
+        0.353716455
+      ],
+      "opencv_rounds_ms": [
+        0.490883125,
+        0.49104083000000004,
+        0.49079896,
+        0.491251875,
+        0.49136125
+      ]
+    },
+    {
+      "image": "DIBC02009_Test_images-handwritten/H04.bmp",
+      "width": 1091,
+      "height": 581,
+      "window": 31,
+      "offset": 10,
+      "kornia_ms": 0.376034585,
+      "opencv_ms": 0.516980625,
+      "opencv_over_kornia": 1.3748220127146018,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.375861455,
+        0.376034585,
+        0.37672833,
+        0.375768125,
+        0.37616375
+      ],
+      "opencv_rounds_ms": [
+        0.51555375,
+        0.5481341700000001,
+        0.520641875,
+        0.516980625,
+        0.51573875
+      ]
+    },
+    {
+      "image": "DIBC02009_Test_images-handwritten/H04.bmp",
+      "width": 1091,
+      "height": 581,
+      "window": 51,
+      "offset": 10,
+      "kornia_ms": 0.3873475,
+      "opencv_ms": 0.53060792,
+      "opencv_over_kornia": 1.3698498634946656,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.3873475,
+        0.387295415,
+        0.38731646,
+        0.3876775,
+        0.38767896
+      ],
+      "opencv_rounds_ms": [
+        0.53060792,
+        0.53332479,
+        0.5304477049999999,
+        0.530381045,
+        0.5330116650000001
+      ]
+    },
+    {
+      "image": "DIBC02009_Test_images-handwritten/H04.bmp",
+      "width": 1091,
+      "height": 581,
+      "window": 67,
+      "offset": 10,
+      "kornia_ms": 0.39483958,
+      "opencv_ms": 0.53275396,
+      "opencv_over_kornia": 1.3492921859556226,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.39483958,
+        0.39472208,
+        0.39436,
+        0.39594229,
+        0.395731875
+      ],
+      "opencv_rounds_ms": [
+        0.5325289599999999,
+        0.53275396,
+        0.532663545,
+        0.53539667,
+        0.535369375
+      ]
+    },
+    {
+      "image": "DIBC02009_Test_images-handwritten/H04.bmp",
+      "width": 1091,
+      "height": 581,
+      "window": 101,
+      "offset": 10,
+      "kornia_ms": 0.416752705,
+      "opencv_ms": 0.552140625,
+      "opencv_over_kornia": 1.3248639261981516,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.418578955,
+        0.4166625,
+        0.41686417,
+        0.416752705,
+        0.41653
+      ],
+      "opencv_rounds_ms": [
+        0.552140625,
+        0.56192375,
+        0.56079125,
+        0.55205042,
+        0.551943125
+      ]
+    },
+    {
+      "image": "DIBC02009_Test_images-handwritten/H05.bmp",
+      "width": 1341,
+      "height": 713,
+      "window": 3,
+      "offset": 10,
+      "kornia_ms": 0.192616875,
+      "opencv_ms": 0.471252915,
+      "opencv_over_kornia": 2.4465816663259643,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.19267104,
+        0.19241604,
+        0.192616875,
+        0.192305835,
+        0.192853335
+      ],
+      "opencv_rounds_ms": [
+        0.471252915,
+        0.47140896000000004,
+        0.471002085,
+        0.47133625,
+        0.471048125
+      ]
+    },
+    {
+      "image": "DIBC02009_Test_images-handwritten/H05.bmp",
+      "width": 1341,
+      "height": 713,
+      "window": 5,
+      "offset": 10,
+      "kornia_ms": 0.276124375,
+      "opencv_ms": 0.479161875,
+      "opencv_over_kornia": 1.735311759420008,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.27614375,
+        0.275840625,
+        0.276124375,
+        0.27609917,
+        0.276473335
+      ],
+      "opencv_rounds_ms": [
+        0.479161875,
+        0.480186455,
+        0.47900833000000004,
+        0.479040625,
+        0.479747705
+      ]
+    },
+    {
+      "image": "DIBC02009_Test_images-handwritten/H05.bmp",
+      "width": 1341,
+      "height": 713,
+      "window": 15,
+      "offset": 10,
+      "kornia_ms": 0.541621875,
+      "opencv_ms": 0.73958875,
+      "opencv_over_kornia": 1.365507532353637,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.543171875,
+        0.541621875,
+        0.541588125,
+        0.54156,
+        0.54176729
+      ],
+      "opencv_rounds_ms": [
+        0.740583335,
+        0.73958875,
+        0.739487915,
+        0.739030625,
+        0.7412225
+      ]
+    },
+    {
+      "image": "DIBC02009_Test_images-handwritten/H05.bmp",
+      "width": 1341,
+      "height": 713,
+      "window": 31,
+      "offset": 10,
+      "kornia_ms": 0.559975,
+      "opencv_ms": 0.7725279150000001,
+      "opencv_over_kornia": 1.3795757221304523,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.559975,
+        0.56010729,
+        0.559593545,
+        0.55963896,
+        0.560034375
+      ],
+      "opencv_rounds_ms": [
+        0.772347915,
+        0.7725279150000001,
+        0.77245125,
+        0.773185625,
+        0.77267625
+      ]
+    },
+    {
+      "image": "DIBC02009_Test_images-handwritten/H05.bmp",
+      "width": 1341,
+      "height": 713,
+      "window": 51,
+      "offset": 10,
+      "kornia_ms": 0.57319625,
+      "opencv_ms": 0.789047915,
+      "opencv_over_kornia": 1.3765755009737068,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.57319625,
+        0.57352021,
+        0.572984585,
+        0.579985625,
+        0.5731625
+      ],
+      "opencv_rounds_ms": [
+        0.79014625,
+        0.78835375,
+        0.788506665,
+        0.79442875,
+        0.789047915
+      ]
+    },
+    {
+      "image": "DIBC02009_Test_images-handwritten/H05.bmp",
+      "width": 1341,
+      "height": 713,
+      "window": 67,
+      "offset": 10,
+      "kornia_ms": 0.58456771,
+      "opencv_ms": 0.794756875,
+      "opencv_over_kornia": 1.359563419950103,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.58446125,
+        0.584695625,
+        0.58456771,
+        0.589347295,
+        0.58430854
+      ],
+      "opencv_rounds_ms": [
+        0.79610625,
+        0.794756875,
+        0.794701875,
+        0.80253375,
+        0.79466104
+      ]
+    },
+    {
+      "image": "DIBC02009_Test_images-handwritten/H05.bmp",
+      "width": 1341,
+      "height": 713,
+      "window": 101,
+      "offset": 10,
+      "kornia_ms": 0.611580205,
+      "opencv_ms": 0.81613354,
+      "opencv_over_kornia": 1.334466899562258,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.61103979,
+        0.611580205,
+        0.610736665,
+        0.6116175,
+        0.61306542
+      ],
+      "opencv_rounds_ms": [
+        0.815164375,
+        0.81613354,
+        0.8165025,
+        0.81509104,
+        0.8177308299999999
+      ]
+    },
+    {
+      "image": "DIBCO2009_Test_images-printed/P01.bmp",
+      "width": 1268,
+      "height": 263,
+      "window": 3,
+      "offset": 10,
+      "kornia_ms": 0.067190625,
+      "opencv_ms": 0.16400146,
+      "opencv_over_kornia": 2.440838435421608,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.06718625,
+        0.06725604,
+        0.067190625,
+        0.06721896,
+        0.067045625
+      ],
+      "opencv_rounds_ms": [
+        0.16400146,
+        0.16426604,
+        0.163953125,
+        0.16408375,
+        0.163989375
+      ]
+    },
+    {
+      "image": "DIBCO2009_Test_images-printed/P01.bmp",
+      "width": 1268,
+      "height": 263,
+      "window": 5,
+      "offset": 10,
+      "kornia_ms": 0.095915415,
+      "opencv_ms": 0.16825979500000002,
+      "opencv_over_kornia": 1.7542518582649098,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.095740625,
+        0.095915415,
+        0.095730415,
+        0.09595625,
+        0.09600104
+      ],
+      "opencv_rounds_ms": [
+        0.16825979500000002,
+        0.16824021,
+        0.16822,
+        0.16830479,
+        0.168411875
+      ]
+    },
+    {
+      "image": "DIBCO2009_Test_images-printed/P01.bmp",
+      "width": 1268,
+      "height": 263,
+      "window": 15,
+      "offset": 10,
+      "kornia_ms": 0.188707295,
+      "opencv_ms": 0.258699585,
+      "opencv_over_kornia": 1.3709039971136252,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.18865458,
+        0.188798335,
+        0.18871396,
+        0.188707295,
+        0.18857104
+      ],
+      "opencv_rounds_ms": [
+        0.25877854,
+        0.25852729,
+        0.25847625,
+        0.25879375,
+        0.258699585
+      ]
+    },
+    {
+      "image": "DIBCO2009_Test_images-printed/P01.bmp",
+      "width": 1268,
+      "height": 263,
+      "window": 31,
+      "offset": 10,
+      "kornia_ms": 0.19725625,
+      "opencv_ms": 0.271911455,
+      "opencv_over_kornia": 1.3784681347232346,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.197180415,
+        0.19725625,
+        0.19719021,
+        0.19792708,
+        0.202324795
+      ],
+      "opencv_rounds_ms": [
+        0.271833335,
+        0.271911455,
+        0.27187146,
+        0.28251979,
+        0.2777475
+      ]
+    },
+    {
+      "image": "DIBCO2009_Test_images-printed/P01.bmp",
+      "width": 1268,
+      "height": 263,
+      "window": 51,
+      "offset": 10,
+      "kornia_ms": 0.20296875,
+      "opencv_ms": 0.27881375,
+      "opencv_over_kornia": 1.3736782140107777,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.202889585,
+        0.20296875,
+        0.202951875,
+        0.203066455,
+        0.203103335
+      ],
+      "opencv_rounds_ms": [
+        0.278646875,
+        0.27895417,
+        0.27881375,
+        0.278940415,
+        0.27878479
+      ]
+    },
+    {
+      "image": "DIBCO2009_Test_images-printed/P01.bmp",
+      "width": 1268,
+      "height": 263,
+      "window": 67,
+      "offset": 10,
+      "kornia_ms": 0.207631455,
+      "opencv_ms": 0.28313979,
+      "opencv_over_kornia": 1.3636652018837898,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.20773625,
+        0.207631455,
+        0.207336875,
+        0.207571455,
+        0.207686875
+      ],
+      "opencv_rounds_ms": [
+        0.28306833000000003,
+        0.283115625,
+        0.28318166499999997,
+        0.2840675,
+        0.28313979
+      ]
+    },
+    {
+      "image": "DIBCO2009_Test_images-printed/P01.bmp",
+      "width": 1268,
+      "height": 263,
+      "window": 101,
+      "offset": 10,
+      "kornia_ms": 0.217607705,
+      "opencv_ms": 0.29383333500000003,
+      "opencv_over_kornia": 1.3502892050628448,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.217315415,
+        0.217273335,
+        0.217607705,
+        0.218071045,
+        0.218059375
+      ],
+      "opencv_rounds_ms": [
+        0.29386125,
+        0.29383333500000003,
+        0.294106045,
+        0.29366521,
+        0.29336375
+      ]
+    },
+    {
+      "image": "DIBCO2009_Test_images-printed/P02.bmp",
+      "width": 1223,
+      "height": 310,
+      "window": 3,
+      "offset": 10,
+      "kornia_ms": 0.075891875,
+      "opencv_ms": 0.18648708,
+      "opencv_over_kornia": 2.457273324713614,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.075837915,
+        0.0758,
+        0.075891875,
+        0.075902085,
+        0.075925
+      ],
+      "opencv_rounds_ms": [
+        0.18648708,
+        0.186511875,
+        0.186308125,
+        0.186515,
+        0.18640125
+      ]
+    },
+    {
+      "image": "DIBCO2009_Test_images-printed/P02.bmp",
+      "width": 1223,
+      "height": 310,
+      "window": 5,
+      "offset": 10,
+      "kornia_ms": 0.109140415,
+      "opencv_ms": 0.19110229,
+      "opencv_over_kornia": 1.7509763912845668,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.10909229,
+        0.109140415,
+        0.10922229,
+        0.109318955,
+        0.10911854
+      ],
+      "opencv_rounds_ms": [
+        0.19246875,
+        0.19110229,
+        0.191020205,
+        0.19103292000000002,
+        0.191161875
+      ]
+    },
+    {
+      "image": "DIBCO2009_Test_images-printed/P02.bmp",
+      "width": 1223,
+      "height": 310,
+      "window": 15,
+      "offset": 10,
+      "kornia_ms": 0.215011875,
+      "opencv_ms": 0.29324625,
+      "opencv_over_kornia": 1.3638607169952823,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.21493,
+        0.21520854,
+        0.215012295,
+        0.215011875,
+        0.21501125
+      ],
+      "opencv_rounds_ms": [
+        0.293987295,
+        0.29316603999999996,
+        0.29324625,
+        0.29399708500000005,
+        0.29312458500000005
+      ]
+    },
+    {
+      "image": "DIBCO2009_Test_images-printed/P02.bmp",
+      "width": 1223,
+      "height": 310,
+      "window": 31,
+      "offset": 10,
+      "kornia_ms": 0.22489229,
+      "opencv_ms": 0.308571045,
+      "opencv_over_kornia": 1.3720836983784548,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.2249025,
+        0.22489229,
+        0.2248625,
+        0.224971875,
+        0.22474167
+      ],
+      "opencv_rounds_ms": [
+        0.30873396000000003,
+        0.308543125,
+        0.30890958500000004,
+        0.30849271,
+        0.308571045
+      ]
+    },
+    {
+      "image": "DIBCO2009_Test_images-printed/P02.bmp",
+      "width": 1223,
+      "height": 310,
+      "window": 51,
+      "offset": 10,
+      "kornia_ms": 0.23130917,
+      "opencv_ms": 0.317268335,
+      "opencv_over_kornia": 1.3716202215415845,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.231293545,
+        0.23130917,
+        0.231370835,
+        0.23149167,
+        0.231265205
+      ],
+      "opencv_rounds_ms": [
+        0.31739521000000004,
+        0.317098335,
+        0.317268335,
+        0.31696958000000003,
+        0.31871729
+      ]
+    },
+    {
+      "image": "DIBCO2009_Test_images-printed/P02.bmp",
+      "width": 1223,
+      "height": 310,
+      "window": 67,
+      "offset": 10,
+      "kornia_ms": 0.236131455,
+      "opencv_ms": 0.321019375,
+      "opencv_over_kornia": 1.359494333357663,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.236105625,
+        0.236142915,
+        0.23634979,
+        0.236131455,
+        0.236105835
+      ],
+      "opencv_rounds_ms": [
+        0.32099625,
+        0.321635,
+        0.321009375,
+        0.321019375,
+        0.321954375
+      ]
+    },
+    {
+      "image": "DIBCO2009_Test_images-printed/P02.bmp",
+      "width": 1223,
+      "height": 310,
+      "window": 101,
+      "offset": 10,
+      "kornia_ms": 0.24915604,
+      "opencv_ms": 0.3335,
+      "opencv_over_kornia": 1.3385186247140548,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.24920021,
+        0.249477085,
+        0.24915604,
+        0.248734165,
+        0.24881583
+      ],
+      "opencv_rounds_ms": [
+        0.333661455,
+        0.333562085,
+        0.3335,
+        0.333016665,
+        0.333433955
+      ]
+    },
+    {
+      "image": "DIBCO2009_Test_images-printed/P03.bmp",
+      "width": 1153,
+      "height": 493,
+      "window": 3,
+      "offset": 10,
+      "kornia_ms": 0.120809375,
+      "opencv_ms": 0.28424666499999995,
+      "opencv_over_kornia": 2.35285270700225,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.115067085,
+        0.235849375,
+        0.120809375,
+        0.12572167,
+        0.11699854
+      ],
+      "opencv_rounds_ms": [
+        0.27670208,
+        0.355283545,
+        0.377447705,
+        0.28424666499999995,
+        0.28084354
+      ]
+    },
+    {
+      "image": "DIBCO2009_Test_images-printed/P03.bmp",
+      "width": 1153,
+      "height": 493,
+      "window": 5,
+      "offset": 10,
+      "kornia_ms": 0.16311792,
+      "opencv_ms": 0.28351875,
+      "opencv_over_kornia": 1.7381214154766074,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.163212295,
+        0.16311792,
+        0.16328896,
+        0.16304771,
+        0.162925
+      ],
+      "opencv_rounds_ms": [
+        0.28331333000000003,
+        0.283792915,
+        0.28351875,
+        0.28345708000000003,
+        0.284039795
+      ]
+    },
+    {
+      "image": "DIBCO2009_Test_images-printed/P03.bmp",
+      "width": 1153,
+      "height": 493,
+      "window": 15,
+      "offset": 10,
+      "kornia_ms": 0.319448125,
+      "opencv_ms": 0.4385075,
+      "opencv_over_kornia": 1.3727033145052892,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.32204396,
+        0.319422295,
+        0.319346045,
+        0.319448125,
+        0.31945083
+      ],
+      "opencv_rounds_ms": [
+        0.4385075,
+        0.438340625,
+        0.439037705,
+        0.43801125,
+        0.43893375
+      ]
+    },
+    {
+      "image": "DIBCO2009_Test_images-printed/P03.bmp",
+      "width": 1153,
+      "height": 493,
+      "window": 31,
+      "offset": 10,
+      "kornia_ms": 0.334927295,
+      "opencv_ms": 0.46110771,
+      "opencv_over_kornia": 1.3767397189888628,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.334927295,
+        0.334922915,
+        0.334720625,
+        0.33501208,
+        0.343765415
+      ],
+      "opencv_rounds_ms": [
+        0.46110771,
+        0.460832705,
+        0.46079583,
+        0.461861875,
+        0.46584979
+      ]
+    },
+    {
+      "image": "DIBCO2009_Test_images-printed/P03.bmp",
+      "width": 1153,
+      "height": 493,
+      "window": 51,
+      "offset": 10,
+      "kornia_ms": 0.3448575,
+      "opencv_ms": 0.471702295,
+      "opencv_over_kornia": 1.3678179972887352,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.344737085,
+        0.3448575,
+        0.34554979,
+        0.34469375,
+        0.34588542
+      ],
+      "opencv_rounds_ms": [
+        0.47148792,
+        0.47191375,
+        0.471702295,
+        0.471839165,
+        0.471465415
+      ]
+    },
+    {
+      "image": "DIBCO2009_Test_images-printed/P03.bmp",
+      "width": 1153,
+      "height": 493,
+      "window": 67,
+      "offset": 10,
+      "kornia_ms": 0.352345625,
+      "opencv_ms": 0.47637416499999996,
+      "opencv_over_kornia": 1.3520081737924232,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.35221021,
+        0.352167085,
+        0.352486665,
+        0.3526625,
+        0.352345625
+      ],
+      "opencv_rounds_ms": [
+        0.476149375,
+        0.47637416499999996,
+        0.47591103999999995,
+        0.47780792,
+        0.4778925
+      ]
+    },
+    {
+      "image": "DIBCO2009_Test_images-printed/P03.bmp",
+      "width": 1153,
+      "height": 493,
+      "window": 101,
+      "offset": 10,
+      "kornia_ms": 0.370356875,
+      "opencv_ms": 0.49313875,
+      "opencv_over_kornia": 1.3315231423745004,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.37027333,
+        0.370127705,
+        0.370356875,
+        0.37053125,
+        0.370635835
+      ],
+      "opencv_rounds_ms": [
+        0.492801665,
+        0.49321333500000003,
+        0.49313875,
+        0.493080625,
+        0.49337166499999996
+      ]
+    },
+    {
+      "image": "DIBCO2009_Test_images-printed/P04.bmp",
+      "width": 1849,
+      "height": 357,
+      "window": 3,
+      "offset": 10,
+      "kornia_ms": 0.132434585,
+      "opencv_ms": 0.320511875,
+      "opencv_over_kornia": 2.4201523718294586,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.132434585,
+        0.132379585,
+        0.132310835,
+        0.135100625,
+        0.132439585
+      ],
+      "opencv_rounds_ms": [
+        0.32048478999999996,
+        0.32019916499999995,
+        0.320571455,
+        0.320511875,
+        0.32092875
+      ]
+    },
+    {
+      "image": "DIBCO2009_Test_images-printed/P04.bmp",
+      "width": 1849,
+      "height": 357,
+      "window": 5,
+      "offset": 10,
+      "kornia_ms": 0.18906271,
+      "opencv_ms": 0.327155625,
+      "opencv_over_kornia": 1.7304079953154168,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.188918335,
+        0.18925771,
+        0.18905917,
+        0.189284795,
+        0.18906271
+      ],
+      "opencv_rounds_ms": [
+        0.327155625,
+        0.326874375,
+        0.327307915,
+        0.32699875,
+        0.32764854499999996
+      ]
+    },
+    {
+      "image": "DIBCO2009_Test_images-printed/P04.bmp",
+      "width": 1849,
+      "height": 357,
+      "window": 15,
+      "offset": 10,
+      "kornia_ms": 0.37823625,
+      "opencv_ms": 0.5067075,
+      "opencv_over_kornia": 1.3396587450303876,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.37776729,
+        0.378485625,
+        0.37823625,
+        0.378048125,
+        0.37873479
+      ],
+      "opencv_rounds_ms": [
+        0.506316875,
+        0.50770125,
+        0.5067075,
+        0.50615479,
+        0.5077175
+      ]
+    },
+    {
+      "image": "DIBCO2009_Test_images-printed/P04.bmp",
+      "width": 1849,
+      "height": 357,
+      "window": 31,
+      "offset": 10,
+      "kornia_ms": 0.385326455,
+      "opencv_ms": 0.531487915,
+      "opencv_over_kornia": 1.3793185183716494,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.38543375,
+        0.385326455,
+        0.385200415,
+        0.385094165,
+        0.385447295
+      ],
+      "opencv_rounds_ms": [
+        0.5344733349999999,
+        0.5346158299999999,
+        0.528203125,
+        0.528017295,
+        0.531487915
+      ]
+    },
+    {
+      "image": "DIBCO2009_Test_images-printed/P04.bmp",
+      "width": 1849,
+      "height": 357,
+      "window": 51,
+      "offset": 10,
+      "kornia_ms": 0.39241875,
+      "opencv_ms": 0.53823396,
+      "opencv_over_kornia": 1.3715806393043146,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.39245229,
+        0.392326875,
+        0.392440625,
+        0.39241875,
+        0.39232604
+      ],
+      "opencv_rounds_ms": [
+        0.53822729,
+        0.53823396,
+        0.53857104,
+        0.550867915,
+        0.538174375
+      ]
+    },
+    {
+      "image": "DIBCO2009_Test_images-printed/P04.bmp",
+      "width": 1849,
+      "height": 357,
+      "window": 67,
+      "offset": 10,
+      "kornia_ms": 0.399727915,
+      "opencv_ms": 0.54360229,
+      "opencv_over_kornia": 1.3599307669067848,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.39898354,
+        0.399727295,
+        0.399727915,
+        0.39980125,
+        0.400348335
+      ],
+      "opencv_rounds_ms": [
+        0.54360229,
+        0.543345835,
+        0.54559646,
+        0.54585875,
+        0.543355835
+      ]
+    },
+    {
+      "image": "DIBCO2009_Test_images-printed/P04.bmp",
+      "width": 1849,
+      "height": 357,
+      "window": 101,
+      "offset": 10,
+      "kornia_ms": 0.414882085,
+      "opencv_ms": 0.5593833349999999,
+      "opencv_over_kornia": 1.3482947449996543,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.414870625,
+        0.41483021,
+        0.414916875,
+        0.415022915,
+        0.414882085
+      ],
+      "opencv_rounds_ms": [
+        0.559028125,
+        0.55856146,
+        0.559518125,
+        0.5596683299999999,
+        0.5593833349999999
+      ]
+    },
+    {
+      "image": "DIBCO2009_Test_images-printed/P05.bmp",
+      "width": 1218,
+      "height": 259,
+      "window": 3,
+      "offset": 10,
+      "kornia_ms": 0.06292229,
+      "opencv_ms": 0.15436895499999997,
+      "opencv_over_kornia": 2.453327032439537,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.06301104,
+        0.06295854,
+        0.062883955,
+        0.06292229,
+        0.062915205
+      ],
+      "opencv_rounds_ms": [
+        0.15436895499999997,
+        0.154350625,
+        0.154350835,
+        0.154466665,
+        0.154555835
+      ]
+    },
+    {
+      "image": "DIBCO2009_Test_images-printed/P05.bmp",
+      "width": 1218,
+      "height": 259,
+      "window": 5,
+      "offset": 10,
+      "kornia_ms": 0.09094771,
+      "opencv_ms": 0.15842625,
+      "opencv_over_kornia": 1.741948752750344,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.09094771,
+        0.090926045,
+        0.091169165,
+        0.09088229,
+        0.091076665
+      ],
+      "opencv_rounds_ms": [
+        0.15842625,
+        0.15816645999999998,
+        0.158355835,
+        0.158630835,
+        0.158459375
+      ]
+    },
+    {
+      "image": "DIBCO2009_Test_images-printed/P05.bmp",
+      "width": 1218,
+      "height": 259,
+      "window": 15,
+      "offset": 10,
+      "kornia_ms": 0.179397705,
+      "opencv_ms": 0.24437395499999998,
+      "opencv_over_kornia": 1.3621910882304764,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.17953833,
+        0.1792875,
+        0.17931458,
+        0.18018271,
+        0.179397705
+      ],
+      "opencv_rounds_ms": [
+        0.2440275,
+        0.24437395499999998,
+        0.244505415,
+        0.244371045,
+        0.244481875
+      ]
+    },
+    {
+      "image": "DIBCO2009_Test_images-printed/P05.bmp",
+      "width": 1218,
+      "height": 259,
+      "window": 31,
+      "offset": 10,
+      "kornia_ms": 0.187748125,
+      "opencv_ms": 0.25758770999999997,
+      "opencv_over_kornia": 1.3719855258208304,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.189572295,
+        0.18782125,
+        0.18766958,
+        0.187545835,
+        0.187748125
+      ],
+      "opencv_rounds_ms": [
+        0.265671665,
+        0.25838916500000003,
+        0.25758770999999997,
+        0.257488125,
+        0.257335835
+      ]
+    },
+    {
+      "image": "DIBCO2009_Test_images-printed/P05.bmp",
+      "width": 1218,
+      "height": 259,
+      "window": 51,
+      "offset": 10,
+      "kornia_ms": 0.193103335,
+      "opencv_ms": 0.2643925,
+      "opencv_over_kornia": 1.3691762495971391,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.193030205,
+        0.193103335,
+        0.19313583,
+        0.19345479,
+        0.193066665
+      ],
+      "opencv_rounds_ms": [
+        0.2643925,
+        0.264296875,
+        0.264355625,
+        0.26490208000000004,
+        0.26467770500000004
+      ]
+    },
+    {
+      "image": "DIBCO2009_Test_images-printed/P05.bmp",
+      "width": 1218,
+      "height": 259,
+      "window": 67,
+      "offset": 10,
+      "kornia_ms": 0.19767646,
+      "opencv_ms": 0.2683475,
+      "opencv_over_kornia": 1.357508627987369,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.203704795,
+        0.20391979,
+        0.19767646,
+        0.19754333,
+        0.197613125
+      ],
+      "opencv_rounds_ms": [
+        0.268724375,
+        0.2683475,
+        0.268351455,
+        0.26797146,
+        0.26793666499999996
+      ]
+    },
+    {
+      "image": "DIBCO2009_Test_images-printed/P05.bmp",
+      "width": 1218,
+      "height": 259,
+      "window": 101,
+      "offset": 10,
+      "kornia_ms": 0.206928955,
+      "opencv_ms": 0.2791475,
+      "opencv_over_kornia": 1.3490016416503916,
+      "mismatch_pixels": 0,
+      "kornia_rounds_ms": [
+        0.207040625,
+        0.206953545,
+        0.206928955,
+        0.20686167,
+        0.20644417
+      ],
+      "opencv_rounds_ms": [
+        0.27907521,
+        0.279119795,
+        0.279185835,
+        0.279260415,
+        0.2791475
+      ]
+    }
+  ]
+}

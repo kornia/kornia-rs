@@ -1,0 +1,1 @@
+Add `kornia_imgproc::threshold::adaptive_threshold_mean` and caller-owned `AdaptiveThresholdMeanWorkspace` scratch for grayscale `u8` images with uneven illumination, using replicated borders and a configurable integer offset, window size and output maximum.

@@ -21,6 +21,7 @@
 *   **Calibration:** Camera calibration and image undistortion.
 *   **Normalization:** Min/max scaling, mean/std normalization.
 *   **Histograms:** Compute and manipulate image histograms.
+*   **Thresholding:** Fixed thresholds and adaptive mean binary thresholding (`threshold::adaptive_threshold_mean`) for grayscale `u8` images, with replicated borders, an integer offset and reusable `AdaptiveThresholdMeanWorkspace` scratch.
 *   **Feature Detection:** (Experimental) Corner detection and feature extraction.
 *   **Contours:** Find image contours and compute their properties.
 
