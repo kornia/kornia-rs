@@ -15,6 +15,7 @@
 #include <string>
 #include <vector>
 
+/// Serve native OpenCV warmup, timing and mask requests without timing IPC.
 int main(int argc, char** argv) {
     try {
         cv::setNumThreads(1);

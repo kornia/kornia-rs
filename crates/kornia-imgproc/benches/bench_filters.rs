@@ -90,8 +90,9 @@ fn bench_filters(c: &mut Criterion) {
     group.finish();
 }
 
+/// Measure steady-state threshold application with retained internal scratch.
 fn bench_adaptive_mean(c: &mut Criterion) {
-    use kornia_imgproc::threshold::{adaptive_threshold_mean, AdaptiveThresholdMeanWorkspace};
+    use kornia_imgproc::threshold::AdaptiveThresholdMean;
 
     let mut group = c.benchmark_group("adaptive_mean");
     for (width, height) in [(640, 480), (1920, 1080)] {
@@ -104,21 +105,16 @@ fn bench_adaptive_mean(c: &mut Criterion) {
         .unwrap();
         let mut dst = Image::from_size_val(src.size(), 0).unwrap();
         group.throughput(criterion::Throughput::Elements((width * height) as u64));
-        let mut workspace = AdaptiveThresholdMeanWorkspace::new();
         for block_size in [3, 5, 15, 31, 51, 67, 101] {
+            let mut threshold = AdaptiveThresholdMean::new(block_size, 10, 255).unwrap();
+            threshold.apply(&src, &mut dst).unwrap();
             group.bench_function(
                 BenchmarkId::new(format!("{width}x{height}"), block_size),
                 |b| {
                     b.iter(|| {
-                        adaptive_threshold_mean(
-                            std::hint::black_box(&src),
-                            &mut dst,
-                            &mut workspace,
-                            block_size,
-                            10,
-                            255,
-                        )
-                        .unwrap();
+                        threshold
+                            .apply(std::hint::black_box(&src), &mut dst)
+                            .unwrap();
                         std::hint::black_box(dst.as_slice());
                     });
                 },

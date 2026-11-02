@@ -8,9 +8,6 @@ description: Use before committing, opening a PR, or debugging CI in kornia-rs â
 All commands are mirrored in CI. Run them through `pixi` (preferred) so the
 toolchain matches CI.
 
-Before committing new files, stage them and run `git diff --cached --check`;
-`git diff --check` does not inspect untracked generated artifacts.
-
 ## Mandatory pre-PR gate
 
 ```bash

@@ -5,187 +5,205 @@ use kornia_image::{Image, ImageError};
 
 use crate::parallel;
 
-/// Reusable CPU scratch for [`adaptive_threshold_mean`].
+/// Adaptive mean binary thresholding for grayscale `u8` images.
 ///
-/// Buffers grow on first use or when a call needs more capacity and retain
-/// their allocations for subsequent calls. The 3 × 3 path uses no scratch.
-/// Use one workspace per concurrent operation.
+/// Compares each pixel with the rounded mean of its centred square window
+/// minus an integer offset. Pixels strictly above the threshold become the
+/// configured maximum; the rest become zero. Borders replicate the nearest
+/// edge pixel, including when the window is larger than the image.
+///
+/// Reference: OpenCV `adaptiveThreshold` with `ADAPTIVE_THRESH_MEAN_C` and
+/// `THRESH_BINARY`. This API accepts an integer offset and a `u8` maximum.
+/// Exact sums take O(width × height) time and at most
+/// O(width × min(block_size, height)) active scratch space. Internal buffers
+/// retain capacity between calls; use one instance per concurrent operation.
+pub struct AdaptiveThresholdMean {
+    block_size: usize,
+    offset: i16,
+    max_value: u8,
+    area: u64,
+    workspace: Workspace,
+}
+
 #[derive(Default)]
-pub struct AdaptiveThresholdMeanWorkspace {
+struct Workspace {
     ring: Vec<u32>,
     columns: Vec<u32>,
     prefix: Vec<u32>,
     wide_columns: Vec<u64>,
 }
 
-impl AdaptiveThresholdMeanWorkspace {
-    /// Create an empty workspace without allocating.
+impl AdaptiveThresholdMean {
+    /// Validate a configuration without allocating scratch.
     ///
     /// # Arguments
     ///
-    /// None.
+    /// * `block_size` - Odd window side in pixels, greater than one.
+    /// * `offset` - Integer brightness offset subtracted from the rounded mean.
+    /// * `max_value` - Output value for pixels above the local threshold.
     ///
     /// # Returns
     ///
-    /// Scratch buffers that are sized by [`adaptive_threshold_mean`] on use.
+    /// A configured threshold with empty internal scratch buffers.
     ///
     /// # Errors
     ///
-    /// This constructor is infallible.
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-/// Apply adaptive mean binary thresholding to a grayscale image.
-///
-/// Each pixel is compared with the rounded mean of its centred square window
-/// minus `offset`. Values strictly above that threshold become `max_value`;
-/// the rest become zero. Borders replicate the nearest edge pixel, including
-/// when the window is larger than the image.
-///
-/// Reference: OpenCV `adaptiveThreshold` with `ADAPTIVE_THRESH_MEAN_C` and
-/// `THRESH_BINARY`. This API accepts an integer offset and a `u8` maximum.
-/// Exact sums take O(width × height) time. Scratch buffers use at most
-/// O(width × min(block_size, height)) active space. The caller-owned workspace
-/// retains capacity, so calls allocate only when more capacity is needed;
-/// the 3 × 3 path uses no scratch. Empty images succeed without writing output.
-///
-/// # Arguments
-///
-/// * `src` - Host-resident single-channel `u8` image.
-/// * `dst` - Host-resident output with the same dimensions as `src`.
-/// * `workspace` - Reusable scratch, grown as needed and retained between calls.
-/// * `block_size` - Odd window side in pixels, greater than one.
-/// * `offset` - Integer brightness offset subtracted from the rounded mean.
-/// * `max_value` - Output value for pixels above the local threshold.
-///
-/// # Returns
-///
-/// `Ok(())` on success, with the binary image written to `dst`.
-///
-/// # Errors
-///
-/// * [`ImageError::InvalidImageSize`] if source and destination sizes differ.
-/// * [`ImageError::InvalidKernelLength`] if the window is even, less than three,
-///   or too large for its sum and rounding term to fit in `u64`.
-/// * [`ImageError::UnsupportedDevice`] if either image is device-resident.
-///
-/// # Example
-///
-/// ```rust
-/// use kornia_image::{Image, ImageSize};
-/// use kornia_imgproc::threshold::{adaptive_threshold_mean, AdaptiveThresholdMeanWorkspace};
-///
-/// let size = ImageSize { width: 3, height: 3 };
-/// let src = Image::<u8, 1>::new(size, vec![200, 200, 200, 200, 40, 200, 200, 200, 200])?;
-/// let mut dst = Image::from_size_val(size, 0)?;
-/// let mut workspace = AdaptiveThresholdMeanWorkspace::new();
-/// adaptive_threshold_mean(&src, &mut dst, &mut workspace, 3, 10, 255)?;
-/// assert_eq!(dst.as_slice(), &[255, 255, 255, 255, 0, 255, 255, 255, 255]);
-/// # Ok::<(), Box<dyn std::error::Error>>(())
-/// ```
-pub fn adaptive_threshold_mean(
-    src: &Image<u8, 1>,
-    dst: &mut Image<u8, 1>,
-    workspace: &mut AdaptiveThresholdMeanWorkspace,
-    block_size: usize,
-    offset: i16,
-    max_value: u8,
-) -> Result<(), ImageError> {
-    crate::color::kernel_common::check_size(src, dst)?;
-    let invalid_kernel = || ImageError::InvalidKernelLength(block_size, block_size);
-    if block_size < 3 || block_size.is_multiple_of(2) {
-        return Err(invalid_kernel());
-    }
-    let area = (block_size as u64)
-        .checked_mul(block_size as u64)
-        .filter(|&area| {
-            area.checked_mul(u64::from(u8::MAX))
-                .and_then(|v| v.checked_add(area / 2))
-                .is_some()
-        })
-        .ok_or_else(invalid_kernel)?;
-
-    #[cfg(feature = "cuda")]
-    if crate::cuda::dispatch::is_device(src) || crate::cuda::dispatch::is_device(dst) {
-        return Err(ImageError::UnsupportedDevice);
-    }
-
-    let width = src.width();
-    let height = src.height();
-    if width == 0 || height == 0 {
-        return Ok(());
-    }
-    if block_size == 3 {
-        adaptive_mean_3x3(src.as_slice(), dst.as_slice_mut(), width, offset, max_value);
-        return Ok(());
-    }
-    // The clamped pixel-plus-offset level is at most 256, so both its
-    // product and the rounded window sum must fit in u32.
-    if area <= u64::from(u32::MAX / 256) {
-        adaptive_mean_streaming_u32(
-            src,
-            dst,
-            workspace,
+    /// [`ImageError::InvalidKernelLength`] if the window is even, less than
+    /// three, or too large for its sum and rounding term to fit in `u64`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use kornia_imgproc::threshold::AdaptiveThresholdMean;
+    /// let threshold = AdaptiveThresholdMean::new(31, 10, 255)?;
+    /// # Ok::<(), kornia_image::ImageError>(())
+    /// ```
+    pub fn new(block_size: usize, offset: i16, max_value: u8) -> Result<Self, ImageError> {
+        let invalid_kernel = || ImageError::InvalidKernelLength(block_size, block_size);
+        if block_size < 3 || block_size.is_multiple_of(2) {
+            return Err(invalid_kernel());
+        }
+        let area = (block_size as u64)
+            .checked_mul(block_size as u64)
+            .filter(|&area| {
+                area.checked_mul(u64::from(u8::MAX))
+                    .and_then(|v| v.checked_add(area / 2))
+                    .is_some()
+            })
+            .ok_or_else(invalid_kernel)?;
+        Ok(Self {
             block_size,
             offset,
             max_value,
-            area as u32,
-        );
-        return Ok(());
-    }
-    let radius = block_size / 2;
-    let src_pixels = src.as_slice();
-    // The existing u8 box blur uses quantized weights, and the integral image
-    // uses f32 sums. Neither preserves the exact rounded mean on large pages.
-    workspace.wide_columns.resize(width, 0);
-    let columns = &mut workspace.wide_columns;
-    for (x, column) in columns.iter_mut().enumerate() {
-        *column = u64::from(src_pixels[x]) * (radius + 1) as u64;
-        for row in src_pixels
-            .chunks_exact(width)
-            .take(height.min(radius + 1))
-            .skip(1)
-        {
-            *column += u64::from(row[x]);
-        }
-        *column += u64::from(src_pixels[(height - 1) * width + x])
-            * radius.saturating_sub(height - 1) as u64;
+            area,
+            workspace: Workspace::default(),
+        })
     }
 
-    for (y, dst_row) in dst.as_slice_mut().chunks_exact_mut(width).enumerate() {
-        if y > 0 {
-            let leaving = y.saturating_sub(radius + 1) * width;
-            let entering = (y + radius).min(height - 1) * width;
-            for (x, column) in columns.iter_mut().enumerate() {
-                *column = *column - u64::from(src_pixels[leaving + x])
-                    + u64::from(src_pixels[entering + x]);
-            }
+    /// Apply this threshold, reusing its internal scratch buffers.
+    ///
+    /// Buffers grow only when more capacity is needed. The 3 × 3 path uses
+    /// no scratch. Empty images succeed without writing output.
+    ///
+    /// # Arguments
+    ///
+    /// * `src` - Host-resident single-channel `u8` image.
+    /// * `dst` - Host-resident output with the same dimensions as `src`.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` with the binary image written to `dst`.
+    ///
+    /// # Errors
+    ///
+    /// * [`ImageError::InvalidImageSize`] if source and destination sizes differ.
+    /// * [`ImageError::UnsupportedDevice`] if either image is device-resident.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use kornia_image::{Image, ImageSize};
+    /// use kornia_imgproc::threshold::AdaptiveThresholdMean;
+    ///
+    /// let size = ImageSize { width: 3, height: 3 };
+    /// let src = Image::<u8, 1>::new(size, vec![200, 200, 200, 200, 40, 200, 200, 200, 200])?;
+    /// let mut dst = Image::from_size_val(size, 0)?;
+    /// let mut threshold = AdaptiveThresholdMean::new(3, 10, 255)?;
+    /// threshold.apply(&src, &mut dst)?;
+    /// assert_eq!(dst.as_slice(), &[255, 255, 255, 255, 0, 255, 255, 255, 255]);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn apply(&mut self, src: &Image<u8, 1>, dst: &mut Image<u8, 1>) -> Result<(), ImageError> {
+        crate::color::kernel_common::check_size(src, dst)?;
+        let Self {
+            block_size,
+            offset,
+            max_value,
+            area,
+            workspace,
+        } = self;
+        let (block_size, offset, max_value, area) = (*block_size, *offset, *max_value, *area);
+        #[cfg(feature = "cuda")]
+        if crate::cuda::dispatch::is_device(src) || crate::cuda::dispatch::is_device(dst) {
+            return Err(ImageError::UnsupportedDevice);
         }
-        let mut sum = columns[0] * (radius + 1) as u64
-            + columns
-                .iter()
-                .take(width.min(radius + 1))
+
+        let width = src.width();
+        let height = src.height();
+        if width == 0 || height == 0 {
+            return Ok(());
+        }
+        if block_size == 3 {
+            adaptive_mean_3x3(src.as_slice(), dst.as_slice_mut(), width, offset, max_value);
+            return Ok(());
+        }
+        // The clamped pixel-plus-offset level is at most 256, so both its
+        // product and the rounded window sum must fit in u32.
+        if area <= u64::from(u32::MAX / 256) {
+            adaptive_mean_streaming_u32(
+                src,
+                dst,
+                workspace,
+                block_size,
+                offset,
+                max_value,
+                area as u32,
+            );
+            return Ok(());
+        }
+        let radius = block_size / 2;
+        let src_pixels = src.as_slice();
+        // The existing u8 box blur uses quantized weights, and the integral image
+        // uses f32 sums. Neither preserves the exact rounded mean on large pages.
+        workspace.wide_columns.resize(width, 0);
+        let columns = &mut workspace.wide_columns;
+        for (x, column) in columns.iter_mut().enumerate() {
+            *column = u64::from(src_pixels[x]) * (radius + 1) as u64;
+            for row in src_pixels
+                .chunks_exact(width)
+                .take(height.min(radius + 1))
                 .skip(1)
-                .sum::<u64>()
-            + columns[width - 1] * radius.saturating_sub(width - 1) as u64;
-        for (x, output) in dst_row.iter_mut().enumerate() {
-            if x > 0 {
-                sum = sum - columns[x.saturating_sub(radius + 1)]
-                    + columns[(x + radius).min(width - 1)];
+            {
+                *column += u64::from(row[x]);
             }
-            let mean = ((sum + area / 2) / area) as i32;
-            *output = if i32::from(src_pixels[y * width + x]) > mean - i32::from(offset) {
-                max_value
-            } else {
-                0
-            };
+            *column += u64::from(src_pixels[(height - 1) * width + x])
+                * radius.saturating_sub(height - 1) as u64;
         }
+
+        for (y, dst_row) in dst.as_slice_mut().chunks_exact_mut(width).enumerate() {
+            if y > 0 {
+                let leaving = y.saturating_sub(radius + 1) * width;
+                let entering = (y + radius).min(height - 1) * width;
+                for (x, column) in columns.iter_mut().enumerate() {
+                    *column = *column - u64::from(src_pixels[leaving + x])
+                        + u64::from(src_pixels[entering + x]);
+                }
+            }
+            let mut sum = columns[0] * (radius + 1) as u64
+                + columns
+                    .iter()
+                    .take(width.min(radius + 1))
+                    .skip(1)
+                    .sum::<u64>()
+                + columns[width - 1] * radius.saturating_sub(width - 1) as u64;
+            for (x, output) in dst_row.iter_mut().enumerate() {
+                if x > 0 {
+                    sum = sum - columns[x.saturating_sub(radius + 1)]
+                        + columns[(x + radius).min(width - 1)];
+                }
+                let mean = ((sum + area / 2) / area) as i32;
+                *output = if i32::from(src_pixels[y * width + x]) > mean - i32::from(offset) {
+                    max_value
+                } else {
+                    0
+                };
+            }
+        }
+        Ok(())
     }
-    Ok(())
 }
 
+/// Compute replicated-border horizontal sums, using wrapping prefixes for wide rows.
 fn adaptive_horizontal_sum(source: &[u8], output: &mut [u32], radius: usize, prefix: &mut [u32]) {
     let width = source.len();
     if radius == 2 && width >= 5 {
@@ -235,10 +253,11 @@ fn adaptive_horizontal_sum(source: &[u8], output: &mut [u32], radius: usize, pre
     }
 }
 
+/// Retain horizontal sums in a ring and update exact vertical sums one row at a time.
 fn adaptive_mean_streaming_u32(
     src: &Image<u8, 1>,
     dst: &mut Image<u8, 1>,
-    workspace: &mut AdaptiveThresholdMeanWorkspace,
+    workspace: &mut Workspace,
     block_size: usize,
     offset: i16,
     max_value: u8,
@@ -249,7 +268,7 @@ fn adaptive_mean_streaming_u32(
     let radius = block_size / 2;
     let pixels = src.as_slice();
     let ring_rows = block_size.min(height);
-    let AdaptiveThresholdMeanWorkspace {
+    let Workspace {
         ring,
         columns,
         prefix,
@@ -314,6 +333,7 @@ fn adaptive_mean_streaming_u32(
 
 // Independent windows let the compiler vectorize the small-kernel path without
 // a rolling-sum dependency or scratch allocation. At most 9 * 255 fits in u16.
+/// Classify a 3 × 3 neighbourhood directly without allocating scratch.
 fn adaptive_mean_3x3(src: &[u8], dst: &mut [u8], width: usize, offset: i16, max_value: u8) {
     let height = src.len() / width;
     let classify = |sum: u16, pixel: u8| {
@@ -721,13 +741,12 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::AdaptiveThresholdMeanWorkspace;
+    use super::{AdaptiveThresholdMean, Workspace};
     use kornia_image::{Image, ImageError, ImageSize};
 
     #[test]
-    fn adaptive_mean_reuses_workspace_across_shapes_and_kernels() -> Result<(), ImageError> {
-        let mut workspace = AdaptiveThresholdMeanWorkspace::new();
-        let allocations = |w: &AdaptiveThresholdMeanWorkspace| {
+    fn adaptive_mean_reuses_workspace_across_shapes() -> Result<(), ImageError> {
+        let allocations = |w: &Workspace| {
             [
                 (w.ring.as_ptr() as usize, w.ring.capacity()),
                 (w.columns.as_ptr() as usize, w.columns.capacity()),
@@ -735,29 +754,32 @@ mod tests {
                 (w.wide_columns.as_ptr() as usize, w.wide_columns.capacity()),
             ]
         };
-        for (width, height, block_size) in [
-            (7, 4, 3),
-            (37, 19, 51),
-            (7, 4, 4097),
-            (13, 17, 5),
-            (37, 19, 51),
-        ] {
-            let mut src = Image::<u8, 1>::new(
-                ImageSize { width, height },
-                (0..width * height).map(|i| (i % 256) as u8).collect(),
-            )?;
-            let mut dst = Image::from_size_val(src.size(), 99)?;
-            super::adaptive_threshold_mean(&src, &mut dst, &mut workspace, block_size, 0, 201)?;
-            if block_size == 3 {
-                assert!(allocations(&workspace)
-                    .iter()
-                    .all(|&(_, capacity)| capacity == 0));
+        for block_size in [3, 5, 51, 4097] {
+            let mut threshold = AdaptiveThresholdMean::new(block_size, 1, 201)?;
+            assert!(allocations(&threshold.workspace)
+                .iter()
+                .all(|&(_, capacity)| capacity == 0));
+            let mut previous = None;
+            for (width, height) in [(37, 19), (7, 4), (13, 17), (37, 19)] {
+                let mut src = Image::<u8, 1>::new(
+                    ImageSize { width, height },
+                    (0..width * height).map(|i| (i % 256) as u8).collect(),
+                )?;
+                let mut dst = Image::from_size_val(src.size(), 99)?;
+                threshold.apply(&src, &mut dst)?;
+                let before = allocations(&threshold.workspace);
+                if block_size == 3 {
+                    assert!(before.iter().all(|&(_, capacity)| capacity == 0));
+                }
+                if let Some(previous) = previous {
+                    assert_eq!(before, previous);
+                }
+                previous = Some(before);
+                src.as_slice_mut().fill(128);
+                threshold.apply(&src, &mut dst)?;
+                assert_eq!(allocations(&threshold.workspace), before);
+                assert!(dst.as_slice().iter().all(|&p| p == 201));
             }
-            let before = allocations(&workspace);
-            src.as_slice_mut().fill(128);
-            super::adaptive_threshold_mean(&src, &mut dst, &mut workspace, block_size, 1, 201)?;
-            assert_eq!(allocations(&workspace), before);
-            assert!(dst.as_slice().iter().all(|&p| p == 201));
         }
         Ok(())
     }
@@ -788,7 +810,6 @@ mod tests {
 
     #[test]
     fn adaptive_mean_large_windows_and_wide_fallback() -> Result<(), ImageError> {
-        let mut workspace = AdaptiveThresholdMeanWorkspace::new();
         let size = ImageSize {
             width: 3,
             height: 2,
@@ -798,14 +819,7 @@ mod tests {
             let mut dst = Image::from_size_val(size, 99)?;
             for window in [4095, 4097, 1_000_001] {
                 for offset in [i16::MIN, -1, 0, 1, i16::MAX] {
-                    super::adaptive_threshold_mean(
-                        &src,
-                        &mut dst,
-                        &mut workspace,
-                        window,
-                        offset,
-                        173,
-                    )?;
+                    AdaptiveThresholdMean::new(window, offset, 173)?.apply(&src, &mut dst)?;
                     assert_eq!(
                         dst.as_slice(),
                         &[if offset > 0 { 173 } else { 0 }; 6],
@@ -819,7 +833,6 @@ mod tests {
 
     #[test]
     fn adaptive_mean_large_windows_on_nonuniform_image() -> Result<(), ImageError> {
-        let mut workspace = AdaptiveThresholdMeanWorkspace::new();
         let src = Image::<u8, 1>::new(
             ImageSize {
                 width: 3,
@@ -847,14 +860,7 @@ mod tests {
                     }
             };
             for offset in [-127, -7, 0, 9, 127] {
-                super::adaptive_threshold_mean(
-                    &src,
-                    &mut dst,
-                    &mut workspace,
-                    block_size,
-                    offset,
-                    173,
-                )?;
+                AdaptiveThresholdMean::new(block_size, offset, 173)?.apply(&src, &mut dst)?;
                 for y in 0..src.height() {
                     for x in 0..src.width() {
                         let mut sum = 0u64;
@@ -887,7 +893,6 @@ mod tests {
 
     #[test]
     fn adaptive_mean_opencv_reference() -> Result<(), ImageError> {
-        let mut workspace = AdaptiveThresholdMeanWorkspace::new();
         // Generated with OpenCV 4.11.0:
         // cv2.adaptiveThreshold(src, 173, cv2.ADAPTIVE_THRESH_MEAN_C,
         //                       cv2.THRESH_BINARY, block_size, offset)
@@ -929,14 +934,7 @@ mod tests {
         ];
         let mut dst = Image::from_size_val(src.size(), 0)?;
         for (block_size, offset, expected) in cases {
-            super::adaptive_threshold_mean(
-                &src,
-                &mut dst,
-                &mut workspace,
-                block_size,
-                offset,
-                173,
-            )?;
+            AdaptiveThresholdMean::new(block_size, offset, 173)?.apply(&src, &mut dst)?;
             assert_eq!(
                 dst.as_slice(),
                 expected,
@@ -948,7 +946,6 @@ mod tests {
 
     #[test]
     fn adaptive_mean_matches_direct_window_sum() -> Result<(), ImageError> {
-        let mut workspace = AdaptiveThresholdMeanWorkspace::new();
         for (width, height) in [(1, 1), (1, 9), (9, 1), (2, 3), (13, 17), (33, 5), (64, 3)] {
             let src = Image::<u8, 1>::new(
                 ImageSize { width, height },
@@ -959,14 +956,7 @@ mod tests {
             let mut dst = Image::from_size_val(src.size(), 0)?;
             for block_size in [3, 5, 31] {
                 for offset in [i16::MIN, -7, 0, 9, i16::MAX] {
-                    super::adaptive_threshold_mean(
-                        &src,
-                        &mut dst,
-                        &mut workspace,
-                        block_size,
-                        offset,
-                        201,
-                    )?;
+                    AdaptiveThresholdMean::new(block_size, offset, 201)?.apply(&src, &mut dst)?;
                     let radius = block_size as isize / 2;
                     for y in 0..height {
                         for x in 0..width {
@@ -1004,7 +994,6 @@ mod tests {
 
     #[test]
     fn adaptive_mean_uniform_and_empty() -> Result<(), ImageError> {
-        let mut workspace = AdaptiveThresholdMeanWorkspace::new();
         for value in [0, 128, 255] {
             let src = Image::<u8, 1>::from_size_val(
                 ImageSize {
@@ -1017,21 +1006,14 @@ mod tests {
             for (offset, max_value, expected) in
                 [(0, 255, 0), (1, 173, 173), (-1, 255, 0), (1, 0, 0)]
             {
-                super::adaptive_threshold_mean(
-                    &src,
-                    &mut dst,
-                    &mut workspace,
-                    31,
-                    offset,
-                    max_value,
-                )?;
+                AdaptiveThresholdMean::new(31, offset, max_value)?.apply(&src, &mut dst)?;
                 assert!(dst.as_slice().iter().all(|&p| p == expected));
             }
         }
         for (width, height) in [(0, 0), (0, 3), (3, 0)] {
             let src = Image::<u8, 1>::from_size_val(ImageSize { width, height }, 0)?;
             let mut dst = Image::from_size_val(src.size(), 0)?;
-            super::adaptive_threshold_mean(&src, &mut dst, &mut workspace, 3, 0, 255)?;
+            AdaptiveThresholdMean::new(3, 0, 255)?.apply(&src, &mut dst)?;
             assert!(dst.as_slice().is_empty());
         }
         Ok(())
@@ -1039,7 +1021,6 @@ mod tests {
 
     #[test]
     fn adaptive_mean_rejects_invalid_arguments_without_writing() -> Result<(), ImageError> {
-        let mut workspace = AdaptiveThresholdMeanWorkspace::new();
         let src = Image::<u8, 1>::from_size_val(
             ImageSize {
                 width: 3,
@@ -1047,13 +1028,11 @@ mod tests {
             },
             100,
         )?;
-        let mut dst = Image::from_size_val(src.size(), 99)?;
         for block_size in [0, 1, 2, 4, usize::MAX] {
             assert!(matches!(
-                super::adaptive_threshold_mean(&src, &mut dst, &mut workspace, block_size, 0, 255),
+                AdaptiveThresholdMean::new(block_size, 0, 255),
                 Err(ImageError::InvalidKernelLength(_, _))
             ));
-            assert_eq!(dst.as_slice(), &[99; 6]);
         }
         let mut wrong_shape = Image::from_size_val(
             ImageSize {
@@ -1063,7 +1042,7 @@ mod tests {
             99,
         )?;
         assert!(matches!(
-            super::adaptive_threshold_mean(&src, &mut wrong_shape, &mut workspace, 3, 0, 255),
+            AdaptiveThresholdMean::new(3, 0, 255)?.apply(&src, &mut wrong_shape),
             Err(ImageError::InvalidImageSize(..))
         ));
         assert_eq!(wrong_shape.as_slice(), &[99; 6]);
@@ -1072,7 +1051,6 @@ mod tests {
 
     #[test]
     fn adaptive_mean_preserves_strokes_across_lighting_gradient() -> Result<(), ImageError> {
-        let mut workspace = AdaptiveThresholdMeanWorkspace::new();
         let size = ImageSize {
             width: 60,
             height: 15,
@@ -1092,7 +1070,7 @@ mod tests {
                 .collect(),
         )?;
         let mut dst = Image::from_size_val(size, 0)?;
-        super::adaptive_threshold_mean(&src, &mut dst, &mut workspace, 9, 10, 255)?;
+        AdaptiveThresholdMean::new(9, 10, 255)?.apply(&src, &mut dst)?;
         for (i, &pixel) in dst.as_slice().iter().enumerate() {
             assert_eq!(pixel, if i % size.width % 10 == 5 { 0 } else { 255 });
         }

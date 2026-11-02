@@ -28,4 +28,3 @@ The authoritative guide is `crates/kornia-imgproc/SIMD.md`; read it first.
   in the PR. iai-callgrind runner version must exactly match the
   `iai-callgrind` dev-dependency version.
 - Avoid allocations in hot paths; mind rayon row chunking.
-- Cross-library timings: interleave sufficiently long rounds and record requested/reported threads; OpenCV 4.11 GCD reports CPU count even after `setNumThreads(1)`, which still serializes its standard parallel loop (see `docs/benchmarks/adaptive-dibco2009-optimized/README.md`).

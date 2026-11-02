@@ -28,6 +28,7 @@ WARMUP_MIN_SECONDS = 0.25
 
 
 def paired(binary, opencv_binary, image, directory, index):
+    """Collect alternating native/reference rounds and masks for one decoded image."""
     source = directory / "source.raw"
     image.tofile(source)
     height, width = image.shape
@@ -36,6 +37,7 @@ def paired(binary, opencv_binary, image, directory, index):
     with ExitStack() as stack:
         workers = []
         def launch(executable, masks):
+            """Start a persistent worker whose input and output storage is reused."""
             worker = stack.enter_context(subprocess.Popen(
                 [str(executable), str(source), str(width), str(height), str(masks), "--server"],
                 text=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=1,
@@ -43,6 +45,7 @@ def paired(binary, opencv_binary, image, directory, index):
             ))
             workers.append(worker)
             def request(command):
+                """Send one command and fail if the worker exits before replying."""
                 worker.stdin.write(command + "\n")
                 worker.stdin.flush()
                 line = worker.stdout.readline()
@@ -55,6 +58,7 @@ def paired(binary, opencv_binary, image, directory, index):
         try:
             for window in WINDOWS:
                 def operation():
+                    """Apply the Python OpenCV reference into the preallocated destination."""
                     cv2.adaptiveThreshold(image, 255, cv2.ADAPTIVE_THRESH_MEAN_C,
                                           cv2.THRESH_BINARY, window, OFFSET, dst=destination)
                 request(f"W {window}")
@@ -67,6 +71,7 @@ def paired(binary, opencv_binary, image, directory, index):
                     while time.perf_counter() - start < WARMUP_MIN_SECONDS:
                         operation()
                 def cv_round():
+                    """Time native C++ calls when supplied, otherwise Python binding calls."""
                     if cv_request:
                         return float(cv_request(f"R {window} {ITERATIONS}"))
                     start = time.perf_counter_ns()
@@ -98,6 +103,7 @@ def paired(binary, opencv_binary, image, directory, index):
 
 
 def main():
+    """Decode the dataset and save median/best-of-N times, masks counts and provenance."""
     root = Path(__file__).resolve().parents[3]
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--images", type=Path, required=True)
@@ -136,12 +142,17 @@ def main():
                 cs, cmask = cv[window]
                 mismatches = int(np.count_nonzero(kmask != cmask))
                 k_ms, c_ms = statistics.median(ks), statistics.median(cs)
+                k_best, c_best = min(ks), min(cs)
                 rows.append({"image": name, "width": image.shape[1], "height": image.shape[0],
                              "window": window, "offset": OFFSET, "kornia_ms": k_ms,
                              "opencv_ms": c_ms, "opencv_over_kornia": c_ms / k_ms,
+                             "kornia_best_ms": k_best, "opencv_best_ms": c_best,
+                             "best_opencv_over_kornia": c_best / k_best,
                              "mismatch_pixels": mismatches,
                              "kornia_rounds_ms": ks, "opencv_rounds_ms": cs})
-                print(f"  {window:3} K={k_ms:.4f}ms CV={c_ms:.4f}ms mismatches={mismatches}", flush=True)
+                print(f"  {window:3} median K={k_ms:.4f}ms CV={c_ms:.4f}ms "
+                      f"best-of-{ROUNDS} K={k_best:.4f}ms CV={c_best:.4f}ms "
+                      f"mismatches={mismatches}", flush=True)
     fields = [key for key in rows[0] if not key.endswith("rounds_ms")]
     with (args.output / "results.csv").open("w", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=fields, extrasaction="ignore", lineterminator="\n")
@@ -162,7 +173,9 @@ def main():
         "threshold_source_sha256": hashlib.sha256(args.rust_source.read_bytes()).hexdigest(),
         "inputs": inputs,
         "reference_call_boundary": "native-cpp" if opencv_binary else "python-binding",
-        "rust_scratch": "caller-owned workspace reused across timed calls",
+        "rust_scratch": "AdaptiveThresholdMean owns scratch reused across timed calls",
+        "rust_worker_source_sha256": hashlib.sha256((root / "crates/kornia-imgproc/examples/bench_adaptive_dataset.rs").read_bytes()).hexdigest(),
+        "runner_source_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
     }
     build_info = cv2.getBuildInformation()
     if opencv_binary:
@@ -175,15 +188,18 @@ def main():
             "opencv_worker_source_sha256": hashlib.sha256((Path(__file__).parent / "bench_adaptive_opencv.cpp").read_bytes()).hexdigest(),
         })
         build_info = subprocess.check_output([str(opencv_binary), "--info"], text=True)
+    metadata["opencv_build_information"] = build_info
     (args.output / "results.json").write_text(json.dumps({"metadata": metadata, "results": rows}, indent=2) + "\n")
-    (args.output / "opencv-build.txt").write_text("\n".join(line.rstrip() for line in build_info.splitlines()).rstrip() + "\n")
-    print("\nwindow,mean_kornia_ms,mean_opencv_ms,opencv_over_kornia,mismatched_pixels")
+    print("\nwindow,mean_median_kornia_ms,mean_median_opencv_ms,median_speedup,mean_best_kornia_ms,mean_best_opencv_ms,best_speedup,mismatched_pixels")
     for window in WINDOWS:
         group = [row for row in rows if row["window"] == window]
         k_ms = statistics.mean(row["kornia_ms"] for row in group)
         c_ms = statistics.mean(row["opencv_ms"] for row in group)
+        k_best = statistics.mean(row["kornia_best_ms"] for row in group)
+        c_best = statistics.mean(row["opencv_best_ms"] for row in group)
         differences = sum(row["mismatch_pixels"] for row in group)
-        print(f"{window},{k_ms:.6f},{c_ms:.6f},{c_ms / k_ms:.3f},{differences}")
+        print(f"{window},{k_ms:.6f},{c_ms:.6f},{c_ms / k_ms:.3f},"
+              f"{k_best:.6f},{c_best:.6f},{c_best / k_best:.3f},{differences}")
     if any(row["mismatch_pixels"] for row in rows):
         raise SystemExit("Output differences found; inspect saved results before interpreting speed comparisons")
 
