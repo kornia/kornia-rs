@@ -1,0 +1,416 @@
+[
+ {
+  "case": "checker-misses-stale-fact",
+  "grader": "claim-contradicted",
+  "review": "checker-misses-stale-fact-with-sonnet-0.md",
+  "judge": true,
+  "human": true,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "Says the 'still flags any skill' claim is false per measured probes and that 'skills OK' proves nothing/is unverified."
+ },
+ {
+  "case": "checker-misses-stale-fact",
+  "grader": "measured-regression",
+  "review": "checker-misses-stale-fact-with-sonnet-0.md",
+  "judge": true,
+  "human": true,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "Quotes the output of running the new publish_claims on the restored sentence; the criterion was widened on 2026-10-24 to accept the function as well as the script (originally labelled FAIL)."
+ },
+ {
+  "case": "checker-misses-stale-fact",
+  "grader": "no-0b",
+  "review": "checker-misses-stale-fact-with-sonnet-0.md",
+  "judge": true,
+  "human": true,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "States 'Reuse searches: not applicable (tooling/skills PR, section 0b skipped)'; no 0b demand."
+ },
+ {
+  "case": "checker-misses-stale-fact",
+  "grader": "precision",
+  "review": "checker-misses-stale-fact-with-sonnet-0.md",
+  "judge": true,
+  "human": true,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "All blocking/major findings hold; '12 of 14 probes' miscount (13) is a wrong detail with a correct conclusion."
+ },
+ {
+  "case": "checker-misses-stale-fact",
+  "grader": "scope",
+  "review": "checker-misses-stale-fact-with-sonnet-0.md",
+  "judge": true,
+  "human": true,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "kornia-arch hunk flagged blocking as out of scope and a stale fact."
+ },
+ {
+  "case": "checker-misses-stale-fact",
+  "grader": "unreadable-issue",
+  "review": "checker-misses-stale-fact-with-sonnet-0.md",
+  "judge": true,
+  "human": true,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "Blocking: issue #9998 could not be read, only the quoted text, so it blocks until read."
+ },
+ {
+  "case": "checker-misses-stale-fact",
+  "grader": "claim-contradicted",
+  "review": "checker-misses-stale-fact-without-sonnet-0.md",
+  "judge": true,
+  "human": false,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "No measurement at all; the 'still flags' claim is only argued from reading ('the check passes only because it can't see the claim')."
+ },
+ {
+  "case": "checker-misses-stale-fact",
+  "grader": "measured-regression",
+  "review": "checker-misses-stale-fact-without-sonnet-0.md",
+  "judge": false,
+  "human": false,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "No severity words, no [measured] tag and no command output for the regression."
+ },
+ {
+  "case": "checker-misses-stale-fact",
+  "grader": "no-0b",
+  "review": "checker-misses-stale-fact-without-sonnet-0.md",
+  "judge": true,
+  "human": true,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "No section 0b / Reuse searches demand."
+ },
+ {
+  "case": "checker-misses-stale-fact",
+  "grader": "precision",
+  "review": "checker-misses-stale-fact-without-sonnet-0.md",
+  "judge": true,
+  "human": true,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "No severity labels; the substantive findings (stale sentence, weaker check, deleted probes) are all true."
+ },
+ {
+  "case": "checker-misses-stale-fact",
+  "grader": "scope",
+  "review": "checker-misses-stale-fact-without-sonnet-0.md",
+  "judge": false,
+  "human": false,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "kornia-arch change is only called a false fact to revert ('Revert the SKILL.md change'), never out of scope, and no blocking severity."
+ },
+ {
+  "case": "checker-misses-stale-fact",
+  "grader": "unreadable-issue",
+  "review": "checker-misses-stale-fact-without-sonnet-0.md",
+  "judge": false,
+  "human": false,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "Unreadable issue #9998 is not mentioned."
+ },
+ {
+  "case": "clean-partialeq-lie",
+  "grader": "no-blocking",
+  "review": "clean-partialeq-lie-with-sonnet-0.md",
+  "judge": true,
+  "human": true,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "Only minor and nit findings; verdict approve."
+ },
+ {
+  "case": "clean-partialeq-lie",
+  "grader": "precision",
+  "review": "clean-partialeq-lie-with-sonnet-0.md",
+  "judge": true,
+  "human": true,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "No blocking or major findings."
+ },
+ {
+  "case": "clean-partialeq-lie",
+  "grader": "no-blocking",
+  "review": "clean-partialeq-lie-without-sonnet-0.md",
+  "judge": true,
+  "human": true,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "No finding is rated blocking or major ('I found no blocking problems'); numbered 'What to fix' items carry no severity."
+ },
+ {
+  "case": "clean-partialeq-lie",
+  "grader": "precision",
+  "review": "clean-partialeq-lie-without-sonnet-0.md",
+  "judge": false,
+  "human": true,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "No blocking or major findings; unrated points are true."
+ },
+ {
+  "case": "compose-plane-fit",
+  "grader": "eigen-reuse",
+  "review": "compose-plane-fit-with-sonnet-0.md",
+  "judge": true,
+  "human": true,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "Major, tagged [measured: Grep hits], points at kornia-algebra svd3 on a Mat3F64."
+ },
+ {
+  "case": "compose-plane-fit",
+  "grader": "precision",
+  "review": "compose-plane-fit-with-sonnet-0.md",
+  "judge": true,
+  "human": true,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "All blocking/major findings hold; the '1e-6 spread' figure in the threshold finding is a wrong detail (true at ~1e-8), conclusion holds."
+ },
+ {
+  "case": "compose-plane-fit",
+  "grader": "reuse-block",
+  "review": "compose-plane-fit-with-sonnet-0.md",
+  "judge": true,
+  "human": true,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "Reuse searches block with grep commands and hits for svd3/jacobi_eigenanalysis and Vec3F64 dot/normalize."
+ },
+ {
+  "case": "compose-plane-fit",
+  "grader": "eigen-reuse",
+  "review": "compose-plane-fit-without-sonnet-0.md",
+  "judge": false,
+  "human": false,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "Reuse finding (nalgebra SymmetricEigen) is not tagged [measured]: 'All of this is from reading the diff'."
+ },
+ {
+  "case": "compose-plane-fit",
+  "grader": "precision",
+  "review": "compose-plane-fit-without-sonnet-0.md",
+  "judge": true,
+  "human": true,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "Blocking findings (absolute threshold, degenerate input, no-op test, reuse) are all true."
+ },
+ {
+  "case": "compose-plane-fit",
+  "grader": "reuse-block",
+  "review": "compose-plane-fit-without-sonnet-0.md",
+  "judge": false,
+  "human": false,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "No `Reuse searches` block."
+ },
+ {
+  "case": "dup-homography-inverse",
+  "grader": "inverse-dup",
+  "review": "dup-homography-inverse-with-sonnet-0.md",
+  "judge": true,
+  "human": true,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "Blocking, tagged [measured], mat3_inv duplicates invert_homography/inverse_perspective_matrix and should call it."
+ },
+ {
+  "case": "dup-homography-inverse",
+  "grader": "precision",
+  "review": "dup-homography-inverse-with-sonnet-0.md",
+  "judge": true,
+  "human": true,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "All blocking/major findings (walkthrough, self-review, mat3_inv dup + threshold, apply_h dup, error variant, w~0, tests) are true."
+ },
+ {
+  "case": "dup-homography-inverse",
+  "grader": "reuse-block",
+  "review": "dup-homography-inverse-with-sonnet-0.md",
+  "judge": true,
+  "human": true,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "Reuse searches block with grep hits for invert_homography, inverse_perspective_matrix and transform_point."
+ },
+ {
+  "case": "dup-homography-inverse",
+  "grader": "inverse-dup",
+  "review": "dup-homography-inverse-without-sonnet-0.md",
+  "judge": false,
+  "human": false,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "Finding is under 'Must fix' with no blocking/major word and no [measured] tag."
+ },
+ {
+  "case": "dup-homography-inverse",
+  "grader": "precision",
+  "review": "dup-homography-inverse-without-sonnet-0.md",
+  "judge": true,
+  "human": true,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "'Must fix' findings (dup inverse, non-scale-invariant check, w~0, error variant) are all true."
+ },
+ {
+  "case": "dup-homography-inverse",
+  "grader": "reuse-block",
+  "review": "dup-homography-inverse-without-sonnet-0.md",
+  "judge": false,
+  "human": false,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "No `Reuse searches` block."
+ },
+ {
+  "case": "gray-copy-scope",
+  "grader": "bench",
+  "review": "gray-copy-scope-with-sonnet-0.md",
+  "judge": true,
+  "human": true,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "'A hot-path change in color/ needs before/after numbers from bench_color'."
+ },
+ {
+  "case": "gray-copy-scope",
+  "grader": "claims",
+  "review": "gray-copy-scope-with-sonnet-0.md",
+  "judge": true,
+  "human": true,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "Faster/cache-locality claim challenged as unbenched; 'tests pass' explicitly not accepted as evidence."
+ },
+ {
+  "case": "gray-copy-scope",
+  "grader": "copy",
+  "review": "gray-copy-scope-with-sonnet-0.md",
+  "judge": true,
+  "human": true,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "Blocking: `src.as_slice().to_vec()` copies the whole source before an unchanged kernel."
+ },
+ {
+  "case": "gray-copy-scope",
+  "grader": "precision",
+  "review": "gray-copy-scope-with-sonnet-0.md",
+  "judge": true,
+  "human": true,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "All blocking/major findings (copy, pixel-count check, check_size reuse, flip scope, split, missing self-review, tests) are true."
+ },
+ {
+  "case": "gray-copy-scope",
+  "grader": "reuse-measured",
+  "review": "gray-copy-scope-with-sonnet-0.md",
+  "judge": true,
+  "human": true,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "Reuse searches block greps `fn check_size` with its hit; the reuse finding is tagged [measured]."
+ },
+ {
+  "case": "gray-copy-scope",
+  "grader": "scope-flip",
+  "review": "gray-copy-scope-with-sonnet-0.md",
+  "judge": true,
+  "human": true,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "flip.rs cols->width rename flagged blocking as out of scope."
+ },
+ {
+  "case": "gray-copy-scope",
+  "grader": "shape-check",
+  "review": "gray-copy-scope-with-sonnet-0.md",
+  "judge": true,
+  "human": true,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "Blocking: compares rows*cols not shape (4x6 vs 6x4 passes); restore check_size."
+ },
+ {
+  "case": "gray-copy-scope",
+  "grader": "bench",
+  "review": "gray-copy-scope-without-sonnet-0.md",
+  "judge": false,
+  "human": false,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "Only 'No benchmark is included to support the claim'; no requirement for bench_color before/after numbers."
+ },
+ {
+  "case": "gray-copy-scope",
+  "grader": "claims",
+  "review": "gray-copy-scope-without-sonnet-0.md",
+  "judge": true,
+  "human": true,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "Speedup claim called wrong and unbenched; 'tests pass' said not to cover the shape gap."
+ },
+ {
+  "case": "gray-copy-scope",
+  "grader": "copy",
+  "review": "gray-copy-scope-without-sonnet-0.md",
+  "judge": true,
+  "human": false,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "Copy is reported but with no severity rating (not blocking or major)."
+ },
+ {
+  "case": "gray-copy-scope",
+  "grader": "precision",
+  "review": "gray-copy-scope-without-sonnet-0.md",
+  "judge": true,
+  "human": true,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "Unrated findings are all true (copy, pixel-count check incl. 2x12 vs 3x8, flip rename)."
+ },
+ {
+  "case": "gray-copy-scope",
+  "grader": "reuse-measured",
+  "review": "gray-copy-scope-without-sonnet-0.md",
+  "judge": false,
+  "human": false,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "No `Reuse searches` block and no [measured] tag."
+ },
+ {
+  "case": "gray-copy-scope",
+  "grader": "scope-flip",
+  "review": "gray-copy-scope-without-sonnet-0.md",
+  "judge": false,
+  "human": false,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "Flip rename called 'scope creep' but 'harmless', with no blocking severity."
+ },
+ {
+  "case": "gray-copy-scope",
+  "grader": "shape-check",
+  "review": "gray-copy-scope-without-sonnet-0.md",
+  "judge": true,
+  "human": false,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "Pixel-count check reported without any severity, not as blocking."
+ },
+ {
+  "case": "novel-otsu",
+  "grader": "histogram-reuse",
+  "review": "novel-otsu-with-sonnet-0.md",
+  "judge": true,
+  "human": true,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "Major, [measured]: inline histogram re-implements compute_histogram (histogram.rs:43), call it."
+ },
+ {
+  "case": "novel-otsu",
+  "grader": "precision",
+  "review": "novel-otsu-with-sonnet-0.md",
+  "judge": true,
+  "human": true,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "All blocking/major findings true, incl. constant-image best_t=0 behaviour; the TODO-mismatch item is overrated but not false."
+ },
+ {
+  "case": "novel-otsu",
+  "grader": "reference",
+  "review": "novel-otsu-with-sonnet-0.md",
+  "judge": true,
+  "human": true,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "Major: only test is a range check `t >= 12 && t < 200` with no reference-pinned threshold."
+ },
+ {
+  "case": "novel-otsu",
+  "grader": "reuse-block",
+  "review": "novel-otsu-with-sonnet-0.md",
+  "judge": true,
+  "human": true,
+  "labeller": "claude-opus-5-5, blind to the judge's verdicts",
+  "why": "Reuse searches block with grep and hit `histogram.rs:43: pub fn compute_histogram`."
+ }
+]

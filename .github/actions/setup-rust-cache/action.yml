@@ -33,8 +33,10 @@ runs:
     - name: Setup sccache environment
       if: inputs.with-sccache == 'true'
       shell: bash
+      # Absolute path: inside `pixi run` a bare `sccache` resolves to the pixi
+      # env's binary, whose client/server protocol may not match this server.
       run: |
-        echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
+        echo "RUSTC_WRAPPER=$SCCACHE_PATH" >> $GITHUB_ENV
         echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
         echo "SCCACHE_CACHE_SIZE=6G" >> $GITHUB_ENV
         echo "SCCACHE_ERROR_LOG=/tmp/sccache_log.txt" >> $GITHUB_ENV
@@ -43,6 +45,6 @@ runs:
       if: inputs.with-sccache == 'true'
       shell: bash
       run: |
-        sccache --stop-server 2>/dev/null || true
-        sccache --start-server || true
-        sccache --show-stats || echo "Warning: sccache server may not be running properly"
+        "$SCCACHE_PATH" --stop-server 2>/dev/null || true
+        "$SCCACHE_PATH" --start-server || true
+        "$SCCACHE_PATH" --show-stats || echo "Warning: sccache server may not be running properly"

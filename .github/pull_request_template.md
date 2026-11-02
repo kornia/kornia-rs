@@ -1,48 +1,43 @@
-## 📝 Description
+## What does this pull request do?
 
-**⚠️ Issue Link Required**: This PR must be linked to an approved and assigned issue. See [Contributing Guide](CONTRIBUTING.md#pull-request) for details.
+<!-- Explain the problem and the change. A few clear sentences are enough. -->
 
-**Fixes/Relates to:** # (issue number)
+<!-- For user-visible changes, add changelog.d/<PR>.<type>.md (breaking, added, perf, fixed); see changelog.d/README.md.
+For internal changes without a fragment, say so and ask for the no-changelog label. -->
 
-**Important**:
-- Ensure you are assigned to the linked issue before submitting this PR
-- This PR should strictly implement what the linked issue describes
-- Do not include changes beyond the scope of the linked issue
+## Related issue
 
----
+<!-- Required: the issue this PR addresses, as `Fixes #<number>`. -->
 
-## 🛠️ Changes Made
-- [ ] Item 1
-- [ ] Item 2
+## What did you check?
 
----
+<!-- List the tests, benches, or manual checks you ran, and include useful results.
+Say what failed or was not run. Perf-sensitive change: before/after `cargo bench` numbers. -->
 
-## 🧪 How Was This Tested?
-- [ ] **Unit Tests:** (List new/updated tests)
-- [ ] **Manual Verification:** (Describe the steps you took)
-- [ ] **Performance/Edge Cases:** (How does this handle nulls, large data, etc.?)
+```text
+$ pixi run pr-check
+```
 
----
+## Self-review (required)
 
-## 🕵️ AI Usage Disclosure
-*Check one of the following:*
-- [ ] 🟢 **No AI used.**
-- [ ] 🟡 **AI-assisted:** I used AI for boilerplate/refactoring but have manually reviewed and tested every line.
-- [ ] 🔴 **AI-generated:** (Note: These PRs may be subject to stricter scrutiny or immediate closure if the logic is not explained).
+<!-- Run the kornia-code-review skill from .claude/skills on `git diff main...HEAD`
+(e.g. tell your agent: "self-review my diff with .claude/skills/kornia-code-review"),
+fix what it finds, and paste its final output here. The PR check fails while this
+section has no verdict. -->
+```text
+Verdict:
 
----
+Reuse searches: (library code only)
 
-## 🚦 Checklist
-- [ ] I am assigned to the linked issue (required before PR submission)
-- [ ] The linked issue has been approved by a maintainer
-- [ ] This PR strictly implements what the linked issue describes (no scope creep)
-- [ ] I have performed a **self-review** of my code (no "ghost" variables or hallucinations).
-- [ ] My code follows the existing style guidelines of this project.
-- [ ] I have commented my code, particularly in hard-to-understand areas.
-- [ ] I have added tests that prove my fix is effective or that my feature works.
-- [ ] (Optional) I have attached screenshots/recordings for UI changes.
+Skill gaps:
+```
 
----
+## AI usage disclosure
 
-## 💭 Additional Context
-Add any other context or screenshots about the pull request here.
+<!-- Exact names, e.g. `Claude Code 2.x`, `claude-opus-5-5`, `high`. No AI used: write
+`none` for Agent + version and leave Model, Effort level and Skills applied empty. -->
+- **Agent + version:**
+- **Model:**
+- **Effort level:**
+- **Skills applied:** (names from `.claude/skills/`)
+- **Human vs AI part:** (e.g. "human diagnosed the bug and reviewed the diff, agent wrote the fix and tests")
