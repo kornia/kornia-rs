@@ -50,9 +50,9 @@ def paired(binary, opencv_binary, image, directory, index):
                     raise RuntimeError(f"Benchmark worker {executable} exited unexpectedly")
                 return line.strip()
             return request
+        request = launch(binary, directory / "rust")
+        cv_request = launch(opencv_binary, directory / "opencv") if opencv_binary else None
         try:
-            request = launch(binary, directory / "rust")
-            cv_request = launch(opencv_binary, directory / "opencv") if opencv_binary else None
             for window in WINDOWS:
                 def operation():
                     cv2.adaptiveThreshold(image, 255, cv2.ADAPTIVE_THRESH_MEAN_C,
