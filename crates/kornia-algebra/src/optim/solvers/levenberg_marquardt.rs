@@ -204,27 +204,30 @@ impl LevenbergMarquardt {
             let (new_cost, snapshot) = self.apply_step(problem, var_names, &delta)?;
 
             let cost_change = current_cost - new_cost;
+
+            // Calculate this using the OLD current_cost, before updating it.
             let relative_cost_change = if current_cost > 0.0 {
                 cost_change.abs() / current_cost
             } else {
                 cost_change.abs()
             };
 
-            if relative_cost_change < self.cost_tolerance {
-                return Ok(OptimizerResult {
-                    final_cost: new_cost,
-                    iterations: iterations + 1,
-                    termination_reason: TerminationReason::CostConverged,
-                });
-            }
-
             let mut last_step_accepted = false;
             if cost_change > 0.0 {
-                // Step improved cost: accept it and decrease lambda
+                // Step improved cost: accept it and decrease lambda.
                 current_cost = new_cost;
                 lambda = (lambda / self.lambda_factor).max(1e-10);
                 last_step_accepted = true;
                 iterations += 1;
+
+                // Only check convergence after accepting the improving step.
+                if relative_cost_change < self.cost_tolerance {
+                    return Ok(OptimizerResult {
+                        final_cost: current_cost,
+                        iterations,
+                        termination_reason: TerminationReason::CostConverged,
+                    });
+                }
             } else {
                 // Step increased cost: reject it and increase lambda
                 self.revert_step(problem, var_names, snapshot)?;
@@ -354,6 +357,48 @@ mod tests {
     use super::*;
     use crate::optim::{PriorFactor, Problem, Variable};
 
+    use crate::optim::core::{Factor, LinearizationResult};
+
+    struct NonlinearFactor;
+
+    impl Factor for NonlinearFactor {
+        fn linearize(
+            &self,
+            params: &[&[f32]],
+            compute_jacobian: bool,
+        ) -> crate::optim::core::FactorResult<LinearizationResult> {
+            if params.len() != 1 || params[0].len() != 1 {
+                return Err(FactorError::DimensionMismatch {
+                    expected: 1,
+                    actual: params.first().map_or(0, |p| p.len()),
+                });
+            }
+
+            let x = params[0][0];
+            let residual = x * x - 1.0;
+
+            let jacobian = if compute_jacobian {
+                Some(vec![2.0 * x])
+            } else {
+                None
+            };
+
+            Ok(LinearizationResult::new(vec![residual], jacobian, 1))
+        }
+
+        fn residual_dim(&self) -> usize {
+            1
+        }
+
+        fn num_variables(&self) -> usize {
+            1
+        }
+
+        fn variable_local_dim(&self, _idx: usize) -> usize {
+            1
+        }
+    }
+
     #[test]
     fn test_simple_1d_optimization() {
         // Minimize (x - 5)^2
@@ -422,5 +467,53 @@ mod tests {
         assert_eq!(optimizer.lambda_max, 1e10);
         assert_eq!(optimizer.lambda_factor, 10.0);
         assert_eq!(optimizer.max_iterations, 50);
+    }
+    #[test]
+    fn test_cost_converge_never_fires_on_uphill_step() {
+        let x_init = 0.1_f32;
+
+        let mut problem = Problem::new();
+        problem
+            .add_variable(Variable::euclidean("x", 1), vec![x_init])
+            .unwrap();
+
+        problem
+            .add_factor(Box::new(NonlinearFactor), vec!["x".to_string()])
+            .unwrap();
+
+        let initial_cost = problem.compute_total_cost().unwrap();
+
+        let optimizer = LevenbergMarquardt {
+            lambda_init: 0.11,
+            cost_tolerance: 0.1,
+            max_iterations: 1,
+            ..LevenbergMarquardt::default()
+        };
+
+        let result = optimizer.optimize(&mut problem).unwrap();
+
+        let x_final = problem.get_variables()["x"].values[0];
+        let final_cost = problem.compute_total_cost().unwrap();
+
+        assert_eq!(
+            result.termination_reason,
+            TerminationReason::MaxIterations
+        );
+
+        assert!(
+            (final_cost - initial_cost).abs() < 1e-5,
+            "Cost changed after rejecting an uphill step: initial={initial_cost}, final={final_cost}"
+        );
+
+        assert!(
+            (x_final - x_init).abs() < 1e-6,
+            "Variable was not restored: initial={x_init}, final={x_final}"
+        );
+
+        assert!(
+            (result.final_cost - initial_cost).abs() < 1e-5,
+            "Incorrect final cost: initial={initial_cost}, returned={}",
+            result.final_cost
+        );
     }
 }
