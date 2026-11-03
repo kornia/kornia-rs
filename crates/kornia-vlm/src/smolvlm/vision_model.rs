@@ -83,6 +83,18 @@ impl Attention {
                 y
             }
         };
+        let att = (q.matmul(&k.t()?)? / (HEAD_DIM as f64).sqrt())?;
+
+let att = att.to_dtype(DType::F32)?;
+let mask = attention_mask.to_dtype(DType::F32)?;
+
+let att = att.broadcast_add(&mask)?;
+let att = candle_nn::ops::softmax_last_dim(&att)?;
+
+// Return to the value tensor's dtype before context multiplication.
+let att = att.to_dtype(v.dtype())?;
+
+let y = att.matmul(&v)?.contiguous()?;
 
         let y = y
             .transpose(1, 2)?
