@@ -1,0 +1,180 @@
+"""Baselines for `bench_depth.rs` on the same synthetic inputs.
+
+Times, when the package is importable (each is skipped otherwise):
+
+* Open3D legacy `geometry.PointCloud.create_from_depth_image` (CPU).
+* Open3D tensor `t.geometry.PointCloud.create_from_depth_image` (CPU and,
+  if Open3D was built with CUDA, `CUDA:0`).
+* OpenCV contrib `cv2.rgbd.depthTo3d`, CPU only.
+* NumPy, always: a vectorised unprojection (precomputed ray tables, boolean
+  compaction).
+
+Usage: python3 bench_depth_baselines.py [--rounds N]
+       python3 bench_depth_baselines.py --write-fixtures DIR
+Prints best-of-N milliseconds per op and size. `--write-fixtures` (needs
+Open3D) writes `unproject_depth_open3d.bin`, the parity fixture read by the
+kornia-3d tests, into DIR (the repository's `tests/data`) instead of timing
+anything.
+"""
+
+import argparse
+import pathlib
+import struct
+import time
+
+import numpy as np
+
+SIZES = [(640, 480), (1280, 720)]
+MM = 0.001
+
+
+def depth_u16(w, h):
+    """Mirror of `depth_u16` in bench_depth.rs (xorshift64, same constants)."""
+    mask64 = (1 << 64) - 1
+    state = 0x2545F4914F6CDD1D
+    out = np.empty(w * h, dtype=np.uint16)
+    for i in range(w * h):
+        x, y = i % w, i // w
+        state ^= (state << 13) & mask64
+        state ^= state >> 7
+        state ^= (state << 17) & mask64
+        if state % 20 == 0:
+            out[i] = 0
+            continue
+        plane = 1500 + (x * 1000 // w) + (y * 500 // h)
+        in_box = w // 3 < x < w // 2 and h // 3 < y < 2 * h // 3
+        out[i] = 800 if in_box else plane
+    return out.reshape(h, w)
+
+
+def intrinsics(w, h):
+    f = 0.9 * w
+    return f, f, 0.5 * w - 0.5, 0.5 * h - 0.5
+
+
+def best_ms(fn, rounds):
+    fn()  # warm-up
+    best = float("inf")
+    for _ in range(rounds):
+        t0 = time.perf_counter()
+        fn()
+        best = min(best, time.perf_counter() - t0)
+    return best * 1e3
+
+
+def rays(w, h):
+    """Per-pixel `(x - cx) / fx` and `(y - cy) / fy`, computed once per size."""
+    fx, fy, cx, cy = intrinsics(w, h)
+    xn = ((np.arange(w, dtype=np.float32) - np.float32(cx)) * np.float32(1.0 / fx))
+    yn = ((np.arange(h, dtype=np.float32) - np.float32(cy)) * np.float32(1.0 / fy))
+    return np.broadcast_to(xn, (h, w)), np.broadcast_to(yn[:, None], (h, w))
+
+
+def numpy_unproject(depth, xn, yn, scale):
+    z = depth.astype(np.float32) * np.float32(scale)
+    keep = z > 0
+    zk = z[keep]
+    return np.stack([xn[keep] * zk, yn[keep] * zk, zk], axis=-1)
+
+
+def bench_numpy(depth, w, h, rounds):
+    xn, yn = rays(w, h)
+    pts = numpy_unproject(depth, xn, yn, MM)
+    print(f"numpy unproject_u16_cpu {w}x{h}: {best_ms(lambda: numpy_unproject(depth, xn, yn, MM), rounds):.3f} ms ({len(pts)} points)")
+
+
+def bench_open3d(depth, w, h, rounds):
+    try:
+        import open3d as o3d
+    except ImportError:
+        print("open3d not installed; skipping")
+        return
+    fx, fy, cx, cy = intrinsics(w, h)
+    intr = o3d.camera.PinholeCameraIntrinsic(w, h, fx, fy, cx, cy)
+    img = o3d.geometry.Image(depth)
+    ms = best_ms(
+        lambda: o3d.geometry.PointCloud.create_from_depth_image(
+            img, intr, depth_scale=1.0 / MM, depth_trunc=1e9
+        ),
+        rounds,
+    )
+    print(f"open3d legacy unproject_u16_cpu {w}x{h}: {ms:.3f} ms")
+
+    k = o3d.core.Tensor([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], o3d.core.Dtype.Float64)
+    devices = [o3d.core.Device("CPU:0")]
+    if o3d.core.cuda.is_available():
+        devices.append(o3d.core.Device("CUDA:0"))
+    for dev in devices:
+        tag = "cuda" if dev.get_type() == o3d.core.Device.DeviceType.CUDA else "cpu"
+        timg = o3d.t.geometry.Image(o3d.core.Tensor(depth, device=dev))
+        sync = (lambda: o3d.core.cuda.synchronize()) if tag == "cuda" else (lambda: None)
+
+        def unproject():
+            pc = o3d.t.geometry.PointCloud.create_from_depth_image(
+                timg, k, depth_scale=1.0 / MM, depth_max=1e9
+            )
+            sync()
+            return pc
+
+        ms = best_ms(unproject, rounds)
+        print(f"open3d tensor unproject_u16_{tag} {w}x{h}: {ms:.3f} ms")
+
+
+def bench_opencv(depth, w, h, rounds):
+    try:
+        import cv2
+
+        rgbd = cv2.rgbd
+    except (ImportError, AttributeError):
+        print("cv2.rgbd (opencv-contrib) not available; skipping")
+        return
+    fx, fy, cx, cy = intrinsics(w, h)
+    k = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=np.float64)
+    ms = best_ms(lambda: rgbd.depthTo3d(depth, k), rounds)
+    print(f"opencv rgbd.depthTo3d_u16_cpu {w}x{h}: {ms:.3f} ms")
+
+
+def write_fixtures(out_dir):
+    """A small random `u16` depth image and Open3D's unprojection of it.
+
+    Little endian: `u32` width and height, `f64` fx, fy, cx, cy and
+    `depth_scale`, the `u16` depth pixels row-major, then a `u64` count and
+    the output `x, y, z` `f64` triplets of the legacy
+    `geometry.PointCloud.create_from_depth_image` (row-major order).
+    """
+    import open3d as o3d
+
+    rng = np.random.default_rng(7)
+    w, h = 40, 30
+    fx, fy, cx, cy = 37.5, 41.25, 19.3, 14.6
+    depth_scale = 1000.0
+    depth = rng.integers(1, 65536, size=(h, w), dtype=np.uint16)
+    depth[rng.random((h, w)) < 0.2] = 0
+    cam = o3d.camera.PinholeCameraIntrinsic(w, h, fx, fy, cx, cy)
+    pc = o3d.geometry.PointCloud.create_from_depth_image(
+        o3d.geometry.Image(depth), cam, depth_scale=depth_scale, depth_trunc=1.0e9
+    )
+    pts = np.ascontiguousarray(np.asarray(pc.points), dtype="<f8")
+    blob = struct.pack("<II5d", w, h, fx, fy, cx, cy, depth_scale)
+    blob += np.ascontiguousarray(depth, dtype="<u2").tobytes()
+    blob += struct.pack("<Q", len(pts)) + pts.tobytes()
+    (pathlib.Path(out_dir) / "unproject_depth_open3d.bin").write_bytes(blob)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--rounds", type=int, default=50)
+    ap.add_argument("--write-fixtures", metavar="DIR")
+    args = ap.parse_args()
+    if args.write_fixtures:
+        write_fixtures(args.write_fixtures)
+        return
+    for w, h in SIZES:
+        depth = depth_u16(w, h)
+        bench_numpy(depth, w, h, args.rounds)
+        bench_open3d(depth, w, h, args.rounds)
+        bench_opencv(depth, w, h, args.rounds)
+
+
+if __name__ == "__main__":
+    main()
