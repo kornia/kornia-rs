@@ -21,7 +21,7 @@ fn bench_grab_layout<const C: usize>(
 ) {
     let mut group = c.benchmark_group(name);
     for (width, height) in [(856, 480), (854, 480), (1920, 1080), (1918, 1080)] {
-        let layout = if (width * C) % 4 == 0 {
+        let layout = if (width * C).is_multiple_of(4) {
             "packed"
         } else {
             "padded"
