@@ -19,7 +19,7 @@
 *   **Fundamental RANSAC:** Seven-point minimal hypotheses (every real solution that satisfies the oriented epipolar constraint on its sample, as in DEGENSAC), with eight-point inlier refinement. `pose::fundamental_7point` exposes the minimal solver; `ransac::estimators::Fundamental8PointEstimator` and `pose::ransac_fundamental_8point` retain the original sampling path for comparisons. The two-view builder also accepts `Fundamental7ptSolver`; its existing `Fundamental8ptSolver` default is preserved.
     `pose::RansacParams::confidence` accepts an explicit sampling target; `None` preserves each model family's default. Exhaustive struct literals must add `confidence: None` or use `..Default::default()`. Adaptive caps use the all-inlier probability for distinct sampling without replacement.
 *   **PnP Solvers:** Solve for camera pose given 3D-2D point correspondences.
-*   **Depth Images:** `depth::DepthImage` (a `u16` / `f32` depth image with its `meter`, units per metre) and `DepthImage::to_pointcloud`, which unprojects it into a point cloud.
+*   **Depth Images:** `depth::DepthImage` (a `u16` / `f32` depth image with its `meter`, units per metre) with `to_pointcloud`, which unprojects it into a point cloud, and `register` / `register_into`, which reproject it into a second pinhole camera with a z-buffer and an optional splat.
 
 ## 📦 Installation
 
