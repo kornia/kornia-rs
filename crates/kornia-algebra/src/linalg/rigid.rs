@@ -148,8 +148,16 @@ pub fn umeyama(src: &[Vec3AF32], dst: &[Vec3AF32]) -> UmeyamaResult {
     ))
 }
 
-/// Rotation (R), translation (t), and scale (s) output of Umeyama (f64).
-pub type UmeyamaOutputF64 = (Mat3F64, Vec3F64, f64);
+/// Rotation `R`, translation `t`, and scale `s` returned by Umeyama alignment (f64).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UmeyamaOutputF64 {
+    /// Rotation matrix (column-major, `det = 1`).
+    pub r: Mat3F64,
+    /// Translation vector.
+    pub t: Vec3F64,
+    /// Scale factor (`1.0` when scale estimation is disabled).
+    pub s: f64,
+}
 
 /// Result type alias for Umeyama (f64).
 pub type UmeyamaResultF64 = Result<UmeyamaOutputF64, UmeyamaError>;
@@ -180,9 +188,9 @@ pub type UmeyamaResultF64 = Result<UmeyamaOutputF64, UmeyamaError>;
 ///
 /// # Returns
 ///
-/// `Ok((R, t, s))` on success, where `R` is a proper rotation matrix
-/// (`det(R) = 1`), `t` is the translation vector, and `s` is the estimated scale
-/// (`1.0` when `with_scale` is `false`).
+/// `Ok(UmeyamaOutputF64 { r, t, s })` on success, where `r` is a proper rotation
+/// matrix (`det(r) = 1`), `t` is the translation vector, and `s` is the
+/// estimated scale (`1.0` when `with_scale` is `false`).
 ///
 /// # Errors
 ///
@@ -213,21 +221,21 @@ pub type UmeyamaResultF64 = Result<UmeyamaOutputF64, UmeyamaError>;
 /// let dst: Vec<Vec3F64> = src.iter().map(|p| *p + Vec3F64::new(1.0, 2.0, 3.0)).collect();
 ///
 /// // Unweighted.
-/// let (_r, t, _s) = umeyama_f64(&src, &dst, None, false)?;
-/// assert!((t.x - 1.0).abs() < 1e-12);
+/// let out = umeyama_f64(&src, &dst, None, false)?;
+/// assert!((out.t.x - 1.0).abs() < 1e-12);
 ///
 /// // Weighted (weights only rescale the residuals).
 /// let weights = [1.0, 2.0, 3.0, 4.0];
-/// let (_r, t, _s) = umeyama_f64(&src, &dst, Some(&weights), false)?;
-/// assert!((t.x - 1.0).abs() < 1e-12);
+/// let out = umeyama_f64(&src, &dst, Some(&weights), false)?;
+/// assert!((out.t.x - 1.0).abs() < 1e-12);
 ///
 /// // A zero weight ignores a point entirely (here a corrupted destination),
 /// // and the scale can still be estimated from the remaining points.
 /// let mut noisy = dst.clone();
 /// noisy[3] = Vec3F64::new(1e6, -1e6, 1e6);
 /// let weights = [1.0, 1.0, 1.0, 0.0];
-/// let (_r, t, s) = umeyama_f64(&src, &noisy, Some(&weights), true)?;
-/// assert!((t.x - 1.0).abs() < 1e-9 && (s - 1.0).abs() < 1e-9);
+/// let out = umeyama_f64(&src, &noisy, Some(&weights), true)?;
+/// assert!((out.t.x - 1.0).abs() < 1e-9 && (out.s - 1.0).abs() < 1e-9);
 /// # Ok::<(), kornia_algebra::linalg::rigid::UmeyamaError>(())
 /// ```
 pub fn umeyama_f64(
@@ -274,7 +282,7 @@ pub fn umeyama_f64(
     // Translation: t = μ_d − s·R·μ_s
     let t = mu_d - scale * r * mu_s;
 
-    Ok((r, t, scale))
+    Ok(UmeyamaOutputF64 { r, t, s: scale })
 }
 
 /// σ̂ = MAD / Φ⁻¹(3/4): the MAD → pseudo-σ consistency factor for Gaussian
@@ -391,9 +399,9 @@ impl RobustUmeyamaConfig {
 ///
 /// # Returns
 ///
-/// `Ok((R, t, s))` on success, where `R` is a proper rotation matrix
-/// (`det(R) = 1`), `t` is the translation, and `s` is the estimated scale
-/// (exactly `1.0` when `with_scale` is `false`).
+/// `Ok(UmeyamaOutputF64 { r, t, s })` on success, where `r` is a proper rotation
+/// matrix (`det(r) = 1`), `t` is the translation, and `s` is the estimated
+/// scale (exactly `1.0` when `with_scale` is `false`).
 ///
 /// # Errors
 ///
@@ -425,11 +433,11 @@ impl RobustUmeyamaConfig {
 ///     .collect();
 /// dst[0] = Vec3F64::new(-50.0, 50.0, 50.0);
 ///
-/// let (r, t, s) = umeyama_f64_robust(&src, &dst, &RobustUmeyamaConfig::default(), true)?;
+/// let out = umeyama_f64_robust(&src, &dst, &RobustUmeyamaConfig::default(), true)?;
 /// // The corrupted corner keeps a large residual while the good corners map tightly.
-/// let bad_res = ((r * src[0]) * s + t - dst[0]).length();
-/// let good_res = ((r * src[1]) * s + t - dst[1]).length();
-/// assert!(good_res < 0.5 && bad_res > 20.0 && (s - 2.0).abs() < 0.5);
+/// let bad_res = ((out.r * src[0]) * out.s + out.t - dst[0]).length();
+/// let good_res = ((out.r * src[1]) * out.s + out.t - dst[1]).length();
+/// assert!(good_res < 0.5 && bad_res > 20.0 && (out.s - 2.0).abs() < 0.5);
 /// # Ok::<(), kornia_algebra::linalg::rigid::UmeyamaError>(())
 /// ```
 pub fn umeyama_f64_robust(
@@ -462,7 +470,7 @@ pub(crate) fn robust_fit(
     // r_i = |(s·R·src_i + t) - dst_i| for the current fit.
     let write_residuals = |fit: &UmeyamaOutputF64, out: &mut [f64]| {
         for (i, (p, d)) in src.iter().zip(dst).enumerate() {
-            let mapped = (fit.0 * *p) * fit.2 + fit.1;
+            let mapped = (fit.r * *p) * fit.s + fit.t;
             out[i] = (mapped - *d).length();
         }
     };
@@ -498,11 +506,11 @@ pub(crate) fn robust_fit(
         // and translation between the two fits. `scale_rel` is 0 in rigid
         // mode, so those fits converge on R/t alone. `t_rel` uses an
         // `EPSILON` floor on the translation norm.
-        let scale_rel = ((new_fit.2 - fit.2) / fit.2.max(eps)).abs();
+        let scale_rel = ((new_fit.s - fit.s) / fit.s.max(eps)).abs();
         let rot_rel = (0..3)
-            .map(|c| (new_fit.0.col(c) - fit.0.col(c)).length() / fit.0.col(c).length().max(eps))
+            .map(|c| (new_fit.r.col(c) - fit.r.col(c)).length() / fit.r.col(c).length().max(eps))
             .fold(0.0_f64, f64::max);
-        let t_rel = (new_fit.1 - fit.1).length() / fit.1.length().max(eps);
+        let t_rel = (new_fit.t - fit.t).length() / fit.t.length().max(eps);
 
         fit = new_fit;
         if scale_rel.max(rot_rel).max(t_rel) < config.tol {
@@ -719,19 +727,19 @@ mod tests {
         let t_true = Vec3F64::new(0.5, -0.3, 2.0);
         let dst: Vec<Vec3F64> = src.iter().map(|p| r_true * *p + t_true).collect();
 
-        let (r_est, t_est, s_est) = umeyama_f64(&src, &dst, None, false)?;
-        assert!((s_est - 1.0).abs() < 1e-12);
+        let out = umeyama_f64(&src, &dst, None, false)?;
+        assert!((out.s - 1.0).abs() < 1e-12);
         for i in 0..9 {
             let r_true_arr: [f64; 9] = r_true.into();
-            let r_est_arr: [f64; 9] = r_est.into();
+            let r_est_arr: [f64; 9] = out.r.into();
             assert!(
                 (r_est_arr[i] - r_true_arr[i]).abs() < 1e-10,
                 "R mismatch at {i}"
             );
         }
-        assert!((t_est.x - t_true.x).abs() < 1e-10);
-        assert!((t_est.y - t_true.y).abs() < 1e-10);
-        assert!((t_est.z - t_true.z).abs() < 1e-10);
+        assert!((out.t.x - t_true.x).abs() < 1e-10);
+        assert!((out.t.y - t_true.y).abs() < 1e-10);
+        assert!((out.t.z - t_true.z).abs() < 1e-10);
         Ok(())
     }
 
@@ -747,19 +755,20 @@ mod tests {
         let scale_true = 2.5;
         let dst: Vec<Vec3F64> = src.iter().map(|p| *p * scale_true).collect();
 
-        let (_r_est, t_est, s_est) = umeyama_f64(&src, &dst, None, true)?;
+        let out = umeyama_f64(&src, &dst, None, true)?;
         assert!(
-            (s_est - scale_true).abs() < 1e-10,
-            "scale: got {s_est}, expected {scale_true}"
+            (out.s - scale_true).abs() < 1e-10,
+            "scale: got {}, expected {scale_true}",
+            out.s
         );
-        assert!(t_est.length() < 1e-10, "translation should be near zero");
+        assert!(out.t.length() < 1e-10, "translation should be near zero");
         Ok(())
     }
 
     /// Assert two Umeyama outputs agree component-wise within `eps`.
     fn assert_outputs_close(a: &UmeyamaOutputF64, b: &UmeyamaOutputF64, eps: f64) {
-        let ar: [f64; 9] = a.0.into();
-        let br: [f64; 9] = b.0.into();
+        let ar: [f64; 9] = a.r.into();
+        let br: [f64; 9] = b.r.into();
         for i in 0..9 {
             assert!(
                 (ar[i] - br[i]).abs() < eps,
@@ -768,10 +777,10 @@ mod tests {
                 br[i]
             );
         }
-        assert!((a.1.x - b.1.x).abs() < eps, "t.x: {} vs {}", a.1.x, b.1.x);
-        assert!((a.1.y - b.1.y).abs() < eps, "t.y: {} vs {}", a.1.y, b.1.y);
-        assert!((a.1.z - b.1.z).abs() < eps, "t.z: {} vs {}", a.1.z, b.1.z);
-        assert!((a.2 - b.2).abs() < eps, "s: {} vs {}", a.2, b.2);
+        assert!((a.t.x - b.t.x).abs() < eps, "t.x: {} vs {}", a.t.x, b.t.x);
+        assert!((a.t.y - b.t.y).abs() < eps, "t.y: {} vs {}", a.t.y, b.t.y);
+        assert!((a.t.z - b.t.z).abs() < eps, "t.z: {} vs {}", a.t.z, b.t.z);
+        assert!((a.s - b.s).abs() < eps, "s: {} vs {}", a.s, b.s);
     }
 
     /// Assert a recovered `(R, t, s)` matches the true transform within `eps`.
@@ -782,7 +791,15 @@ mod tests {
         s_true: f64,
         eps: f64,
     ) {
-        assert_outputs_close(got, &(*r_true, *t_true, s_true), eps);
+        assert_outputs_close(
+            got,
+            &UmeyamaOutputF64 {
+                r: *r_true,
+                t: *t_true,
+                s: s_true,
+            },
+            eps,
+        );
     }
 
     /// Assert two [`Moments`] agree component-wise within `eps`.
@@ -1173,7 +1190,7 @@ mod tests {
             .collect();
         let weights = [1.0, 2.0, 0.5, 1.5];
 
-        let (r, t, s) = umeyama_f64(&src, &dst, Some(&weights), true)?;
+        let UmeyamaOutputF64 { r, t, s } = umeyama_f64(&src, &dst, Some(&weights), true)?;
 
         // Rank-deficient: (R, t, s) is not unique, but the recovered transform
         // must still reproduce every destination point exactly.
@@ -1199,7 +1216,7 @@ mod tests {
         let dst: Vec<Vec3F64> = src.iter().map(|q| *q + t_true).collect();
         let weights = [1.0, 2.0, 3.0];
 
-        let (r, t, s) = umeyama_f64(&src, &dst, Some(&weights), true)?;
+        let UmeyamaOutputF64 { r, t, s } = umeyama_f64(&src, &dst, Some(&weights), true)?;
 
         assert!(
             (s - 1.0).abs() < 1e-12,
@@ -1236,7 +1253,7 @@ mod tests {
             .map(|p| (r_true * *p) * s_true + t_true)
             .collect();
 
-        let (r, t, s) = umeyama_f64(&src, &dst, None, true)?;
+        let UmeyamaOutputF64 { r, t, s } = umeyama_f64(&src, &dst, None, true)?;
 
         // In-plane singular vectors are ambiguous; assert the transform reproduces
         // the data rather than matching the planted rotation.
@@ -1325,7 +1342,7 @@ mod tests {
         let dst: Vec<Vec3F64> = src.iter().map(|p| *p * 3.0).collect();
         let weights = [1.0, 2.0, 0.5, 1.5];
 
-        let (_r, _t, s) = umeyama_f64(&src, &dst, Some(&weights), false)?;
+        let UmeyamaOutputF64 { r: _, t: _, s } = umeyama_f64(&src, &dst, Some(&weights), false)?;
         assert!((s - 1.0).abs() < 1e-15, "scale should be 1.0, got {s}");
         Ok(())
     }
@@ -1363,7 +1380,7 @@ mod tests {
             .collect();
         let weights = [0.5, 3.0, 1.0, 2.0, 4.0, 1.5];
 
-        let (r, t, s) = umeyama_f64(&src, &dst, Some(&weights), true)?;
+        let UmeyamaOutputF64 { r, t, s } = umeyama_f64(&src, &dst, Some(&weights), true)?;
 
         let mut mean_res = Vec3F64::ZERO;
         let mut rot = Vec3F64::ZERO;
@@ -1403,7 +1420,7 @@ mod tests {
         ];
         let dst: Vec<Vec3F64> = src.iter().map(|p| *p * 2.0).collect();
 
-        let (_r, _t, s) = umeyama_f64(&src, &dst, None, true)?;
+        let UmeyamaOutputF64 { r: _, t: _, s } = umeyama_f64(&src, &dst, None, true)?;
         assert!((s - 1.0).abs() < 1e-12, "documented fallback, got {s}");
         Ok(())
     }
@@ -1424,7 +1441,7 @@ mod tests {
         // Only the third correspondence counts: `var_src` is zero, so the scale
         // falls back to 1.0 and the single point must be reproduced.
         let weights = [0.0, 0.0, 1.0];
-        let (r, t, s) = umeyama_f64(&src, &dst, Some(&weights), true)?;
+        let UmeyamaOutputF64 { r, t, s } = umeyama_f64(&src, &dst, Some(&weights), true)?;
 
         assert!((s - 1.0).abs() < 1e-12, "s: {s}");
         let mapped = (r * src[2]) * s + t;
@@ -1712,7 +1729,7 @@ mod tests {
         // (proof of down-weighting and rejection).
         let mut max_good = 0.0_f64;
         for (i, (p, d)) in src.iter().zip(&dst).enumerate() {
-            let r = ((got.0 * *p) * got.2 + got.1 - *d).length();
+            let r = ((got.r * *p) * got.s + got.t - *d).length();
             if i == 3 || i == 17 {
                 assert!(r > 20.0, "outlier {i} residual too small: {r}");
             } else {
@@ -1772,11 +1789,11 @@ mod tests {
         let a = umeyama_f64_robust(&src, &dst, &RobustUmeyamaConfig::default(), true)?;
         let b = umeyama_f64_robust(&src, &dst, &RobustUmeyamaConfig::default(), true)?;
 
-        let ar: [f64; 9] = a.0.into();
-        let br: [f64; 9] = b.0.into();
+        let ar: [f64; 9] = a.r.into();
+        let br: [f64; 9] = b.r.into();
         assert_eq!(ar, br, "R must be bit-for-bit identical");
-        assert_eq!(a.1, b.1, "t must be bit-for-bit identical");
-        assert_eq!(a.2, b.2, "s must be bit-for-bit identical");
+        assert_eq!(a.t, b.t, "t must be bit-for-bit identical");
+        assert_eq!(a.s, b.s, "s must be bit-for-bit identical");
         Ok(())
     }
 
@@ -1825,10 +1842,11 @@ mod tests {
         dst[9] += Vec3F64::new(0.0, -40.0, 30.0);
         dst[15] += Vec3F64::new(45.0, 45.0, 0.0);
 
-        let (r, t, s) = umeyama_f64_robust(&src, &dst, &RobustUmeyamaConfig::default(), false)?;
+        let UmeyamaOutputF64 { r, t, s } =
+            umeyama_f64_robust(&src, &dst, &RobustUmeyamaConfig::default(), false)?;
 
         assert_eq!(s, 1.0, "rigid mode must return s = 1.0 exactly");
-        assert_matches_true(&(r, t, s), &r_true, &t_true, 1.0, 5e-3);
+        assert_matches_true(&UmeyamaOutputF64 { r, t, s }, &r_true, &t_true, 1.0, 5e-3);
 
         // Good points map tightly; the corrupted ones keep large residuals.
         let mut max_good = 0.0_f64;
@@ -1864,7 +1882,7 @@ mod tests {
             ..RobustUmeyamaConfig::default()
         };
 
-        let (r, t, s) = umeyama_f64_robust(&src, &dst, &cfg, false)?;
+        let UmeyamaOutputF64 { r, t, s } = umeyama_f64_robust(&src, &dst, &cfg, false)?;
         assert_eq!(s, 1.0);
         // The bias must be gone: the five untouched correspondences are
         // reproduced exactly (identity is one valid rotation here).
