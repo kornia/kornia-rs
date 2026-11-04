@@ -50,6 +50,11 @@ required-features = ["cuda"]
 
 [[bench]]
 harness = false
+name = "bench_cuda_fast"
+required-features = ["cuda"]
+
+[[bench]]
+harness = false
 name = "bench_unified_memory"
 required-features = ["cuda"]
 

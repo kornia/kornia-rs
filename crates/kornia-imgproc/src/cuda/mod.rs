@@ -32,6 +32,10 @@ pub mod remap;
 /// Native CUDA color-space conversion kernels.
 pub mod color;
 
+/// CUDA FAST corner detector (cuda-oxide kernel), bit-exact with the CPU
+/// [`crate::features::fast_detect_rows_u8`].
+pub mod fast;
+
 /// Native CUDA SIFT scale-space, detector, descriptor and matcher.
 pub mod sift;
 

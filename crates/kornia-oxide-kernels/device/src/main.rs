@@ -6,6 +6,7 @@
 //! keeps the name of the NVRTC kernel it replaces.
 
 mod color;
+mod features;
 
 /// PTX-only crate: `main` exists so the codegen backend has a binary to compile.
 fn main() {
