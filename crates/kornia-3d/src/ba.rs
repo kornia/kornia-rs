@@ -239,14 +239,17 @@ pub struct BaParams {
     /// - `Identity` → no loss (plain L2 fast path).
     /// - `Huber`    → [`kornia_algebra::optim::HuberLoss`].
     /// - `Cauchy`   → [`kornia_algebra::optim::CauchyLoss`].
-    /// - `Tukey`    → currently maps to `CauchyLoss` (Tukey isn't yet
-    ///   exposed by `kornia_algebra::optim::losses`; both are smooth
-    ///   redescenders and produce qualitatively similar weight curves).
+    /// - `Tukey`    → not supported; `bundle_adjust` returns
+    ///   [`BaError::InvalidInput`] (Tukey isn't yet exposed by
+    ///   `kornia_algebra::optim::losses`).
     pub robust: RobustKernelKind,
     /// Squared scale parameter for [`Self::robust`]. The square root is
     /// the linear scale fed to `HuberLoss::new`/`CauchyLoss::new`. Default
-    /// `f32::INFINITY` collapses to the L2 fast path even for non-Identity
-    /// kernel choices.
+    /// `f32::INFINITY` collapses to the L2 fast path for every supported
+    /// kernel.
+    ///
+    /// Exception: [`RobustKernelKind::Tukey`] is not supported and is rejected
+    /// with [`BaError::InvalidInput`] at any scale, including `INFINITY`.
     pub robust_scale_sq: f32,
     /// Robust-kernel scale (squared) for the σ-WHITENED residual families — the per-observation
     /// depth residual ([`BaObservation::depth_meas`]) and the constant-velocity motion prior
@@ -867,29 +870,35 @@ impl Factor for ReprojFactor {
 /// Translate a [`BaParams`] robust kernel choice into a shared
 /// [`RobustLoss`] instance. Identity returns `None` so factors fall back
 /// to plain L2 (the optim solver's fast path). Tukey isn't yet exposed
-/// by `kornia-algebra::optim::losses` — caller falls back to Cauchy.
-fn build_robust_loss(params: &BaParams) -> Option<Arc<dyn RobustLoss>> {
+/// by `kornia-algebra::optim::losses`, so it is rejected with
+/// [`BaError::InvalidInput`] instead of silently using another kernel.
+fn build_robust_loss(params: &BaParams) -> Result<Option<Arc<dyn RobustLoss>>, BaError> {
     use crate::ransac::RobustKernelKind;
+    if params.robust == RobustKernelKind::Tukey {
+        return Err(BaError::InvalidInput(
+            "Tukey robust kernel is not supported for bundle adjustment".to_string(),
+        ));
+    }
+
     if !params.robust_scale_sq.is_finite() || params.robust_scale_sq <= 0.0 {
-        return None;
+        return Ok(None);
     }
     // BaParams stores the *squared* scale (matches the kornia-3d kernel
     // surface); kornia-algebra's losses take the linear scale.
-    let scale = params.robust_scale_sq.sqrt();
+    let scale: f32 = params.robust_scale_sq.sqrt();
     match params.robust {
-        RobustKernelKind::Identity => None,
-        RobustKernelKind::Huber => HuberLoss::new(scale).ok().map(|l| {
+        RobustKernelKind::Identity => Ok(None),
+        RobustKernelKind::Huber => Ok(HuberLoss::new(scale).ok().map(|l| {
             let arc: Arc<dyn RobustLoss> = Arc::new(l);
             arc
-        }),
-        // Tukey not yet in kornia-algebra; fall back to Cauchy which is
-        // also a smooth redescender. Documented in BaParams::robust doc.
-        RobustKernelKind::Cauchy | RobustKernelKind::Tukey => {
-            CauchyLoss::new(scale).ok().map(|l| {
-                let arc: Arc<dyn RobustLoss> = Arc::new(l);
-                arc
-            })
-        }
+        })),
+        RobustKernelKind::Cauchy => Ok(CauchyLoss::new(scale).ok().map(|l| {
+            let arc: Arc<dyn RobustLoss> = Arc::new(l);
+            arc
+        })),
+        RobustKernelKind::Tukey => Err(BaError::InvalidInput(
+            "Tukey robust kernel is not supported for bundle adjustment".to_string(),
+        )),
     }
 }
 
@@ -969,7 +978,7 @@ pub fn bundle_adjust(
     // Translate the BaParams robust kernel choice into a shared loss
     // instance once (cloned by Arc into every factor). Identity → None,
     // skipping the loss path entirely on the optim solver's L2 fast path.
-    let robust_loss = build_robust_loss(params);
+    let robust_loss = build_robust_loss(params)?;
 
     // Add factors. Variant per observation depends on which side is fixed.
     for obs in observations {
