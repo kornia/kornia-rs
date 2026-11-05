@@ -899,6 +899,63 @@ unsafe fn dot_avx2(a: &[f32], b: &[f32]) -> f32 {
     }
 }
 
+/// Fixed-width [`squared_l2_avx2`]: `D` is a multiple of 32, so no tail or bounds remain.
+///
+/// # Safety
+///
+/// The caller must ensure AVX2 and FMA are available, and both rows hold `D` floats.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+unsafe fn squared_l2_fixed_avx2<const D: usize>(a: &[f32], b: &[f32]) -> f32 {
+    use std::arch::x86_64::*;
+    // SAFETY: caller guarantees AVX2, FMA and `D` floats per row; `k + 32 <= D`.
+    unsafe {
+        let (pa, pb) = (a.as_ptr(), b.as_ptr());
+        let mut acc = [_mm256_setzero_ps(); 4];
+        for k in (0..D).step_by(32) {
+            for (lane, acc) in acc.iter_mut().enumerate() {
+                let at = k + lane * 8;
+                let d = _mm256_sub_ps(_mm256_loadu_ps(pa.add(at)), _mm256_loadu_ps(pb.add(at)));
+                *acc = _mm256_fmadd_ps(d, d, *acc);
+            }
+        }
+        horizontal_sum_avx(_mm256_add_ps(
+            _mm256_add_ps(acc[0], acc[1]),
+            _mm256_add_ps(acc[2], acc[3]),
+        ))
+    }
+}
+
+/// Fixed-width [`dot_avx2`]: `D` is a multiple of 32, so no tail or bounds remain.
+///
+/// # Safety
+///
+/// The caller must ensure AVX2 and FMA are available, and both rows hold `D` floats.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+unsafe fn dot_fixed_avx2<const D: usize>(a: &[f32], b: &[f32]) -> f32 {
+    use std::arch::x86_64::*;
+    // SAFETY: caller guarantees AVX2, FMA and `D` floats per row; `k + 32 <= D`.
+    unsafe {
+        let (pa, pb) = (a.as_ptr(), b.as_ptr());
+        let mut acc = [_mm256_setzero_ps(); 4];
+        for k in (0..D).step_by(32) {
+            for (lane, acc) in acc.iter_mut().enumerate() {
+                let at = k + lane * 8;
+                *acc = _mm256_fmadd_ps(
+                    _mm256_loadu_ps(pa.add(at)),
+                    _mm256_loadu_ps(pb.add(at)),
+                    *acc,
+                );
+            }
+        }
+        horizontal_sum_avx(_mm256_add_ps(
+            _mm256_add_ps(acc[0], acc[1]),
+            _mm256_add_ps(acc[2], acc[3]),
+        ))
+    }
+}
+
 /// # Safety
 ///
 /// The caller must ensure AVX2 and FMA are available.
@@ -912,17 +969,26 @@ unsafe fn scan_float_task_avx2(
     rows: &mut [RowNearest],
     metric: FloatMetric,
 ) -> (Vec<f32>, Vec<u32>, Vec<f32>) {
-    match metric {
-        FloatMetric::SquaredL2 => {
-            scan_float_task(queries, train, dim, columns, rows, |q, c| {
-                // SAFETY: caller guarantees AVX2 and FMA.
-                unsafe { squared_l2_avx2(q, c) }
-            })
+    // SAFETY, every closure: the caller guarantees AVX2 and FMA, and rows come from
+    // `chunks_exact(dim)`, so fixed-width kernels read exactly `dim` floats.
+    macro_rules! scan {
+        ($kernel:expr) => {
+            scan_float_task(queries, train, dim, columns, rows, $kernel)
+        };
+    }
+    match (metric, dim) {
+        (FloatMetric::SquaredL2, 64) => scan!(|q, c| unsafe { squared_l2_fixed_avx2::<64>(q, c) }),
+        (FloatMetric::SquaredL2, 128) => {
+            scan!(|q, c| unsafe { squared_l2_fixed_avx2::<128>(q, c) })
         }
-        FloatMetric::NegativeDot => scan_float_task(queries, train, dim, columns, rows, |q, c| {
-            // SAFETY: caller guarantees AVX2 and FMA.
-            -unsafe { dot_avx2(q, c) }
-        }),
+        (FloatMetric::SquaredL2, 256) => {
+            scan!(|q, c| unsafe { squared_l2_fixed_avx2::<256>(q, c) })
+        }
+        (FloatMetric::SquaredL2, _) => scan!(|q, c| unsafe { squared_l2_avx2(q, c) }),
+        (FloatMetric::NegativeDot, 64) => scan!(|q, c| -unsafe { dot_fixed_avx2::<64>(q, c) }),
+        (FloatMetric::NegativeDot, 128) => scan!(|q, c| -unsafe { dot_fixed_avx2::<128>(q, c) }),
+        (FloatMetric::NegativeDot, 256) => scan!(|q, c| -unsafe { dot_fixed_avx2::<256>(q, c) }),
+        (FloatMetric::NegativeDot, _) => scan!(|q, c| -unsafe { dot_avx2(q, c) }),
     }
 }
 

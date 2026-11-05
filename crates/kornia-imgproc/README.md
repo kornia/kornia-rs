@@ -141,6 +141,8 @@ contract of `kornia.feature.match_smnn`: mutual nearest neighbors with
 `nearest / second_nearest <= th` in both directions, returned with the larger of
 the two ratios. One pass over the distance table serves both directions. The SIFT
 and cosine matchers share the float pass.
+`cuda::sift::SiftMatcher::match_smnn` returns the same bits on device for integer
+SIFT descriptors, and refuses others rather than truncating them.
 
 For real EuRoC ORB matching benchmarks, including timed Rayon pool entry, run
 `cargo bench -p kornia-imgproc --bench bench_features -- descriptor_matching`.

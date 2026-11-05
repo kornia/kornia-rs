@@ -3,9 +3,9 @@ use pyo3::prelude::*;
 
 use crate::pyutils::{c_slice, value_err};
 
-use kornia_imgproc::features::{match_descriptors, match_smnn, match_smnn_f32};
+use kornia_imgproc::features::{match_descriptors, match_smnn, match_smnn_f32, SmnnMatch};
 
-type SmnnArrays = (Py<PyArray2<f32>>, Py<PyArray2<i64>>);
+pub(crate) type SmnnArrays = (Py<PyArray2<f32>>, Py<PyArray2<i64>>);
 type DescriptorRows<'a> = (&'a [[u8; 32]], &'a [[u8; 32]]);
 
 fn descriptor_rows<'a>(
@@ -120,6 +120,11 @@ pub fn match_smnn_py(
         ));
     };
 
+    smnn_arrays(py, &matches)
+}
+
+/// `(dists, idxs)` as `kornia.feature.match_smnn` returns them.
+pub(crate) fn smnn_arrays(py: Python<'_>, matches: &[SmnnMatch]) -> PyResult<SmnnArrays> {
     let k = matches.len();
     let dists = PyArray::<f32, _>::zeros(py, [k, 1], false);
     let idxs = PyArray::<i64, _>::zeros(py, [k, 2], false);

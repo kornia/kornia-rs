@@ -614,9 +614,6 @@ fn octave_gate(has_octaves: bool, o_l: usize, o_r: usize) -> bool {
 
 /// Counts differing bits in paired bytes of two descriptors of equal, validated width.
 fn hamming(a: &[u8], b: &[u8]) -> u32 {
-    if let (Ok(a), Ok(b)) = (<&[u8; 32]>::try_from(a), <&[u8; 32]>::try_from(b)) {
-        return kornia_imgproc::features::hamming_distance(a, b);
-    }
     a.iter().zip(b).map(|(x, y)| (x ^ y).count_ones()).sum()
 }
 

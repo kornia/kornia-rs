@@ -3,7 +3,7 @@ use std::time::Instant;
 use argh::FromArgs;
 use cudarc::driver::CudaContext;
 use kornia_image::{Image, ImageSize};
-use kornia_imgproc::cuda::sift::{FirstOctave, SiftCuda, SiftCudaConfig};
+use kornia_imgproc::cuda::sift::{FirstOctave, SiftCuda, SiftCudaConfig, SiftMatcher, DESCR_LEN};
 
 /// Benchmark unified memory against explicit device copies for SIFT.
 #[derive(FromArgs)]
@@ -133,5 +133,57 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("{label:<16} {explicit_ms:>11.3} {unified_ms:>11.3} {speedup:>8.2}x");
     }
 
+    println!("\nmatching, ms per pair of descriptor blocks");
+    println!(
+        "{:<8} {:>11} {:>11} {:>11}",
+        "rows", "forward", "cross-check", "match_smnn"
+    );
+    for rows in [512usize, 1024, 2048, 4096, 8192] {
+        let (a, b) = (match_descriptors(rows, 1), match_descriptors(rows, 2));
+        let (da, db) = (stream.clone_htod(&a)?, stream.clone_htod(&b)?);
+        let mut matcher = SiftMatcher::new(&stream, rows)?;
+        let pairs = |cross_check: bool, matcher: &mut SiftMatcher| {
+            timed(args.warmup, args.iters, || {
+                std::hint::black_box(matcher.match_descriptors(
+                    &ctx,
+                    &stream,
+                    &da.as_view(),
+                    rows,
+                    &db.as_view(),
+                    rows,
+                    0.95,
+                    cross_check,
+                )?);
+                Ok(())
+            })
+        };
+        let forward_ms = pairs(false, &mut matcher)?;
+        let cross_check_ms = pairs(true, &mut matcher)?;
+        let smnn_ms = timed(args.warmup, args.iters, || {
+            std::hint::black_box(matcher.match_smnn(
+                &ctx,
+                &stream,
+                &da.as_view(),
+                rows,
+                &db.as_view(),
+                rows,
+                0.95,
+            )?);
+            Ok(())
+        })?;
+        println!("{rows:<8} {forward_ms:>11.3} {cross_check_ms:>11.3} {smnn_ms:>11.3}");
+    }
+
     Ok(())
+}
+
+fn match_descriptors(rows: usize, mut seed: u64) -> Vec<f32> {
+    (0..rows * DESCR_LEN)
+        .map(|_| {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((seed >> 33) % 256) as f32
+        })
+        .collect()
 }
