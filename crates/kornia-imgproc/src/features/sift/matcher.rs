@@ -21,6 +21,8 @@
 use super::descriptor::DESCR_LEN;
 #[cfg(target_arch = "x86_64")]
 use crate::features::r#match::squared_l2_avx2;
+#[cfg(target_arch = "aarch64")]
+use crate::features::r#match::squared_l2_fixed_neon;
 use crate::features::r#match::{scan_float_rows, FloatMetric};
 
 /// Squared L2 between two descriptors, four lanes at a time.
@@ -42,32 +44,14 @@ use crate::features::r#match::{scan_float_rows, FloatMetric};
 #[cfg(target_arch = "aarch64")]
 #[inline]
 pub fn l2_sq(a: &[f32], b: &[f32]) -> f32 {
-    use std::arch::aarch64::*;
-    // Real (release-mode) length check: the loads below read exactly
-    // `DESCR_LEN` floats from each slice.
+    // Real (release-mode) length check: the kernel reads exactly `DESCR_LEN`
+    // floats from each slice.
     if a.len() != DESCR_LEN || b.len() != DESCR_LEN {
         return l2_sq_scalar(a, b);
     }
-    // SAFETY: both slices are exactly `DESCR_LEN` long (checked above) and
-    // `DESCR_LEN % 16 == 0`, so every 4-lane load is in bounds.
-    unsafe {
-        let (mut s0, mut s1) = (vdupq_n_f32(0.0), vdupq_n_f32(0.0));
-        let (mut s2, mut s3) = (vdupq_n_f32(0.0), vdupq_n_f32(0.0));
-        let (mut pa, mut pb) = (a.as_ptr(), b.as_ptr());
-        for _ in 0..DESCR_LEN / 16 {
-            let d0 = vsubq_f32(vld1q_f32(pa), vld1q_f32(pb));
-            let d1 = vsubq_f32(vld1q_f32(pa.add(4)), vld1q_f32(pb.add(4)));
-            let d2 = vsubq_f32(vld1q_f32(pa.add(8)), vld1q_f32(pb.add(8)));
-            let d3 = vsubq_f32(vld1q_f32(pa.add(12)), vld1q_f32(pb.add(12)));
-            s0 = vfmaq_f32(s0, d0, d0);
-            s1 = vfmaq_f32(s1, d1, d1);
-            s2 = vfmaq_f32(s2, d2, d2);
-            s3 = vfmaq_f32(s3, d3, d3);
-            pa = pa.add(16);
-            pb = pb.add(16);
-        }
-        vaddvq_f32(vaddq_f32(vaddq_f32(s0, s1), vaddq_f32(s2, s3)))
-    }
+    // SAFETY: both slices are exactly `DESCR_LEN` long (checked above), and
+    // `DESCR_LEN % 16 == 0` as the kernel requires.
+    unsafe { squared_l2_fixed_neon::<DESCR_LEN>(a, b) }
 }
 
 /// Squared L2 between two descriptors.

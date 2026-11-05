@@ -1079,14 +1079,14 @@ fn dot_neon(a: &[f32], b: &[f32]) -> f32 {
 }
 
 /// Fixed-width [`squared_l2_neon`]: `D` is a multiple of 16, so no tail or bounds remain.
-/// At 128 floats, the additions run in the order of `l2_sq`, so the bits are the same.
+/// At 128 floats, this is also the vector path of `l2_sq`.
 ///
 /// # Safety
 ///
 /// The caller must ensure both rows hold `D` floats.
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
-unsafe fn squared_l2_fixed_neon<const D: usize>(a: &[f32], b: &[f32]) -> f32 {
+pub(crate) unsafe fn squared_l2_fixed_neon<const D: usize>(a: &[f32], b: &[f32]) -> f32 {
     use std::arch::aarch64::*;
     // SAFETY: NEON is architectural; the caller guarantees `D` floats and `k + 16 <= D`.
     unsafe {
@@ -1333,12 +1333,11 @@ pub fn match_smnn_f32(
 /// Cosine similarity (dot product) between two L2-normalised f32 descriptors.
 ///
 /// Assumes both inputs are unit-norm; the dot product is then the cosine.
-/// LLVM autovectorises the loop for the build's baseline on fixed-size arrays
-/// such as `[f32; 64]` (XFeat) or `[f32; 256]` (SuperPoint).
+/// A scalar sum in index order: float addition can't be reordered, so LLVM doesn't
+/// vectorise it, on fixed-size arrays such as `[f32; 64]` (XFeat) or `[f32; 256]`
+/// (SuperPoint) either. [`match_descriptors_f32`] uses its own vector kernels.
 #[inline]
 pub fn dot_product<const D: usize>(a: &[f32; D], b: &[f32; D]) -> f32 {
-    // Fused multiply-add when available; iterator form lets LLVM unroll +
-    // vectorise. Manual NEON intrinsics offered no measurable win in benches.
     let mut acc = 0.0f32;
     for i in 0..D {
         acc += a[i] * b[i];
@@ -2139,6 +2138,8 @@ mod tests {
         check::<16>();
         check::<19>();
         check::<64>();
+        check::<128>();
+        check::<256>();
     }
 
     #[cfg(target_arch = "aarch64")]
@@ -2176,7 +2177,7 @@ mod tests {
     #[cfg(target_arch = "aarch64")]
     #[test]
     fn neon_float_kernels_agree_with_scalar_at_every_length() {
-        use super::super::sift::{l2_sq, l2_sq_scalar};
+        use super::super::sift::l2_sq_scalar;
         let dot = |a: &[f32], b: &[f32]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>();
         // Small integers keep every sum exact, whatever the summation order.
         let (a, b) = (integer_rows(1, 300, 3, 16), integer_rows(1, 300, 5, 16));
@@ -2215,9 +2216,6 @@ mod tests {
         check_fixed::<64>(&a, &b);
         check_fixed::<128>(&a, &b);
         check_fixed::<256>(&a, &b);
-        // SAFETY: both rows hold 128 floats.
-        let fixed = unsafe { squared_l2_fixed_neon::<128>(&a[..128], &b[..128]) };
-        assert_eq!(fixed.to_bits(), l2_sq(&a[..128], &b[..128]).to_bits());
     }
 
     #[test]
