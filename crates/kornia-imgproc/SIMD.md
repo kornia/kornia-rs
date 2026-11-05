@@ -333,6 +333,10 @@ Because AVX2+FMA+BMI2 are in the v3 baseline, the runtime feature check may fold
 
 To exercise the scalar fallback under qemu, build with `-Ctarget-cpu=x86-64` (plain baseline).
 
+### Changing a kernel's instructions breaks the wheel check
+
+`kornia-py/scripts/verify_simd_kernels.sh` pins each kernel to a symbol path and instruction pattern, and only the wheel jobs run it. A path that no longer exists only warns; a path that still matches with stale instructions fails those jobs. Update its manifest in the same PR.
+
 ### Criterion under qemu
 
 `criterion` pulls in `alloca` which invokes `cc-rs` which wants `x86_64-linux-gnu-gcc` at build time. That's installed on the Jetson, but if tests start failing at link time with `-m64` errors, the aarch64 gcc got picked as the linker — check `.cargo/config.toml`'s `linker = "x86_64-linux-gnu-gcc"`.
