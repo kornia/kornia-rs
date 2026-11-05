@@ -1,3 +1,4 @@
+use std::hint::black_box;
 use std::time::Instant;
 
 use argh::FromArgs;
@@ -46,6 +47,30 @@ where
     Ok(start.elapsed().as_secs_f64() * 1e3 / iters as f64)
 }
 
+/// Best per-iteration milliseconds of each mode. Each iteration starts from the
+/// next mode, so no mode always runs first.
+fn best_of_rotated<const MODES: usize>(
+    warmup: usize,
+    iters: usize,
+    mut run: impl FnMut(usize) -> Result<(), Box<dyn std::error::Error>>,
+) -> Result<[f64; MODES], Box<dyn std::error::Error>> {
+    for mode in 0..MODES {
+        for _ in 0..warmup {
+            run(mode)?;
+        }
+    }
+    let mut best = [f64::INFINITY; MODES];
+    for iter in 0..iters {
+        for step in 0..MODES {
+            let mode = (iter + step) % MODES;
+            let start = Instant::now();
+            run(mode)?;
+            best[mode] = best[mode].min(start.elapsed().as_secs_f64() * 1e3);
+        }
+    }
+    Ok(best)
+}
+
 fn fill_ramp(buf: &mut [f32]) {
     let inv = 255.0 / buf.len() as f32;
     for (i, px) in buf.iter_mut().enumerate() {
@@ -80,7 +105,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("iters: {} (warmup {})\n", args.iters, args.warmup);
 
-    println!("\nmatching, ms per pair of descriptor blocks");
+    println!("\nmatching, best ms per pair of descriptor blocks");
     println!(
         "{:<8} {:>11} {:>11} {:>11}",
         "rows", "forward", "cross-check", "match_smnn"
@@ -89,35 +114,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (a, b) = (match_descriptors(rows, 1), match_descriptors(rows, 2));
         let (da, db) = (stream.clone_htod(&a)?, stream.clone_htod(&b)?);
         let mut matcher = SiftMatcher::new(&stream, rows)?;
-        let pairs = |cross_check: bool, matcher: &mut SiftMatcher| {
-            timed(args.warmup, args.iters, || {
-                std::hint::black_box(matcher.match_descriptors(
-                    &ctx,
-                    &stream,
-                    &da.as_view(),
-                    rows,
-                    &db.as_view(),
-                    rows,
-                    0.95,
-                    cross_check,
-                )?);
+        let [forward_ms, cross_check_ms, smnn_ms] =
+            best_of_rotated(args.warmup, args.iters, |mode| {
+                let (d1, d2) = (black_box(da.as_view()), black_box(db.as_view()));
+                if mode == 2 {
+                    black_box(matcher.match_smnn(&ctx, &stream, &d1, rows, &d2, rows, 0.95)?);
+                } else {
+                    black_box(matcher.match_descriptors(
+                        &ctx,
+                        &stream,
+                        &d1,
+                        rows,
+                        &d2,
+                        rows,
+                        0.95,
+                        mode == 1,
+                    )?);
+                }
                 Ok(())
-            })
-        };
-        let forward_ms = pairs(false, &mut matcher)?;
-        let cross_check_ms = pairs(true, &mut matcher)?;
-        let smnn_ms = timed(args.warmup, args.iters, || {
-            std::hint::black_box(matcher.match_smnn(
-                &ctx,
-                &stream,
-                &da.as_view(),
-                rows,
-                &db.as_view(),
-                rows,
-                0.95,
-            )?);
-            Ok(())
-        })?;
+            })?;
         println!("{rows:<8} {forward_ms:>11.3} {cross_check_ms:>11.3} {smnn_ms:>11.3}");
     }
 

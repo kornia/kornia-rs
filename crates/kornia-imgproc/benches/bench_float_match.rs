@@ -1,3 +1,5 @@
+use std::hint::black_box;
+
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use kornia_imgproc::features::{
     match_descriptors_f32, match_smnn_f32, sift_match_descriptors, sift_match_descriptors_scalar,
@@ -47,7 +49,12 @@ fn bench_float_match(c: &mut Criterion) {
             group.bench_with_input(BenchmarkId::new("match_smnn_f32", count), &count, |b, _| {
                 b.iter(|| {
                     pool.install(|| {
-                        std::hint::black_box(match_smnn_f32(&sift1, &sift2, SIFT_DIM, 0.95))
+                        black_box(match_smnn_f32(
+                            black_box(&sift1),
+                            black_box(&sift2),
+                            SIFT_DIM,
+                            0.95,
+                        ))
                     })
                 })
             });
@@ -57,8 +64,13 @@ fn bench_float_match(c: &mut Criterion) {
                 |b, _| {
                     b.iter(|| {
                         pool.install(|| {
-                            std::hint::black_box(sift_match_descriptors(
-                                &sift1, count, &sift2, count, 0.95, true,
+                            black_box(sift_match_descriptors(
+                                black_box(&sift1),
+                                count,
+                                black_box(&sift2),
+                                count,
+                                0.95,
+                                true,
                             ))
                         })
                     })
@@ -71,8 +83,13 @@ fn bench_float_match(c: &mut Criterion) {
                     |b, _| {
                         b.iter(|| {
                             pool.install(|| {
-                                std::hint::black_box(sift_match_descriptors_scalar(
-                                    &sift1, count, &sift2, count, 0.95, true,
+                                black_box(sift_match_descriptors_scalar(
+                                    black_box(&sift1),
+                                    count,
+                                    black_box(&sift2),
+                                    count,
+                                    0.95,
+                                    true,
                                 ))
                             })
                         })
@@ -87,9 +104,9 @@ fn bench_float_match(c: &mut Criterion) {
                 |b, _| {
                     b.iter(|| {
                         pool.install(|| {
-                            std::hint::black_box(match_descriptors_f32(
-                                &cosine1,
-                                &cosine2,
+                            black_box(match_descriptors_f32(
+                                black_box(&cosine1),
+                                black_box(&cosine2),
                                 None,
                                 true,
                                 Some(0.95),
