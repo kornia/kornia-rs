@@ -112,35 +112,34 @@ matching). Decode is clock-paced at ~24 s and is included in `Total`.
 
 | Config | Detector | Extract (s) | Match (s) | Geo (s) | Matches (raw→verified) | Tracks | Recon (s) | Points | Views | RMSE (px) | Total (s) |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| `orb_base` | ORB | 2.6 | 4.3 | — | 19810 | 4048 | 1.8 | 125 | 2/63 | 0.761 | 32.3 |
-| `orb_geo` | ORB | 2.5 | 4.4 | 3.6 | 19810→14286 | 4011 | 0.7 | 137 | 2/63 | 0.803 | 34.7 |
-| `orb_geo --geo-min-inliers 8` | ORB | 2.7 | 4.6 | 3.7 | 19810→15385 | 4148 | 3.7 | 670 | 10/63 | 1.072 | 38.3 |
-| `orb_geo --wide-baseline 20` | ORB | 2.9 | 5.0 | 4.4 | 20973→14428 | 3985 | 4.6 | 697 | 12/63 | 1.111 | 40.5 |
-| `sift_base` | SIFT (CUDA) | 0.8 | 0.1 | — | 21667 | 3483 | 3.1 | 520 | 9/63 | 2.244 | 27.9 |
-| `sift_geo` | SIFT (CUDA) | 1.1 | 0.1 | 2.1 | 21667→16935 | 3774 | 8.0 | 806 | 16/63 | 1.842 | 35.1 |
-| `sift_geo_sprt` (champion) | SIFT (CUDA) | 0.8 | 0.1 | 2.2 | 21667→16935 | 3774 | 8.4 | 805 | 16/63 | 1.848 | 35.1 |
-| champion, no `--cuda` | SIFT (CPU) | 18.8 | 12.7 | 2.1 | 21667→16935 | 3774 | 7.8 | 805 | 16/63 | 1.848 | 64.9 |
-| champion + `--refine-intrinsics` | SIFT (CUDA) | 0.9 | 0.1 | 2.3 | 21667→16935 | 3774 | 9.2 | 805 | 16/63 | 1.831 | 36.1 |
-| champion + `--wide-baseline 20` | SIFT (CUDA) | 0.8 | 0.1 | 2.3 | 22643→17147 | 3707 | 13.4 | 914 | 19/63 | 1.910 | 40.2 |
-| champion, `--frame-step 5` | SIFT (CUDA) | 1.3 | 0.2 | 3.2 | 70314→60355 | 6510 | 29.7 | 1703 | 31/126 | 3.380 | 58.0 |
+| `orb_base` | ORB | 2.2 | 2.5 | — | 19810 | 4048 | 1.7 | 125 | 2/63 | 0.761 | 29.9 |
+| `orb_geo` | ORB | 2.3 | 2.6 | 3.5 | 19810→14570 | 4084 | 3.7 | 674 | 10/63 | 1.106 | 35.7 |
+| `orb_geo --geo-min-inliers 8` | ORB | 2.4 | 3.0 | 3.9 | 19810→15598 | 4169 | 4.5 | 692 | 11/63 | 1.122 | 37.4 |
+| `orb_geo --wide-baseline 20` | ORB | 2.5 | 2.7 | 4.3 | 20973→14713 | 4057 | 4.5 | 700 | 12/63 | 1.133 | 37.5 |
+| `sift_base` | SIFT (CUDA) | 1.0 | 0.1 | — | 21667 | 3483 | 3.0 | 520 | 9/63 | 2.244 | 27.8 |
+| `sift_geo` | SIFT (CUDA) | 0.7 | 0.1 | 2.2 | 21667→17170 | 3780 | 9.0 | 809 | 16/63 | 1.880 | 35.3 |
+| `sift_geo_sprt` (champion) | SIFT (CUDA) | 0.7 | 0.1 | 2.2 | 21667→17170 | 3780 | 12.3 | 1175 | 22/63 | 2.086 | 38.6 |
+| champion, no `--cuda` | SIFT (CPU) | 16.5 | 11.4 | 2.3 | 21667→17170 | 3780 | 12.4 | 1175 | 22/63 | 2.086 | 65.9 |
+| champion + `--refine-intrinsics` | SIFT (CUDA) | 0.8 | 0.1 | 2.2 | 21667→17170 | 3780 | 17.0 | 1175 | 22/63 | 2.064 | 43.6 |
+| champion + `--wide-baseline 20` | SIFT (CUDA) | 0.7 | 0.1 | 2.5 | 22643→17389 | 3711 | 16.0 | 816 | 17/63 | 1.898 | 42.8 |
+| champion, `--frame-step 5` | SIFT (CUDA) | 1.2 | 0.2 | 3.7 | 70314→60896 | 6590 | 26.1 | 2037 | 39/126 | 2.414 | 54.6 |
 
 Observations:
 
 - **Deterministic**: two identical champion runs produce byte-identical PLY.
 - **`--cuda` speeds up both stages with identical output**: extraction
-  18.8 s → 0.8 s and matching 12.7 s → 0.1 s; the reconstruction is
+  16.5 s → 0.7 s and matching 11.4 s → 0.1 s; the reconstruction is
   byte-identical to the CPU path.
-- **`--geo-verify` is the SIFT accuracy lever**: 9 → 16 views, RMSE 2.24 →
-  1.84 px.
-- **`--wide-baseline 20`** maximises coverage at this frame step (914 pts,
-  19/63 views).
+- **The seven-point fundamental solver (kornia-3d's default) registers many
+  more views**: SIFT 16 → 22/63 and ORB reaches 10/63 at the stock
+  `--geo-min-inliers 15` (the eight-point solver needed 8). RMSE rises slightly
+  (2.09 px) because the longer map spans harder views.
+- **`--geo-verify` is the accuracy lever**: SIFT 9 → 22 views, ORB 2 → 10.
+- **`--wide-baseline 20`** trades views for longer-baseline triangulation.
 - **`--refine-intrinsics`** is near-neutral here (the EXIF focal is already
   accurate: it fits `gamma≈1.00`).
-- **`--frame-step 5`** gives the densest map (1703 pts, 31/126 views) at higher
+- **`--frame-step 5`** gives the densest map (2037 pts, 39/126 views) at higher
   RMSE.
-- **ORB sensitivity**: with the default `--geo-min-inliers 15` ORB registers
-  2/63 views on this clip; `--geo-min-inliers 8` keeps enough weak pairs to
-  register 10/63. SIFT has denser per-pair inliers and is unaffected.
 
 Reproduce the champion (device SIFT, requires an NVIDIA GPU with NVRTC on the
 library path):
