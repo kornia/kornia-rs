@@ -90,6 +90,28 @@ pub fn cpu_features() -> &'static CpuFeatures {
     CPU.get_or_init(CpuFeatures::probe)
 }
 
+/// Horizontal sum of a `__m256` of 8 f32 lanes.
+///
+/// # Safety
+///
+/// The caller must ensure AVX is available.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+pub(crate) unsafe fn hsum_avx_ps(v: std::arch::x86_64::__m256) -> f32 {
+    use std::arch::x86_64::*;
+    // SAFETY: caller guarantees AVX; these intrinsics only use registers.
+    unsafe {
+        let hi = _mm256_extractf128_ps::<1>(v);
+        let lo = _mm256_castps256_ps128(v);
+        let s128 = _mm_add_ps(lo, hi);
+        let shuf = _mm_movehdup_ps(s128);
+        let sums = _mm_add_ps(s128, shuf);
+        let shuf = _mm_movehl_ps(sums, sums);
+        let sums = _mm_add_ss(sums, shuf);
+        _mm_cvtss_f32(sums)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -810,18 +810,6 @@ fn scan_float_task(
     (best, index, second)
 }
 
-#[cfg(target_arch = "x86_64")]
-#[inline(always)]
-unsafe fn horizontal_sum_avx(sum: std::arch::x86_64::__m256) -> f32 {
-    use std::arch::x86_64::*;
-    // SAFETY: caller guarantees AVX; these intrinsics only use registers.
-    unsafe {
-        let x = _mm_add_ps(_mm256_castps256_ps128(sum), _mm256_extractf128_ps(sum, 1));
-        let x = _mm_add_ps(x, _mm_movehl_ps(x, x));
-        _mm_cvtss_f32(_mm_add_ss(x, _mm_shuffle_ps(x, x, 1)))
-    }
-}
-
 /// Squared L2 over the common prefix of two rows.
 ///
 /// Four accumulators, because one would be a chain of FMAs bound by their latency.
@@ -856,7 +844,7 @@ pub(crate) unsafe fn squared_l2_avx2(a: &[f32], b: &[f32]) -> f32 {
         let tail = (rest..a.len())
             .map(|k| (a[k] - b[k]) * (a[k] - b[k]))
             .sum::<f32>();
-        horizontal_sum_avx(sum) + tail
+        crate::simd::hsum_avx_ps(sum) + tail
     }
 }
 
@@ -895,7 +883,7 @@ unsafe fn dot_avx2(a: &[f32], b: &[f32]) -> f32 {
         }
         let sum = _mm256_add_ps(_mm256_add_ps(acc[0], acc[1]), _mm256_add_ps(acc[2], acc[3]));
         let tail = (rest..a.len()).map(|k| a[k] * b[k]).sum::<f32>();
-        horizontal_sum_avx(sum) + tail
+        crate::simd::hsum_avx_ps(sum) + tail
     }
 }
 
@@ -919,7 +907,7 @@ unsafe fn squared_l2_fixed_avx2<const D: usize>(a: &[f32], b: &[f32]) -> f32 {
                 *acc = _mm256_fmadd_ps(d, d, *acc);
             }
         }
-        horizontal_sum_avx(_mm256_add_ps(
+        crate::simd::hsum_avx_ps(_mm256_add_ps(
             _mm256_add_ps(acc[0], acc[1]),
             _mm256_add_ps(acc[2], acc[3]),
         ))
@@ -949,7 +937,7 @@ unsafe fn dot_fixed_avx2<const D: usize>(a: &[f32], b: &[f32]) -> f32 {
                 );
             }
         }
-        horizontal_sum_avx(_mm256_add_ps(
+        crate::simd::hsum_avx_ps(_mm256_add_ps(
             _mm256_add_ps(acc[0], acc[1]),
             _mm256_add_ps(acc[2], acc[3]),
         ))
