@@ -185,11 +185,14 @@ pub struct ReconstructionConfig {
     /// default.
     pub progress: Option<std::sync::Arc<dyn Fn(usize, usize) + Send + Sync>>,
     /// Optional Wald's SPRT configuration for the per-view PnP-RANSAC
-    /// registration. `None` (the default) runs plain RANSAC to its full
-    /// iteration budget. Enabling SPRT streams residuals one at a time and
-    /// rejects a candidate pose as soon as the evidence says it cannot reach
-    /// `min_registration_inliers`, which speeds up registration when many
-    /// camera candidates fail PnP (e.g. noisy ORB tracks).
+    /// registration. `None` (the default) leaves SPRT off; PnP then runs its
+    /// normal adaptive RANSAC (early exit at full consensus, iteration budget
+    /// derived from the observed inlier ratio — not a fixed full budget).
+    /// With `Some`, SPRT streams residuals one at a time and rejects a
+    /// candidate pose early when the evidence says it cannot be good, saving
+    /// per-point work when many candidates fail (e.g. noisy ORB tracks). It
+    /// does **not** use [`ReconstructionConfig::min_registration_inliers`]: that
+    /// gate is applied to the registered pose after the solve.
     pub sprt: Option<SPRTConfig>,
 }
 

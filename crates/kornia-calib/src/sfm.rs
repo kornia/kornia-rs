@@ -2640,6 +2640,37 @@ mod tests {
         );
     }
 
+    /// `sprt: Some(..)` must be accepted and must not change which views register.
+    #[test]
+    fn sprt_config_is_accepted_and_keeps_registration() {
+        let (cams, _, tracks) = converging_rig(500.0, 1.0);
+        let plain = reconstruct(&cams, &[], &tracks, &ReconstructionConfig::new(0.0), None)
+            .expect("solves without SPRT");
+
+        let with_sprt = reconstruct(
+            &cams,
+            &[],
+            &tracks,
+            &ReconstructionConfig {
+                sprt: Some(kornia_3d::ransac::SPRTConfig::default()),
+                ..ReconstructionConfig::new(0.0)
+            },
+            None,
+        )
+        .expect("solves with SPRT enabled");
+
+        let registered = |r: &Reconstruction| r.views.iter().filter(|v| v.is_some()).count();
+        assert_eq!(
+            registered(&with_sprt),
+            registered(&plain),
+            "SPRT must not change which views register on a clean rig"
+        );
+        assert!(
+            registered(&with_sprt) >= 2,
+            "the bootstrap pair must register"
+        );
+    }
+
     /// `refine_intrinsics` must REPORT its fit and then ACT on it.
     ///
     /// 1. It reaches the caller on [`Reconstruction::camera_correction`] — refinement applies
