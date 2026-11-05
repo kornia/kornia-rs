@@ -267,7 +267,7 @@ fn hamming_row_scan<const N: usize, const SECOND: bool, const GATED: bool>(
                     );
                 }
                 // SAFETY: the selector confirms POPCNT and N == 32.
-                return unsafe { hamming_row_popcnt::<SECOND>(query, candidates, gate, visit) };
+                return unsafe { hamming_row_popcnt::<SECOND>(query, candidates, visit) };
             }
         }
         #[cfg(target_arch = "aarch64")]
@@ -318,6 +318,8 @@ fn hamming_row_scalar<const N: usize, const SECOND: bool>(
     )
 }
 
+/// Ungated POPCNT scan; gated scans stay in `hamming_row_scan`'s baseline context.
+///
 /// # Safety
 ///
 /// The caller must ensure POPCNT is available.
@@ -326,18 +328,18 @@ fn hamming_row_scalar<const N: usize, const SECOND: bool>(
 unsafe fn hamming_row_popcnt<const SECOND: bool>(
     query: &[u8; 32],
     candidates: &[[u8; 32]],
-    gate: impl FnMut(usize) -> bool,
     visit: impl FnMut(usize, u32),
 ) -> (usize, u32, u32) {
     let kernel = PopcntHamming::new(query);
     let distance = |candidate: &[u8; 32]| kernel.distance(candidate);
     let distances4 = |batch: &[[u8; 32]; 4]| std::array::from_fn(|i| kernel.distance(&batch[i]));
     // Four-candidate batches help best-only scans; tracking the runner-up is
-    // faster one candidate at a time (see bench_hamming_match).
+    // faster one candidate at a time (see bench_hamming_match). The always-true
+    // gate only selects that one-at-a-time loop.
     if SECOND {
-        scan_hamming::<32, SECOND, true>(candidates, distance, distances4, gate, visit)
+        scan_hamming::<32, SECOND, true>(candidates, distance, distances4, |_| true, visit)
     } else {
-        scan_hamming::<32, SECOND, false>(candidates, distance, distances4, gate, visit)
+        scan_hamming::<32, SECOND, false>(candidates, distance, distances4, |_| true, visit)
     }
 }
 
@@ -2303,20 +2305,25 @@ mod tests {
                     hamming_row_scalar::<32, true>(query, candidates),
                     (index, distance, second)
                 );
+                // Ungated scans ignore the gate on every kernel.
+                assert_eq!(
+                    hamming_row_scan::<32, true, false>(query, candidates, |_| false, |_, _| {}),
+                    (index, distance, second)
+                );
+                assert_eq!(
+                    hamming_row_scan::<32, false, false>(query, candidates, |_| false, |_, _| {}),
+                    (index, distance, u32::MAX)
+                );
                 #[cfg(target_arch = "x86_64")]
                 if crate::simd::cpu_features().has_popcnt {
                     // SAFETY: POPCNT detected above and descriptors are 32 bytes.
                     assert_eq!(
-                        unsafe {
-                            hamming_row_popcnt::<true>(query, candidates, |_| true, |_, _| {})
-                        },
+                        unsafe { hamming_row_popcnt::<true>(query, candidates, |_, _| {}) },
                         (index, distance, second)
                     );
                     // SAFETY: POPCNT detected above and descriptors are 32 bytes.
                     assert_eq!(
-                        unsafe {
-                            hamming_row_popcnt::<false>(query, candidates, |_| true, |_, _| {})
-                        },
+                        unsafe { hamming_row_popcnt::<false>(query, candidates, |_, _| {}) },
                         (index, distance, u32::MAX)
                     );
                 }
