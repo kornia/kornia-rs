@@ -501,6 +501,186 @@ pub fn match_descriptors<const N: usize>(
     matches
 }
 
+// A task's column keys hold its query offsets in 16 bits.
+const MAX_ROWS_PER_SMNN_TASK: usize = 1 << 16;
+
+// Packed (distance, query offset) keys keep the earliest of tied queries. The
+// runner-up only needs its distance, and any key with that distance gives it.
+#[inline(always)]
+fn update_columns_scalar(distances: &[u16], offset: u32, best: &mut [u32], second: &mut [u32]) {
+    for ((&distance, best), second) in distances.iter().zip(best).zip(second) {
+        let key = ((distance as u32) << 16) | offset;
+        *second = (*second).min((*best).max(key));
+        *best = (*best).min(key);
+    }
+}
+
+/// [`update_columns_scalar`], autovectorized for AVX2's unsigned 32-bit min and max.
+///
+/// # Safety
+///
+/// The caller must ensure AVX2 is available.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn update_columns_avx2(
+    distances: &[u16],
+    offset: u32,
+    best: &mut [u32],
+    second: &mut [u32],
+) {
+    update_columns_scalar(distances, offset, best, second)
+}
+
+#[inline]
+fn update_columns(distances: &[u16], offset: u32, best: &mut [u32], second: &mut [u32]) {
+    #[cfg(target_arch = "x86_64")]
+    if crate::simd::cpu_features().has_avx2 {
+        // SAFETY: the shared selector confirms AVX2.
+        unsafe { update_columns_avx2(distances, offset, best, second) };
+        return;
+    }
+    update_columns_scalar(distances, offset, best, second)
+}
+
+// Each column's nearest query as a packed (distance, query) key, and its
+// runner-up distance.
+struct ColumnNearest {
+    best: Vec<u64>,
+    second: Vec<u16>,
+}
+
+impl ColumnNearest {
+    fn merge(mut self, other: Self) -> Self {
+        let columns = self.best.iter_mut().zip(&mut self.second);
+        for ((best, second), (other_best, other_second)) in
+            columns.zip(other.best.into_iter().zip(other.second))
+        {
+            let larger_best = ((*best).max(other_best) >> 32) as u16;
+            *second = (*second).min(other_second).min(larger_best);
+            *best = (*best).min(other_best);
+        }
+        self
+    }
+}
+
+/// One match of [`match_smnn`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SmnnMatch {
+    /// Row in `descriptors1`.
+    pub query: usize,
+    /// Row in `descriptors2`.
+    pub train: usize,
+    /// The larger of the two nearest-to-second-nearest distance ratios.
+    pub ratio: f32,
+}
+
+/// Match mutual nearest neighbors that pass Lowe's ratio test in both directions.
+///
+/// The contract of `kornia.feature.match_smnn`, on Hamming distances: a pair is kept
+/// when the two descriptors are mutual nearest neighbors and
+/// `nearest / second_nearest <= th` both from `descriptors1` to `descriptors2` and
+/// back. Ratios are `f32`. One pass over the distance table serves both directions,
+/// at about half the cost of two [`match_descriptors`] ratio scans.
+///
+/// Of tied nearest neighbors, the earliest row is the nearest. A tie has ratio 1, or
+/// is not a number at distance zero, which `th` never accepts.
+///
+/// # Arguments
+///
+/// * `descriptors1` - First set of N-byte binary descriptors. `N` is at most 8,190.
+/// * `descriptors2` - Second set of N-byte binary descriptors.
+/// * `th` - Distance ratio threshold; `kornia.feature.match_smnn` defaults to 0.95.
+///
+/// # Returns
+///
+/// The matches, in the order of the rows of `descriptors1`. Sets with fewer than two
+/// descriptors have no second neighbor and return no matches.
+///
+/// # Errors
+///
+/// This function does not return errors.
+///
+/// # Example
+///
+/// ```
+/// use kornia_imgproc::features::match_smnn;
+/// let a = [[0u8; 32], [255u8; 32]];
+/// let b = [[255u8; 32], [1u8; 32]];
+/// let matches = match_smnn(&a, &b, 0.95);
+/// assert_eq!((matches[0].query, matches[0].train), (0, 1));
+/// assert_eq!((matches[1].query, matches[1].train), (1, 0));
+/// ```
+pub fn match_smnn<const N: usize>(
+    descriptors1: &[[u8; N]],
+    descriptors2: &[[u8; N]],
+    th: f32,
+) -> Vec<SmnnMatch> {
+    const {
+        assert!(
+            N * 8 < u16::MAX as usize,
+            "Hamming distances must fit u16 below its sentinel"
+        )
+    };
+    if descriptors1.len() < 2 || descriptors2.len() < 2 {
+        return Vec::new();
+    }
+
+    use rayon::prelude::*;
+    let rows_per_task = descriptors1
+        .len()
+        .div_ceil(rayon::current_num_threads() * 4)
+        .min(MAX_ROWS_PER_SMNN_TASK);
+    let mut rows = vec![(0, 0, 0); descriptors1.len()];
+    let columns = rows
+        .par_chunks_mut(rows_per_task)
+        .zip(descriptors1.par_chunks(rows_per_task))
+        .enumerate()
+        .map(|(task, (results, queries))| {
+            let mut distances = vec![0u16; descriptors2.len()];
+            let mut best = vec![u32::MAX; descriptors2.len()];
+            let mut second = vec![u32::MAX; descriptors2.len()];
+            for (offset, (result, query)) in results.iter_mut().zip(queries).enumerate() {
+                *result = hamming_row_scan::<N, true, false>(
+                    query,
+                    descriptors2,
+                    |_| true,
+                    |j, distance| distances[j] = distance as u16,
+                );
+                update_columns(&distances, offset as u32, &mut best, &mut second);
+            }
+            let first_query = (task * rows_per_task) as u64;
+            ColumnNearest {
+                best: best
+                    .into_iter()
+                    .map(|key| (((key >> 16) as u64) << 32) | (first_query + (key & 0xffff) as u64))
+                    .collect(),
+                second: second.into_iter().map(|key| (key >> 16) as u16).collect(),
+            }
+        })
+        .reduce_with(ColumnNearest::merge);
+    let Some(columns) = columns else {
+        return Vec::new();
+    };
+
+    let mut matches = Vec::new();
+    for (query, &(train, first, second)) in rows.iter().enumerate() {
+        let column = columns.best[train];
+        if column as u32 as usize != query {
+            continue;
+        }
+        let forward = first as f32 / second as f32;
+        let backward = (column >> 32) as f32 / columns.second[train] as f32;
+        if forward <= th && backward <= th {
+            matches.push(SmnnMatch {
+                query,
+                train,
+                ratio: forward.max(backward),
+            });
+        }
+    }
+    matches
+}
+
 /// Cosine similarity (dot product) between two L2-normalised f32 descriptors.
 ///
 /// Assumes both inputs are unit-norm; the dot product is then the cosine.
@@ -828,6 +1008,226 @@ pub fn match_orb_by_projection<const N: usize>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    type KorniaMatch = (usize, usize, f32);
+
+    fn hex_rows(rows: &[&str]) -> Vec<[u8; 32]> {
+        rows.iter()
+            .map(|row| {
+                std::array::from_fn(|i| {
+                    u8::from_str_radix(&row[i * 2..i * 2 + 2], 16).expect("test fixture is hex")
+                })
+            })
+            .collect()
+    }
+
+    // Values from kornia.feature.match_smnn (kornia 5310f2589), given the Hamming
+    // table of these descriptors as `dm`: 12 x 9 random rows, with near copies at
+    // 10, 40 and 90 flipped bits, one exact copy, and one target stored twice.
+    #[test]
+    fn match_smnn_returns_the_values_of_kornia() {
+        let a = hex_rows(&[
+            "babbb6faf3fe08fa81ace9fcf7815461b43cde2b7cdd59ec8e3eda1a5246fe42",
+            "841e87234658b051fa763a891f3a3b1e8751bdcb5265e43d9bf23ac986708b51",
+            "dc4b22cbbce5cdf6fb0e55f5b68d7e4330df3c8ef7c6e570023835414d7e209c",
+            "5d46a8e5084916dd74a85ea503391fddcd59ba849105c5acad3280f47786eda8",
+            "7027190cd49d5abcf2a919bd3c6206394868f9dd8b870c2ca566e9c90084d3de",
+            "3e969b7b403f650fcbaf8e29813c06af17eaa30a3c41d6ab24acc523a6ac6b9c",
+            "e51e7a8caf28650f6d51b12d4d164ffa660e476741225f7064b00a74b7255888",
+            "5c9b6b311047cd005dd64ea5800a53401c635ba88007c6db81ed4f6e4d5ae06c",
+            "7ba40d2d33a25ebc1422ebb235060becc997a5c651154a27ee13b1cd6bb304fe",
+            "b38d8d5bb44bad2e301d19da393dabf0abcb92f9c8f73d16a3cf03e14ca8dc77",
+            "5e30886edea238d4333dbde7850af347a34596c201c87cde90b386ddc56ff6f9",
+            "05875d54d78b7ad7b016dd6c5961e972844be6c1f4a3d95eabe6d2c06639907b",
+        ]);
+        let b = hex_rows(&[
+            "5d47a8e51849165d74285ea503390f9dcd59ba849105c5bcad3281f477a6eca8",
+            "3e969b7b403f650fcbaf8e29813c06af17eaa30a3c41d6ab24acc523a6ac6b9c",
+            "5c8ffb3100cf8d425edf4ead990b5340b8635b80d817f6da81e54f6cc55bc3ec",
+            "f0cfbcbbb6ce8cb1b93f6c5a9d9f89323219f36b59efb03726ff10675c99f947",
+            "841e8f234650b050da763aa91fba3b1a87599fdb527de43d9bf33ee983688b51",
+            "841e8f234650b050da763aa91fba3b1a87599fdb527de43d9bf33ee983688b51",
+            "f316389e0ba187338a27906bb89cc241cc981d07c40d3b57d7deb3c15f89910d",
+            "23a6e7fbab249553897299be7c9ac732605b2d1ea56d47d435a8418b2e671aa3",
+            "d953ea6aad71df15dc19ba05366f5c38c21c5512fb8c61aebb2531591ab36822",
+        ]);
+        let expected: [(f32, &[KorniaMatch]); 3] = [
+            (
+                0.5f32,
+                &[(3, 0, 0.09090909f32), (5, 1, 0.0f32), (7, 2, 0.3478261f32)],
+            ),
+            (
+                0.8f32,
+                &[
+                    (3, 0, 0.09090909f32),
+                    (5, 1, 0.0f32),
+                    (7, 2, 0.3478261f32),
+                    (9, 3, 0.79646015f32),
+                ],
+            ),
+            (
+                0.95f32,
+                &[
+                    (3, 0, 0.09090909f32),
+                    (5, 1, 0.0f32),
+                    (6, 7, 0.92561984f32),
+                    (7, 2, 0.3478261f32),
+                    (9, 3, 0.79646015f32),
+                ],
+            ),
+        ];
+        for (th, pairs) in expected {
+            let got: Vec<_> = match_smnn(&a, &b, th)
+                .into_iter()
+                .map(|m| (m.query, m.train, m.ratio))
+                .collect();
+            assert_eq!(got, pairs, "th={th}");
+        }
+    }
+
+    fn reference_smnn<const N: usize>(a: &[[u8; N]], b: &[[u8; N]], th: f32) -> Vec<SmnnMatch> {
+        if a.len() < 2 || b.len() < 2 {
+            return Vec::new();
+        }
+        let table: Vec<Vec<u32>> = a
+            .iter()
+            .map(|x| {
+                b.iter()
+                    .map(|y| x.iter().zip(y).map(|(p, q)| (p ^ q).count_ones()).sum())
+                    .collect()
+            })
+            .collect();
+        let top2 = |values: Vec<u32>| {
+            let mut order: Vec<usize> = (0..values.len()).collect();
+            order.sort_by_key(|&k| (values[k], k));
+            (order[0], values[order[0]], values[order[1]])
+        };
+        let mut out = Vec::new();
+        for (i, row) in table.iter().enumerate() {
+            let (j, d1, d2) = top2(row.clone());
+            let (back, e1, e2) = top2(table.iter().map(|r| r[j]).collect());
+            let (r1, r2) = (d1 as f32 / d2 as f32, e1 as f32 / e2 as f32);
+            if back == i && r1 <= th && r2 <= th {
+                out.push(SmnnMatch {
+                    query: i,
+                    train: j,
+                    ratio: r1.max(r2),
+                });
+            }
+        }
+        out
+    }
+
+    fn check_smnn_against_reference<const N: usize>() {
+        // A few repeated rows force the ties and zero distances random rows never reach.
+        let with_duplicates = |n: usize, seed: u64| {
+            let unique = random_binary_descs::<N>(n / 2 + 1, seed);
+            (0..n)
+                .map(|i| unique[(i * 7) % unique.len()])
+                .collect::<Vec<_>>()
+        };
+        for threads in [1, 4] {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .expect("test thread pool");
+            for (n1, n2) in [
+                (0, 5),
+                (1, 5),
+                (5, 1),
+                (2, 2),
+                (3, 17),
+                (64, 40),
+                (129, 300),
+            ] {
+                for (a, b) in [
+                    (
+                        random_binary_descs::<N>(n1, 11),
+                        random_binary_descs::<N>(n2, 13),
+                    ),
+                    (with_duplicates(n1, 17), with_duplicates(n2, 17)),
+                ] {
+                    for th in [0.0, 0.5, 0.8, 0.95, 1.0, 2.0, f32::NAN] {
+                        let got = pool.install(|| match_smnn(&a, &b, th));
+                        assert_eq!(got, reference_smnn(&a, &b, th), "{n1}x{n2} th={th}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn match_smnn_agrees_with_the_reference_across_widths() {
+        check_smnn_against_reference::<16>();
+        check_smnn_against_reference::<32>();
+        check_smnn_against_reference::<64>();
+    }
+
+    #[test]
+    fn match_smnn_rejects_zero_distance_ties_at_any_threshold() {
+        let a = [[0u8; 32], [255u8; 32]];
+        let b = [[0u8; 32], [0u8; 32], [255u8; 32]];
+        // Row 0 ties at distance zero (0/0 is not <= th); row 1 is unambiguous.
+        for th in [0.5, 1.0, 100.0] {
+            assert_eq!(
+                match_smnn(&a, &b, th),
+                vec![SmnnMatch {
+                    query: 1,
+                    train: 2,
+                    ratio: 0.0
+                }],
+            );
+        }
+    }
+
+    #[test]
+    fn match_smnn_keeps_query_indices_past_one_task() {
+        // One thread and this many rows reach the 16-bit limit on a task's rows, so
+        // both matches below cross it: the earliest row must win a tie across tasks,
+        // and a row of a later task must report its real index.
+        let mut a = vec![[0xaau8; 32]; (1 << 18) + 9];
+        let near = (1 << 16) + 1;
+        a[near] = [0x55u8; 32];
+        let mut b = [[0x0fu8; 32], [0x55u8; 32]];
+        b[1][0] ^= 1;
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .expect("test thread pool");
+        assert_eq!(
+            pool.install(|| match_smnn(&a, &b, 1.0)),
+            vec![
+                SmnnMatch {
+                    query: 0,
+                    train: 0,
+                    ratio: 1.0
+                },
+                SmnnMatch {
+                    query: near,
+                    train: 1,
+                    ratio: 1.0 / 128.0
+                },
+            ],
+        );
+    }
+
+    #[test]
+    fn column_updates_agree_across_kernels() {
+        let rows: [[u16; 9]; 3] = [
+            [5, 1, 9, 256, 0, 7, 7, 3, 2],
+            [5, 2, 8, 255, 0, 6, 8, 3, 1],
+            [4, 1, 9, 256, 1, 7, 6, 2, 2],
+        ];
+        let mut scalar = ([u32::MAX; 9], [u32::MAX; 9]);
+        let mut selected = scalar;
+        for (offset, row) in rows.iter().enumerate() {
+            update_columns_scalar(row, offset as u32, &mut scalar.0, &mut scalar.1);
+            update_columns(row, offset as u32, &mut selected.0, &mut selected.1);
+        }
+        assert_eq!(scalar, selected);
+        // Column 0 saw 5, 5, 4: nearest is row 2, runner-up distance 5.
+        assert_eq!((scalar.0[0], scalar.1[0] >> 16), ((4 << 16) | 2, 5));
+    }
 
     #[test]
     fn binary_ratio_rejects_ambiguous_zero_ties() {

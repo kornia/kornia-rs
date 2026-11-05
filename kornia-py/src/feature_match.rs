@@ -3,7 +3,36 @@ use pyo3::prelude::*;
 
 use crate::pyutils::{c_slice, value_err};
 
-use kornia_imgproc::features::match_descriptors;
+use kornia_imgproc::features::{match_descriptors, match_smnn};
+
+type SmnnArrays = (Py<PyArray2<f32>>, Py<PyArray2<i64>>);
+type DescriptorRows<'a> = (&'a [[u8; 32]], &'a [[u8; 32]]);
+
+fn descriptor_rows<'a>(
+    descriptors1: &'a Bound<'_, PyArray2<u8>>,
+    descriptors2: &'a Bound<'_, PyArray2<u8>>,
+) -> PyResult<DescriptorRows<'a>> {
+    if !descriptors1.is_c_contiguous() || !descriptors2.is_c_contiguous() {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "descriptor arrays must be C-contiguous",
+        ));
+    }
+    let s1 = descriptors1.shape();
+    let s2 = descriptors2.shape();
+    if s1[1] != 32 || s2[1] != 32 {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "expected (N, 32) uint8 descriptors, got ({}, {}) and ({}, {})",
+            s1[0], s1[1], s2[0], s2[1]
+        )));
+    }
+
+    // Zero-copy reinterpret as 32-byte rows. `c_slice` validates contiguity
+    // and uses the array's real element count, so `as_chunks` can never read
+    // past the numpy buffer.
+    let (d1, _) = c_slice(descriptors1, "descriptors1")?.as_chunks::<32>();
+    let (d2, _) = c_slice(descriptors2, "descriptors2")?.as_chunks::<32>();
+    Ok((d1, d2))
+}
 
 /// Brute-force matcher for 32-byte binary descriptors (ORB, BRIEF).
 ///
@@ -26,25 +55,7 @@ pub fn match_descriptors_py(
     cross_check: bool,
     max_ratio: Option<f32>,
 ) -> PyResult<Py<PyArray2<i64>>> {
-    if !descriptors1.is_c_contiguous() || !descriptors2.is_c_contiguous() {
-        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-            "descriptor arrays must be C-contiguous",
-        ));
-    }
-    let s1 = descriptors1.shape();
-    let s2 = descriptors2.shape();
-    if s1[1] != 32 || s2[1] != 32 {
-        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-            "expected (N, 32) uint8 descriptors, got ({}, {}) and ({}, {})",
-            s1[0], s1[1], s2[0], s2[1]
-        )));
-    }
-
-    // Zero-copy reinterpret as 32-byte rows. `c_slice` validates contiguity
-    // and uses the array's real element count, so `as_chunks` can never read
-    // past the numpy buffer.
-    let (d1, _) = c_slice(&descriptors1, "descriptors1")?.as_chunks::<32>();
-    let (d2, _) = c_slice(&descriptors2, "descriptors2")?.as_chunks::<32>();
+    let (d1, d2) = descriptor_rows(&descriptors1, &descriptors2)?;
 
     let matches =
         py.detach(|| match_descriptors::<32>(d1, d2, max_distance, cross_check, max_ratio));
@@ -61,4 +72,49 @@ pub fn match_descriptors_py(
         }
     }
     Ok(out.unbind())
+}
+
+/// Match mutual nearest neighbors that pass Lowe's ratio test in both directions.
+///
+/// The contract of `kornia.feature.match_smnn`, on Hamming distances of 32-byte
+/// binary descriptors (ORB, BRIEF): keeps pairs with
+/// `nearest / second_nearest <= th` both ways.
+///
+/// Args:
+///     descriptors1: `(M, 32)` uint8 descriptors.
+///     descriptors2: `(N, 32)` uint8 descriptors.
+///     th: distance ratio threshold.
+///
+/// Returns:
+///     `(dists, idxs)`: `(K, 1)` float32 larger ratio of each match, and `(K, 2)`
+///     int64 index pairs, in the order of the rows of `descriptors1`.
+#[pyfunction(name = "match_smnn")]
+#[pyo3(signature = (descriptors1, descriptors2, th=0.95))]
+pub fn match_smnn_py(
+    py: Python<'_>,
+    descriptors1: Bound<'_, PyArray2<u8>>,
+    descriptors2: Bound<'_, PyArray2<u8>>,
+    th: f32,
+) -> PyResult<SmnnArrays> {
+    let (d1, d2) = descriptor_rows(&descriptors1, &descriptors2)?;
+    let matches = py.detach(|| match_smnn::<32>(d1, d2, th));
+
+    let k = matches.len();
+    let dists = PyArray::<f32, _>::zeros(py, [k, 1], false);
+    let idxs = PyArray::<i64, _>::zeros(py, [k, 2], false);
+    {
+        // SAFETY: both arrays are freshly allocated, zero-initialised and
+        // C-contiguous, and no other code references them yet.
+        let (dist_rows, idx_rows) = unsafe { (dists.as_slice_mut(), idxs.as_slice_mut()) };
+        let (dist_rows, idx_rows) = (dist_rows.map_err(value_err)?, idx_rows.map_err(value_err)?);
+        for (m, (dist, idx)) in matches
+            .iter()
+            .zip(dist_rows.iter_mut().zip(idx_rows.chunks_exact_mut(2)))
+        {
+            *dist = m.ratio;
+            idx[0] = m.query as i64;
+            idx[1] = m.train as i64;
+        }
+    }
+    Ok((dists.unbind(), idxs.unbind()))
 }
