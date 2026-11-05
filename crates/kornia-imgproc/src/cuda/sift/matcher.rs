@@ -63,6 +63,8 @@ const TILED_TRAIN_ROWS: usize = 2048;
 /// Train descriptors per shared-memory tile, and queries per block, of that kernel.
 const TILE_ROWS: usize = 128;
 const TILED_BLOCK_THREADS: u32 = 128;
+/// Words per descriptor in `match_smnn`'s gathered download.
+const SMNN_GATHER_STRIDE: usize = 4;
 
 fn quantize_src() -> String {
     format!(
@@ -222,6 +224,26 @@ extern "C" __global__ void __launch_bounds__(THREADS) sift_match_best2_tiled(
     )
 }
 
+// One row per query or train descriptor, in one buffer, so that one download brings
+// back what `match_smnn` needs: `index, best, second, integral` as raw 32-bit words.
+fn smnn_gather_src() -> String {
+    r#"
+extern "C" __global__ void sift_smnn_gather(
+    const int* __restrict__ index, const float* __restrict__ best,
+    const float* __restrict__ second, const int* __restrict__ integral, int n,
+    unsigned int* __restrict__ out)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    out[i * 4] = (unsigned int)index[i];
+    out[i * 4 + 1] = __float_as_uint(best[i]);
+    out[i * 4 + 2] = __float_as_uint(second[i]);
+    out[i * 4 + 3] = (unsigned int)integral[i];
+}
+"#
+    .to_string()
+}
+
 fn pairs_src() -> String {
     format!(
         r#"
@@ -283,6 +305,8 @@ pub struct SiftMatcher {
     rev_d2: CudaSlice<f32>,
     pairs: CudaSlice<i32>,
     count: CudaSlice<i32>,
+    // Both sides' `SMNN_GATHER_STRIDE` words per row, for one download.
+    smnn_rows: CudaSlice<u32>,
     cap: usize,
 }
 
@@ -309,6 +333,7 @@ impl SiftMatcher {
             rev_d2: stream.alloc_zeros::<f32>(cap)?,
             pairs: stream.alloc_zeros::<i32>(cap * MATCH_STRIDE)?,
             count: stream.alloc_zeros::<i32>(1)?,
+            smnn_rows: stream.alloc_zeros::<u32>(2 * cap * SMNN_GATHER_STRIDE)?,
             cap,
         })
     }
@@ -478,37 +503,67 @@ impl SiftMatcher {
             &mut self.tn,
             &mut self.t_integral,
         )?;
-        let forward_integral = stream.clone_dtoh(&self.q_integral.slice(0..n1))?;
-        let backward_integral = stream.clone_dtoh(&self.t_integral.slice(0..n2))?;
-        if forward_integral
-            .iter()
-            .chain(&backward_integral)
-            .any(|&ok| ok == 0)
-        {
-            return Err(SiftCudaError::NonIntegerDescriptors);
-        }
         launch_best2(ctx, stream, n1, n2, self)?;
         launch_best2_rev(ctx, stream, n2, n1, self)?;
 
-        let forward_index = stream.clone_dtoh(&self.fwd_idx.slice(0..n1))?;
-        let forward_best = stream.clone_dtoh(&self.fwd_d1.slice(0..n1))?;
-        let forward_second = stream.clone_dtoh(&self.fwd_d2.slice(0..n1))?;
-        let backward_index = stream.clone_dtoh(&self.rev_idx.slice(0..n2))?;
-        let backward_best = stream.clone_dtoh(&self.rev_d1.slice(0..n2))?;
-        let backward_second = stream.clone_dtoh(&self.rev_d2.slice(0..n2))?;
+        let kernel = get_or_compile(ctx, "sift_smnn_gather", smnn_gather_src, "sift_smnn_gather")?;
+        let block = 128u32;
+        for (first, n, index, best, second, integral) in [
+            (
+                0,
+                n1,
+                &self.fwd_idx,
+                &self.fwd_d1,
+                &self.fwd_d2,
+                &self.q_integral,
+            ),
+            (
+                n1,
+                n2,
+                &self.rev_idx,
+                &self.rev_d1,
+                &self.rev_d2,
+                &self.t_integral,
+            ),
+        ] {
+            let rows = n as i32;
+            let mut out = self
+                .smnn_rows
+                .slice_mut(first * SMNN_GATHER_STRIDE..(first + n) * SMNN_GATHER_STRIDE);
+            kernel
+                .launch_builder(stream)
+                .arg(index)
+                .arg(best)
+                .arg(second)
+                .arg(integral)
+                .arg(&rows)
+                .arg(&mut out)
+                .launch_2d(n as u32, 1, make_config(n as u32, 1, Some((block, 1))))
+                .map_err(|e| SiftCudaError::Cuda(e.to_string()))?;
+        }
+        let words = stream.clone_dtoh(&self.smnn_rows.slice(0..(n1 + n2) * SMNN_GATHER_STRIDE))?;
+        let (forward, backward) = words.split_at(n1 * SMNN_GATHER_STRIDE);
+        let forward = forward.as_chunks::<SMNN_GATHER_STRIDE>().0;
+        let backward = backward.as_chunks::<SMNN_GATHER_STRIDE>().0;
+        if forward.iter().chain(backward).any(|row| row[3] == 0) {
+            return Err(SiftCudaError::NonIntegerDescriptors);
+        }
         let mut matches = Vec::new();
-        for (query, &train) in forward_index.iter().enumerate() {
-            let train = train as usize;
-            if backward_index[train] as usize != query {
+        for (query, row) in forward.iter().enumerate() {
+            let train = row[0] as usize;
+            let back = backward[train];
+            if back[0] as usize != query {
                 continue;
             }
-            let forward = forward_best[query].sqrt() / forward_second[query].sqrt();
-            let backward = backward_best[train].sqrt() / backward_second[train].sqrt();
-            if forward <= th && backward <= th {
+            let ratio = |row: &[u32; SMNN_GATHER_STRIDE]| {
+                f32::from_bits(row[1]).sqrt() / f32::from_bits(row[2]).sqrt()
+            };
+            let (forward_ratio, backward_ratio) = (ratio(row), ratio(&back));
+            if forward_ratio <= th && backward_ratio <= th {
                 matches.push(SmnnMatch {
                     query,
                     train,
-                    ratio: forward.max(backward),
+                    ratio: forward_ratio.max(backward_ratio),
                 });
             }
         }

@@ -80,6 +80,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("iters: {} (warmup {})\n", args.iters, args.warmup);
 
+    println!("\nmatching, ms per pair of descriptor blocks");
+    println!(
+        "{:<8} {:>11} {:>11} {:>11}",
+        "rows", "forward", "cross-check", "match_smnn"
+    );
+    for rows in [512usize, 1024, 2048, 4096, 8192] {
+        let (a, b) = (match_descriptors(rows, 1), match_descriptors(rows, 2));
+        let (da, db) = (stream.clone_htod(&a)?, stream.clone_htod(&b)?);
+        let mut matcher = SiftMatcher::new(&stream, rows)?;
+        let pairs = |cross_check: bool, matcher: &mut SiftMatcher| {
+            timed(args.warmup, args.iters, || {
+                std::hint::black_box(matcher.match_descriptors(
+                    &ctx,
+                    &stream,
+                    &da.as_view(),
+                    rows,
+                    &db.as_view(),
+                    rows,
+                    0.95,
+                    cross_check,
+                )?);
+                Ok(())
+            })
+        };
+        let forward_ms = pairs(false, &mut matcher)?;
+        let cross_check_ms = pairs(true, &mut matcher)?;
+        let smnn_ms = timed(args.warmup, args.iters, || {
+            std::hint::black_box(matcher.match_smnn(
+                &ctx,
+                &stream,
+                &da.as_view(),
+                rows,
+                &db.as_view(),
+                rows,
+                0.95,
+            )?);
+            Ok(())
+        })?;
+        println!("{rows:<8} {forward_ms:>11.3} {cross_check_ms:>11.3} {smnn_ms:>11.3}");
+    }
+
     println!("── per frame, end-to-end SIFT detect_and_compute() ───────────");
     println!(
         "{:<16} {:>11} {:>11} {:>9}",
@@ -131,47 +172,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let speedup = explicit_ms / unified_ms;
         println!("{label:<16} {explicit_ms:>11.3} {unified_ms:>11.3} {speedup:>8.2}x");
-    }
-
-    println!("\nmatching, ms per pair of descriptor blocks");
-    println!(
-        "{:<8} {:>11} {:>11} {:>11}",
-        "rows", "forward", "cross-check", "match_smnn"
-    );
-    for rows in [512usize, 1024, 2048, 4096, 8192] {
-        let (a, b) = (match_descriptors(rows, 1), match_descriptors(rows, 2));
-        let (da, db) = (stream.clone_htod(&a)?, stream.clone_htod(&b)?);
-        let mut matcher = SiftMatcher::new(&stream, rows)?;
-        let pairs = |cross_check: bool, matcher: &mut SiftMatcher| {
-            timed(args.warmup, args.iters, || {
-                std::hint::black_box(matcher.match_descriptors(
-                    &ctx,
-                    &stream,
-                    &da.as_view(),
-                    rows,
-                    &db.as_view(),
-                    rows,
-                    0.95,
-                    cross_check,
-                )?);
-                Ok(())
-            })
-        };
-        let forward_ms = pairs(false, &mut matcher)?;
-        let cross_check_ms = pairs(true, &mut matcher)?;
-        let smnn_ms = timed(args.warmup, args.iters, || {
-            std::hint::black_box(matcher.match_smnn(
-                &ctx,
-                &stream,
-                &da.as_view(),
-                rows,
-                &db.as_view(),
-                rows,
-                0.95,
-            )?);
-            Ok(())
-        })?;
-        println!("{rows:<8} {forward_ms:>11.3} {cross_check_ms:>11.3} {smnn_ms:>11.3}");
     }
 
     Ok(())
