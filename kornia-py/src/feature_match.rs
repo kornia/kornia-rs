@@ -3,7 +3,7 @@ use pyo3::prelude::*;
 
 use crate::pyutils::{c_slice, value_err};
 
-use kornia_imgproc::features::{match_descriptors, match_smnn};
+use kornia_imgproc::features::{match_descriptors, match_smnn, match_smnn_f32};
 
 type SmnnArrays = (Py<PyArray2<f32>>, Py<PyArray2<i64>>);
 type DescriptorRows<'a> = (&'a [[u8; 32]], &'a [[u8; 32]]);
@@ -76,13 +76,13 @@ pub fn match_descriptors_py(
 
 /// Match mutual nearest neighbors that pass Lowe's ratio test in both directions.
 ///
-/// The contract of `kornia.feature.match_smnn`, on Hamming distances of 32-byte
-/// binary descriptors (ORB, BRIEF): keeps pairs with
-/// `nearest / second_nearest <= th` both ways.
+/// The contract of `kornia.feature.match_smnn`: keeps pairs with
+/// `nearest / second_nearest <= th` both ways. `(N, 32)` uint8 descriptors (ORB, BRIEF)
+/// use Hamming distances; `(N, D)` float32 descriptors (SIFT, RootSIFT) use L2.
 ///
 /// Args:
-///     descriptors1: `(M, 32)` uint8 descriptors.
-///     descriptors2: `(N, 32)` uint8 descriptors.
+///     descriptors1: `(M, 32)` uint8 or `(M, D)` float32 descriptors.
+///     descriptors2: `(N, 32)` uint8 or `(N, D)` float32 descriptors.
 ///     th: distance ratio threshold.
 ///
 /// Returns:
@@ -92,12 +92,33 @@ pub fn match_descriptors_py(
 #[pyo3(signature = (descriptors1, descriptors2, th=0.95))]
 pub fn match_smnn_py(
     py: Python<'_>,
-    descriptors1: Bound<'_, PyArray2<u8>>,
-    descriptors2: Bound<'_, PyArray2<u8>>,
+    descriptors1: Bound<'_, PyAny>,
+    descriptors2: Bound<'_, PyAny>,
     th: f32,
 ) -> PyResult<SmnnArrays> {
-    let (d1, d2) = descriptor_rows(&descriptors1, &descriptors2)?;
-    let matches = py.detach(|| match_smnn::<32>(d1, d2, th));
+    let matches = if let (Ok(a), Ok(b)) = (
+        descriptors1.cast::<PyArray2<u8>>(),
+        descriptors2.cast::<PyArray2<u8>>(),
+    ) {
+        let (d1, d2) = descriptor_rows(a, b)?;
+        py.detach(|| match_smnn::<32>(d1, d2, th))
+    } else if let (Ok(a), Ok(b)) = (
+        descriptors1.cast::<PyArray2<f32>>(),
+        descriptors2.cast::<PyArray2<f32>>(),
+    ) {
+        let (dim, other) = (a.shape()[1], b.shape()[1]);
+        if dim != other {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                "descriptors must have one dimension, got {dim} and {other}"
+            )));
+        }
+        let (d1, d2) = (c_slice(a, "descriptors1")?, c_slice(b, "descriptors2")?);
+        py.detach(|| match_smnn_f32(d1, d2, dim, th))
+    } else {
+        return Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+            "expected two (N, 32) uint8 arrays or two (N, D) float32 arrays",
+        ));
+    };
 
     let k = matches.len();
     let dists = PyArray::<f32, _>::zeros(py, [k, 1], false);

@@ -681,11 +681,416 @@ pub fn match_smnn<const N: usize>(
     matches
 }
 
+// Candidate tiles keep one tile of train rows resident in the L1 data cache while
+// every query of a task passes over it.
+const FLOAT_TILE_BYTES: usize = 32 * 1024;
+const MIN_FLOAT_TILE_ROWS: usize = 8;
+
+/// What a one-pass float scan minimises; cosine similarity is minimised negated.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum FloatMetric {
+    SquaredL2,
+    NegativeDot,
+}
+
+/// A query's earliest nearest train row, with its distance and the runner-up's.
+/// `index` is `usize::MAX` and both distances are infinite if no distance was finite.
+#[derive(Clone, Copy)]
+pub(crate) struct RowNearest {
+    pub(crate) index: usize,
+    pub(crate) best: f32,
+    pub(crate) second: f32,
+}
+
+/// Each train row's earliest nearest query, with its distance and the runner-up's.
+#[derive(Default)]
+pub(crate) struct ColumnsNearest {
+    pub(crate) index: Vec<usize>,
+    pub(crate) best: Vec<f32>,
+    pub(crate) second: Vec<f32>,
+}
+
+impl ColumnsNearest {
+    // `self` holds earlier queries than `other`, so a tie keeps its index.
+    fn merge(mut self, other: Self) -> Self {
+        for (j, (other_best, other_second)) in other.best.into_iter().zip(other.second).enumerate()
+        {
+            let larger = if other_best < self.best[j] {
+                self.best[j]
+            } else {
+                other_best
+            };
+            self.second[j] = self.second[j].min(other_second).min(larger);
+            if other_best < self.best[j] {
+                self.best[j] = other_best;
+                self.index[j] = other.index[j];
+            }
+        }
+        self
+    }
+}
+
+// Comparisons rather than `f32::min`: they vectorize to one instruction each, and a
+// NaN distance fails all of them, so it changes nothing.
+#[inline(always)]
+fn update_float_columns(
+    distances: &[f32],
+    query: u32,
+    best: &mut [f32],
+    index: &mut [u32],
+    second: &mut [f32],
+) {
+    let columns = best.iter_mut().zip(index).zip(second);
+    for (&distance, ((best, index), second)) in distances.iter().zip(columns) {
+        let larger = if distance < *best { *best } else { distance };
+        *second = if larger < *second { larger } else { *second };
+        *index = if distance < *best { query } else { *index };
+        *best = if distance < *best { distance } else { *best };
+    }
+}
+
+#[inline(always)]
+fn merge_tile_into_row(row: &mut RowNearest, distances: &[f32], first_train: usize) {
+    let (mut best, mut second, mut index) = (f32::INFINITY, f32::INFINITY, 0);
+    for (j, &distance) in distances.iter().enumerate() {
+        if distance < best {
+            second = best;
+            best = distance;
+            index = j;
+        } else if distance < second {
+            second = distance;
+        }
+    }
+    if best < row.best {
+        row.second = row.best.min(second);
+        row.best = best;
+        row.index = first_train + index;
+    } else if best < row.second {
+        row.second = best;
+    }
+}
+
+#[inline(always)]
+fn scan_float_task(
+    queries: &[f32],
+    train: &[f32],
+    dim: usize,
+    columns: bool,
+    rows: &mut [RowNearest],
+    distance: impl Fn(&[f32], &[f32]) -> f32,
+) -> (Vec<f32>, Vec<u32>, Vec<f32>) {
+    let n_train = if columns { train.len() / dim } else { 0 };
+    let (mut best, mut index, mut second) = (
+        vec![f32::INFINITY; n_train],
+        vec![0; n_train],
+        vec![f32::INFINITY; n_train],
+    );
+    let tile_rows = (FLOAT_TILE_BYTES / (dim * size_of::<f32>())).max(MIN_FLOAT_TILE_ROWS);
+    let mut distances = vec![0.0; tile_rows];
+    for (tile, candidates) in train.chunks(tile_rows * dim).enumerate() {
+        let first_train = tile * tile_rows;
+        let distances = &mut distances[..candidates.len() / dim];
+        for (offset, (query, row)) in queries.chunks_exact(dim).zip(rows.iter_mut()).enumerate() {
+            for (out, candidate) in distances.iter_mut().zip(candidates.chunks_exact(dim)) {
+                *out = distance(query, candidate);
+            }
+            merge_tile_into_row(row, distances, first_train);
+            if columns {
+                let range = first_train..first_train + distances.len();
+                update_float_columns(
+                    distances,
+                    offset as u32,
+                    &mut best[range.clone()],
+                    &mut index[range.clone()],
+                    &mut second[range],
+                );
+            }
+        }
+    }
+    (best, index, second)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+unsafe fn horizontal_sum_avx(sum: std::arch::x86_64::__m256) -> f32 {
+    use std::arch::x86_64::*;
+    // SAFETY: caller guarantees AVX; these intrinsics only use registers.
+    unsafe {
+        let x = _mm_add_ps(_mm256_castps256_ps128(sum), _mm256_extractf128_ps(sum, 1));
+        let x = _mm_add_ps(x, _mm_movehl_ps(x, x));
+        _mm_cvtss_f32(_mm_add_ss(x, _mm_shuffle_ps(x, x, 1)))
+    }
+}
+
+/// Squared L2 over the common prefix of two rows.
+///
+/// Four accumulators, because one would be a chain of FMAs bound by their latency.
+///
+/// # Safety
+///
+/// The caller must ensure AVX2 and FMA are available.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+pub(crate) unsafe fn squared_l2_avx2(a: &[f32], b: &[f32]) -> f32 {
+    use std::arch::x86_64::*;
+    let (a, b) = (&a[..a.len().min(b.len())], &b[..a.len().min(b.len())]);
+    let (wide, rest) = (a.len() / 32 * 32, a.len() / 8 * 8);
+    // SAFETY: caller guarantees AVX2 and FMA. Each 8-lane load starts at most 8 floats
+    // before `wide` or `rest`, which are within both equally long slices.
+    unsafe {
+        let (pa, pb) = (a.as_ptr(), b.as_ptr());
+        let difference =
+            |k: usize| _mm256_sub_ps(_mm256_loadu_ps(pa.add(k)), _mm256_loadu_ps(pb.add(k)));
+        let mut acc = [_mm256_setzero_ps(); 4];
+        for k in (0..wide).step_by(32) {
+            for (lane, acc) in acc.iter_mut().enumerate() {
+                let d = difference(k + lane * 8);
+                *acc = _mm256_fmadd_ps(d, d, *acc);
+            }
+        }
+        for k in (wide..rest).step_by(8) {
+            let d = difference(k);
+            acc[0] = _mm256_fmadd_ps(d, d, acc[0]);
+        }
+        let sum = _mm256_add_ps(_mm256_add_ps(acc[0], acc[1]), _mm256_add_ps(acc[2], acc[3]));
+        let tail = (rest..a.len())
+            .map(|k| (a[k] - b[k]) * (a[k] - b[k]))
+            .sum::<f32>();
+        horizontal_sum_avx(sum) + tail
+    }
+}
+
+/// Dot product over the common prefix of two rows.
+///
+/// # Safety
+///
+/// The caller must ensure AVX2 and FMA are available.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+unsafe fn dot_avx2(a: &[f32], b: &[f32]) -> f32 {
+    use std::arch::x86_64::*;
+    let (a, b) = (&a[..a.len().min(b.len())], &b[..a.len().min(b.len())]);
+    let (wide, rest) = (a.len() / 32 * 32, a.len() / 8 * 8);
+    // SAFETY: caller guarantees AVX2 and FMA. Each 8-lane load starts at most 8 floats
+    // before `wide` or `rest`, which are within both equally long slices.
+    unsafe {
+        let (pa, pb) = (a.as_ptr(), b.as_ptr());
+        let mut acc = [_mm256_setzero_ps(); 4];
+        for k in (0..wide).step_by(32) {
+            for (lane, acc) in acc.iter_mut().enumerate() {
+                let at = k + lane * 8;
+                *acc = _mm256_fmadd_ps(
+                    _mm256_loadu_ps(pa.add(at)),
+                    _mm256_loadu_ps(pb.add(at)),
+                    *acc,
+                );
+            }
+        }
+        for k in (wide..rest).step_by(8) {
+            acc[0] = _mm256_fmadd_ps(
+                _mm256_loadu_ps(pa.add(k)),
+                _mm256_loadu_ps(pb.add(k)),
+                acc[0],
+            );
+        }
+        let sum = _mm256_add_ps(_mm256_add_ps(acc[0], acc[1]), _mm256_add_ps(acc[2], acc[3]));
+        let tail = (rest..a.len()).map(|k| a[k] * b[k]).sum::<f32>();
+        horizontal_sum_avx(sum) + tail
+    }
+}
+
+/// # Safety
+///
+/// The caller must ensure AVX2 and FMA are available.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn scan_float_task_avx2(
+    queries: &[f32],
+    train: &[f32],
+    dim: usize,
+    columns: bool,
+    rows: &mut [RowNearest],
+    metric: FloatMetric,
+) -> (Vec<f32>, Vec<u32>, Vec<f32>) {
+    match metric {
+        FloatMetric::SquaredL2 => {
+            scan_float_task(queries, train, dim, columns, rows, |q, c| {
+                // SAFETY: caller guarantees AVX2 and FMA.
+                unsafe { squared_l2_avx2(q, c) }
+            })
+        }
+        FloatMetric::NegativeDot => scan_float_task(queries, train, dim, columns, rows, |q, c| {
+            // SAFETY: caller guarantees AVX2 and FMA.
+            -unsafe { dot_avx2(q, c) }
+        }),
+    }
+}
+
+fn scan_float_task_portable(
+    queries: &[f32],
+    train: &[f32],
+    dim: usize,
+    columns: bool,
+    rows: &mut [RowNearest],
+    metric: FloatMetric,
+    scalar: bool,
+) -> (Vec<f32>, Vec<u32>, Vec<f32>) {
+    use super::sift::{l2_sq, l2_sq_scalar};
+    let dot = |q: &[f32], c: &[f32]| q.iter().zip(c).map(|(x, y)| x * y).sum::<f32>();
+    match (metric, scalar) {
+        (FloatMetric::SquaredL2, true) => {
+            scan_float_task(queries, train, dim, columns, rows, l2_sq_scalar)
+        }
+        (FloatMetric::SquaredL2, false) => {
+            scan_float_task(queries, train, dim, columns, rows, l2_sq)
+        }
+        (FloatMetric::NegativeDot, _) => {
+            scan_float_task(queries, train, dim, columns, rows, |q, c| -dot(q, c))
+        }
+    }
+}
+
+/// One pass over the float distance table: every query's nearest train rows and, when
+/// `columns` is set, every train row's nearest queries. `scalar` forces the portable
+/// kernels on every CPU. Rows beyond the last whole `dim` are ignored; `dim` is not 0.
+pub(crate) fn scan_float_rows(
+    queries: &[f32],
+    train: &[f32],
+    dim: usize,
+    metric: FloatMetric,
+    columns: bool,
+    scalar: bool,
+) -> (Vec<RowNearest>, ColumnsNearest) {
+    use rayon::prelude::*;
+    let n_queries = queries.len() / dim;
+    let train = &train[..train.len() / dim * dim];
+    let unset = RowNearest {
+        index: usize::MAX,
+        best: f32::INFINITY,
+        second: f32::INFINITY,
+    };
+    let mut rows = vec![unset; n_queries];
+    if n_queries == 0 {
+        return (rows, ColumnsNearest::default());
+    }
+    let rows_per_task = n_queries
+        .div_ceil(rayon::current_num_threads() * 4)
+        .min(u32::MAX as usize);
+    #[cfg(target_arch = "x86_64")]
+    let simd = !scalar && {
+        let cpu = crate::simd::cpu_features();
+        cpu.has_avx2 && cpu.has_fma
+    };
+    let nearest = rows
+        .par_chunks_mut(rows_per_task)
+        .zip(queries[..n_queries * dim].par_chunks(rows_per_task * dim))
+        .enumerate()
+        .map(|(task, (rows, chunk))| {
+            let first_query = task * rows_per_task;
+            #[cfg(target_arch = "x86_64")]
+            let (best, index, second) = if simd {
+                // SAFETY: `simd` confirms AVX2 and FMA.
+                unsafe { scan_float_task_avx2(chunk, train, dim, columns, rows, metric) }
+            } else {
+                scan_float_task_portable(chunk, train, dim, columns, rows, metric, scalar)
+            };
+            #[cfg(not(target_arch = "x86_64"))]
+            let (best, index, second) =
+                scan_float_task_portable(chunk, train, dim, columns, rows, metric, scalar);
+            ColumnsNearest {
+                index: index
+                    .into_iter()
+                    .map(|i| first_query + i as usize)
+                    .collect(),
+                best,
+                second,
+            }
+        })
+        .reduce_with(ColumnsNearest::merge)
+        .unwrap_or_default();
+    (rows, nearest)
+}
+
+/// Match mutual nearest neighbors of float descriptors that pass Lowe's ratio test in
+/// both directions, on L2 distances.
+///
+/// The contract of `kornia.feature.match_smnn`: a pair is kept when the two descriptors
+/// are mutual nearest neighbors and `nearest / second_nearest <= th` both from
+/// `descriptors1` to `descriptors2` and back, with the ratio taken of the square roots
+/// of the two `f32` squared distances. One pass over the distance table serves both
+/// directions, in tiles of train rows that stay in the L1 data cache.
+///
+/// Of tied nearest neighbors, the earliest row is the nearest. A NaN distance is never
+/// nearest. Summation order can differ from another library's, so distances of
+/// non-integer descriptors may differ by rounding in the last bits.
+///
+/// # Arguments
+///
+/// * `descriptors1` - First set, `dim` floats per row, row after row.
+/// * `descriptors2` - Second set, in the same layout. A trailing partial row is ignored.
+/// * `dim` - Floats per descriptor. `0` returns no matches.
+/// * `th` - Distance ratio threshold; `kornia.feature.match_smnn` defaults to 0.95.
+///
+/// # Returns
+///
+/// The matches, in the order of the rows of `descriptors1`. Sets with fewer than two
+/// descriptors have no second neighbor and return no matches.
+///
+/// # Errors
+///
+/// This function does not return errors.
+///
+/// # Example
+///
+/// ```
+/// use kornia_imgproc::features::match_smnn_f32;
+/// let a = [0.0, 0.0, 9.0, 9.0];
+/// let b = [9.0, 9.0, 1.0, 0.0];
+/// let matches = match_smnn_f32(&a, &b, 2, 0.95);
+/// assert_eq!((matches[0].query, matches[0].train), (0, 1));
+/// assert_eq!((matches[1].query, matches[1].train), (1, 0));
+/// ```
+pub fn match_smnn_f32(
+    descriptors1: &[f32],
+    descriptors2: &[f32],
+    dim: usize,
+    th: f32,
+) -> Vec<SmnnMatch> {
+    if dim == 0 || descriptors1.len() / dim < 2 || descriptors2.len() / dim < 2 {
+        return Vec::new();
+    }
+    let (rows, columns) = scan_float_rows(
+        descriptors1,
+        descriptors2,
+        dim,
+        FloatMetric::SquaredL2,
+        true,
+        false,
+    );
+    let mut matches = Vec::new();
+    for (query, row) in rows.iter().enumerate() {
+        if row.index == usize::MAX || columns.index[row.index] != query {
+            continue;
+        }
+        let train = row.index;
+        let forward = row.best.sqrt() / row.second.sqrt();
+        let backward = columns.best[train].sqrt() / columns.second[train].sqrt();
+        if forward <= th && backward <= th {
+            matches.push(SmnnMatch {
+                query,
+                train,
+                ratio: forward.max(backward),
+            });
+        }
+    }
+    matches
+}
+
 /// Cosine similarity (dot product) between two L2-normalised f32 descriptors.
 ///
 /// Assumes both inputs are unit-norm; the dot product is then the cosine.
-/// LLVM autovectorises the loop on aarch64 (NEON) and x86_64 (AVX2) for
-/// fixed-size arrays such as `[f32; 64]` (XFeat) or `[f32; 256]` (SuperPoint).
+/// LLVM autovectorises the loop for the build's baseline on fixed-size arrays
+/// such as `[f32; 64]` (XFeat) or `[f32; 256]` (SuperPoint).
 #[inline]
 pub fn dot_product<const D: usize>(a: &[f32; D], b: &[f32; D]) -> f32 {
     // Fused multiply-add when available; iterator form lets LLVM unroll +
@@ -714,9 +1119,9 @@ pub fn dot_product<const D: usize>(a: &[f32; D], b: &[f32; D]) -> f32 {
 /// # Returns
 /// Vec<(i, j)> index pairs into descriptors1 / descriptors2.
 ///
-/// Uses rayon for parallelism across descriptors1; cossim computed inline
-/// as the dot product (descriptors must be L2-normalised). NEON SIMD over
-/// the 64-dim inner loop is autovectorised by LLVM on aarch64.
+/// Uses rayon for parallelism across descriptors1, in one pass over the table
+/// that also serves the mutual check. Descriptors must be L2-normalised. x86_64
+/// dispatches to AVX2 and FMA; the portable loop is autovectorised by LLVM.
 pub fn match_descriptors_f32<const D: usize>(
     descriptors1: &[[f32; D]],
     descriptors2: &[[f32; D]],
@@ -728,50 +1133,28 @@ pub fn match_descriptors_f32<const D: usize>(
         return vec![];
     }
 
-    // Forward pass: for each desc1[i], find best and second-best cosine in desc2.
-    // Each row is independent — parallelize across descriptors1.
-    use rayon::prelude::*;
-    let fwd: Vec<(usize, f32, f32)> = descriptors1
-        .par_iter()
-        .map(|d1| {
-            let mut best_j = 0usize;
-            let mut best_cos = f32::NEG_INFINITY;
-            let mut second_cos = f32::NEG_INFINITY;
-            for (j, d2) in descriptors2.iter().enumerate() {
-                let cos = dot_product(d1, d2);
-                if cos > best_cos {
-                    second_cos = best_cos;
-                    best_cos = cos;
-                    best_j = j;
-                } else if cos > second_cos {
-                    second_cos = cos;
-                }
-            }
-            (best_j, best_cos, second_cos)
+    // One pass serves both directions: every cosine of the mutual check is one the
+    // forward search computes. Distances are negated cosines.
+    let (rows, columns) = scan_float_rows(
+        descriptors1.as_flattened(),
+        descriptors2.as_flattened(),
+        D,
+        FloatMetric::NegativeDot,
+        cross_check,
+        false,
+    );
+    let fwd: Vec<(usize, f32, f32)> = rows
+        .iter()
+        .map(|row| {
+            let index = if row.index == usize::MAX {
+                0
+            } else {
+                row.index
+            };
+            (index, -row.best, -row.second)
         })
         .collect();
-
-    // Reverse pass (only if cross-check): for each desc2[j], find best match in desc1.
-    let rev_best_i = if cross_check {
-        let rev: Vec<usize> = descriptors2
-            .par_iter()
-            .map(|d2| {
-                let mut best_i = 0usize;
-                let mut best_cos = f32::NEG_INFINITY;
-                for (i, d1) in descriptors1.iter().enumerate() {
-                    let cos = dot_product(d1, d2);
-                    if cos > best_cos {
-                        best_cos = cos;
-                        best_i = i;
-                    }
-                }
-                best_i
-            })
-            .collect();
-        Some(rev)
-    } else {
-        None
-    };
+    let rev_best_i = cross_check.then_some(columns.index);
 
     // Build matches applying all filters in one pass.
     let mut matches = Vec::new();
@@ -1227,6 +1610,290 @@ mod tests {
         assert_eq!(scalar, selected);
         // Column 0 saw 5, 5, 4: nearest is row 2, runner-up distance 5.
         assert_eq!((scalar.0[0], scalar.1[0] >> 16), ((4 << 16) | 2, 5));
+    }
+
+    // Values from kornia.feature.match_smnn (kornia 5310f2589) on these descriptors,
+    // with its own L2 distances: 12 x 9 integer-valued rows of 16 dimensions, with
+    // near copies, one exact copy and one target stored twice.
+    #[test]
+    fn match_smnn_f32_returns_the_values_of_kornia() {
+        let a: [[f32; 16]; 12] = [
+            [
+                245.0, 129.0, 193.0, 144.0, 45.0, 131.0, 241.0, 248.0, 247.0, 157.0, 80.0, 145.0,
+                166.0, 73.0, 246.0, 141.0,
+            ],
+            [
+                90.0, 119.0, 27.0, 156.0, 87.0, 238.0, 76.0, 62.0, 154.0, 79.0, 87.0, 100.0, 176.0,
+                69.0, 232.0, 89.0,
+            ],
+            [
+                198.0, 239.0, 177.0, 96.0, 170.0, 198.0, 195.0, 10.0, 23.0, 76.0, 90.0, 179.0,
+                23.0, 115.0, 203.0, 227.0,
+            ],
+            [
+                16.0, 111.0, 76.0, 159.0, 212.0, 149.0, 150.0, 153.0, 75.0, 167.0, 43.0, 130.0,
+                232.0, 49.0, 22.0, 17.0,
+            ],
+            [
+                7.0, 64.0, 71.0, 24.0, 213.0, 28.0, 72.0, 71.0, 144.0, 151.0, 110.0, 87.0, 170.0,
+                199.0, 119.0, 247.0,
+            ],
+            [
+                196.0, 84.0, 245.0, 60.0, 176.0, 176.0, 78.0, 146.0, 88.0, 197.0, 77.0, 157.0,
+                130.0, 71.0, 228.0, 233.0,
+            ],
+            [
+                129.0, 146.0, 70.0, 183.0, 213.0, 172.0, 113.0, 197.0, 86.0, 192.0, 44.0, 105.0,
+                163.0, 9.0, 190.0, 124.0,
+            ],
+            [
+                129.0, 229.0, 80.0, 37.0, 35.0, 200.0, 92.0, 167.0, 14.0, 180.0, 223.0, 55.0,
+                228.0, 19.0, 92.0, 68.0,
+            ],
+            [
+                73.0, 159.0, 194.0, 99.0, 59.0, 65.0, 94.0, 101.0, 251.0, 186.0, 112.0, 65.0, 2.0,
+                139.0, 3.0, 104.0,
+            ],
+            [
+                60.0, 254.0, 255.0, 218.0, 128.0, 184.0, 107.0, 140.0, 24.0, 101.0, 131.0, 173.0,
+                89.0, 215.0, 81.0, 35.0,
+            ],
+            [
+                220.0, 10.0, 102.0, 117.0, 3.0, 69.0, 212.0, 226.0, 105.0, 67.0, 69.0, 233.0,
+                242.0, 128.0, 116.0, 213.0,
+            ],
+            [
+                74.0, 116.0, 114.0, 183.0, 12.0, 250.0, 192.0, 42.0, 188.0, 66.0, 104.0, 131.0,
+                176.0, 96.0, 56.0, 205.0,
+            ],
+        ];
+        let b: [[f32; 16]; 9] = [
+            [
+                17.0, 113.0, 79.0, 162.0, 214.0, 148.0, 153.0, 154.0, 74.0, 166.0, 44.0, 127.0,
+                232.0, 47.0, 22.0, 19.0,
+            ],
+            [
+                196.0, 84.0, 245.0, 60.0, 176.0, 176.0, 78.0, 146.0, 88.0, 197.0, 77.0, 157.0,
+                130.0, 71.0, 228.0, 233.0,
+            ],
+            [
+                143.0, 226.0, 71.0, 25.0, 9.0, 186.0, 68.0, 155.0, 0.0, 163.0, 248.0, 79.0, 239.0,
+                36.0, 53.0, 76.0,
+            ],
+            [
+                106.0, 255.0, 255.0, 148.0, 131.0, 245.0, 24.0, 94.0, 0.0, 31.0, 48.0, 177.0,
+                111.0, 190.0, 14.0, 73.0,
+            ],
+            [
+                86.0, 124.0, 24.0, 163.0, 87.0, 232.0, 69.0, 65.0, 162.0, 76.0, 93.0, 103.0, 175.0,
+                73.0, 235.0, 95.0,
+            ],
+            [
+                86.0, 124.0, 24.0, 163.0, 87.0, 232.0, 69.0, 65.0, 162.0, 76.0, 93.0, 103.0, 175.0,
+                73.0, 235.0, 95.0,
+            ],
+            [
+                220.0, 226.0, 59.0, 245.0, 47.0, 65.0, 209.0, 62.0, 228.0, 14.0, 15.0, 191.0,
+                195.0, 95.0, 27.0, 171.0,
+            ],
+            [
+                206.0, 205.0, 226.0, 65.0, 236.0, 254.0, 46.0, 153.0, 119.0, 228.0, 39.0, 131.0,
+                104.0, 233.0, 220.0, 124.0,
+            ],
+            [
+                223.0, 207.0, 13.0, 96.0, 197.0, 0.0, 77.0, 185.0, 168.0, 29.0, 59.0, 241.0, 118.0,
+                144.0, 149.0, 92.0,
+            ],
+        ];
+        let expected: [(f32, &[KorniaMatch]); 3] = [
+            (
+                0.5f32,
+                &[
+                    (3, 0, 0.029885547f32),
+                    (5, 1, 0.0f32),
+                    (7, 2, 0.21327893f32),
+                ],
+            ),
+            (
+                0.8f32,
+                &[
+                    (3, 0, 0.029885547f32),
+                    (5, 1, 0.0f32),
+                    (7, 2, 0.21327893f32),
+                    (9, 3, 0.5456152f32),
+                ],
+            ),
+            (
+                0.95f32,
+                &[
+                    (3, 0, 0.029885547f32),
+                    (5, 1, 0.0f32),
+                    (7, 2, 0.21327893f32),
+                    (9, 3, 0.5456152f32),
+                ],
+            ),
+        ];
+        for (th, pairs) in expected {
+            let got: Vec<_> = match_smnn_f32(a.as_flattened(), b.as_flattened(), 16, th)
+                .into_iter()
+                .map(|m| (m.query, m.train, m.ratio))
+                .collect();
+            assert_eq!(got, pairs, "th={th}");
+        }
+    }
+
+    fn integer_rows(n: usize, dim: usize, mut seed: u64, levels: u64) -> Vec<f32> {
+        (0..n * dim)
+            .map(|_| {
+                seed = seed
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                ((seed >> 33) % levels) as f32
+            })
+            .collect()
+    }
+
+    fn reference_smnn_f32(a: &[f32], b: &[f32], dim: usize, th: f32) -> Vec<SmnnMatch> {
+        let (n1, n2) = (a.len() / dim, b.len() / dim);
+        if n1 < 2 || n2 < 2 {
+            return Vec::new();
+        }
+        let table: Vec<Vec<f32>> = a
+            .chunks_exact(dim)
+            .map(|x| {
+                b.chunks_exact(dim)
+                    .map(|y| x.iter().zip(y).map(|(p, q)| (p - q) * (p - q)).sum())
+                    .collect()
+            })
+            .collect();
+        let top2 = |values: Vec<f32>| {
+            let mut order: Vec<usize> = (0..values.len()).collect();
+            order.sort_by(|&p, &q| values[p].total_cmp(&values[q]).then(p.cmp(&q)));
+            (order[0], values[order[0]], values[order[1]])
+        };
+        let mut out = Vec::new();
+        for (i, row) in table.iter().enumerate() {
+            let (j, d1, d2) = top2(row.clone());
+            let (back, e1, e2) = top2(table.iter().map(|r| r[j]).collect());
+            let (r1, r2) = (d1.sqrt() / d2.sqrt(), e1.sqrt() / e2.sqrt());
+            if back == i && r1 <= th && r2 <= th {
+                out.push(SmnnMatch {
+                    query: i,
+                    train: j,
+                    ratio: r1.max(r2),
+                });
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn match_smnn_f32_agrees_with_the_reference_across_dimensions() {
+        // Integer values keep every sum exact, whatever the summation order. Few
+        // levels force ties and zero distances; large sets cross several tiles.
+        for dim in [1, 3, 8, 9, 16, 31, 32, 33, 64, 128, 130, 256] {
+            for threads in [1, 4] {
+                let pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(threads)
+                    .build()
+                    .expect("test thread pool");
+                for (n1, n2, levels) in [
+                    (0, 5, 256),
+                    (1, 5, 256),
+                    (5, 1, 256),
+                    (2, 2, 2),
+                    (17, 3, 3),
+                    (70, 300, 256),
+                    (129, 80, 2),
+                ] {
+                    let (a, b) = (
+                        integer_rows(n1, dim, 11, levels),
+                        integer_rows(n2, dim, 13, levels),
+                    );
+                    for th in [0.0, 0.5, 0.8, 0.95, 1.0, 2.0, f32::NAN] {
+                        let got = pool.install(|| match_smnn_f32(&a, &b, dim, th));
+                        assert_eq!(
+                            got,
+                            reference_smnn_f32(&a, &b, dim, th),
+                            "{dim}D {n1}x{n2} levels={levels} th={th} threads={threads}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn match_smnn_f32_handles_degenerate_dimensions_and_non_finite_rows() {
+        let a = [1.0f32, 2.0, 3.0, 4.0];
+        assert!(match_smnn_f32(&a, &a, 0, 0.95).is_empty());
+        // A trailing partial row is ignored: two whole rows on each side remain.
+        assert_eq!(
+            match_smnn_f32(&[0.0, 0.0, 9.0, 9.0, 5.0], &[0.0, 0.0, 9.0, 9.0], 2, 0.95).len(),
+            2
+        );
+        // A NaN row has no finite distance, so it can't become anyone's nearest.
+        let mut b = vec![0.0f32, 0.0, 5.0, 5.0, 9.0, 9.0];
+        b[0] = f32::NAN;
+        let got = match_smnn_f32(&[5.0, 5.0, 9.0, 9.0], &b, 2, 0.95);
+        assert_eq!(
+            got.iter().map(|m| (m.query, m.train)).collect::<Vec<_>>(),
+            [(0, 1), (1, 2)]
+        );
+    }
+
+    #[test]
+    fn cosine_one_pass_agrees_with_the_reference() {
+        // Small integers keep every dot product exact, whatever the summation order.
+        fn rows<const D: usize>(n: usize, seed: u64) -> Vec<[f32; D]> {
+            integer_rows(n, D, seed, 5).as_chunks::<D>().0.to_vec()
+        }
+        fn check<const D: usize>() {
+            let (a, b) = (rows::<D>(150, 7), rows::<D>(90, 9));
+            let dots: Vec<Vec<f32>> = a
+                .iter()
+                .map(|x| {
+                    b.iter()
+                        .map(|y| x.iter().zip(y).map(|(p, q)| p * q).sum())
+                        .collect()
+                })
+                .collect();
+            let top2 = |values: Vec<f32>| {
+                let mut order: Vec<usize> = (0..values.len()).collect();
+                order.sort_by(|&p, &q| values[q].total_cmp(&values[p]).then(p.cmp(&q)));
+                (order[0], values[order[0]], values[order[1]])
+            };
+            for threads in [1, 4] {
+                let pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(threads)
+                    .build()
+                    .expect("test thread pool");
+                for (min_cos, cross, ratio) in [
+                    (None, false, None),
+                    (None, true, None),
+                    (Some(5.0), true, None),
+                    (None, true, Some(0.95)),
+                    (None, false, Some(0.5)),
+                ] {
+                    let got = pool.install(|| match_descriptors_f32(&a, &b, min_cos, cross, ratio));
+                    let mut want = Vec::new();
+                    for (i, row) in dots.iter().enumerate() {
+                        let (j, best, second) = top2(row.clone());
+                        let back = top2(dots.iter().map(|r| r[j]).collect()).0;
+                        let cos_ok = min_cos.is_none_or(|m| best >= m);
+                        let ratio_ok =
+                            ratio.is_none_or(|r| (1.0 - best) / (1.0 - second).max(1e-6) <= r);
+                        if cos_ok && (!cross || back == i) && ratio_ok {
+                            want.push((i, j));
+                        }
+                    }
+                    assert_eq!(got, want, "{D}D {min_cos:?} {cross} {ratio:?} {threads}");
+                }
+            }
+        }
+        check::<16>();
+        check::<19>();
+        check::<64>();
     }
 
     #[test]

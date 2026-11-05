@@ -79,6 +79,39 @@ def test_match_smnn_needs_two_descriptors_per_side():
     assert dists.shape == (0, 1) and idxs.shape == (0, 2)
 
 
+def _reference_smnn_l2(desc_a, desc_b, th):
+    table = ((desc_a[:, None] - desc_b[None]) ** 2).sum(2)
+    order_a = np.argsort(table, axis=1, kind="stable")[:, :2]
+    order_b = np.argsort(table, axis=0, kind="stable")[:2].T
+    rows = np.arange(len(desc_a))
+    nearest = order_a[:, 0]
+    forward = np.sqrt(table[rows, nearest]) / np.sqrt(table[rows, order_a[:, 1]])
+    backward = np.sqrt(table[order_b[nearest, 0], nearest]) / np.sqrt(table[order_b[nearest, 1], nearest])
+    keep = (order_b[nearest, 0] == rows) & (forward <= th) & (backward <= th)
+    return np.maximum(forward, backward)[keep], np.column_stack((rows[keep], nearest[keep]))
+
+
+@pytest.mark.parametrize("dim", [8, 31, 64, 128])
+def test_match_smnn_float32_uses_l2(dim):
+    rng = np.random.default_rng(dim)
+    desc_a = rng.integers(0, 256, size=(90, dim)).astype(np.float32)
+    desc_b = np.clip(desc_a[:70] + rng.integers(-9, 10, size=(70, dim)), 0, 255).astype(np.float32)
+    dists, idxs = K.features.match_smnn(desc_a, desc_b, 0.8)
+    want_dists, want_idxs = _reference_smnn_l2(desc_a, desc_b, 0.8)
+    assert len(want_idxs) > 0
+    np.testing.assert_array_equal(idxs, want_idxs)
+    np.testing.assert_array_equal(dists[:, 0], want_dists)
+
+
+def test_match_smnn_rejects_other_dtypes_and_mismatched_dimensions():
+    with pytest.raises(TypeError, match="float32"):
+        K.features.match_smnn(np.zeros((4, 32), np.float64), np.zeros((4, 32), np.float64))
+    with pytest.raises(TypeError, match="float32"):
+        K.features.match_smnn(np.zeros((4, 32), np.uint8), np.zeros((4, 32), np.float32))
+    with pytest.raises(ValueError, match="dimension"):
+        K.features.match_smnn(np.zeros((4, 8), np.float32), np.zeros((4, 9), np.float32))
+
+
 def test_match_smnn_rejects_other_shapes():
     with pytest.raises(ValueError, match="32"):
         K.features.match_smnn(np.zeros((4, 16), np.uint8), np.zeros((4, 16), np.uint8))

@@ -1,1 +1,1 @@
-`features::match_smnn` and `kornia_rs.features.match_smnn`: Hamming matching with the contract of `kornia.feature.match_smnn`, keeping mutual nearest neighbors that pass the ratio test in both directions and returning the larger ratio.
+`features::match_smnn` (Hamming), `features::match_smnn_f32` (L2) and `kornia_rs.features.match_smnn`: matching with the contract of `kornia.feature.match_smnn`, keeping mutual nearest neighbors that pass the ratio test in both directions and returning the larger ratio.

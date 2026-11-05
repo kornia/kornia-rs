@@ -136,10 +136,11 @@ ties. `None`, NaN, and ratios >= 1.0 disable the generic matcher's ratio filter.
 Projection matching omits queries with no eligible candidate, including when
 the distance cap is `u32::MAX`.
 
-`features::match_smnn` has the contract of `kornia.feature.match_smnn` on Hamming
-distances: mutual nearest neighbors with `nearest / second_nearest <= th` in both
-directions, returned with the larger of the two ratios. One pass over the distance
-table serves both directions.
+`features::match_smnn` (Hamming) and `features::match_smnn_f32` (L2) have the
+contract of `kornia.feature.match_smnn`: mutual nearest neighbors with
+`nearest / second_nearest <= th` in both directions, returned with the larger of
+the two ratios. One pass over the distance table serves both directions. The SIFT
+and cosine matchers share the float pass.
 
 For real EuRoC ORB matching benchmarks, including timed Rayon pool entry, run
 `cargo bench -p kornia-imgproc --bench bench_features -- descriptor_matching`.
