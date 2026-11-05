@@ -18,9 +18,9 @@
 //!
 //! From there on: one query descriptor per thread, so a lane computes a whole
 //! distance with no shuffles, reading tiles of train rows through shared memory.
-//! Measured on an RTX 4090, this costs 15-20% at up to 1,024 descriptors, where
-//! launches dominate, and saves 2x at 4,096 and 3.9x at 8,192. Both kernels return
-//! the same pairs.
+//! Measured on an RTX 4090, this runs 1.9x faster at 4,096 descriptors and 3.6x at
+//! 8,192. Below the switch, launches dominate and it would cost about 20%. Both
+//! kernels return the same pairs.
 //!
 //! # Distances
 //!
