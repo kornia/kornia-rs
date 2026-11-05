@@ -140,11 +140,37 @@ impl NeonHamming {
     unsafe fn distance(&self, candidate: &[u8; 32]) -> u32 {
         use std::arch::aarch64::*;
         // SAFETY: NEON is architectural; both loads stay inside candidate.
-        // Each 16-byte popcount sum is at most 128, so u8 reduction is exact.
+        unsafe { vaddlvq_u8(self.byte_counts(candidate)) as u32 }
+    }
+
+    /// Distances to four candidates at once: three pairwise reductions in place of
+    /// four horizontal additions.
+    #[inline(always)]
+    unsafe fn distances4(&self, batch: &[[u8; 32]; 4]) -> [u32; 4] {
+        use std::arch::aarch64::*;
+        // SAFETY: NEON is architectural; every load stays inside its 32-byte
+        // candidate, and the store writes the four u32 lanes into `distances`.
+        // Pairwise sums are at most 32, then 64, so the u8 reductions are exact, and
+        // the widening steps hold the final 256.
+        unsafe {
+            let counts01 = vpaddq_u8(self.byte_counts(&batch[0]), self.byte_counts(&batch[1]));
+            let counts23 = vpaddq_u8(self.byte_counts(&batch[2]), self.byte_counts(&batch[3]));
+            let sums = vpaddlq_u16(vpaddlq_u8(vpaddq_u8(counts01, counts23)));
+            let mut distances = [0; 4];
+            vst1q_u32(distances.as_mut_ptr(), sums);
+            distances
+        }
+    }
+
+    /// Differing bits per byte position over both halves; each lane is at most 16.
+    #[inline(always)]
+    unsafe fn byte_counts(&self, candidate: &[u8; 32]) -> std::arch::aarch64::uint8x16_t {
+        use std::arch::aarch64::*;
+        // SAFETY: NEON is architectural; both loads stay inside candidate.
         unsafe {
             let x0 = veorq_u8(self.query0, vld1q_u8(candidate.as_ptr()));
             let x1 = veorq_u8(self.query1, vld1q_u8(candidate.as_ptr().add(16)));
-            vaddvq_u8(vcntq_u8(x0)) as u32 + vaddvq_u8(vcntq_u8(x1)) as u32
+            vaddq_u8(vcntq_u8(x0), vcntq_u8(x1))
         }
     }
 }
@@ -276,20 +302,28 @@ fn hamming_row_scan<const N: usize, const SECOND: bool, const GATED: bool>(
                 let (candidates, _) = candidates.as_flattened().as_chunks::<32>();
                 // SAFETY: NEON is architectural and N == 32.
                 let kernel = unsafe { NeonHamming::new(query) };
+                let distance = |candidate: &[u8; 32]| {
+                    // SAFETY: NEON is architectural; candidate is 32 bytes.
+                    unsafe { kernel.distance(candidate) }
+                };
+                let distances4 = |batch: &[[u8; 32]; 4]| {
+                    // SAFETY: NEON is architectural; candidates are 32 bytes.
+                    unsafe { kernel.distances4(batch) }
+                };
+                // As on x86_64: batches help best-only scans, and tracking the runner-up
+                // is faster one candidate at a time (see bench_hamming_match). The
+                // always-true gate only selects that loop.
+                if SECOND && !GATED {
+                    return scan_hamming::<32, SECOND, true>(
+                        candidates,
+                        distance,
+                        distances4,
+                        |_| true,
+                        visit,
+                    );
+                }
                 return scan_hamming::<32, SECOND, GATED>(
-                    candidates,
-                    |candidate| {
-                        // SAFETY: NEON is architectural; candidate is 32 bytes.
-                        unsafe { kernel.distance(candidate) }
-                    },
-                    |batch| {
-                        std::array::from_fn(|i| {
-                            // SAFETY: NEON is architectural; candidate is 32 bytes.
-                            unsafe { kernel.distance(&batch[i]) }
-                        })
-                    },
-                    gate,
-                    visit,
+                    candidates, distance, distances4, gate, visit,
                 );
             }
         }
@@ -684,7 +718,11 @@ pub fn match_smnn<const N: usize>(
 }
 
 // Candidate tiles keep one tile of train rows resident in the L1 data cache while
-// every query of a task passes over it.
+// every query of a task passes over it. Apple's L1 is larger: on an M1, 64 KiB beats
+// 32 KiB by 4-8% on the performance cores, and 128 KiB, their whole L1, gives that back.
+#[cfg(all(target_arch = "aarch64", target_vendor = "apple"))]
+const FLOAT_TILE_BYTES: usize = 64 * 1024;
+#[cfg(not(all(target_arch = "aarch64", target_vendor = "apple")))]
 const FLOAT_TILE_BYTES: usize = 32 * 1024;
 const MIN_FLOAT_TILE_ROWS: usize = 8;
 
@@ -982,6 +1020,150 @@ unsafe fn scan_float_task_avx2(
     }
 }
 
+/// Squared L2 over the common prefix of two rows, for widths without a fixed kernel.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+fn squared_l2_neon(a: &[f32], b: &[f32]) -> f32 {
+    use std::arch::aarch64::*;
+    let (a, b) = (&a[..a.len().min(b.len())], &b[..a.len().min(b.len())]);
+    let (wide, rest) = (a.len() / 16 * 16, a.len() / 4 * 4);
+    // SAFETY: NEON is architectural. Each 4-lane load starts at most 4 floats before
+    // `wide` or `rest`, which are within both equally long slices.
+    unsafe {
+        let (pa, pb) = (a.as_ptr(), b.as_ptr());
+        let difference = |k: usize| vsubq_f32(vld1q_f32(pa.add(k)), vld1q_f32(pb.add(k)));
+        let mut acc = [vdupq_n_f32(0.0); 4];
+        for k in (0..wide).step_by(16) {
+            for (lane, acc) in acc.iter_mut().enumerate() {
+                let d = difference(k + lane * 4);
+                *acc = vfmaq_f32(*acc, d, d);
+            }
+        }
+        for k in (wide..rest).step_by(4) {
+            let d = difference(k);
+            acc[0] = vfmaq_f32(acc[0], d, d);
+        }
+        let sum = vaddq_f32(vaddq_f32(acc[0], acc[1]), vaddq_f32(acc[2], acc[3]));
+        let tail = (rest..a.len())
+            .map(|k| (a[k] - b[k]) * (a[k] - b[k]))
+            .sum::<f32>();
+        vaddvq_f32(sum) + tail
+    }
+}
+
+/// Dot product over the common prefix of two rows, for widths without a fixed kernel.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+fn dot_neon(a: &[f32], b: &[f32]) -> f32 {
+    use std::arch::aarch64::*;
+    let (a, b) = (&a[..a.len().min(b.len())], &b[..a.len().min(b.len())]);
+    let (wide, rest) = (a.len() / 16 * 16, a.len() / 4 * 4);
+    // SAFETY: NEON is architectural. Each 4-lane load starts at most 4 floats before
+    // `wide` or `rest`, which are within both equally long slices.
+    unsafe {
+        let (pa, pb) = (a.as_ptr(), b.as_ptr());
+        let mut acc = [vdupq_n_f32(0.0); 4];
+        for k in (0..wide).step_by(16) {
+            for (lane, acc) in acc.iter_mut().enumerate() {
+                let at = k + lane * 4;
+                *acc = vfmaq_f32(*acc, vld1q_f32(pa.add(at)), vld1q_f32(pb.add(at)));
+            }
+        }
+        for k in (wide..rest).step_by(4) {
+            acc[0] = vfmaq_f32(acc[0], vld1q_f32(pa.add(k)), vld1q_f32(pb.add(k)));
+        }
+        let sum = vaddq_f32(vaddq_f32(acc[0], acc[1]), vaddq_f32(acc[2], acc[3]));
+        let tail = (rest..a.len()).map(|k| a[k] * b[k]).sum::<f32>();
+        vaddvq_f32(sum) + tail
+    }
+}
+
+/// Fixed-width [`squared_l2_neon`]: `D` is a multiple of 16, so no tail or bounds remain.
+/// At 128 floats, the additions run in the order of `l2_sq`, so the bits are the same.
+///
+/// # Safety
+///
+/// The caller must ensure both rows hold `D` floats.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn squared_l2_fixed_neon<const D: usize>(a: &[f32], b: &[f32]) -> f32 {
+    use std::arch::aarch64::*;
+    // SAFETY: NEON is architectural; the caller guarantees `D` floats and `k + 16 <= D`.
+    unsafe {
+        let (pa, pb) = (a.as_ptr(), b.as_ptr());
+        let mut acc = [vdupq_n_f32(0.0); 4];
+        for k in (0..D).step_by(16) {
+            for (lane, acc) in acc.iter_mut().enumerate() {
+                let at = k + lane * 4;
+                let d = vsubq_f32(vld1q_f32(pa.add(at)), vld1q_f32(pb.add(at)));
+                *acc = vfmaq_f32(*acc, d, d);
+            }
+        }
+        vaddvq_f32(vaddq_f32(
+            vaddq_f32(acc[0], acc[1]),
+            vaddq_f32(acc[2], acc[3]),
+        ))
+    }
+}
+
+/// Fixed-width [`dot_neon`]: `D` is a multiple of 16, so no tail or bounds remain.
+///
+/// # Safety
+///
+/// The caller must ensure both rows hold `D` floats.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn dot_fixed_neon<const D: usize>(a: &[f32], b: &[f32]) -> f32 {
+    use std::arch::aarch64::*;
+    // SAFETY: NEON is architectural; the caller guarantees `D` floats and `k + 16 <= D`.
+    unsafe {
+        let (pa, pb) = (a.as_ptr(), b.as_ptr());
+        let mut acc = [vdupq_n_f32(0.0); 4];
+        for k in (0..D).step_by(16) {
+            for (lane, acc) in acc.iter_mut().enumerate() {
+                let at = k + lane * 4;
+                *acc = vfmaq_f32(*acc, vld1q_f32(pa.add(at)), vld1q_f32(pb.add(at)));
+            }
+        }
+        vaddvq_f32(vaddq_f32(
+            vaddq_f32(acc[0], acc[1]),
+            vaddq_f32(acc[2], acc[3]),
+        ))
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn scan_float_task_neon(
+    queries: &[f32],
+    train: &[f32],
+    dim: usize,
+    columns: bool,
+    rows: &mut [RowNearest],
+    metric: FloatMetric,
+) -> (Vec<f32>, Vec<u32>, Vec<f32>) {
+    // SAFETY, every closure: rows come from `chunks_exact(dim)`, so fixed-width kernels
+    // read exactly `dim` floats.
+    macro_rules! scan {
+        ($kernel:expr) => {
+            scan_float_task(queries, train, dim, columns, rows, $kernel)
+        };
+    }
+    match (metric, dim) {
+        (FloatMetric::SquaredL2, 64) => scan!(|q, c| unsafe { squared_l2_fixed_neon::<64>(q, c) }),
+        (FloatMetric::SquaredL2, 128) => {
+            scan!(|q, c| unsafe { squared_l2_fixed_neon::<128>(q, c) })
+        }
+        (FloatMetric::SquaredL2, 256) => {
+            scan!(|q, c| unsafe { squared_l2_fixed_neon::<256>(q, c) })
+        }
+        (FloatMetric::SquaredL2, _) => scan!(squared_l2_neon),
+        (FloatMetric::NegativeDot, 64) => scan!(|q, c| -unsafe { dot_fixed_neon::<64>(q, c) }),
+        (FloatMetric::NegativeDot, 128) => scan!(|q, c| -unsafe { dot_fixed_neon::<128>(q, c) }),
+        (FloatMetric::NegativeDot, 256) => scan!(|q, c| -unsafe { dot_fixed_neon::<256>(q, c) }),
+        (FloatMetric::NegativeDot, _) => scan!(|q, c| -dot_neon(q, c)),
+    }
+}
+
 fn scan_float_task_portable(
     queries: &[f32],
     train: &[f32],
@@ -1050,7 +1232,13 @@ pub(crate) fn scan_float_rows(
             } else {
                 scan_float_task_portable(chunk, train, dim, columns, rows, metric, scalar)
             };
-            #[cfg(not(target_arch = "x86_64"))]
+            #[cfg(target_arch = "aarch64")]
+            let (best, index, second) = if scalar {
+                scan_float_task_portable(chunk, train, dim, columns, rows, metric, scalar)
+            } else {
+                scan_float_task_neon(chunk, train, dim, columns, rows, metric)
+            };
+            #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
             let (best, index, second) =
                 scan_float_task_portable(chunk, train, dim, columns, rows, metric, scalar);
             ColumnsNearest {
@@ -1177,7 +1365,8 @@ pub fn dot_product<const D: usize>(a: &[f32; D], b: &[f32; D]) -> f32 {
 ///
 /// Uses rayon for parallelism across descriptors1, in one pass over the table
 /// that also serves the mutual check. Descriptors must be L2-normalised. x86_64
-/// dispatches to AVX2 and FMA; the portable loop is autovectorised by LLVM.
+/// dispatches to AVX2 and FMA, and aarch64 uses NEON with FMA; other targets use a
+/// scalar sum.
 pub fn match_descriptors_f32<const D: usize>(
     descriptors1: &[[f32; D]],
     descriptors2: &[[f32; D]],
@@ -1950,6 +2139,85 @@ mod tests {
         check::<16>();
         check::<19>();
         check::<64>();
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn neon_hamming_kernels_agree_with_scalar_up_to_all_bits_differing() {
+        let mut rows = random_binary_descs::<32>(61, 0x51);
+        rows[0] = [0x00; 32];
+        rows[1] = [0xff; 32];
+        rows[2] = [0x00; 32];
+        rows[3] = [0xff; 32];
+        for query in &rows {
+            // SAFETY: NEON is architectural and every array is 32 bytes.
+            let kernel = unsafe { NeonHamming::new(query) };
+            let scalar = |row: &[u8; 32]| hamming_distance_scalar(query, row);
+            for row in &rows {
+                // SAFETY: as above.
+                assert_eq!(unsafe { kernel.distance(row) }, scalar(row));
+            }
+            for batch in rows.as_chunks::<4>().0 {
+                // SAFETY: as above.
+                assert_eq!(
+                    unsafe { kernel.distances4(batch) },
+                    batch.each_ref().map(scalar)
+                );
+            }
+        }
+        // SAFETY: as above.
+        let kernel = unsafe { NeonHamming::new(&[0x00; 32]) };
+        // SAFETY: as above.
+        assert_eq!(unsafe { kernel.distance(&[0xff; 32]) }, 256);
+        // SAFETY: as above.
+        assert_eq!(unsafe { kernel.distances4(&[[0xff; 32]; 4]) }, [256; 4]);
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn neon_float_kernels_agree_with_scalar_at_every_length() {
+        use super::super::sift::{l2_sq, l2_sq_scalar};
+        let dot = |a: &[f32], b: &[f32]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>();
+        // Small integers keep every sum exact, whatever the summation order.
+        let (a, b) = (integer_rows(1, 300, 3, 16), integer_rows(1, 300, 5, 16));
+        for len in [0, 1, 3, 4, 5, 15, 16, 17, 19, 64, 127, 128, 129, 256, 300] {
+            let (a, b) = (&a[..len], &b[..len]);
+            assert_eq!(
+                squared_l2_neon(a, b),
+                l2_sq_scalar(a, b),
+                "L2, length {len}"
+            );
+            assert_eq!(dot_neon(a, b), dot(a, b), "dot, length {len}");
+        }
+        // Rows of different lengths use their common prefix.
+        assert_eq!(
+            squared_l2_neon(&a[..7], &b[..9]),
+            l2_sq_scalar(&a[..7], &b[..7])
+        );
+        assert_eq!(dot_neon(&a[..9], &b[..7]), dot(&a[..7], &b[..7]));
+
+        fn check_fixed<const D: usize>(a: &[f32], b: &[f32]) {
+            let (a, b) = (&a[..D], &b[..D]);
+            // SAFETY: both rows hold `D` floats.
+            let (l2, inner) =
+                unsafe { (squared_l2_fixed_neon::<D>(a, b), dot_fixed_neon::<D>(a, b)) };
+            assert_eq!(l2.to_bits(), squared_l2_neon(a, b).to_bits(), "L2, {D}D");
+            assert_eq!(inner.to_bits(), dot_neon(a, b).to_bits(), "dot, {D}D");
+        }
+        // Real values, where only the same additions in the same order give the same bits.
+        let real = |seed| -> Vec<f32> {
+            integer_rows(1, 256, seed, 1 << 20)
+                .iter()
+                .map(|x| x.sqrt() / 7.0)
+                .collect()
+        };
+        let (a, b) = (real(11), real(13));
+        check_fixed::<64>(&a, &b);
+        check_fixed::<128>(&a, &b);
+        check_fixed::<256>(&a, &b);
+        // SAFETY: both rows hold 128 floats.
+        let fixed = unsafe { squared_l2_fixed_neon::<128>(&a[..128], &b[..128]) };
+        assert_eq!(fixed.to_bits(), l2_sq(&a[..128], &b[..128]).to_bits());
     }
 
     #[test]
