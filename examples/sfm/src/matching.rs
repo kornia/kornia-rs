@@ -193,6 +193,7 @@ pub fn verify_matches_geometrically(
             min_inliers,
             random_seed: Some(0),
             refit: true,
+            ..Default::default()
         };
         let Ok(result) = ransac_fundamental(&x1, &x2, &params) else {
             continue;
