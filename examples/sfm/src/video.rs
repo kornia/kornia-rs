@@ -23,28 +23,17 @@ pub type VideoFrames = (Vec<Image<u8, 3>>, Vec<Image<u8, 1>>);
 /// How often (in frames) the live progress line is refreshed.
 const PROGRESS_INTERVAL: usize = 10;
 
-/// Reject frame widths whose RGB rows GStreamer pads.
+/// How long to wait for the first frame before declaring the stream dead.
 ///
-/// GStreamer pads each `video/x-raw,format=RGB` row to a 4-byte boundary, so a
-/// width where `3 * W` is not a multiple of 4 has a row stride larger than
-/// `3 * W`. `kornia-io`'s reader currently assumes tightly packed rows (it
-/// ignores `GstVideoMeta` strides), so such frames are read sheared with no
-/// error. Refuse them until the core fix lands.
-///
-/// # Errors
-///
-/// Returns a message when `3 * width` is not a multiple of 4.
-pub fn validate_frame_width(width: usize) -> Result<(), String> {
-    if (width * 3).is_multiple_of(4) {
-        Ok(())
-    } else {
-        Err(format!(
-            "unsupported frame width {width}: GStreamer pads RGB rows to a 4-byte \
-             boundary and kornia-io's reader assumes tightly packed rows, so frames \
-             would be read sheared. Re-encode or scale to a width where 3*W is a \
-             multiple of 4 (e.g. a multiple of 4)."
-        ))
-    }
+/// `grab_rgb8()` returns `Ok(None)` for "not yet", end-of-stream and pipeline
+/// error alike (kornia-io #1158). A healthy file delivers its first frame in
+/// well under a second, so silence this long means nothing will ever arrive
+/// (audio-only, truncated, or no decoder). Low-fps truncation is left to #1158.
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Whether the read has waited past [`STARTUP_TIMEOUT`] without any frame.
+fn startup_timed_out(seen_any: bool, elapsed: Duration) -> bool {
+    !seen_any && elapsed > STARTUP_TIMEOUT
 }
 
 /// Cumulative timing and progress counters for one `read_frames` call.
@@ -180,11 +169,6 @@ pub fn read_frames(path: &Path, frame_step: usize) -> Result<VideoFrames, Box<dy
 
         match grabbed {
             Some(frame) => {
-                if frame_idx == 0 {
-                    // Fail fast on widths whose RGB rows GStreamer pads.
-                    validate_frame_width(frame.width())
-                        .map_err(|e| -> Box<dyn Error> { e.into() })?;
-                }
                 seen_any = true;
                 consecutive_none = 0;
                 stats.frames_grabbed += 1;
@@ -215,6 +199,18 @@ pub fn read_frames(path: &Path, frame_step: usize) -> Result<VideoFrames, Box<dy
                 // the end via playback position, but some files report a bad
                 // duration (e.g. a malformed moov atom), so fall back to a
                 // sustained silence after having seen frames.
+                //
+                // A stream that never delivers a frame (audio-only, truncated,
+                // no decoder) would otherwise spin forever, because the
+                // silence fallback below requires `seen_any`.
+                if startup_timed_out(seen_any, stats.start.elapsed()) {
+                    return Err(format!(
+                        "no frames decoded within {}s; the stream is empty or \
+                         undecodable (see kornia-io #1158)",
+                        STARTUP_TIMEOUT.as_secs()
+                    )
+                    .into());
+                }
                 if let (Some(pos), Some(dur)) = (reader.get_pos(), reader.get_duration()) {
                     if pos >= dur {
                         break;
@@ -258,13 +254,17 @@ mod tests {
     }
 
     #[test]
-    fn validate_frame_width_rejects_padded_widths() {
-        // 3*W divisible by 4 => GStreamer adds no padding.
-        assert!(validate_frame_width(1280).is_ok());
-        assert!(validate_frame_width(640).is_ok());
-        // 3*W % 4 != 0 => rows are padded and would be read sheared.
-        assert!(validate_frame_width(854).is_err());
-        assert!(validate_frame_width(426).is_err());
-        assert!(validate_frame_width(1366).is_err());
+    fn startup_timed_out_only_before_first_frame() {
+        // Not yet at the limit, or already seen a frame: no timeout.
+        assert!(!startup_timed_out(false, Duration::ZERO));
+        assert!(!startup_timed_out(
+            true,
+            STARTUP_TIMEOUT + Duration::from_secs(60)
+        ));
+        // Never saw a frame and the limit passed: timeout.
+        assert!(startup_timed_out(
+            false,
+            STARTUP_TIMEOUT + Duration::from_secs(1)
+        ));
     }
 }

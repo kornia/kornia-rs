@@ -290,6 +290,11 @@ impl CudaSiftMatcher {
     /// Match two device-resident descriptor blocks, returning `(query, train)`
     /// index pairs (mutual NN + Lowe's ratio, the same contract as the CPU
     /// path).
+    ///
+    /// # Errors
+    ///
+    /// Returns the matcher's error (e.g. a CUDA failure) instead of pretending
+    /// the pair had no matches, which would silently drop track edges.
     pub fn match_pair(
         &self,
         d1: &CudaSlice<f32>,
@@ -297,30 +302,28 @@ impl CudaSiftMatcher {
         d2: &CudaSlice<f32>,
         n2: usize,
         ratio: f32,
-    ) -> Vec<(usize, usize)> {
+    ) -> Result<Vec<(usize, usize)>, String> {
         let stream = self.ctx.default_stream();
-        let Ok(mut matcher) = self.matcher.lock() else {
-            return Vec::new();
-        };
-        match matcher.match_descriptors(
-            &self.ctx,
-            &stream,
-            &d1.as_view(),
-            n1,
-            &d2.as_view(),
-            n2,
-            ratio,
-            true,
-        ) {
-            Ok(pairs) => pairs
-                .into_iter()
-                .map(|[q, t]| (q as usize, t as usize))
-                .collect(),
-            Err(e) => {
-                eprintln!("  warning: CUDA SIFT match failed: {e}");
-                Vec::new()
-            }
-        }
+        let mut matcher = self
+            .matcher
+            .lock()
+            .map_err(|_| "CUDA SIFT matcher mutex poisoned".to_string())?;
+        let pairs = matcher
+            .match_descriptors(
+                &self.ctx,
+                &stream,
+                &d1.as_view(),
+                n1,
+                &d2.as_view(),
+                n2,
+                ratio,
+                true,
+            )
+            .map_err(|e| format!("CUDA SIFT match failed: {e}"))?;
+        Ok(pairs
+            .into_iter()
+            .map(|[q, t]| (q as usize, t as usize))
+            .collect())
     }
 }
 

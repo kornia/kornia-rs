@@ -18,10 +18,11 @@ use crate::features::{CudaSiftMatcher, FrameFeatures};
 /// Safe floor for the epipolar-RANSAC inlier count used by
 /// [`verify_matches_geometrically`].
 ///
-/// The 8-point algorithm fits a fundamental matrix to 8 correspondences, so a
-/// minimal-sample model trivially explains its own sample: an acceptance test of
-/// `inliers >= 8` passes even for pure-outlier pairs. Requiring a margin above
-/// the minimal sample (`15`) rejects those without discarding genuine pairs.
+/// A seven-point fundamental hypothesis (the solver's default) needs seven
+/// correspondences, and a minimal-sample model trivially explains its own
+/// sample: an acceptance test of `inliers >= 7` passes even for pure-outlier
+/// pairs. Requiring a margin above the minimal sample (`15`) rejects those
+/// without discarding genuine pairs.
 pub const MIN_SAFE_GEO_INLIERS: usize = 15;
 
 /// Returns a warning when the requested `--geo-min-inliers` is below the safe
@@ -66,16 +67,11 @@ pub fn match_sequential_pairs(
     for i in 0..features.len() {
         let end = (i + 1 + window).min(features.len());
         for j in (i + 1)..end {
-            let matches = match_pair(&features[i], &features[j], ratio, None);
+            // CPU-only (no device matcher), so this cannot fail.
+            let matches = match_pair(&features[i], &features[j], ratio, None)
+                .expect("CPU-only matcher cannot fail");
             for (kpt_a, kpt_b) in matches {
-                edges.push(TrackEdge {
-                    cam_a: i,
-                    kpt_a: kpt_a as u32,
-                    uv_a: keypoint_to_uv(features[i].keypoints[kpt_a]),
-                    cam_b: j,
-                    kpt_b: kpt_b as u32,
-                    uv_b: keypoint_to_uv(features[j].keypoints[kpt_b]),
-                });
+                edges.push(track_edge(features, i, j, kpt_a, kpt_b));
             }
         }
     }
@@ -85,6 +81,24 @@ pub fn match_sequential_pairs(
 fn keypoint_to_uv(kp: [f32; 2]) -> Vec2F64 {
     // keypoints are stored as [col, row]; TrackEdge expects (x, y) = (col, row).
     Vec2F64::new(kp[0] as f64, kp[1] as f64)
+}
+
+/// Build a [`TrackEdge`] from a matched `(kpt_a, kpt_b)` pair.
+fn track_edge(
+    features: &[FrameFeatures],
+    i: usize,
+    j: usize,
+    kpt_a: usize,
+    kpt_b: usize,
+) -> TrackEdge {
+    TrackEdge {
+        cam_a: i,
+        kpt_a: kpt_a as u32,
+        uv_a: keypoint_to_uv(features[i].keypoints[kpt_a]),
+        cam_b: j,
+        kpt_b: kpt_b as u32,
+        uv_b: keypoint_to_uv(features[j].keypoints[kpt_b]),
+    }
 }
 
 /// Match every frame `i` against frames `i+1 ..= i+window` concurrently with
@@ -105,9 +119,9 @@ pub fn match_pairs_parallel(
     window: usize,
     ratio: f32,
     cuda: Option<&CudaSiftMatcher>,
-) -> Vec<TrackEdge> {
+) -> Result<Vec<TrackEdge>, String> {
     if features.len() < 2 {
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
     // Enumerate the same (i, j) pairs the sequential version visits.
@@ -121,28 +135,23 @@ pub fn match_pairs_parallel(
     eprintln!("  matching: {total_pairs} pairs in parallel");
     let done = AtomicUsize::new(0);
 
-    pairs
+    // Propagate a matcher error instead of silently returning fewer edges.
+    let per_pair: Result<Vec<Vec<TrackEdge>>, String> = pairs
         .par_iter()
-        .flat_map(|&(i, j)| {
+        .map(|&(i, j)| {
             let n = done.fetch_add(1, Ordering::Relaxed) + 1;
             if n.is_multiple_of(100) || n == total_pairs {
                 eprintln!("  matching: {n}/{total_pairs} pairs");
             }
-            let matches = match_pair(&features[i], &features[j], ratio, cuda);
-            let pair_edges: Vec<TrackEdge> = matches
+            let matches = match_pair(&features[i], &features[j], ratio, cuda)?;
+            Ok(matches
                 .into_iter()
-                .map(|(kpt_a, kpt_b)| TrackEdge {
-                    cam_a: i,
-                    kpt_a: kpt_a as u32,
-                    uv_a: keypoint_to_uv(features[i].keypoints[kpt_a]),
-                    cam_b: j,
-                    kpt_b: kpt_b as u32,
-                    uv_b: keypoint_to_uv(features[j].keypoints[kpt_b]),
-                })
-                .collect();
-            pair_edges.into_par_iter()
+                .map(|(kpt_a, kpt_b)| track_edge(features, i, j, kpt_a, kpt_b))
+                .collect())
         })
-        .collect()
+        .collect();
+
+    Ok(per_pair?.into_iter().flatten().collect())
 }
 
 /// Filter [`TrackEdge`]s per camera pair using epipolar-geometry RANSAC.
@@ -157,8 +166,8 @@ pub fn match_pairs_parallel(
 /// * `edges` - Raw descriptor matches from a matcher.
 /// * `threshold` - RANSAC inlier threshold in pixels.
 /// * `min_inliers` - Minimum inlier count for a pair's fundamental matrix to
-///   be trusted. Pairs with fewer raw matches than this (or than 8, the
-///   minimum for the 8-point algorithm) are dropped entirely.
+///   be trusted. Pairs with fewer raw matches than this (or than 7, the
+///   minimum for the seven-point algorithm) are dropped entirely.
 ///
 /// # Returns
 ///
@@ -179,7 +188,7 @@ pub fn verify_matches_geometrically(
         pairs.entry((e.cam_a, e.cam_b)).or_default().push(i);
     }
 
-    let min_inliers = min_inliers.max(8);
+    let min_inliers = min_inliers.max(7);
     let mut keep = vec![false; edges.len()];
     for indices in pairs.into_values() {
         if indices.len() < min_inliers {
@@ -229,9 +238,9 @@ pub fn append_wide_baseline_edges(
     ratio: f32,
     cuda: Option<&CudaSiftMatcher>,
     edges: &mut Vec<TrackEdge>,
-) -> usize {
+) -> Result<usize, String> {
     if stride == 0 || features.len() <= window + 1 {
-        return 0;
+        return Ok(0);
     }
     let mut added = 0;
     for i in 0..features.len() {
@@ -239,7 +248,7 @@ pub fn append_wide_baseline_edges(
         let start = i + window + 1;
         let first = start + ((stride - (start - i) % stride) % stride);
         for j in (first..features.len()).step_by(stride) {
-            let matches = match_pair(&features[i], &features[j], ratio, cuda);
+            let matches = match_pair(&features[i], &features[j], ratio, cuda)?;
             for (kpt_a, kpt_b) in matches {
                 edges.push(TrackEdge {
                     cam_a: i,
@@ -253,7 +262,7 @@ pub fn append_wide_baseline_edges(
             }
         }
     }
-    added
+    Ok(added)
 }
 
 /// Match a single frame pair; returns `(idx_in_a, idx_in_b)` pairs.
@@ -262,15 +271,20 @@ pub fn append_wide_baseline_edges(
 /// sides are device-resident and a `cuda` matcher is supplied, else on the host.
 /// All paths use mutual nearest neighbours (cross-check), which
 /// `kornia_calib::build_tracks` requires (see the README's matching notes).
+///
+/// # Errors
+///
+/// Propagates a device-matcher failure rather than returning an empty match
+/// list, which would silently drop track edges.
 fn match_pair(
     a: &FrameFeatures,
     b: &FrameFeatures,
     ratio: f32,
     cuda: Option<&CudaSiftMatcher>,
-) -> Vec<(usize, usize)> {
+) -> Result<Vec<(usize, usize)>, String> {
     // ORB path: binary descriptors, Hamming distance, mutual NN + Lowe's ratio.
     if let (Some(d1), Some(d2)) = (&a.descriptors_orb, &b.descriptors_orb) {
-        return match_descriptors::<32>(d1, d2, None, true, Some(ratio));
+        return Ok(match_descriptors::<32>(d1, d2, None, true, Some(ratio)));
     }
     // SIFT on device (avoids a host round-trip when --cuda is used). Use the
     // keypoint count, not the buffer length: the descriptor block may have
@@ -284,12 +298,14 @@ fn match_pair(
     }
     // SIFT on host: L2 matching with ratio test + mutual NN.
     if let (Some(d1), Some(d2)) = (&a.descriptors_sift, &b.descriptors_sift) {
-        return sift_match_descriptors(d1, a.n_keypoints(), d2, b.n_keypoints(), ratio, true)
-            .into_iter()
-            .map(|[q, t]| (q as usize, t as usize))
-            .collect();
+        return Ok(
+            sift_match_descriptors(d1, a.n_keypoints(), d2, b.n_keypoints(), ratio, true)
+                .into_iter()
+                .map(|[q, t]| (q as usize, t as usize))
+                .collect(),
+        );
     }
-    Vec::new()
+    Ok(Vec::new())
 }
 
 #[cfg(test)]
@@ -474,7 +490,7 @@ mod tests {
 
     #[test]
     fn geometric_verification_drops_pairs_with_few_matches() {
-        // Fewer than 8 raw matches: not enough for the 8-point algorithm.
+        // Fewer than 7 raw matches: not enough for the seven-point algorithm.
         let mut edges = Vec::new();
         for i in 0..5 {
             edges.push(TrackEdge {
@@ -496,7 +512,7 @@ mod tests {
         let frames: Vec<FrameFeatures> = (0..5).map(|_| f()).collect();
 
         let mut edges = Vec::new();
-        let added = append_wide_baseline_edges(&frames, 1, 2, 0.8, None, &mut edges);
+        let added = append_wide_baseline_edges(&frames, 1, 2, 0.8, None, &mut edges).unwrap();
         assert_eq!(added, 4 * 2, "pairs (0,2),(0,4),(1,3),(2,4) x 2 matches");
         let pairs: Vec<(usize, usize)> = edges.iter().map(|e| (e.cam_a, e.cam_b)).collect();
         for (a, b) in &pairs {
@@ -513,7 +529,7 @@ mod tests {
         let frames = vec![f.clone(), f];
         let mut edges = Vec::new();
         assert_eq!(
-            append_wide_baseline_edges(&frames, 1, 0, 0.8, None, &mut edges),
+            append_wide_baseline_edges(&frames, 1, 0, 0.8, None, &mut edges).unwrap(),
             0
         );
         assert!(edges.is_empty());

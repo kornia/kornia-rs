@@ -131,6 +131,9 @@ mod tests {
 
     #[test]
     fn run_sfm_recovers_points_and_poses_from_synthetic_scene() {
+        use kornia_algebra::linalg::rigid::umeyama_f64;
+        use kornia_algebra::Vec3F64;
+
         let tracks = test_util::synthetic_tracks();
 
         let recon = run_sfm(
@@ -149,10 +152,31 @@ mod tests {
             !recon.points.is_empty(),
             "reconstruction should recover 3D points"
         );
-        let registered = recon.views.iter().filter(|v| v.is_some()).count();
+
+        // The bootstrap pair alone satisfies ">= 2"; require all three cameras,
+        // which is what exercising PnP registration actually means.
+        let recovered: Vec<Vec3F64> = recon
+            .views
+            .iter()
+            .map(|v| v.as_ref().map(|p| p.translation))
+            .collect::<Option<Vec<_>>>()
+            .expect("all three cameras must register");
+
+        // The map is up to scale and world frame; align the recovered camera
+        // centres to ground truth with a similarity before comparing.
+        let gt: Vec<Vec3F64> = test_util::synthetic_poses()
+            .iter()
+            .map(|p| p.inverse().translation)
+            .collect();
+        let (r, t, s) = umeyama_f64(&recovered, &gt, None, true).expect("similarity alignment");
+        let max_err = recovered
+            .iter()
+            .zip(&gt)
+            .map(|(p, q)| (r * *p * s + t - *q).length())
+            .fold(0.0_f64, f64::max);
         assert!(
-            registered >= 2,
-            "at least two of three cameras should register (got {registered})"
+            max_err < 1e-6,
+            "similarity-aligned camera centres must match ground truth (max err {max_err:.3e})"
         );
     }
 

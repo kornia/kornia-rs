@@ -18,7 +18,8 @@ use std::path::Path;
 
 use kiddo::immutable::float::kdtree::ImmutableKdTree;
 use kornia_3d::pose::Pose3d;
-use kornia_algebra::Vec2F64;
+use kornia_algebra::linalg::svd::svd3_f64;
+use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64};
 use kornia_calib::{FeatureTrack, Reconstruction};
 use kornia_image::Image;
 
@@ -48,11 +49,7 @@ pub fn build_vertices(
     reconstruction: &Reconstruction,
     observation_colors: &[Vec<(usize, [u8; 3])>],
 ) -> Vec<Vertex> {
-    let points: Vec<[f64; 3]> = reconstruction
-        .points
-        .iter()
-        .map(|p| [p.position.x, p.position.y, p.position.z])
-        .collect();
+    let points: Vec<Vec3F64> = reconstruction.points.iter().map(|p| p.position).collect();
     let axes = pca_normals_axis(&points);
 
     // Group surviving observations by the point they belong to.
@@ -73,7 +70,7 @@ pub fn build_vertices(
             let track_id = pt.track_id;
 
             // Observers that actually saw this point (surviving observations).
-            let mut observers: Vec<([f64; 3], Option<[u8; 3]>)> = obs_by_point[pi]
+            let mut observers: Vec<(Vec3F64, Option<[u8; 3]>)> = obs_by_point[pi]
                 .iter()
                 .filter_map(|&oi| {
                     let view = reconstruction.observations[oi].view;
@@ -96,9 +93,9 @@ pub fn build_vertices(
 
             let (normal, color) = orient_normal_and_pick_color(p, axis, &observers);
             Vertex {
-                position: p,
+                position: p.to_array(),
                 color,
-                normal,
+                normal: normal.to_array(),
             }
         })
         .collect()
@@ -184,9 +181,9 @@ pub fn sample_observation_colors(
 /// `views` are camera→world (`T_world_cam`), so a camera's centre is simply its
 /// translation — no inversion (inverting would give the world→camera term
 /// `-Rᵀ·C`, not the centre).
-fn view_centre(views: &[Option<Pose3d>], view: usize) -> Option<[f64; 3]> {
+fn view_centre(views: &[Option<Pose3d>], view: usize) -> Option<Vec3F64> {
     let pose = views.get(view)?.as_ref()?;
-    Some([pose.translation.x, pose.translation.y, pose.translation.z])
+    Some(pose.translation)
 }
 
 /// Colour recorded for `track_id` at `view`, if that observation exists.
@@ -210,28 +207,28 @@ fn colour_for_view(
 /// most aligned with the axis (`max |dot|`) rejects grazing views, and using a
 /// point's own observers (not a global mean) keeps surround captures correct.
 fn orient_normal_and_pick_color(
-    p: [f64; 3],
-    axis: [f64; 3],
-    observers: &[([f64; 3], Option<[u8; 3]>)],
-) -> ([f64; 3], [u8; 3]) {
+    p: Vec3F64,
+    axis: Vec3F64,
+    observers: &[(Vec3F64, Option<[u8; 3]>)],
+) -> (Vec3F64, [u8; 3]) {
     let first_color = observers.iter().find_map(|(_, c)| *c).unwrap_or([0, 0, 0]);
     if observers.is_empty() {
         return (axis, first_color);
     }
     let mut best_idx = 0usize;
     let mut best_score = f64::NEG_INFINITY;
-    let mut best_dir = [0.0, 0.0, 1.0];
+    let mut best_dir = Vec3F64::new(0.0, 0.0, 1.0);
     for (i, (c, _)) in observers.iter().enumerate() {
-        let dir = normalize([c[0] - p[0], c[1] - p[1], c[2] - p[2]]);
-        let score = dot(axis, dir).abs();
+        let dir = (*c - p).normalize();
+        let score = axis.dot(dir).abs();
         if score > best_score {
             best_score = score;
             best_idx = i;
             best_dir = dir;
         }
     }
-    let normal = if dot(axis, best_dir) < 0.0 {
-        [-axis[0], -axis[1], -axis[2]]
+    let normal = if axis.dot(best_dir) < 0.0 {
+        -axis
     } else {
         axis
     };
@@ -239,132 +236,73 @@ fn orient_normal_and_pick_color(
     (normal, color)
 }
 
-/// Smallest-eigenvector (PCA) normal axis for every point; the sign is
+/// Smallest-singular-value (PCA) normal axis for every point; the sign is
 /// arbitrary and is fixed later by [`orient_normal_and_pick_color`].
-fn pca_normals_axis(points: &[[f64; 3]]) -> Vec<[f64; 3]> {
+fn pca_normals_axis(points: &[Vec3F64]) -> Vec<Vec3F64> {
     if points.is_empty() {
         return Vec::new();
     }
-    let kdtree: ImmutableKdTree<f64, u32, 3, 32> = ImmutableKdTree::new_from_slice(points);
+    let arrays: Vec<[f64; 3]> = points.iter().map(|p| p.to_array()).collect();
+    let kdtree: ImmutableKdTree<f64, u32, 3, 32> = ImmutableKdTree::new_from_slice(&arrays);
     let k = NonZeroUsize::new(NORMAL_K.min(points.len()).max(2)).unwrap();
 
     points
         .iter()
         .map(|p| {
-            let nn = kdtree.nearest_n::<kiddo::SquaredEuclidean>(p, k);
-            let neighbours: Vec<[f64; 3]> = nn.iter().map(|nb| points[nb.item as usize]).collect();
+            let query = p.to_array();
+            let nn = kdtree.nearest_n::<kiddo::SquaredEuclidean>(&query, k);
+            let neighbours: Vec<Vec3F64> = nn.iter().map(|nb| points[nb.item as usize]).collect();
             pca_normal(&neighbours)
         })
         .collect()
 }
 
-/// Smallest-eigenvector normal of the neighbour covariance via PCA.
-fn pca_normal(neighbours: &[[f64; 3]]) -> [f64; 3] {
+/// Smallest-singular-value vector of the neighbour covariance via PCA.
+///
+/// The covariance is symmetric PSD, so its eigenvectors are its singular
+/// vectors; the right singular vector of the smallest singular value is the
+/// plane normal. Uses kornia-algebra's SVD instead of a local Jacobi solver.
+fn pca_normal(neighbours: &[Vec3F64]) -> Vec3F64 {
     let m = mean(neighbours);
-    let mut cov = [[0.0; 3]; 3];
+    let mut cov = [[0.0f64; 3]; 3];
     for p in neighbours {
-        let d = [p[0] - m[0], p[1] - m[1], p[2] - m[2]];
+        let d = (*p - m).to_array();
         for i in 0..3 {
             for j in 0..3 {
                 cov[i][j] += d[i] * d[j];
             }
         }
     }
+    let cov = Mat3F64::from_cols(
+        Vec3F64::new(cov[0][0], cov[1][0], cov[2][0]),
+        Vec3F64::new(cov[0][1], cov[1][1], cov[2][1]),
+        Vec3F64::new(cov[0][2], cov[1][2], cov[2][2]),
+    );
 
-    let (evecs, evals) = jacobi_symmetric(&cov);
+    let svd = svd3_f64(&cov);
+    let s = svd.s();
+    let v = svd.v();
+    let diag = [s.x_axis.x, s.y_axis.y, s.z_axis.z];
+    let cols = [
+        Vec3F64::from(v.x_axis),
+        Vec3F64::from(v.y_axis),
+        Vec3F64::from(v.z_axis),
+    ];
     let mut min_i = 0;
-    if evals[1] < evals[min_i] {
-        min_i = 1;
+    for i in 1..3 {
+        if diag[i].total_cmp(&diag[min_i]).is_lt() {
+            min_i = i;
+        }
     }
-    if evals[2] < evals[min_i] {
-        min_i = 2;
-    }
-    let v = [evecs[0][min_i], evecs[1][min_i], evecs[2][min_i]];
-    normalize(v)
+    cols[min_i].normalize()
 }
 
-/// Jacobi eigen-decomposition of a symmetric 3x3 matrix.
-///
-/// Returns `(eigenvectors_as_columns, eigenvalues)`.
-#[allow(clippy::needless_range_loop)] // fixed-size 3x3 index arithmetic is clearest as ranges
-fn jacobi_symmetric(a: &[[f64; 3]; 3]) -> ([[f64; 3]; 3], [f64; 3]) {
-    let mut a = *a;
-    let mut v = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-
-    for _ in 0..100 {
-        let (mut p, mut q, mut max) = (0, 1, a[0][1].abs());
-        for i in 0..3 {
-            for j in (i + 1)..3 {
-                if a[i][j].abs() > max {
-                    max = a[i][j].abs();
-                    p = i;
-                    q = j;
-                }
-            }
-        }
-        if a[p][q].abs() < 1e-15 {
-            break;
-        }
-
-        let theta = (a[q][q] - a[p][p]) / (2.0 * a[p][q]);
-        let t = if theta >= 0.0 {
-            1.0 / (theta + (1.0 + theta * theta).sqrt())
-        } else {
-            -1.0 / (-theta + (1.0 + theta * theta).sqrt())
-        };
-        let c = 1.0 / (1.0 + t * t).sqrt();
-        let s = t * c;
-
-        let (app, aqq, apq) = (a[p][p], a[q][q], a[p][q]);
-        a[p][p] = c * c * app - 2.0 * s * c * apq + s * s * aqq;
-        a[q][q] = s * s * app + 2.0 * s * c * apq + c * c * aqq;
-        a[p][q] = 0.0;
-        a[q][p] = 0.0;
-
-        for i in 0..3 {
-            if i != p && i != q {
-                let (aip, aiq) = (a[i][p], a[i][q]);
-                a[i][p] = c * aip - s * aiq;
-                a[p][i] = a[i][p];
-                a[i][q] = s * aip + c * aiq;
-                a[q][i] = a[i][q];
-            }
-        }
-        for i in 0..3 {
-            let (vip, viq) = (v[i][p], v[i][q]);
-            v[i][p] = c * vip - s * viq;
-            v[i][q] = s * vip + c * viq;
-        }
-    }
-
-    (v, [a[0][0], a[1][1], a[2][2]])
-}
-
-fn mean(pts: &[[f64; 3]]) -> [f64; 3] {
+fn mean(pts: &[Vec3F64]) -> Vec3F64 {
     let n = pts.len() as f64;
     if n == 0.0 {
-        return [0.0; 3];
+        return Vec3F64::ZERO;
     }
-    let mut s = [0.0; 3];
-    for p in pts {
-        s[0] += p[0];
-        s[1] += p[1];
-        s[2] += p[2];
-    }
-    [s[0] / n, s[1] / n, s[2] / n]
-}
-
-fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn normalize(v: [f64; 3]) -> [f64; 3] {
-    let len = dot(v, v).sqrt();
-    if len < 1e-12 {
-        [0.0, 0.0, 1.0]
-    } else {
-        [v[0] / len, v[1] / len, v[2] / len]
-    }
+    pts.iter().fold(Vec3F64::ZERO, |acc, p| acc + *p) / n
 }
 
 #[cfg(test)]
@@ -426,16 +364,18 @@ mod tests {
         let mut points = Vec::new();
         for x in [-1.0, -0.5, 0.0, 0.5, 1.0] {
             for y in [-1.0, -0.5, 0.0, 0.5, 1.0] {
-                points.push([x, y, 0.0]);
+                points.push(Vec3F64::new(x, y, 0.0));
             }
         }
         let normals = pca_normals_axis(&points);
         assert_eq!(normals.len(), points.len());
         for n in &normals {
             // Axis is ±z (sign is fixed later by the orientation step).
-            assert!(n[2].abs() > 0.99, "plane axis should be ±z, got {n:?}");
-            let len = dot(*n, *n).sqrt();
-            assert!((len - 1.0).abs() < 1e-6, "normal should be unit length");
+            assert!(n.z.abs() > 0.99, "plane axis should be ±z, got {n:?}");
+            assert!(
+                (n.length() - 1.0).abs() < 1e-6,
+                "normal should be unit length"
+            );
         }
     }
 
@@ -549,7 +489,7 @@ mod tests {
         );
         let pose = Pose3d::new(rot, Vec3F64::new(1.0, 2.0, 3.0));
         let views = [Some(pose), None];
-        assert_eq!(view_centre(&views, 0), Some([1.0, 2.0, 3.0]));
+        assert_eq!(view_centre(&views, 0), Some(Vec3F64::new(1.0, 2.0, 3.0)));
         assert_eq!(
             view_centre(&views, 1),
             None,
@@ -564,23 +504,21 @@ mod tests {
 
     #[test]
     fn orient_normal_picks_head_on_observer_and_color() {
-        let p = [0.0, 0.0, 0.0];
-        let axis = [0.0, 0.0, 1.0];
+        let p = Vec3F64::new(0.0, 0.0, 0.0);
+        let axis = Vec3F64::new(0.0, 0.0, 1.0);
         // A grazing observer to the side, a head-on observer on +z. The
         // head-on one must win even though it is second in the list, and its
         // colour is the one returned.
-        let grazing = ([1.0, 0.0, 0.1], Some([9, 9, 9]));
-        let head_on = ([0.0, 0.0, 5.0], Some([1, 2, 3]));
+        let grazing = (Vec3F64::new(1.0, 0.0, 0.1), Some([9, 9, 9]));
+        let head_on = (Vec3F64::new(0.0, 0.0, 5.0), Some([1, 2, 3]));
         let (normal, color) = orient_normal_and_pick_color(p, axis, &[grazing, head_on]);
-        assert!(
-            normal[2] > 0.99,
-            "normal should point at the head-on camera"
-        );
+        assert!(normal.z > 0.99, "normal should point at the head-on camera");
         assert_eq!(color, [1, 2, 3]);
 
         // An observer on −z flips the axis.
-        let (flipped, _) = orient_normal_and_pick_color(p, axis, &[([0.0, 0.0, -5.0], None)]);
-        assert!(flipped[2] < -0.99, "normal must flip toward a −z observer");
+        let (flipped, _) =
+            orient_normal_and_pick_color(p, axis, &[(Vec3F64::new(0.0, 0.0, -5.0), None)]);
+        assert!(flipped.z < -0.99, "normal must flip toward a −z observer");
 
         // No observers: axis unchanged, colour defaults to black.
         let (unchanged, color) = orient_normal_and_pick_color(p, axis, &[]);
