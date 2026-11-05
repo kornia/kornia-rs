@@ -126,7 +126,7 @@ You can find comprehensive examples in the `examples` folder of the repository:
 
 `features::match_descriptors` matches fixed-width binary descriptors with
 Hamming distance, an optional distance cap, mutual nearest neighbors, and a
-forward Lowe ratio filter. ORB's 32-byte descriptors use AVX2 or NEON row
+forward Lowe ratio filter. ORB's 32-byte descriptors use POPCNT or NEON row
 kernels; other widths and CPUs use a scalar row kernel. Large mutual scans
 reuse forward distances for reverse minima with worker-local scratch buffers.
 The ORB and projection matchers share these row kernels.

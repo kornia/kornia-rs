@@ -26,8 +26,12 @@ fn bench_hamming_match(c: &mut Criterion) {
         for count in [512, 1024, 4096] {
             let queries = descriptors(count, 0x1234_5678);
             let candidates = descriptors(count, 0x9876_5432);
-            for cross_check in [false, true] {
-                let direction = if cross_check { "mutual" } else { "forward" };
+            for (direction, cross_check, max_ratio) in [
+                ("forward", false, None),
+                ("forward_ratio", false, Some(0.9)),
+                ("mutual", true, None),
+                ("mutual_ratio", true, Some(0.9)),
+            ] {
                 group.bench_with_input(BenchmarkId::new(direction, count), &count, |b, _| {
                     b.iter(|| {
                         pool.install(|| {
@@ -36,7 +40,7 @@ fn bench_hamming_match(c: &mut Criterion) {
                                 std::hint::black_box(&candidates),
                                 None,
                                 cross_check,
-                                None,
+                                max_ratio,
                             ))
                         })
                     });

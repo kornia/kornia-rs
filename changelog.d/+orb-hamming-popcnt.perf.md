@@ -1,0 +1,1 @@
+Exact 32-byte Hamming matching on x86_64 uses POPCNT instead of AVX2 nibble lookup. On an i7-14700K, `match_descriptors` with `cross_check` and a ratio is 20-25% faster at 1 thread, and 20-29% faster at 4 threads above 512 descriptors, and `hamming_distance` is 14-20% faster. Results are unchanged. Forward scans without `cross_check` change by +3% to -20%.

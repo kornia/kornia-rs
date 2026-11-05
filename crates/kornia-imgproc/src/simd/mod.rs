@@ -21,6 +21,8 @@ pub struct CpuFeatures {
     pub has_avx512f: bool,
     /// AVX-512BW (byte + word ops on 512-bit lanes).
     pub has_avx512bw: bool,
+    /// POPCNT (population count on 64-bit registers).
+    pub has_popcnt: bool,
 
     /// NEON (Advanced SIMD) — architectural on aarch64.
     pub has_neon: bool,
@@ -40,6 +42,7 @@ impl CpuFeatures {
             has_fma: std::is_x86_feature_detected!("fma"),
             has_avx512f: std::is_x86_feature_detected!("avx512f"),
             has_avx512bw: std::is_x86_feature_detected!("avx512bw"),
+            has_popcnt: std::is_x86_feature_detected!("popcnt"),
             has_neon: false,
             has_fp16: false,
             has_dotprod: false,
@@ -54,6 +57,7 @@ impl CpuFeatures {
             has_fma: false,
             has_avx512f: false,
             has_avx512bw: false,
+            has_popcnt: false,
             has_neon: true,
             has_fp16: std::arch::is_aarch64_feature_detected!("fp16"),
             has_dotprod: std::arch::is_aarch64_feature_detected!("dotprod"),
@@ -68,6 +72,7 @@ impl CpuFeatures {
             has_fma: false,
             has_avx512f: false,
             has_avx512bw: false,
+            has_popcnt: false,
             has_neon: false,
             has_fp16: false,
             has_dotprod: false,

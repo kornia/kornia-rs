@@ -1,7 +1,7 @@
 /// Hamming distance between two fixed-size byte descriptors.
 ///
 /// Specialized for `N=32` (ORB's 256-bit descriptor) on aarch64 (NEON) and
-/// x86_64 (AVX2). Other widths and CPUs use scalar XOR and popcount.
+/// x86_64 (POPCNT). Other widths and CPUs use scalar XOR and popcount.
 ///
 /// # Arguments
 ///
@@ -19,11 +19,11 @@
 pub fn hamming_distance<const N: usize>(a: &[u8; N], b: &[u8; N]) -> u32 {
     match hamming_kernel::<N>() {
         #[cfg(target_arch = "x86_64")]
-        HammingKernel::Avx2 => {
+        HammingKernel::Popcnt => {
             if let (Ok(a), Ok(b)) = (a.as_slice().try_into(), b.as_slice().try_into()) {
-                // SAFETY: the shared selector confirms AVX2; the converted
+                // SAFETY: the shared selector confirms POPCNT; the converted
                 // array references each contain exactly 32 valid bytes.
-                return unsafe { hamming32_avx2(a, b) };
+                return unsafe { hamming32_popcnt(a, b) };
             }
         }
         #[cfg(target_arch = "aarch64")]
@@ -42,7 +42,7 @@ pub fn hamming_distance<const N: usize>(a: &[u8; N], b: &[u8; N]) -> u32 {
 enum HammingKernel {
     Scalar,
     #[cfg(target_arch = "x86_64")]
-    Avx2,
+    Popcnt,
     #[cfg(target_arch = "aarch64")]
     Neon,
 }
@@ -51,8 +51,8 @@ enum HammingKernel {
 fn hamming_kernel<const N: usize>() -> HammingKernel {
     if N == 32 {
         #[cfg(target_arch = "x86_64")]
-        if crate::simd::cpu_features().has_avx2 {
-            return HammingKernel::Avx2;
+        if crate::simd::cpu_features().has_popcnt {
+            return HammingKernel::Popcnt;
         }
         #[cfg(target_arch = "aarch64")]
         return HammingKernel::Neon;
@@ -66,104 +66,53 @@ fn hamming_distance_scalar<const N: usize>(a: &[u8; N], b: &[u8; N]) -> u32 {
 }
 
 #[cfg(target_arch = "x86_64")]
-struct Avx2Hamming {
-    query: std::arch::x86_64::__m256i,
-    lut: std::arch::x86_64::__m256i,
-    mask: std::arch::x86_64::__m256i,
+#[inline(always)]
+fn descriptor_words(descriptor: &[u8; 32]) -> [u64; 4] {
+    let mut words = [0; 4];
+    for (word, chunk) in words.iter_mut().zip(descriptor.as_chunks::<8>().0) {
+        *word = u64::from_ne_bytes(*chunk);
+    }
+    words
 }
 
 #[cfg(target_arch = "x86_64")]
-impl Avx2Hamming {
-    // These helpers inherit the caller's target features. Only the thin
-    // target_feature wrappers are called from baseline or downstream code.
+struct PopcntHamming {
+    query: [u64; 4],
+}
+
+#[cfg(target_arch = "x86_64")]
+impl PopcntHamming {
+    // These helpers inherit the caller's target features once inlined. Only
+    // the thin target_feature wrappers are called from baseline code.
     #[inline(always)]
-    unsafe fn new(query: &[u8; 32]) -> Self {
-        use std::arch::x86_64::*;
+    fn new(query: &[u8; 32]) -> Self {
         Self {
-            // SAFETY: caller guarantees AVX2; query contains 32 readable bytes.
-            query: unsafe { _mm256_loadu_si256(query.as_ptr().cast()) },
-            // SAFETY: caller guarantees AVX2 for these register-only intrinsics.
-            lut: unsafe {
-                _mm256_setr_epi8(
-                    0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4, 0, 1, 1, 2, 1, 2, 2, 3, 1, 2,
-                    2, 3, 2, 3, 3, 4,
-                )
-            },
-            // SAFETY: caller guarantees AVX2.
-            mask: unsafe { _mm256_set1_epi8(0x0f) },
+            query: descriptor_words(query),
         }
     }
 
     #[inline(always)]
-    unsafe fn partial_sums(&self, candidate: &[u8; 32]) -> std::arch::x86_64::__m256i {
-        use std::arch::x86_64::*;
-        // SAFETY: caller guarantees AVX2. The unaligned load reads exactly
-        // the candidate's 32 bytes; the remaining intrinsics use registers.
-        unsafe {
-            let x = _mm256_xor_si256(self.query, _mm256_loadu_si256(candidate.as_ptr().cast()));
-            let lo = _mm256_and_si256(x, self.mask);
-            let hi = _mm256_and_si256(_mm256_srli_epi16(x, 4), self.mask);
-            let pop = _mm256_add_epi8(
-                _mm256_shuffle_epi8(self.lut, lo),
-                _mm256_shuffle_epi8(self.lut, hi),
-            );
-            _mm256_sad_epu8(pop, _mm256_setzero_si256())
-        }
-    }
-
-    #[inline(always)]
-    unsafe fn distance(&self, candidate: &[u8; 32]) -> u32 {
-        use std::arch::x86_64::*;
-        // SAFETY: caller guarantees AVX2 and candidate contains 32 bytes.
-        unsafe {
-            let sums = self.partial_sums(candidate);
-            let sum = _mm_add_epi64(
-                _mm256_castsi256_si128(sums),
-                _mm256_extracti128_si256(sums, 1),
-            );
-            let sum = _mm_add_epi64(sum, _mm_unpackhi_epi64(sum, sum));
-            _mm_cvtsi128_si32(sum) as u32
-        }
-    }
-
-    #[inline(always)]
-    unsafe fn distances4(&self, candidates: &[[u8; 32]; 4]) -> [u32; 4] {
-        use std::arch::x86_64::*;
-        // SAFETY: caller guarantees AVX2. Each typed candidate supplies 32
-        // bytes. SAD lanes are <=64 with zero high halves, so horizontal
-        // i32 adds reduce four independent descriptors without overflow.
-        // The final unaligned store initializes exactly four u32 outputs.
-        unsafe {
-            let ab = _mm256_hadd_epi32(
-                self.partial_sums(&candidates[0]),
-                self.partial_sums(&candidates[1]),
-            );
-            let cd = _mm256_hadd_epi32(
-                self.partial_sums(&candidates[2]),
-                self.partial_sums(&candidates[3]),
-            );
-            let halves = _mm256_hadd_epi32(ab, cd);
-            let totals = _mm_add_epi32(
-                _mm256_castsi256_si128(halves),
-                _mm256_extracti128_si256(halves, 1),
-            );
-            let mut distances = [0; 4];
-            _mm_storeu_si128(distances.as_mut_ptr().cast(), totals);
-            distances
-        }
+    fn distance(&self, candidate: &[u8; 32]) -> u32 {
+        let candidate = descriptor_words(candidate);
+        (self.query[0] ^ candidate[0]).count_ones()
+            + (self.query[1] ^ candidate[1]).count_ones()
+            + (self.query[2] ^ candidate[2]).count_ones()
+            + (self.query[3] ^ candidate[3]).count_ones()
     }
 }
 
-/// AVX2 32-byte Hamming distance via nibble lookup and SAD reduction.
+/// 32-byte Hamming distance as XOR and POPCNT over four 64-bit words.
+///
+/// The same word loop as OpenCV's `normHamming` under `CV_POPCNT_U64`
+/// (`modules/core/src/stat.simd.hpp`).
 ///
 /// # Safety
 ///
-/// The caller must ensure AVX2 is available.
+/// The caller must ensure POPCNT is available.
 #[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
-unsafe fn hamming32_avx2(a: &[u8; 32], b: &[u8; 32]) -> u32 {
-    // SAFETY: caller guarantees AVX2; both typed arrays contain 32 bytes.
-    unsafe { Avx2Hamming::new(a).distance(b) }
+#[target_feature(enable = "popcnt")]
+unsafe fn hamming32_popcnt(a: &[u8; 32], b: &[u8; 32]) -> u32 {
+    PopcntHamming::new(a).distance(b)
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -290,11 +239,11 @@ fn hamming_row_scan<const N: usize, const SECOND: bool, const GATED: bool>(
     gate: impl FnMut(usize) -> bool,
     visit: impl FnMut(usize, u32),
 ) -> (usize, u32, u32) {
-    // Select once per row, including on CPUs without AVX2. No pair calls
+    // Select once per row, including on CPUs without POPCNT. No pair calls
     // go back through the public runtime dispatcher.
     match hamming_kernel::<N>() {
         #[cfg(target_arch = "x86_64")]
-        HammingKernel::Avx2 => {
+        HammingKernel::Popcnt => {
             if let Ok(query) = query.as_slice().try_into() {
                 let (candidates, _) = candidates.as_flattened().as_chunks::<32>();
                 if GATED {
@@ -304,24 +253,21 @@ fn hamming_row_scan<const N: usize, const SECOND: bool, const GATED: bool>(
                     return scan_hamming::<32, SECOND, true>(
                         candidates,
                         |candidate| {
-                            // SAFETY: selector confirms AVX2; both arrays are 32 bytes.
-                            unsafe { hamming32_avx2(query, candidate) }
+                            // SAFETY: selector confirms POPCNT; both arrays are 32 bytes.
+                            unsafe { hamming32_popcnt(query, candidate) }
                         },
                         |batch| {
                             std::array::from_fn(|i| {
-                                // SAFETY: selector confirms AVX2; each array is 32 bytes.
-                                unsafe { hamming32_avx2(query, &batch[i]) }
+                                // SAFETY: selector confirms POPCNT; each array is 32 bytes.
+                                unsafe { hamming32_popcnt(query, &batch[i]) }
                             })
                         },
                         gate,
                         visit,
                     );
                 }
-                // SAFETY: the selector confirms AVX2 and N == 32; typed
-                // references prevent short loads and truncated descriptors.
-                return unsafe {
-                    hamming_row_avx2::<SECOND, GATED>(query, candidates, gate, visit)
-                };
+                // SAFETY: the selector confirms POPCNT and N == 32.
+                return unsafe { hamming_row_popcnt::<SECOND>(query, candidates, gate, visit) };
             }
         }
         #[cfg(target_arch = "aarch64")]
@@ -374,30 +320,25 @@ fn hamming_row_scalar<const N: usize, const SECOND: bool>(
 
 /// # Safety
 ///
-/// The caller must ensure AVX2 is available.
+/// The caller must ensure POPCNT is available.
 #[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
-unsafe fn hamming_row_avx2<const SECOND: bool, const GATED: bool>(
+#[target_feature(enable = "popcnt")]
+unsafe fn hamming_row_popcnt<const SECOND: bool>(
     query: &[u8; 32],
     candidates: &[[u8; 32]],
     gate: impl FnMut(usize) -> bool,
     visit: impl FnMut(usize, u32),
 ) -> (usize, u32, u32) {
-    // SAFETY: caller guarantees AVX2; the query is exactly 32 bytes.
-    let kernel = unsafe { Avx2Hamming::new(query) };
-    scan_hamming::<32, SECOND, GATED>(
-        candidates,
-        |candidate| {
-            // SAFETY: caller guarantees AVX2; candidate is exactly 32 bytes.
-            unsafe { kernel.distance(candidate) }
-        },
-        |batch| {
-            // SAFETY: caller guarantees AVX2; all candidates are 32 bytes.
-            unsafe { kernel.distances4(batch) }
-        },
-        gate,
-        visit,
-    )
+    let kernel = PopcntHamming::new(query);
+    let distance = |candidate: &[u8; 32]| kernel.distance(candidate);
+    let distances4 = |batch: &[[u8; 32]; 4]| std::array::from_fn(|i| kernel.distance(&batch[i]));
+    // Four-candidate batches help best-only scans; tracking the runner-up is
+    // faster one candidate at a time (see bench_hamming_match).
+    if SECOND {
+        scan_hamming::<32, SECOND, true>(candidates, distance, distances4, gate, visit)
+    } else {
+        scan_hamming::<32, SECOND, false>(candidates, distance, distances4, gate, visit)
+    }
 }
 
 // The caller guarantees query indices fit in the low 32 bits of each key.
@@ -1242,18 +1183,18 @@ mod tests {
                     (index, distance, second)
                 );
                 #[cfg(target_arch = "x86_64")]
-                if crate::simd::cpu_features().has_avx2 {
-                    // SAFETY: AVX2 detected above and descriptors are 32 bytes.
+                if crate::simd::cpu_features().has_popcnt {
+                    // SAFETY: POPCNT detected above and descriptors are 32 bytes.
                     assert_eq!(
                         unsafe {
-                            hamming_row_avx2::<true, false>(query, candidates, |_| true, |_, _| {})
+                            hamming_row_popcnt::<true>(query, candidates, |_| true, |_, _| {})
                         },
                         (index, distance, second)
                     );
-                    // SAFETY: AVX2 detected above and descriptors are 32 bytes.
+                    // SAFETY: POPCNT detected above and descriptors are 32 bytes.
                     assert_eq!(
                         unsafe {
-                            hamming_row_avx2::<false, false>(query, candidates, |_| true, |_, _| {})
+                            hamming_row_popcnt::<false>(query, candidates, |_| true, |_, _| {})
                         },
                         (index, distance, u32::MAX)
                     );
