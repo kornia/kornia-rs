@@ -56,7 +56,7 @@ cargo run -p sfm -- sample.mp4 out.ply \
 | `--max-reprojection-error` | `0.01` | Reprojection-error threshold (normalized units). |
 | `--geo-verify` | off | Verify matches with epipolar RANSAC after matching (rejects false matches). |
 | `--geo-threshold` | `3.0` | Epipolar RANSAC inlier threshold (pixels). |
-| `--geo-min-inliers` | `15` | Min inliers for a pair's fundamental matrix to be trusted. Values below 15 warn — at 8 the 8-point algorithm's minimal sample validates itself. |
+| `--geo-min-inliers` | `15` | Min inliers for a pair's fundamental matrix to be trusted. Values below 15 warn — at 7 the seven-point algorithm's minimal sample validates itself. |
 | `--cuda` | off | Use CUDA for SIFT extraction (requires an NVIDIA GPU). |
 | `--sprt` | off | Enable Wald's SPRT for PnP registration (rejects bad candidate poses early). |
 | `--sprt-epsilon` | `0.5` | SPRT expected inlier ratio (capped at 0.3 until a consensus exists). |
@@ -181,12 +181,9 @@ detached, so closing the CLI does not close the viewer.
   resolution (principal point at its centre), not the displayed portrait frame.
   The focal length can be derived from the EXIF 35 mm-equivalent:
   `fx = f_35mm / 36 * frame_width`.
-- **Frame width must satisfy `3*W % 4 == 0`.** GStreamer pads RGB rows to a
-  4-byte boundary and `kornia-io` currently ignores the stride, so other widths
-  (e.g. 854x480) would be read sheared with no error; the example rejects them
-  until the core fix lands.
-- **No distortion model**: the supplied intrinsics are treated as an ideal
-  pinhole (zero distortion).
+- **Intrinsics are treated as zero-distortion.** `--refine-intrinsics` estimates
+  a focal scale and radial/tangential distortion against the reconstruction, but
+  the frames themselves are not undistorted.
 
 ## Tests
 

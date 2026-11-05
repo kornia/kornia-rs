@@ -35,6 +35,15 @@ pub fn project(pw: Vec3F64, pose_w2c: &Pose3d, cam: &kornia_3d::camera::PinholeC
     Vec2F64::new(cam.fx * pc.x / pc.z + cam.cx, cam.fy * pc.y / pc.z + cam.cy)
 }
 
+/// Ground-truth world→camera poses used by [`synthetic_tracks`].
+pub fn synthetic_poses() -> [Pose3d; N_FRAMES] {
+    [
+        Pose3d::new(rot(0.0, 0.05), Vec3F64::new(0.0, 0.0, 0.0)),
+        Pose3d::new(rot(0.40, 0.05), Vec3F64::new(-0.6, 0.0, 0.10)),
+        Pose3d::new(rot(-0.40, 0.05), Vec3F64::new(0.6, 0.0, 0.15)),
+    ]
+}
+
 /// Build a synthetic scene: a grid of 3D points ~2 m away viewed by three
 /// cameras that converge on it (as a real overlapping-FOV rig would). One
 /// track per point; a camera only contributes an observation when the point is
@@ -42,11 +51,7 @@ pub fn project(pw: Vec3F64, pose_w2c: &Pose3d, cam: &kornia_3d::camera::PinholeC
 pub fn synthetic_tracks() -> Vec<FeatureTrack> {
     let cam = || make_camera(FX, FY, CX, CY);
     let cams = [cam(), cam(), cam()];
-    let gt = [
-        Pose3d::new(rot(0.0, 0.05), Vec3F64::new(0.0, 0.0, 0.0)),
-        Pose3d::new(rot(0.40, 0.05), Vec3F64::new(-0.6, 0.0, 0.10)),
-        Pose3d::new(rot(-0.40, 0.05), Vec3F64::new(0.6, 0.0, 0.15)),
-    ];
+    let gt = synthetic_poses();
     let (w, h) = (640.0, 480.0);
     let visible = |p: Vec3F64, c: usize| -> Option<Vec2F64> {
         let pc = gt[c].transform_point(&p);

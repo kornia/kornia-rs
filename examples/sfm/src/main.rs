@@ -111,7 +111,7 @@ struct Args {
     geo_threshold: f64,
 
     /// min inliers for a pair's fundamental matrix to be trusted (default: 15;
-    /// values below 15 warn — an 8-point model validates its own minimal sample)
+    /// values below 15 warn — a seven-point model validates its own minimal sample)
     #[argh(option, default = "15")]
     geo_min_inliers: usize,
 
@@ -158,6 +158,32 @@ fn validate_positive_args(frame_step: usize, match_window: usize) -> Result<(), 
     Ok(())
 }
 
+/// Build and validate the SPRT config from CLI flags.
+///
+/// Returns `None` when SPRT is disabled. An invalid config (epsilon/delta
+/// outside `(0, 1)`) makes PnP silently skip SPRT, so reject it as a CLI error
+/// instead of letting `--sprt` appear enabled while it does nothing.
+fn build_sprt_config(
+    enabled: bool,
+    epsilon: f64,
+    delta: f64,
+) -> Result<Option<kornia_3d::ransac::SPRTConfig>, String> {
+    if !enabled {
+        return Ok(None);
+    }
+    let cfg = kornia_3d::ransac::SPRTConfig {
+        epsilon,
+        delta,
+        ..Default::default()
+    };
+    if !cfg.is_valid() {
+        return Err(format!(
+            "invalid SPRT config (epsilon={epsilon}, delta={delta}): both must be in (0, 1)"
+        ));
+    }
+    Ok(Some(cfg))
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Args = argh::from_env();
 
@@ -166,6 +192,11 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Reject zero values up front rather than panicking deep in the pipeline.
     validate_positive_args(args.frame_step, args.match_window)
+        .map_err(|e| -> Box<dyn Error> { e.into() })?;
+
+    // Validate SPRT before the pipeline runs; an invalid config would otherwise
+    // silently disable it.
+    let sprt = build_sprt_config(args.sprt, args.sprt_epsilon, args.sprt_delta)
         .map_err(|e| -> Box<dyn Error> { e.into() })?;
 
     // 1. Decode frames.
@@ -245,7 +276,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         args.match_window,
         args.ratio,
         cuda_matcher.as_ref(),
-    );
+    )?;
     eprintln!(
         "[3/6] found {} matched correspondences in {:.1}s",
         edges.len(),
@@ -266,7 +297,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             args.ratio,
             cuda_matcher.as_ref(),
             &mut edges,
-        );
+        )?;
         eprintln!(
             "[3/6] added {added} wide-baseline matches in {:.1}s",
             t.elapsed().as_secs_f64()
@@ -331,11 +362,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         motion_prior_sigma: Some(args.motion_prior_sigma),
         up_prior_sigma: Some(args.up_prior_sigma),
         max_reprojection_error: Some(args.max_reprojection_error),
-        sprt: args.sprt.then(|| kornia_3d::ransac::SPRTConfig {
-            epsilon: args.sprt_epsilon,
-            delta: args.sprt_delta,
-            ..Default::default()
-        }),
+        sprt,
         refine_intrinsics: args.refine_intrinsics.then_some(true),
     };
     let reconstruction = reconstruction::run_sfm(
@@ -412,5 +439,17 @@ mod tests {
         assert!(validate_positive_args(0, 5).is_err(), "frame-step 0");
         assert!(validate_positive_args(1, 0).is_err(), "match-window 0");
         assert!(validate_positive_args(0, 0).is_err());
+    }
+
+    #[test]
+    fn build_sprt_config_validates_bounds() {
+        // Disabled: always None, whatever the values.
+        assert!(build_sprt_config(false, 1.0, 0.0).unwrap().is_none());
+        // Valid bounds.
+        assert!(build_sprt_config(true, 0.5, 0.05).unwrap().is_some());
+        // epsilon/delta must be strictly inside (0, 1).
+        assert!(build_sprt_config(true, 1.0, 0.05).is_err(), "epsilon = 1.0");
+        assert!(build_sprt_config(true, 0.5, 0.0).is_err(), "delta = 0.0");
+        assert!(build_sprt_config(true, 0.0, 0.05).is_err(), "epsilon = 0.0");
     }
 }
