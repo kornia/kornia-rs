@@ -80,3 +80,14 @@ Contributions are welcome! This crate is part of the Kornia workspace. Please re
 ## 📄 License
 
 This crate is licensed under the Apache-2.0 License.
+
+### Affine bundle adjustment (prototype)
+
+`camera::AffineCamera` represents an unconstrained float64 2×4 world-to-image matrix.
+`ba_affine::bundle_adjust_affine` jointly refines these matrices and 3D points using
+Cauchy IRLS and a dense Schur LM step. Four well-spread, noncoplanar fixed points
+select the affine gauge; all cameras are adjustable. Coordinates are normalized
+internally and outputs use the original frame. The Python entry point is
+`kornia_rs.k3d.bundle_adjust_affine`. See
+[the prototype notes](../../docs/affine-schur-prototype.md) for limitations,
+validation and the aerial reconstruction benchmark.

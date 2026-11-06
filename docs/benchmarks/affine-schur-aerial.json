@@ -1,0 +1,172 @@
+{
+  "points": 9288,
+  "observations": 21031,
+  "cameras": 4,
+  "initialization_seconds": 0.090041347022634,
+  "fixed_points": [
+    9281,
+    4748,
+    8965,
+    8085
+  ],
+  "initial_cost": 47423.804515993055,
+  "source_revision": "620ca497d29fd309a7beb66581ec05232c253535",
+  "source_dirty": true,
+  "extension_path": "/tmp/kornia-affine-python/kornia_rs/kornia_rs.cpython-310-x86_64-linux-gnu.so",
+  "python": "3.10.15 | packaged by conda-forge | (main, Oct 16 2024, 01:24:24) [GCC 13.3.0]",
+  "numpy_version": "2.2.6",
+  "thread_env": {
+    "OPENBLAS_NUM_THREADS": "1",
+    "RAYON_NUM_THREADS": "1",
+    "OMP_NUM_THREADS": "1"
+  },
+  "first_rust_call_one_iteration_seconds": 0.014799484983086586,
+  "numpy": {
+    "seconds": [
+      4.443902122031432,
+      4.436377270030789,
+      4.4287953859893605
+    ],
+    "median_seconds": 4.436377270030789,
+    "iterations": 300,
+    "cost": 20641.451725317907
+  },
+  "rust_5": {
+    "initial_cost": 47423.80451599306,
+    "cost": 21426.494953144836,
+    "iterations": 5,
+    "accepted_steps": 5,
+    "converged": false,
+    "seconds": [
+      0.05042417097138241,
+      0.05031059600878507,
+      0.05038321198662743
+    ],
+    "median_seconds": 0.05038321198662743,
+    "speedup": 88.05268848695633,
+    "cost_ratio": 1.0380323650813779,
+    "aligned_point_delta_median": 0.013316952753076318,
+    "aligned_point_delta_p95": 0.09859265163480714,
+    "scene_rms_radius": 10.183759048061576
+  },
+  "rust_10": {
+    "initial_cost": 47423.80451599306,
+    "cost": 20699.34321722957,
+    "iterations": 10,
+    "accepted_steps": 10,
+    "converged": false,
+    "seconds": [
+      0.10497135599143803,
+      0.10512923798523843,
+      0.10555129899876192
+    ],
+    "median_seconds": 0.10512923798523843,
+    "speedup": 42.19927163035003,
+    "cost_ratio": 1.0028046230799093,
+    "aligned_point_delta_median": 0.022310428813702543,
+    "aligned_point_delta_p95": 0.059391177735996,
+    "scene_rms_radius": 10.183759048061576
+  },
+  "rust_20": {
+    "initial_cost": 47423.80451599306,
+    "cost": 20537.31773029656,
+    "iterations": 20,
+    "accepted_steps": 20,
+    "converged": false,
+    "seconds": [
+      0.1997718659695238,
+      0.20273797604022548,
+      0.19882214802782983
+    ],
+    "median_seconds": 0.1997718659695238,
+    "speedup": 22.207217460278322,
+    "cost_ratio": 0.9949551031387186,
+    "aligned_point_delta_median": 0.030380573604126028,
+    "aligned_point_delta_p95": 0.07370336670594797,
+    "scene_rms_radius": 10.183759048061576
+  },
+  "rust_50": {
+    "initial_cost": 47423.80451599306,
+    "cost": 20530.370246770734,
+    "iterations": 50,
+    "accepted_steps": 50,
+    "converged": false,
+    "seconds": [
+      0.48358039697632194,
+      0.4816260219668038,
+      0.47540200100047514
+    ],
+    "median_seconds": 0.4816260219668038,
+    "speedup": 9.211249117965156,
+    "cost_ratio": 0.9946185239281922,
+    "aligned_point_delta_median": 0.03141463769598586,
+    "aligned_point_delta_p95": 0.07589583150843555,
+    "scene_rms_radius": 10.183759048061576
+  },
+  "rust_100": {
+    "initial_cost": 47423.80451599306,
+    "cost": 20530.180427158753,
+    "iterations": 64,
+    "accepted_steps": 64,
+    "converged": true,
+    "seconds": [
+      0.6235072760027833,
+      0.614444509963505,
+      0.6127718489733525
+    ],
+    "median_seconds": 0.614444509963505,
+    "speedup": 7.220143069215947,
+    "cost_ratio": 0.9946093278883736,
+    "aligned_point_delta_median": 0.03140371550884375,
+    "aligned_point_delta_p95": 0.07590651862705011,
+    "scene_rms_radius": 10.183759048061576
+  },
+  "reconstruction": {
+    "numpy": {
+      "seconds": [
+        6.438509689003695,
+        6.431856095965486,
+        6.4107065760181285
+      ],
+      "median_seconds": 6.431856095965486,
+      "points": 9177,
+      "observations": 19485,
+      "median_residual": 0.7646676174980716,
+      "p95_residual": 2.2957006540078493,
+      "log": [
+        "factorisation of 241 tracks seen in views [0, 1, 2, 3], singular values [6230.4 4415.7  867.1  423.5  210.4]",
+        "view 4: not registered (9 inliers of 73: fewer than 12; they lie in a patch, where they fit a camera that projects the rest of the points 18 times less certainly than one match (at most 5))",
+        "bundle adjustment 1: 300 iterations, median reprojection 0.83 px",
+        "dropped 1743 observations above 4.0 px, 9181 tracks left",
+        "bundle adjustment 2: 81 iterations, median reprojection 0.77 px",
+        "dropped 30 observations above 4.0 px, 9177 tracks left",
+        "bundle adjustment 3: 47 iterations, median reprojection 0.76 px",
+        "dropped 5 observations above 4.0 px, 9177 tracks left",
+        "weak-perspective frame: X east, Y north, Z up, ground at Z~0; units: pixels of the images (scale unknown)"
+      ]
+    },
+    "rust": {
+      "seconds": [
+        1.1806257920106873,
+        1.1785293139982969,
+        1.1774309879983775
+      ],
+      "median_seconds": 1.1785293139982969,
+      "points": 9241,
+      "observations": 19587,
+      "median_residual": 0.7620751243961361,
+      "p95_residual": 2.2809825121216685,
+      "log": [
+        "factorisation of 241 tracks seen in views [0, 1, 2, 3], singular values [6230.4 4415.7  867.1  423.5  210.4]",
+        "view 4: not registered (9 inliers of 73: fewer than 12; they lie in a patch, where they fit a camera that projects the rest of the points 18 times less certainly than one match (at most 5))",
+        "bundle adjustment 1: 64 iterations, median reprojection 0.83 px",
+        "dropped 1717 observations above 4.0 px, 9241 tracks left",
+        "bundle adjustment 2: 29 iterations, median reprojection 0.76 px",
+        "dropped 21 observations above 4.0 px, 9241 tracks left",
+        "bundle adjustment 3: 24 iterations, median reprojection 0.76 px",
+        "dropped 2 observations above 4.0 px, 9241 tracks left",
+        "weak-perspective frame: X east, Y north, Z up, ground at Z~0; units: pixels of the images (scale unknown)"
+      ]
+    }
+  }
+}
