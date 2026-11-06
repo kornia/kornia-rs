@@ -3,8 +3,9 @@
 //! Uses the same block elimination as [`crate::ba_schur`], with eight additive camera
 //! parameters instead of six SE(3) tangents. All assembly and solves are f64.
 //! Point blocks use nalgebra Cholesky; the small reduced camera system is dense.
-//! Four noncoplanar fixed points define the affine gauge. Inputs must form one
-//! connected camera/point graph. The solver normalizes world coordinates internally.
+//! Four noncoplanar fixed points define the affine gauge; when any point is free, each
+//! of those four must be seen in at least two views. Inputs must form one connected
+//! camera/point graph. The solver normalizes world coordinates internally.
 //! This solver has a separate API: no pinhole priors, shared
 //! intrinsics, automatic gauge selection, or mixed camera types are implied.
 //!
@@ -12,16 +13,30 @@
 //! evaluated here in f64 (that trait accepts f32). nalgebra provides the SVD
 //! gauge check and Cholesky solves. The dense reduced system uses O(C²) storage
 //! and O(C³) factorization work, so this API targets few-camera, many-point scenes.
+//!
+//! References: Triggs et al., "Bundle Adjustment: A Modern Synthesis" (2000), for the
+//! Schur elimination and robust IRLS weights; Nielsen, "Damping Parameter in Marquardt's
+//! Method" (IMM-REP-1999-05), for the gain-ratio damping update; Hartley and Zisserman,
+//! "Multiple View Geometry", section 6.3, for the affine camera.
 use crate::camera::AffineCamera;
-use kornia_algebra::Vec3F64;
+use kornia_algebra::{Vec2F64, Vec3F64};
 use nalgebra::{DMatrix, DVector, SMatrix, SVector};
 
 const CAMERA_DIM: usize = 8;
 const POINT_DIM: usize = 3;
 const DIAGONAL_FLOOR: f64 = 1e-12;
 const GAUGE_SINGULAR_RATIO: f64 = 1e-6;
-const GRADIENT_TOLERANCE: f64 = 1e-10;
+/// Scaled-gradient stop as a fraction of the largest pixel magnitude: about 4500 ulp of
+/// that magnitude, just above where residual rounding dominates the gradient.
+const GRADIENT_TOLERANCE: f64 = 1e-12;
 const MIN_DAMPING: f64 = 1e-15;
+/// Above this the damping dominates the Hessian diagonal, so a small cost decrease only
+/// reflects a short step and says nothing about stationarity.
+const MAX_CONVERGENCE_DAMPING: f64 = 1.;
+/// Fraction of the cost below which a predicted decrease cannot be resolved by evaluating it.
+const COST_RESOLUTION: f64 = f64::EPSILON;
+/// Views an anchor needs to pin its 3D position when free points can absorb a gauge change.
+const MIN_ANCHOR_VIEWS: usize = 2;
 type CameraBlock = SMatrix<f64, CAMERA_DIM, CAMERA_DIM>;
 type CrossBlock = SMatrix<f64, CAMERA_DIM, POINT_DIM>;
 type PointBlock = SMatrix<f64, POINT_DIM, POINT_DIM>;
@@ -36,7 +51,7 @@ pub struct AffineObservation {
     /// Index into the points slice.
     pub point_index: usize,
     /// Measured image coordinates in pixels.
-    pub pixel: [f64; 2],
+    pub pixel: Vec2F64,
 }
 
 /// Parameters for affine Schur Levenberg–Marquardt.
@@ -46,7 +61,7 @@ pub struct AffineBaParams {
     pub max_iterations: usize,
     /// Cauchy scale applied to the norm of each 2D residual, in pixels.
     pub robust_scale: f64,
-    /// Relative accepted cost decrease at which to stop.
+    /// Relative accepted cost decrease at which to stop, once damping is at most 1.
     pub cost_tolerance: f64,
     /// Initial multiplier for diagonal Hessian damping.
     pub initial_damping: f64,
@@ -80,7 +95,7 @@ pub struct AffineBaResult {
     pub iterations: usize,
     /// Number of accepted updates.
     pub accepted_steps: usize,
-    /// Whether the accepted cost decrease or gradient satisfied the stopping criterion.
+    /// Whether the cost decrease, scaled gradient or numerical floor satisfied a stop test.
     pub converged: bool,
 }
 
@@ -91,9 +106,11 @@ pub enum AffineBaError {
     #[error("invalid affine BA input: {0}")]
     InvalidInput(String),
     /// Fixed points do not define a sufficiently noncoplanar affine frame.
-    #[error("affine BA requires four noncoplanar fixed points")]
+    #[error(
+        "affine BA requires four noncoplanar fixed points, each in two views if any point is free"
+    )]
     InvalidGauge,
-    /// No acceptable finite step after all damping trials.
+    /// No step was accepted before the damping trials ran out, away from a numerical floor.
     #[error("affine LM exhausted damping trials at iteration {iteration}")]
     NoProgress {
         /// One-based linearization index.
@@ -101,8 +118,60 @@ pub enum AffineBaError {
     },
 }
 
-fn invalid(message: &str) -> AffineBaError {
+fn invalid(message: impl Into<String>) -> AffineBaError {
     AffineBaError::InvalidInput(message.into())
+}
+
+/// Centroid and root-mean-square distance from it.
+fn centroid_and_rms(points: &[Vec3F64]) -> (Vec3F64, f64) {
+    let center = points.iter().copied().fold(Vec3F64::ZERO, |a, b| a + b) / points.len() as f64;
+    let squared = points
+        .iter()
+        .map(|x| (*x - center).dot(*x - center))
+        .sum::<f64>();
+    (center, (squared / points.len() as f64).sqrt())
+}
+
+/// Whether the fixed points define an affine frame, conditioned in their own coordinates so
+/// free points cannot change the verdict.
+///
+/// With free points, an anchor seen once leaves its viewing ray open: a gauge change along
+/// that ray keeps its projection while free points and other cameras absorb the rest. Only
+/// anchors in at least [`MIN_ANCHOR_VIEWS`] views count then. Without free points there is
+/// no gauge and each camera is fitted to fixed coordinates, so every anchor counts.
+fn anchors_define_frame(
+    points: &[Vec3F64],
+    fixed_points: &[bool],
+    by_point: &[Vec<usize>],
+) -> bool {
+    let min_views = if fixed_points.iter().all(|f| *f) {
+        1
+    } else {
+        MIN_ANCHOR_VIEWS
+    };
+    let anchors: Vec<_> = points
+        .iter()
+        .zip(fixed_points)
+        .zip(by_point)
+        .filter(|((_, fixed), views)| **fixed && views.len() >= min_views)
+        .map(|((x, _), _)| *x)
+        .collect();
+    if anchors.len() < 4 {
+        return false;
+    }
+    let (center, scale) = centroid_and_rms(&anchors);
+    if scale <= 0. {
+        return false;
+    }
+    let frame = DMatrix::from_fn(anchors.len(), 4, |i, j| {
+        if j == 3 {
+            1.
+        } else {
+            ((anchors[i] - center) / scale).to_array()[j]
+        }
+    });
+    let singular = frame.svd(false, false).singular_values;
+    singular.min() >= GAUGE_SINGULAR_RATIO * singular.max()
 }
 
 fn validate(
@@ -143,28 +212,51 @@ fn validate(
     }
     let mut point_views = vec![Vec::new(); points.len()];
     let mut camera_points = vec![Vec::new(); cameras.len()];
-    for o in obs {
-        if o.camera_index >= cameras.len()
-            || o.point_index >= points.len()
-            || o.pixel.iter().any(|v| !v.is_finite())
-        {
-            return Err(invalid("invalid observation index or pixel"));
+    for (i, o) in obs.iter().enumerate() {
+        if o.camera_index >= cameras.len() {
+            return Err(invalid(format!(
+                "observation {i}: camera index {} out of bounds for {} cameras",
+                o.camera_index,
+                cameras.len()
+            )));
+        }
+        if o.point_index >= points.len() {
+            return Err(invalid(format!(
+                "observation {i}: point index {} out of bounds for {} points",
+                o.point_index,
+                points.len()
+            )));
+        }
+        if o.pixel.to_array().iter().any(|v| !v.is_finite()) {
+            return Err(invalid(format!("observation {i}: pixel must be finite")));
         }
         if point_views[o.point_index].contains(&o.camera_index) {
-            return Err(invalid("duplicate camera/point observation"));
+            return Err(invalid(format!(
+                "observation {i}: duplicate of camera {} and point {}",
+                o.camera_index, o.point_index
+            )));
         }
         point_views[o.point_index].push(o.camera_index);
         camera_points[o.camera_index].push(o.point_index);
     }
-    if point_views
-        .iter()
-        .zip(fixed)
-        .any(|(v, f)| v.is_empty() || (!f && v.len() < 2))
-        || camera_points.iter().any(|p| p.len() < 4)
-    {
-        return Err(invalid(
-            "each camera needs four points; each free point needs two views",
-        ));
+    for (p, (views, is_fixed)) in point_views.iter().zip(fixed).enumerate() {
+        if views.is_empty() {
+            return Err(invalid(format!("point {p} has no observations")));
+        }
+        if !is_fixed && views.len() < 2 {
+            return Err(invalid(format!(
+                "free point {p} needs two views, has {}",
+                views.len()
+            )));
+        }
+    }
+    for (c, observed) in camera_points.iter().enumerate() {
+        if observed.len() < 4 {
+            return Err(invalid(format!(
+                "camera {c} needs four observed points, has {}",
+                observed.len()
+            )));
+        }
     }
     let mut seen = vec![false; cameras.len()];
     let mut todo = vec![0];
@@ -185,6 +277,16 @@ fn validate(
     Ok(())
 }
 
+/// Cauchy `0.5 * rho` of a squared residual norm.
+fn cauchy_cost(squared_norm: f64, scale2: f64) -> f64 {
+    0.5 * scale2 * (squared_norm / scale2).ln_1p()
+}
+
+/// IRLS weight: twice the derivative of [`cauchy_cost`] with respect to the squared norm.
+fn cauchy_weight(squared_norm: f64, scale2: f64) -> f64 {
+    1. / (1. + squared_norm / scale2)
+}
+
 fn cost(
     cameras: &[AffineCamera],
     points: &[Vec3F64],
@@ -194,9 +296,8 @@ fn cost(
     let scale2 = scale * scale;
     obs.iter()
         .map(|o| {
-            let r = cameras[o.camera_index].project(&points[o.point_index])
-                - kornia_algebra::Vec2F64::from_array(o.pixel);
-            0.5 * scale2 * (r.dot(r) / scale2).ln_1p()
+            let r = cameras[o.camera_index].project(&points[o.point_index]) - o.pixel;
+            cauchy_cost(r.dot(r), scale2)
         })
         .sum()
 }
@@ -233,8 +334,8 @@ impl NormalEquations {
         for (i, o) in obs.iter().enumerate() {
             let camera = &cameras[o.camera_index];
             let x = &points[o.point_index];
-            let r = camera.project(x) - kornia_algebra::Vec2F64::from_array(o.pixel);
-            let w = 1. / (1. + r.dot(r) / (scale * scale));
+            let r = camera.project(x) - o.pixel;
+            let w = cauchy_weight(r.dot(r), scale * scale);
             let (jc, jp) = camera.jacobians(x);
             let jc = SMatrix::<f64, 2, 8>::from_fn(|i, j| jc[i][j]);
             let jp = SMatrix::<f64, 2, 3>::from_fn(|i, j| jp[i][j]);
@@ -248,14 +349,66 @@ impl NormalEquations {
             }
         }
     }
+
+    /// Largest `|g_k| / sqrt(H_kk)`, in pixels. Rescaling a parameter leaves it unchanged, so
+    /// unlike the raw gradient it does not grow with camera or world magnitude.
+    fn scaled_gradient_max(&self) -> f64 {
+        fn scaled(g: f64, h: f64) -> f64 {
+            if h > 0. {
+                g.abs() / h.sqrt()
+            } else {
+                0.
+            }
+        }
+        let cameras = self.gc.iter().zip(&self.cc).flat_map(|(g, h)| {
+            g.iter()
+                .enumerate()
+                .map(move |(k, g)| scaled(*g, h[(k, k)]))
+        });
+        let points = self.gp.iter().zip(&self.pp).flat_map(|(g, h)| {
+            g.iter()
+                .enumerate()
+                .map(move |(k, g)| scaled(*g, h[(k, k)]))
+        });
+        cameras.chain(points).fold(0., f64::max)
+    }
+
+    /// Decrease of the damped quadratic model for a step: `0.5 * d' (damping * D * d - g)`.
+    fn predicted_decrease(
+        &self,
+        camera_steps: &[CameraVector],
+        point_steps: &[PointVector],
+        fixed: &[bool],
+        damping: f64,
+    ) -> f64 {
+        let mut twice = 0.;
+        for (c, step) in camera_steps.iter().enumerate() {
+            for (k, delta) in step.iter().enumerate() {
+                twice += delta
+                    * (damping * self.cc[c][(k, k)].max(DIAGONAL_FLOOR) * delta - self.gc[c][k]);
+            }
+        }
+        for (p, step) in point_steps.iter().enumerate() {
+            if !fixed[p] {
+                for (k, delta) in step.iter().enumerate() {
+                    twice += delta
+                        * (damping * self.pp[p][(k, k)].max(DIAGONAL_FLOOR) * delta
+                            - self.gp[p][k]);
+                }
+            }
+        }
+        0.5 * twice
+    }
 }
 
 /// Optimize affine cameras and 3D points together with Schur LM.
 ///
 /// Fixing four noncoplanar points selects a representative of the 12-dimensional
-/// affine gauge. Fixing additional points imposes additional geometric constraints.
-/// Normalization and damping do not substitute for these anchors. Degenerate local
-/// geometry is damped; no observations or points are silently discarded.
+/// affine gauge. When any point is free, each of the four must be seen in at least two
+/// views; those views also need non-parallel viewing directions, which cannot be checked
+/// before the cameras are solved. Fixing additional points imposes additional geometric
+/// constraints. Normalization and damping do not substitute for these anchors. Degenerate
+/// local geometry is damped; no observations or points are silently discarded.
 ///
 /// # Arguments
 /// * `cameras` - Initial world-to-pixel affine matrices, all adjustable.
@@ -264,11 +417,14 @@ impl NormalEquations {
 /// * `fixed_points` - One flag per point; true points are held exactly.
 /// * `params` - Cauchy scale and LM stopping parameters.
 /// # Returns
-/// Optimized state and convergence statistics. Exhausting the iteration cap without
-/// satisfying a stopping criterion returns the last accepted state with `converged = false`.
+/// Optimized state and convergence statistics. Stops with `converged = true` when the
+/// scaled gradient is negligible, the cost decrease falls below `cost_tolerance` at damping
+/// of at most 1, or no step can resolve a further decrease. Exhausting the iteration cap,
+/// or the damping trials after some progress, returns the last accepted state with
+/// `converged = false`.
 /// # Errors
-/// Returns [`AffineBaError`] for invalid inputs, a degenerate fixed-point frame,
-/// or exhausted damping trials. Planar anchor sets are rejected explicitly.
+/// Returns [`AffineBaError`] for invalid inputs, a degenerate fixed-point frame, or
+/// damping trials exhausted before any accepted step. Planar anchor sets are rejected.
 /// # Example
 /// ```
 /// use kornia_3d::{ba_affine::*, camera::AffineCamera};
@@ -276,7 +432,7 @@ impl NormalEquations {
 /// let points = vec![Vec3F64::ZERO, Vec3F64::new(1.,0.,0.), Vec3F64::new(0.,1.,0.), Vec3F64::new(0.,0.,1.)];
 /// let cameras = vec![AffineCamera { matrix: [[1.,0.,0.,0.], [0.,1.,0.,0.]] }];
 /// let observations: Vec<_> = points.iter().enumerate().map(|(p,x)| AffineObservation {
-///     camera_index: 0, point_index: p, pixel: cameras[0].project(x).to_array()
+///     camera_index: 0, point_index: p, pixel: cameras[0].project(x)
 /// }).collect();
 /// let result = bundle_adjust_affine(&cameras, &points, &observations, &[true;4], &AffineBaParams::default())?;
 /// assert!(result.cost < 1e-20);
@@ -290,14 +446,15 @@ pub fn bundle_adjust_affine(
     params: &AffineBaParams,
 ) -> Result<AffineBaResult, AffineBaError> {
     validate(cameras, points, observations, fixed_points, params)?;
-    let center = points.iter().copied().fold(Vec3F64::ZERO, |a, b| a + b) / points.len() as f64;
-    let scale = (points
-        .iter()
-        .map(|x| (*x - center).dot(*x - center))
-        .sum::<f64>()
-        / points.len() as f64)
-        .sqrt();
-    if !scale.is_finite() || scale <= f64::EPSILON {
+    let (center, scale) = centroid_and_rms(points);
+    if !scale.is_finite() {
+        return Err(invalid("world coordinates overflow normalization"));
+    }
+    let mut by_point = vec![Vec::new(); points.len()];
+    for (i, o) in observations.iter().enumerate() {
+        by_point[o.point_index].push(i);
+    }
+    if !anchors_define_frame(points, fixed_points, &by_point) {
         return Err(AffineBaError::InvalidGauge);
     }
     let mut x: Vec<_> = points.iter().map(|x| (*x - center) / scale).collect();
@@ -310,29 +467,6 @@ pub fn bundle_adjust_affine(
             }
             row[3] = t.to_array()[i];
         }
-    }
-    let anchors: Vec<_> = x
-        .iter()
-        .zip(fixed_points)
-        .filter_map(|(x, f)| f.then_some(*x))
-        .collect();
-    if anchors.len() < 4 {
-        return Err(AffineBaError::InvalidGauge);
-    }
-    let anchor_matrix = DMatrix::from_fn(anchors.len(), 4, |i, j| {
-        if j == 3 {
-            1.
-        } else {
-            anchors[i].to_array()[j]
-        }
-    });
-    let singular = anchor_matrix.svd(false, false).singular_values;
-    if singular.min() < GAUGE_SINGULAR_RATIO * singular.max() {
-        return Err(AffineBaError::InvalidGauge);
-    }
-    let mut by_point = vec![Vec::new(); x.len()];
-    for (i, o) in observations.iter().enumerate() {
-        by_point[o.point_index].push(i);
     }
     let nc = cams.len();
     let np = x.len();
@@ -354,20 +488,20 @@ pub fn bundle_adjust_affine(
     let mut accepted_steps = 0;
     let mut iterations = 0;
     let mut converged = false;
+    let gradient_tolerance = GRADIENT_TOLERANCE
+        * observations
+            .iter()
+            .flat_map(|o| o.pixel.to_array())
+            .fold(1., |largest: f64, v| largest.max(v.abs()));
     for iteration in 1..=params.max_iterations {
         iterations = iteration;
         normal.assemble(&cams, &x, observations, fixed_points, params.robust_scale);
-        let gradient_max = normal
-            .gc
-            .iter()
-            .flat_map(|g| g.iter())
-            .chain(normal.gp.iter().flat_map(|g| g.iter()))
-            .fold(0.0_f64, |a, b| a.max(b.abs()));
-        if gradient_max < GRADIENT_TOLERANCE {
+        if normal.scaled_gradient_max() < gradient_tolerance {
             converged = true;
             break;
         }
         let mut accepted = false;
+        let mut smallest_predicted = f64::INFINITY;
         for _ in 0..params.max_trials {
             reduced.fill(0.);
             rhs.fill(0.);
@@ -439,30 +573,16 @@ pub fn bundle_adjust_affine(
                     trial_x[p] = x[p] + Vec3F64::new(dp[p][0], dp[p][1], dp[p][2]);
                 }
                 let next_cost = cost(&trial_cams, &trial_x, observations, params.robust_scale);
+                let predicted = normal.predicted_decrease(&dc, &dp, fixed_points, damping);
+                smallest_predicted = smallest_predicted.min(predicted);
                 if next_cost.is_finite() && next_cost < current_cost {
-                    let mut pred = 0.;
-                    for (c, step) in dc.iter().enumerate() {
-                        for (k, delta) in step.iter().enumerate() {
-                            pred += delta
-                                * (damping * normal.cc[c][(k, k)].max(DIAGONAL_FLOOR) * delta
-                                    - normal.gc[c][k]);
-                        }
-                    }
-                    for (p, step) in dp.iter().enumerate() {
-                        if !fixed_points[p] {
-                            for (k, delta) in step.iter().enumerate() {
-                                pred += delta
-                                    * (damping * normal.pp[p][(k, k)].max(DIAGONAL_FLOOR) * delta
-                                        - normal.gp[p][k]);
-                            }
-                        }
-                    }
                     let decrease = current_cost - next_cost;
-                    let rho = decrease / (0.5 * pred).max(f64::MIN_POSITIVE);
+                    converged = decrease < params.cost_tolerance * current_cost
+                        && damping <= MAX_CONVERGENCE_DAMPING;
+                    let rho = decrease / predicted.max(f64::MIN_POSITIVE);
                     damping *= (1.0_f64 / 3.).max(1. - (2. * rho - 1.).powi(3));
                     damping = damping.max(MIN_DAMPING);
                     nu = 2.;
-                    converged = decrease < params.cost_tolerance * current_cost;
                     current_cost = next_cost;
                     std::mem::swap(&mut cams, &mut trial_cams);
                     std::mem::swap(&mut x, &mut trial_x);
@@ -478,7 +598,15 @@ pub fn bundle_adjust_affine(
             }
         }
         if !accepted {
-            return Err(AffineBaError::NoProgress { iteration });
+            // The gradient is analytic, so a small enough damped step descends. Rejecting every
+            // step until the predicted decrease is unresolvable means the cost is numerically
+            // stationary; residual rounding can hold the scaled gradient above its tolerance.
+            if smallest_predicted <= COST_RESOLUTION * current_cost {
+                converged = true;
+            } else if accepted_steps == 0 {
+                return Err(AffineBaError::NoProgress { iteration });
+            }
+            break;
         }
         if converged {
             break;
@@ -550,7 +678,7 @@ mod tests {
                     .map(move |(p, x)| AffineObservation {
                         camera_index: c,
                         point_index: p,
-                        pixel: cam.project(x).to_array(),
+                        pixel: cam.project(x),
                     })
             })
             .collect();
@@ -567,12 +695,12 @@ mod tests {
             AffineObservation {
                 camera_index: 0,
                 point_index: 0,
-                pixel: [3., 4.],
+                pixel: Vec2F64::new(3., 4.),
             },
             AffineObservation {
                 camera_index: 0,
                 point_index: 0,
-                pixel: [0., 0.],
+                pixel: Vec2F64::new(0., 0.),
             },
         ];
         let actual = cost(&[camera], &[Vec3F64::ZERO], &observations, 2.);
@@ -597,7 +725,7 @@ mod tests {
             .map(|(point_index, &pixel)| AffineObservation {
                 camera_index: 0,
                 point_index,
-                pixel,
+                pixel: Vec2F64::from_array(pixel),
             })
             .collect();
         let cameras = [AffineCamera {
@@ -696,13 +824,7 @@ mod tests {
         let (mut cams, mut points, obs, fixed) = fixture();
         cams[0].matrix[0][3] += 0.3;
         points[10].x += 0.2;
-        let center = points.iter().copied().fold(Vec3F64::ZERO, |a, b| a + b) / points.len() as f64;
-        let scale = (points
-            .iter()
-            .map(|x| (*x - center).dot(*x - center))
-            .sum::<f64>()
-            / points.len() as f64)
-            .sqrt();
+        let (center, scale) = centroid_and_rms(&points);
         let x: Vec<_> = points.iter().map(|p| (*p - center) / scale).collect();
         let mut normalized = cams.clone();
         for c in &mut normalized {
@@ -823,8 +945,8 @@ mod tests {
     fn robust_cost_decreases_with_outliers() -> Result<(), AffineBaError> {
         let (cams, points, mut obs, fixed) = fixture();
         for o in obs.iter_mut().filter(|o| o.point_index >= 4).step_by(13) {
-            o.pixel[0] += 25.;
-            o.pixel[1] -= 15.;
+            o.pixel.x += 25.;
+            o.pixel.y -= 15.;
         }
         let result =
             bundle_adjust_affine(&cams, &points, &obs, &fixed, &AffineBaParams::default())?;
@@ -842,5 +964,422 @@ mod tests {
             errors[errors.len() / 2]
         );
         Ok(())
+    }
+
+    struct Scene {
+        cameras: Vec<AffineCamera>,
+        truth: Vec<Vec3F64>,
+        start: Vec<Vec3F64>,
+        observations: Vec<AffineObservation>,
+        fixed: Vec<bool>,
+    }
+
+    /// Deterministic value in `[-1, 1)` (Knuth's MMIX LCG), so scenes need no RNG dependency.
+    fn uniform(state: &mut u64) -> f64 {
+        *state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        ((*state >> 11) as f64 / (1_u64 << 53) as f64) * 2. - 1.
+    }
+
+    /// Four cameras of coefficient size `focal` and translation `offset` viewing `count`
+    /// points: a tetrahedron of fixed anchors, then free points started up to 0.05 off.
+    fn scene(count: usize, noise: f64, focal: f64, offset: f64) -> Scene {
+        let mut state = 0x1234_5678_u64;
+        let mut truth: Vec<_> = (0..count)
+            .map(|_| {
+                Vec3F64::new(
+                    uniform(&mut state) * 2.,
+                    uniform(&mut state) * 2.,
+                    uniform(&mut state) * 2.,
+                )
+            })
+            .collect();
+        truth[0] = Vec3F64::new(0., 0., 0.);
+        truth[1] = Vec3F64::new(2., 0., 0.);
+        truth[2] = Vec3F64::new(0., 2., 0.);
+        truth[3] = Vec3F64::new(0., 0., 2.);
+        let cameras: Vec<_> = (0..4)
+            .map(|i| {
+                let (s, c) = (i as f64 * 1.5).sin_cos();
+                AffineCamera {
+                    matrix: [
+                        [c * focal, s * focal, 0.1 * focal, offset],
+                        [-s * focal, c * focal, -0.7 * focal, offset],
+                    ],
+                }
+            })
+            .collect();
+        let mut observations = Vec::new();
+        for (camera_index, camera) in cameras.iter().enumerate() {
+            for (point_index, x) in truth.iter().enumerate() {
+                let mut pixel = camera.project(x);
+                pixel.x += noise * uniform(&mut state);
+                pixel.y += noise * uniform(&mut state);
+                observations.push(AffineObservation {
+                    camera_index,
+                    point_index,
+                    pixel,
+                });
+            }
+        }
+        let mut start = truth.clone();
+        for x in start.iter_mut().skip(4) {
+            x.x += 0.05 * uniform(&mut state);
+            x.y += 0.05 * uniform(&mut state);
+            x.z += 0.05 * uniform(&mut state);
+        }
+        let fixed = (0..count).map(|p| p < 4).collect();
+        Scene {
+            cameras,
+            truth,
+            start,
+            observations,
+            fixed,
+        }
+    }
+
+    fn median_error(a: &[Vec3F64], b: &[Vec3F64]) -> f64 {
+        let mut errors: Vec<_> = a.iter().zip(b).map(|(a, b)| (*a - *b).length()).collect();
+        errors.sort_by(f64::total_cmp);
+        errors[errors.len() / 2]
+    }
+
+    #[test]
+    fn solved_scene_at_realistic_scale_converges() -> Result<(), AffineBaError> {
+        for (noise, focal, offset) in [
+            (0., 500., 1e3),
+            (0., 5000., 1e3),
+            (0., 5000., 1e5),
+            (0., 50000., 1e6),
+            (1e-9, 5000., 1e3),
+        ] {
+            let s = scene(200, noise, focal, offset);
+            let result = bundle_adjust_affine(
+                &s.cameras,
+                &s.start,
+                &s.observations,
+                &s.fixed,
+                &AffineBaParams::default(),
+            )?;
+            assert!(result.converged, "noise {noise} focal {focal}");
+            assert!(median_error(&result.points, &s.truth) < 1e-9);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn exact_start_is_not_an_error() -> Result<(), AffineBaError> {
+        let s = scene(200, 0., 5000., 1e5);
+        let result = bundle_adjust_affine(
+            &s.cameras,
+            &s.truth,
+            &s.observations,
+            &s.fixed,
+            &AffineBaParams::default(),
+        )?;
+        assert!(result.converged);
+        assert!(result.cost <= result.initial_cost);
+        Ok(())
+    }
+
+    #[test]
+    fn unreachable_cost_tolerance_keeps_the_solution() -> Result<(), AffineBaError> {
+        let s = scene(200, 0.5, 3., 100.);
+        let solve = |cost_tolerance| {
+            bundle_adjust_affine(
+                &s.cameras,
+                &s.start,
+                &s.observations,
+                &s.fixed,
+                &AffineBaParams {
+                    cost_tolerance,
+                    ..Default::default()
+                },
+            )
+        };
+        let reference = solve(1e-12)?;
+        let result = solve(1e-30)?;
+        assert!(result.converged);
+        assert!((result.cost - reference.cost).abs() < 1e-9 * reference.cost);
+        Ok(())
+    }
+
+    #[test]
+    fn large_initial_damping_is_not_reported_as_convergence() -> Result<(), AffineBaError> {
+        let s = scene(200, 0.5, 3., 100.);
+        let solve = |initial_damping| {
+            bundle_adjust_affine(
+                &s.cameras,
+                &s.start,
+                &s.observations,
+                &s.fixed,
+                &AffineBaParams {
+                    initial_damping,
+                    ..Default::default()
+                },
+            )
+        };
+        let reference = solve(1e-3)?;
+        for damping in [1e7, 1e10] {
+            let result = solve(damping)?;
+            assert!(result.converged, "damping {damping}");
+            assert!(
+                (result.cost - reference.cost).abs() < 1e-5 * reference.cost,
+                "damping {damping}: {} vs {}",
+                result.cost,
+                reference.cost
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn anchors_in_a_single_view_are_rejected() {
+        let s = scene(60, 0., 3., 100.);
+        let observations: Vec<_> = s
+            .observations
+            .iter()
+            .copied()
+            .filter(|o| o.point_index >= 4 || o.camera_index == 0)
+            .collect();
+        assert!(matches!(
+            bundle_adjust_affine(
+                &s.cameras,
+                &s.start,
+                &observations,
+                &s.fixed,
+                &AffineBaParams::default()
+            ),
+            Err(AffineBaError::InvalidGauge)
+        ));
+    }
+
+    #[test]
+    fn anchors_in_two_views_fix_the_gauge() -> Result<(), AffineBaError> {
+        let s = scene(60, 0., 3., 100.);
+        let observations: Vec<_> = s
+            .observations
+            .iter()
+            .copied()
+            .filter(|o| o.point_index >= 4 || o.camera_index < 2)
+            .collect();
+        let mut other_start = s.start.clone();
+        for x in other_start.iter_mut().skip(4) {
+            x.z += 0.3;
+        }
+        for start in [&s.start, &other_start] {
+            let result = bundle_adjust_affine(
+                &s.cameras,
+                start,
+                &observations,
+                &s.fixed,
+                &AffineBaParams::default(),
+            )?;
+            assert!(median_error(&result.points, &s.truth) < 1e-7);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn far_free_point_does_not_invalidate_good_anchors() -> Result<(), AffineBaError> {
+        let mut s = scene(60, 0., 3., 100.);
+        s.start[10] = Vec3F64::new(1e8, 0., 0.);
+        let result = bundle_adjust_affine(
+            &s.cameras,
+            &s.start,
+            &s.observations,
+            &s.fixed,
+            &AffineBaParams::default(),
+        )?;
+        assert!(result.cost < result.initial_cost);
+        Ok(())
+    }
+
+    #[test]
+    fn uniformly_tiny_world_is_normalized() -> Result<(), AffineBaError> {
+        let s = scene(60, 0., 3., 100.);
+        for world_scale in [1e-16, 1e-20] {
+            let points: Vec<_> = s.start.iter().map(|x| *x * world_scale).collect();
+            let cameras: Vec<_> = s
+                .cameras
+                .iter()
+                .map(|c| {
+                    let mut matrix = c.matrix;
+                    for row in &mut matrix {
+                        for value in &mut row[..3] {
+                            *value /= world_scale;
+                        }
+                    }
+                    AffineCamera { matrix }
+                })
+                .collect();
+            let result = bundle_adjust_affine(
+                &cameras,
+                &points,
+                &s.observations,
+                &s.fixed,
+                &AffineBaParams::default(),
+            )?;
+            let recovered: Vec<_> = result.points.iter().map(|x| *x / world_scale).collect();
+            assert!(median_error(&recovered, &s.truth) < 1e-7);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn coordinates_overflowing_normalization_are_invalid_input() {
+        let s = scene(60, 0., 3., 100.);
+        let points: Vec<_> = s.start.iter().map(|x| *x * 1e200).collect();
+        assert!(matches!(
+            bundle_adjust_affine(
+                &s.cameras,
+                &points,
+                &s.observations,
+                &s.fixed,
+                &AffineBaParams::default()
+            ),
+            Err(AffineBaError::InvalidInput(_))
+        ));
+    }
+
+    #[test]
+    fn validation_errors_name_the_failing_item() {
+        let s = scene(60, 0., 3., 100.);
+        let params = AffineBaParams::default();
+        let message = |observations: &[AffineObservation]| {
+            bundle_adjust_affine(&s.cameras, &s.start, observations, &s.fixed, &params)
+                .map(|_| ())
+                .unwrap_err()
+                .to_string()
+        };
+        let mut bad_camera = s.observations.clone();
+        bad_camera[3].camera_index = 9;
+        assert!(message(&bad_camera).contains("observation 3"));
+        assert!(message(&bad_camera).contains("camera index 9"));
+        let mut bad_point = s.observations.clone();
+        bad_point[4].point_index = 70;
+        assert!(message(&bad_point).contains("point index 70"));
+        let mut bad_pixel = s.observations.clone();
+        bad_pixel[5].pixel.y = f64::NAN;
+        assert!(message(&bad_pixel).contains("observation 5"));
+        let unobserved: Vec<_> = s
+            .observations
+            .iter()
+            .copied()
+            .filter(|o| o.point_index != 2)
+            .collect();
+        assert!(message(&unobserved).contains("point 2 has no observations"));
+        let single_view: Vec<_> = s
+            .observations
+            .iter()
+            .copied()
+            .filter(|o| o.point_index != 7 || o.camera_index == 0)
+            .collect();
+        assert!(message(&single_view).contains("free point 7"));
+        let starved: Vec<_> = s
+            .observations
+            .iter()
+            .copied()
+            .filter(|o| o.camera_index != 2 || o.point_index < 3)
+            .collect();
+        assert!(message(&starved).contains("camera 2"));
+    }
+
+    /// Moves every free point and camera far enough that steps get rejected.
+    fn far_start(s: &mut Scene, far: f64) {
+        for (i, x) in s.start.iter_mut().enumerate().skip(4) {
+            x.x += far * ((i * 37 % 17) as f64 / 8.5 - 1.);
+            x.y -= far * ((i * 53 % 19) as f64 / 9.5 - 1.);
+        }
+        for c in &mut s.cameras {
+            c.matrix[0][3] += far;
+            c.matrix[1][0] -= far * 0.2;
+        }
+    }
+
+    #[test]
+    fn no_accepted_step_reports_no_progress() {
+        let mut s = scene(60, 0., 3., 100.);
+        far_start(&mut s, 1000.);
+        let params = AffineBaParams {
+            max_trials: 1,
+            ..Default::default()
+        };
+        assert!(matches!(
+            bundle_adjust_affine(&s.cameras, &s.start, &s.observations, &s.fixed, &params),
+            Err(AffineBaError::NoProgress { iteration: 1 })
+        ));
+    }
+
+    #[test]
+    fn rejection_after_progress_returns_the_last_state() -> Result<(), AffineBaError> {
+        let mut s = scene(60, 0., 3., 100.);
+        far_start(&mut s, 3000.);
+        let params = AffineBaParams {
+            max_trials: 1,
+            initial_damping: 1e-15,
+            ..Default::default()
+        };
+        let result =
+            bundle_adjust_affine(&s.cameras, &s.start, &s.observations, &s.fixed, &params)?;
+        assert_eq!(result.accepted_steps, 1);
+        assert!(!result.converged);
+        assert!(result.cost < result.initial_cost);
+        Ok(())
+    }
+
+    #[test]
+    fn single_view_extra_anchor_is_allowed() -> Result<(), AffineBaError> {
+        let mut s = scene(60, 0., 3., 100.);
+        s.fixed[4] = true;
+        s.start[4] = s.truth[4];
+        let observations: Vec<_> = s
+            .observations
+            .iter()
+            .copied()
+            .filter(|o| o.point_index != 4 || o.camera_index == 0)
+            .collect();
+        let result = bundle_adjust_affine(
+            &s.cameras,
+            &s.start,
+            &observations,
+            &s.fixed,
+            &AffineBaParams::default(),
+        )?;
+        assert!(median_error(&result.points, &s.truth) < 1e-7);
+        Ok(())
+    }
+
+    #[test]
+    fn cauchy_matches_the_shared_kornia_algebra_loss() {
+        use kornia_algebra::optim::losses::{CauchyLoss, RobustLoss};
+        let scale = 1.5_f32;
+        let shared = CauchyLoss::new(scale).unwrap();
+        let scale2 = f64::from(scale * scale);
+        for radius in [1e-2_f32, 0.1, 1., 1.5, 10., 1e3] {
+            let squared = radius * radius;
+            let cost = cauchy_cost(f64::from(squared), scale2);
+            let weight = cauchy_weight(f64::from(squared), scale2);
+            let shared_cost = 0.5 * f64::from(shared.rho(squared));
+            let shared_weight = f64::from(shared.weight(squared));
+            assert!((cost - shared_cost).abs() <= 1e-5 * shared_cost, "{radius}");
+            assert!(
+                (weight - shared_weight).abs() <= 1e-5 * shared_weight,
+                "{radius}"
+            );
+        }
+    }
+
+    #[test]
+    fn cauchy_weight_is_the_derivative_of_the_cost() {
+        let scale2 = 2.25;
+        for squared in [1e-2, 0.5, 2.25, 40., 1e4] {
+            let step = 1e-6 * squared;
+            let derivative = (cauchy_cost(squared + step, scale2)
+                - cauchy_cost(squared - step, scale2))
+                / (2. * step);
+            assert!((2. * derivative - cauchy_weight(squared, scale2)).abs() < 1e-7);
+        }
     }
 }
