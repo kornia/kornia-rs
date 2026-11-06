@@ -72,3 +72,7 @@ Without pixi: `cargo test --features ci,kornia-algebra/approx`, `cargo test -p k
 
 Reproduce with the exact job command from `.github/workflows/rust_lint.yml`
 or `rust_test.yml`. Clippy warnings are errors.
+
+A stacked PR gets no test or lint CI: those workflows filter on `branches: main`,
+and retargeting alone does not start them (no `edited` trigger). Push after
+retargeting, then check that `gh pr checks` lists them.

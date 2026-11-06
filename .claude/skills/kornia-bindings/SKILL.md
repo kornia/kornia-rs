@@ -16,6 +16,8 @@ description: Use when changing Python (kornia-py, PyO3/Maturin) or C++ (kornia-c
 - Release wheels are built with `--features cuda` (dynamic loading, CPU
   fallback); do not break import on machines without CUDA.
 - Errors map to Python exceptions; never `unwrap()` in binding code.
+- A Python-visible docstring uses the module's `Args:` / `Returns:` format;
+  rustdoc sections and the `py` token do not belong in `__doc__`.
 
 ## C++ (`kornia-cpp/`)
 
