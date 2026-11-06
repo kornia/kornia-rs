@@ -194,8 +194,9 @@ impl ObservationIndex {
         let mut next = offsets.clone();
         let mut entries = vec![0; obs.len()];
         for (i, o) in obs.iter().enumerate() {
-            entries[next[key(o)]] = i;
-            next[key(o)] += 1;
+            let slot = &mut next[key(o)];
+            entries[*slot] = i;
+            *slot += 1;
         }
         Self { offsets, entries }
     }
