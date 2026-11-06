@@ -50,7 +50,8 @@ impl PyAffineBaResult {
 
 /// Simultaneous float64 affine BA with Cauchy loss and fixed-point gauge.
 ///
-/// Arrays must be aligned and C-contiguous. No inputs are modified. Costs use
+/// Arrays must be aligned and C-contiguous. No inputs are modified. On free-threaded
+/// Python, do not write to or resize an input from another thread during the call. Costs use
 /// 0.5*robust_scale**2*sum(log1p(r²/robust_scale²)), summed per 2D observation.
 ///
 /// Args:
@@ -78,7 +79,8 @@ impl PyAffineBaResult {
 /// Raises:
 ///     ValueError: Invalid shapes, memory layout, indices, nonfinite values or
 ///         solver parameters, a degenerate gauge, or damping trials exhausted
-///         before any accepted step.
+///         before any accepted step. A cost already numerically stationary returns
+///         `converged=True` instead.
 ///     TypeError: An array has the wrong dtype or dimensions.
 ///     OverflowError: A negative `fixed_point_indices` entry or integer option.
 #[pyfunction(name = "bundle_adjust_affine")]

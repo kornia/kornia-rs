@@ -29,7 +29,7 @@ def bundle_adjust_affine(
     camera_indices: npt.NDArray[np.int64],
     point_indices: npt.NDArray[np.int64],
     pixels: npt.NDArray[np.float64],
-    fixed_point_indices: Sequence[int],
+    fixed_point_indices: Sequence[int] | npt.NDArray[np.integer[Any]],
     *,
     max_iterations: int = 100,
     robust_scale: float = 2.0,

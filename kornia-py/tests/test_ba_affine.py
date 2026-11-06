@@ -117,6 +117,14 @@ def test_matches_independent_scipy_objective():
     np.testing.assert_allclose(
         result.points[4:], reference.x[24:].reshape(-1, 3), atol=1e-6
     )
+    # The reported cost must describe the returned cameras and points together.
+    r = (
+        np.einsum("nij,nj->ni", result.cameras[ci, :, :3], result.points[pi])
+        + result.cameras[ci, :, 3]
+        - xy
+    )
+    recomputed = 2.0 * np.sum(np.log1p(np.sum(r * r, axis=1) / 4.0))
+    assert result.cost == pytest.approx(recomputed, rel=1e-9)
 
 
 def test_rejects_disconnected_graph():
