@@ -61,3 +61,7 @@ cuda = [
   "kornia-imgproc/cuda",
   "kornia-tensor/cuda",
 ]
+
+[[bench]]
+harness = false
+name = "bench_affine_ba"
