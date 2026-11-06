@@ -22,10 +22,10 @@ def test_recovers_points_and_does_not_mutate_inputs():
     a, x, ci, pi, xy, truth = scene()
     originals = [v.copy() for v in (a, x, ci, pi, xy)]
     result = k3d.bundle_adjust_affine(a, x, ci, pi, xy, [0, 1, 2, 3])
-    assert result["cost"] < 1e-12
-    assert result["cost"] < result["initial_cost"]
-    np.testing.assert_allclose(result["points"], truth, atol=1e-5)
-    np.testing.assert_array_equal(result["points"][:4], x[:4])
+    assert result.cost < 1e-12
+    assert result.cost < result.initial_cost
+    np.testing.assert_allclose(result.points, truth, atol=1e-5)
+    np.testing.assert_array_equal(result.points[:4], x[:4])
     for before, after in zip(originals, (a, x, ci, pi, xy)):
         np.testing.assert_array_equal(before, after)
 
@@ -40,7 +40,7 @@ def test_large_world_translation_and_scaling():
     result = k3d.bundle_adjust_affine(
         transformed, np.ascontiguousarray(x * scale + offset), ci, pi, xy, [0, 1, 2, 3]
     )
-    np.testing.assert_allclose((result["points"] - offset) / scale, truth, atol=1e-5)
+    np.testing.assert_allclose((result.points - offset) / scale, truth, atol=1e-5)
 
 
 @pytest.mark.parametrize(
@@ -113,9 +113,9 @@ def test_matches_independent_scipy_objective():
         a, initial, ci, pi, xy, [0, 1, 2, 3], cost_tolerance=1e-11
     )
     assert reference.success
-    assert result["cost"] == pytest.approx(reference.cost, rel=1e-7, abs=1e-12)
+    assert result.cost == pytest.approx(reference.cost, rel=1e-7, abs=1e-12)
     np.testing.assert_allclose(
-        result["points"][4:], reference.x[24:].reshape(-1, 3), atol=1e-6
+        result.points[4:], reference.x[24:].reshape(-1, 3), atol=1e-6
     )
 
 
@@ -140,8 +140,8 @@ def test_camera_only_refinement():
     result = k3d.bundle_adjust_affine(
         initial, truth, ci, pi, xy, list(range(len(truth)))
     )
-    np.testing.assert_array_equal(result["points"], truth)
-    np.testing.assert_allclose(result["cameras"], a, atol=1e-8)
+    np.testing.assert_array_equal(result.points, truth)
+    np.testing.assert_allclose(result.cameras, a, atol=1e-8)
 
 
 @pytest.mark.parametrize(
@@ -171,9 +171,9 @@ def test_binding_contract_errors(mode):
 def test_iteration_limit_returns_last_state():
     a, x, ci, pi, xy, _ = scene()
     result = k3d.bundle_adjust_affine(a, x, ci, pi, xy, [0, 1, 2, 3], max_iterations=1)
-    assert result["iterations"] == result["accepted_steps"] == 1
-    assert not result["converged"]
-    assert result["cost"] < result["initial_cost"]
+    assert result.iterations == result.accepted_steps == 1
+    assert not result.converged
+    assert result.cost < result.initial_cost
 
 
 def large_focal_scene(focal, offset):
@@ -203,8 +203,8 @@ def large_focal_scene(focal, offset):
 def test_solved_scene_at_realistic_focal_converges(focal, offset):
     a, x, ci, pi, xy, truth = large_focal_scene(focal, offset)
     result = k3d.bundle_adjust_affine(a, x, ci, pi, xy, [0, 1, 2, 3])
-    assert result["converged"]
-    np.testing.assert_allclose(result["points"], truth, atol=1e-8)
+    assert result.converged
+    np.testing.assert_allclose(result.points, truth, atol=1e-8)
 
 
 def test_rejects_anchors_seen_in_a_single_view():
@@ -245,7 +245,7 @@ def test_argument_conversion_errors(mode, error):
 def test_fixed_point_indices_accepts_a_numpy_array():
     a, x, ci, pi, xy, _ = scene()
     result = k3d.bundle_adjust_affine(a, x, ci, pi, xy, np.arange(4))
-    assert result["cost"] < result["initial_cost"]
+    assert result.cost < result.initial_cost
 
 
 def test_docstring_uses_the_python_format():
@@ -253,3 +253,16 @@ def test_docstring_uses_the_python_format():
     assert "Args:" in doc and "Returns:" in doc and "Raises:" in doc
     assert "# Arguments" not in doc
     assert "Interpreter token" not in doc
+
+
+def test_result_is_a_frozen_named_class():
+    a, x, ci, pi, xy, _ = scene()
+    result = k3d.bundle_adjust_affine(a, x, ci, pi, xy, [0, 1, 2, 3], max_iterations=1)
+    assert isinstance(result, k3d.AffineBaResult)
+    assert result.cameras.shape == a.shape
+    assert result.points.shape == x.shape
+    assert "cost=" in repr(result) and "converged=False" in repr(result)
+    with pytest.raises(AttributeError):
+        result.cost = 0.0
+    with pytest.raises(TypeError):
+        result["cost"]

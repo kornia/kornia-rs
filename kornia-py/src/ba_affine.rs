@@ -6,7 +6,47 @@ use kornia_3d::{
 };
 use kornia_algebra::{Vec2F64, Vec3F64};
 use numpy::{PyArray1, PyArray2, PyArray3, PyArrayMethods, PyUntypedArrayMethods};
-use pyo3::{prelude::*, types::PyDict};
+use pyo3::prelude::*;
+
+/// Result of an affine bundle adjustment. Field access mirrors the Rust `AffineBaResult`.
+#[pyclass(name = "AffineBaResult", module = "kornia_rs.k3d", frozen)]
+pub struct PyAffineBaResult {
+    /// `(C, 2, 4)` float64 optimized world-to-pixel matrices.
+    #[pyo3(get)]
+    pub cameras: Py<PyArray3<f64>>,
+    /// `(N, 3)` float64 optimized world points; fixed points keep their input values.
+    #[pyo3(get)]
+    pub points: Py<PyArray2<f64>>,
+    /// Cost at the input state.
+    #[pyo3(get)]
+    pub initial_cost: f64,
+    /// Cost at the returned state.
+    #[pyo3(get)]
+    pub cost: f64,
+    /// Linearizations performed.
+    #[pyo3(get)]
+    pub iterations: usize,
+    /// Steps that lowered the cost.
+    #[pyo3(get)]
+    pub accepted_steps: usize,
+    /// False when the iteration or damping-trial budget ran out before a stopping test passed.
+    #[pyo3(get)]
+    pub converged: bool,
+}
+
+#[pymethods]
+impl PyAffineBaResult {
+    fn __repr__(&self) -> String {
+        format!(
+            "AffineBaResult(cost={}, initial_cost={}, iterations={}, accepted_steps={}, converged={})",
+            self.cost,
+            self.initial_cost,
+            self.iterations,
+            self.accepted_steps,
+            if self.converged { "True" } else { "False" }
+        )
+    }
+}
 
 /// Simultaneous float64 affine BA with Cauchy loss and fixed-point gauge.
 ///
@@ -30,10 +70,10 @@ use pyo3::{prelude::*, types::PyDict};
 ///     max_trials: Maximum damping trials per linearization (default 30).
 ///
 /// Returns:
-///     A dict with new `cameras` and `points` arrays, plus `initial_cost`, `cost`,
-///     `iterations`, `accepted_steps` and `converged`. Exhausting `max_iterations`,
-///     or the damping trials after some progress, returns the last accepted state
-///     with `converged=False`.
+///     An `AffineBaResult` with new `cameras` and `points` arrays, plus `initial_cost`,
+///     `cost`, `iterations`, `accepted_steps` and `converged`. Exhausting
+///     `max_iterations`, or the damping trials after some progress, returns the last
+///     accepted state with `converged=False`.
 ///
 /// Raises:
 ///     ValueError: Invalid shapes, memory layout, indices, nonfinite values or
@@ -57,7 +97,7 @@ pub fn bundle_adjust_affine_py<'py>(
     cost_tolerance: f64,
     initial_damping: f64,
     max_trials: usize,
-) -> PyResult<Bound<'py, PyDict>> {
+) -> PyResult<PyAffineBaResult> {
     if cameras.shape()[1..] != [2, 4] || points.shape()[1] != 3 || pixels.shape()[1] != 2 {
         return Err(value_err(
             "expected cameras (C,2,4), points (N,3), pixels (O,2)",
@@ -116,16 +156,15 @@ pub fn bundle_adjust_affine_py<'py>(
         .flat_map(|c| c.matrix.into_iter().flatten())
         .collect();
     let point_output: Vec<_> = result.points.iter().flat_map(|p| p.to_array()).collect();
-    let out = PyDict::new(py);
-    out.set_item(
-        "cameras",
-        PyArray1::from_vec(py, camera_output).reshape([nc, 2, 4])?,
-    )?;
-    out.set_item("points", rows_to_numpy(py, point_output, 3)?)?;
-    out.set_item("initial_cost", result.initial_cost)?;
-    out.set_item("cost", result.cost)?;
-    out.set_item("iterations", result.iterations)?;
-    out.set_item("accepted_steps", result.accepted_steps)?;
-    out.set_item("converged", result.converged)?;
-    Ok(out)
+    Ok(PyAffineBaResult {
+        cameras: PyArray1::from_vec(py, camera_output)
+            .reshape([nc, 2, 4])?
+            .unbind(),
+        points: rows_to_numpy(py, point_output, 3)?.unbind(),
+        initial_cost: result.initial_cost,
+        cost: result.cost,
+        iterations: result.iterations,
+        accepted_steps: result.accepted_steps,
+        converged: result.converged,
+    })
 }

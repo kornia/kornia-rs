@@ -88,16 +88,14 @@ def main():
         a, x, ci, pi, xy, [0, 1, 2, 3], cost_tolerance=1e-10
     )
     elapsed = time.perf_counter() - start
+    print(f"Rust: {elapsed:.6f} s; cost {result.initial_cost:.9g} -> {result.cost:.9g}")
     print(
-        f"Rust: {elapsed:.6f} s; cost {result['initial_cost']:.9g} -> {result['cost']:.9g}"
+        f"Iterations: {result.iterations}; accepted: {result.accepted_steps}; converged: {result.converged}"
     )
-    print(
-        f"Iterations: {result['iterations']}; accepted: {result['accepted_steps']}; converged: {result['converged']}"
-    )
-    error = np.linalg.norm(result["points"] - truth, axis=1)
+    error = np.linalg.norm(result.points - truth, axis=1)
     print(f"Median point error: {np.median(error):.6g} world units")
-    np.testing.assert_array_equal(result["points"][:4], x[:4])
-    assert result["cost"] < result["initial_cost"]
+    np.testing.assert_array_equal(result.points[:4], x[:4])
+    assert result.cost < result.initial_cost
     if args.scipy:
         # Warm import before timing, as for the Rust extension above.
         import scipy.optimize  # noqa: F401
@@ -112,7 +110,7 @@ def main():
             "These methods use different linear solvers and stopping rules; timings describe only this generated scene."
         )
         assert reference.success
-        np.testing.assert_allclose(result["cost"], reference.cost, rtol=1e-6, atol=1e-9)
+        np.testing.assert_allclose(result.cost, reference.cost, rtol=1e-6, atol=1e-9)
 
 
 if __name__ == "__main__":

@@ -591,6 +591,7 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     k3d_mod.add_function(wrap_pyfunction!(homography::find_homography_py, &k3d_mod)?)?;
     k3d_mod.add_function(wrap_pyfunction!(homography::find_fundamental_py, &k3d_mod)?)?;
     k3d_mod.add_function(wrap_pyfunction!(pnp::solve_pnp_ransac_py, &k3d_mod)?)?;
+    k3d_mod.add_class::<ba_affine::PyAffineBaResult>()?;
     k3d_mod.add_function(wrap_pyfunction!(ba::bundle_adjust_py, &k3d_mod)?)?;
     k3d_mod.add_function(wrap_pyfunction!(
         ba_affine::bundle_adjust_affine_py,

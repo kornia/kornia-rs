@@ -391,8 +391,9 @@ the world frame and pixels described by each camera's 2×4 matrix; no metric cam
 constraints are imposed.
 
 The function copies inputs into owned Rust buffers, releases the GIL for the
-solve, and returns new `cameras`/`points` arrays plus `initial_cost`, `cost`,
-`iterations`, `accepted_steps`, and `converged`. It never modifies the inputs.
+solve, and returns an `AffineBaResult` with new `cameras`/`points` arrays plus
+`initial_cost`, `cost`, `iterations`, `accepted_steps`, and `converged`. It never
+modifies the inputs.
 Costs are `0.5 * scale**2 * sum(log1p(||residual||**2 / scale**2))`, summed per
 2D observation. Check `converged`: exhausting the iteration budget, or the damping
 trials after some progress, returns the last accepted state with `converged=False`.
