@@ -42,3 +42,6 @@ pub mod stereo;
 
 /// 3D transforms algorithms.
 pub mod transforms;
+
+/// Float64 affine bundle adjustment with dense Schur elimination.
+pub mod ba_affine;
