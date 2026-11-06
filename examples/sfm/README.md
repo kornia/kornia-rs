@@ -1,0 +1,195 @@
+# Structure-from-Motion from Video
+
+End-to-end SfM example for the kornia-rs ecosystem: read a video file,
+extract per-frame features, match frames, chain the matches into multi-view
+tracks, reconstruct a sparse 3D point cloud, and export it as a binary PLY
+file (XYZ + RGB + normals).
+
+## Pipeline
+
+```
+MP4 ─► RGB+gray frames ─► features (ORB/SIFT) ─► pairwise matches
+   ─► build_tracks ─► kornia_calib::reconstruct ─► PLY (XYZ + RGB + normals)
+```
+
+| Stage | Module |
+|---|---|
+| Frame decoding (GStreamer) | `video.rs` |
+| Feature extraction (ORB / SIFT, sync or parallel) | `features.rs` |
+| Sliding-window matching (sync or parallel) | `matching.rs` |
+| Track building | `kornia_calib::build_tracks` |
+| Incremental SfM | `reconstruction.rs` → `kornia_calib::reconstruct` |
+| PLY export + normals | `ply_writer.rs` |
+| Rerun visualization | `ply_viewer.rs` |
+
+## Usage
+
+```sh
+cargo run -p sfm -- <video> <output.ply> --fx <fx> --fy <fy> --cx <cx> --cy <cy> [options]
+```
+
+Camera intrinsics (`--fx`, `--fy`, `--cx`, `--cy`, in pixels) are required.
+
+### Example
+
+```sh
+cargo run -p sfm -- sample.mp4 out.ply \
+    --fx 600 --fy 600 --cx 320 --cy 240 \
+    --detector orb --n-features 2000 --match-window 5 --frame-step 1
+```
+
+### Options
+
+| Flag | Default | Description |
+|---|---|---|
+| `--detector` | `orb` | Feature detector: `orb` (binary, fast) or `sift` (float, robust). |
+| `--n-features` | `2000` | Max features per frame. |
+| `--match-window` | `5` | Match each frame against this many following frames. |
+| `--ratio` | `0.8` | Lowe's ratio-test threshold (lower = stricter). |
+| `--frame-step` | `1` | Process every Nth frame (1 = all frames). |
+| `--threads` | `0` | Worker threads for parallel feature extraction and matching (`0` = auto-detect CPU count). |
+| `--view` | off | Log the point cloud + camera poses to a rerun viewer, then return. The viewer is spawned detached and stays open after the CLI exits. |
+| `--max-ba-iterations` | `100` | Bundle-adjustment LM iterations. Lower = faster but less accurate. |
+| `--min-registration-inliers` | `30` | Min PnP inliers to register a view. Lower admits more cameras (looser). |
+| `--motion-prior-sigma` | `0.0` | Constant-velocity motion prior (`0.0` = off). Use for smooth walkthroughs. |
+| `--up-prior-sigma` | `0.0` | Camera-up prior (`0.0` = off). Use for handheld upright capture. |
+| `--max-reprojection-error` | `0.01` | Reprojection-error threshold (normalized units). |
+| `--geo-verify` | off | Verify matches with epipolar RANSAC after matching (rejects false matches). |
+| `--geo-threshold` | `3.0` | Epipolar RANSAC inlier threshold (pixels). |
+| `--geo-min-inliers` | `15` | Min inliers for a pair's fundamental matrix to be trusted. Values below 15 warn — at 7 the seven-point algorithm's minimal sample validates itself. |
+| `--cuda` | off | Use CUDA for SIFT extraction (requires an NVIDIA GPU). |
+| `--sprt` | off | Enable Wald's SPRT for PnP registration (rejects bad candidate poses early). |
+| `--sprt-epsilon` | `0.5` | SPRT expected inlier ratio (capped at 0.3 until a consensus exists). |
+| `--sprt-delta` | `0.05` | SPRT Type-I error: probability of rejecting a good pose. |
+| `--refine-intrinsics` | off | Refine focal + radial/tangential distortion against the reconstruction. |
+| `--wide-baseline` | `0` | Also match frame `i` against `i+K, i+2K, …` (`0` = off). |
+
+### Recommended flags by capture type
+
+- **SIFT speed**: add `--cuda` to run SIFT on the GPU (needs the CUDA runtime
+  on `LD_LIBRARY_PATH`). NVRTC kernels are JIT-compiled on the first frame.
+- **Noisy matches / poor ORB reconstruction**: add `--geo-verify`.
+- **Long videos**: raise `--frame-step` (fewer cameras to register).
+
+## Matching model and future upgrades
+
+Every frame pair is matched with **mutual nearest neighbours (cross-check)**: a
+pair is kept only when each descriptor is the other's nearest neighbour. This is
+a hard requirement of the track builder — `kornia_calib::build_tracks` assumes
+one-to-one pair matches and discards any track that reaches one camera at two
+different pixels. A forward-only matcher can emit many-to-one matches (two
+keypoints of one camera sharing a neighbour), which silently culls whole
+multi-view tracks; the ORB path regressed to that in `98ecd0b` and was reverted
+to a cross-checked matcher here.
+
+Planned upgrades (each belongs in a core crate, not this example):
+
+| Idea | Where | Why |
+|---|---|---|
+| Orientation-histogram filtering on top of mutual NN | `kornia-imgproc` (`OrbMatchConfig`) | `98ecd0b`'s rotation-consistency check is useful but was shipped without cross-check; combine both. |
+| Per-target injective matching | `kornia-imgproc` | Weaker than mutual NN: kills the shared-neighbour fan-in while keeping strictly more matches. |
+| Cross-octave ORB keypoint de-duplication | `kornia-imgproc` (ORB extractor) | ORB emits near-duplicate keypoints 1–3 px apart across scales; removing them attacks the fan-in at its source. |
+| `build_tracks` conflict recovery (split instead of drop) | `kornia-calib` | Recover the consistent sub-track instead of discarding the whole component. |
+| Pose-guided matching | `kornia-imgproc` (`match_orb_by_projection`) | Already exists; use it once incremental poses are available. |
+
+## Performance notes
+
+- Feature extraction and frame-pair matching run on a rayon thread pool;
+  `--threads` sizes it (`0` = auto-detect).
+- Video *decode* is paced by GStreamer's real-time clock (`sync=true` in
+  `kornia-io`'s `VideoReader`), so reading a 21 s clip takes ~21 s. Use
+  `--frame-step` to keep fewer frames. Overlapping decode with downstream work
+  is tracked as future work (it needs a fast-read path in `kornia-io`).
+- Results are deterministic for a given input: matching, track building, and
+  the reconstruction do not depend on run-to-run ordering.
+
+## Benchmarks
+
+`swiss_knife.mp4` — 628 frames, 1280x720 HEVC orbit. Intrinsics
+`--fx 895 --fy 895 --cx 640 --cy 360`, `--n-features 500`, `--frame-step 10`
+(63 frames) unless noted. CUDA rows use `--cuda` (device SIFT extraction *and*
+matching). Decode is clock-paced at ~24 s and is included in `Total`.
+
+| Config | Detector | Extract (s) | Match (s) | Geo (s) | Matches (raw→verified) | Tracks | Recon (s) | Points | Views | RMSE (px) | Total (s) |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `orb_base` | ORB | 2.2 | 2.5 | — | 19810 | 4048 | 1.7 | 125 | 2/63 | 0.761 | 29.9 |
+| `orb_geo` | ORB | 2.3 | 2.6 | 3.5 | 19810→14570 | 4084 | 3.7 | 674 | 10/63 | 1.106 | 35.7 |
+| `orb_geo --geo-min-inliers 8` | ORB | 2.4 | 3.0 | 3.9 | 19810→15598 | 4169 | 4.5 | 692 | 11/63 | 1.122 | 37.4 |
+| `orb_geo --wide-baseline 20` | ORB | 2.5 | 2.7 | 4.3 | 20973→14713 | 4057 | 4.5 | 700 | 12/63 | 1.133 | 37.5 |
+| `sift_base` | SIFT (CUDA) | 1.0 | 0.1 | — | 21667 | 3483 | 3.0 | 520 | 9/63 | 2.244 | 27.8 |
+| `sift_geo` | SIFT (CUDA) | 0.7 | 0.1 | 2.2 | 21667→17170 | 3780 | 9.0 | 809 | 16/63 | 1.880 | 35.3 |
+| `sift_geo_sprt` (champion) | SIFT (CUDA) | 0.7 | 0.1 | 2.2 | 21667→17170 | 3780 | 12.3 | 1175 | 22/63 | 2.086 | 38.6 |
+| champion, no `--cuda` | SIFT (CPU) | 16.5 | 11.4 | 2.3 | 21667→17170 | 3780 | 12.4 | 1175 | 22/63 | 2.086 | 65.9 |
+| champion + `--refine-intrinsics` | SIFT (CUDA) | 0.8 | 0.1 | 2.2 | 21667→17170 | 3780 | 17.0 | 1175 | 22/63 | 2.064 | 43.6 |
+| champion + `--wide-baseline 20` | SIFT (CUDA) | 0.7 | 0.1 | 2.5 | 22643→17389 | 3711 | 16.0 | 816 | 17/63 | 1.898 | 42.8 |
+| champion, `--frame-step 5` | SIFT (CUDA) | 1.2 | 0.2 | 3.7 | 70314→60896 | 6590 | 26.1 | 2037 | 39/126 | 2.414 | 54.6 |
+
+Observations:
+
+- **Deterministic**: two identical champion runs produce byte-identical PLY.
+- **`--cuda` speeds up both stages with identical output**: extraction
+  16.5 s → 0.7 s and matching 11.4 s → 0.1 s; the reconstruction is
+  byte-identical to the CPU path.
+- **The seven-point fundamental solver (kornia-3d's default) registers many
+  more views**: SIFT 16 → 22/63 and ORB reaches 10/63 at the stock
+  `--geo-min-inliers 15` (the eight-point solver needed 8). RMSE rises slightly
+  (2.09 px) because the longer map spans harder views.
+- **`--geo-verify` is the accuracy lever**: SIFT 9 → 22 views, ORB 2 → 10.
+- **`--wide-baseline 20`** trades views for longer-baseline triangulation.
+- **`--refine-intrinsics`** is near-neutral here (the EXIF focal is already
+  accurate: it fits `gamma≈1.00`).
+- **`--frame-step 5`** gives the densest map (2037 pts, 39/126 views) at higher
+  RMSE.
+
+Reproduce the champion (device SIFT, requires an NVIDIA GPU with NVRTC on the
+library path):
+
+```sh
+export LD_LIBRARY_PATH=<dir containing libnvrtc.so>
+cargo run -p sfm -- swiss_knife.mp4 out.ply \
+    --fx 895 --fy 895 --cx 640 --cy 360 --n-features 500 --frame-step 10 \
+    --detector sift --geo-verify --sprt --cuda
+```
+
+## Output
+
+The PLY uses the `XYZRgbNormals` layout that `kornia_3d::io::ply::read_ply_binary`
+can read back: `x y z` (f32), `red green blue` (u8), `nx ny nz` (f32), written
+little-endian at 27 bytes per vertex. Colours are sampled from the source RGB
+frames per raw observation (before reconstruction), and each point takes the
+colour of a surviving observation; normals are estimated from the k nearest
+neighbours via PCA and oriented toward the point's own observing cameras.
+
+View the result in MeshLab, CloudCompare, the `ply_rerun` example, or with this
+example's `--view` flag (requires the [rerun](https://rerun.io) viewer). `--view`
+logs the cloud + camera poses and returns immediately; the viewer is spawned
+detached, so closing the CLI does not close the viewer.
+
+## Notes and limitations
+
+- **Up to scale**: without an AprilTag anchor, the reconstruction is recovered
+  up to an unknown global scale (`ScaleSource::UpToScale`). Shape is correct,
+  units are arbitrary.
+- **Sparse cloud**: only tracked feature points are reconstructed, not a dense
+  surface.
+- **Requires `gstreamer`**: the `kornia-io` gstreamer feature must be enabled
+  (it is in this example's `Cargo.toml`).
+- **Intrinsics must match the decoded frame.** Phone videos shot in portrait are
+  often coded 1280x720 landscape with a `rotation=-90` metadata tag, and
+  GStreamer decodes them unrotated — so supply intrinsics for the *decoded*
+  resolution (principal point at its centre), not the displayed portrait frame.
+  The focal length can be derived from the EXIF 35 mm-equivalent:
+  `fx = f_35mm / 36 * frame_width`.
+- **Intrinsics are treated as zero-distortion.** `--refine-intrinsics` estimates
+  a focal scale and radial/tangential distortion against the reconstruction, but
+  the frames themselves are not undistorted.
+
+## Tests
+
+```sh
+cargo test -p sfm --bin sfm
+```
+
+Tests use fabricated inputs (synthetic checkerboards, descriptor sets, and a
+projected 3D scene) plus a PLY write→read round-trip against
+`kornia_3d::io::ply::read_ply_binary`. No external video files are required.
