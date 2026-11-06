@@ -142,7 +142,7 @@ fn centroid_and_rms(points: &[Vec3F64]) -> (Vec3F64, f64) {
 fn anchors_define_frame(
     points: &[Vec3F64],
     fixed_points: &[bool],
-    by_point: &[Vec<usize>],
+    by_point: &ObservationIndex,
 ) -> bool {
     let min_views = if fixed_points.iter().all(|f| *f) {
         1
@@ -152,9 +152,9 @@ fn anchors_define_frame(
     let anchors: Vec<_> = points
         .iter()
         .zip(fixed_points)
-        .zip(by_point)
-        .filter(|((_, fixed), views)| **fixed && views.len() >= min_views)
-        .map(|((x, _), _)| *x)
+        .enumerate()
+        .filter(|(p, (_, fixed))| **fixed && by_point.row(*p).len() >= min_views)
+        .map(|(_, (x, _))| *x)
         .collect();
     if anchors.len() < 4 {
         return false;
@@ -174,13 +174,45 @@ fn anchors_define_frame(
     singular.min() >= GAUGE_SINGULAR_RATIO * singular.max()
 }
 
+/// Observation indices grouped by point or camera, in compressed sparse row layout. Each row
+/// keeps observation order, so the Schur sums do not depend on how the index is stored.
+struct ObservationIndex {
+    offsets: Vec<usize>,
+    entries: Vec<usize>,
+}
+
+impl ObservationIndex {
+    /// Group `obs` into `rows` rows by `key`, which must be below `rows` for every observation.
+    fn new(rows: usize, obs: &[AffineObservation], key: fn(&AffineObservation) -> usize) -> Self {
+        let mut offsets = vec![0; rows + 1];
+        for o in obs {
+            offsets[key(o) + 1] += 1;
+        }
+        for r in 0..rows {
+            offsets[r + 1] += offsets[r];
+        }
+        let mut next = offsets.clone();
+        let mut entries = vec![0; obs.len()];
+        for (i, o) in obs.iter().enumerate() {
+            entries[next[key(o)]] = i;
+            next[key(o)] += 1;
+        }
+        Self { offsets, entries }
+    }
+
+    fn row(&self, row: usize) -> &[usize] {
+        &self.entries[self.offsets[row]..self.offsets[row + 1]]
+    }
+}
+
+/// Check the inputs and return the observations grouped by point.
 fn validate(
     cameras: &[AffineCamera],
     points: &[Vec3F64],
     obs: &[AffineObservation],
     fixed: &[bool],
     params: &AffineBaParams,
-) -> Result<(), AffineBaError> {
+) -> Result<ObservationIndex, AffineBaError> {
     if cameras.is_empty() || points.is_empty() || obs.is_empty() || fixed.len() != points.len() {
         return Err(invalid(
             "nonempty cameras, points, observations and one fixed flag per point required",
@@ -210,8 +242,6 @@ fn validate(
     {
         return Err(invalid("camera and point coordinates must be finite"));
     }
-    let mut point_views = vec![Vec::new(); points.len()];
-    let mut camera_points = vec![Vec::new(); cameras.len()];
     for (i, o) in obs.iter().enumerate() {
         if o.camera_index >= cameras.len() {
             return Err(invalid(format!(
@@ -230,31 +260,44 @@ fn validate(
         if o.pixel.to_array().iter().any(|v| !v.is_finite()) {
             return Err(invalid(format!("observation {i}: pixel must be finite")));
         }
-        if point_views[o.point_index].contains(&o.camera_index) {
-            return Err(invalid(format!(
-                "observation {i}: duplicate of camera {} and point {}",
-                o.camera_index, o.point_index
-            )));
-        }
-        point_views[o.point_index].push(o.camera_index);
-        camera_points[o.camera_index].push(o.point_index);
     }
-    for (p, (views, is_fixed)) in point_views.iter().zip(fixed).enumerate() {
-        if views.is_empty() {
+    let by_point = ObservationIndex::new(points.len(), obs, |o| o.point_index);
+    let by_camera = ObservationIndex::new(cameras.len(), obs, |o| o.camera_index);
+    // Each camera remembers the last point it saw. Rows are in observation order, so the
+    // smallest repeat is the first observation that duplicates an earlier one.
+    let mut last_point = vec![points.len(); cameras.len()];
+    let mut first_duplicate = None;
+    for p in 0..points.len() {
+        for &i in by_point.row(p) {
+            let c = obs[i].camera_index;
+            if last_point[c] == p && first_duplicate.is_none_or(|first| i < first) {
+                first_duplicate = Some(i);
+            }
+            last_point[c] = p;
+        }
+    }
+    if let Some(i) = first_duplicate {
+        return Err(invalid(format!(
+            "observation {i}: duplicate of camera {} and point {}",
+            obs[i].camera_index, obs[i].point_index
+        )));
+    }
+    for (p, is_fixed) in fixed.iter().enumerate() {
+        let views = by_point.row(p).len();
+        if views == 0 {
             return Err(invalid(format!("point {p} has no observations")));
         }
-        if !is_fixed && views.len() < 2 {
+        if !is_fixed && views < 2 {
             return Err(invalid(format!(
-                "free point {p} needs two views, has {}",
-                views.len()
+                "free point {p} needs two views, has {views}"
             )));
         }
     }
-    for (c, observed) in camera_points.iter().enumerate() {
-        if observed.len() < 4 {
+    for c in 0..cameras.len() {
+        let observed = by_camera.row(c).len();
+        if observed < 4 {
             return Err(invalid(format!(
-                "camera {c} needs four observed points, has {}",
-                observed.len()
+                "camera {c} needs four observed points, has {observed}"
             )));
         }
     }
@@ -262,8 +305,9 @@ fn validate(
     let mut todo = vec![0];
     seen[0] = true;
     while let Some(c) = todo.pop() {
-        for &p in &camera_points[c] {
-            for &v in &point_views[p] {
+        for &a in by_camera.row(c) {
+            for &b in by_point.row(obs[a].point_index) {
+                let v = obs[b].camera_index;
                 if !seen[v] {
                     seen[v] = true;
                     todo.push(v);
@@ -274,7 +318,7 @@ fn validate(
     if seen.iter().any(|s| !s) {
         return Err(invalid("observation graph is disconnected"));
     }
-    Ok(())
+    Ok(by_point)
 }
 
 /// Cauchy `0.5 * rho` of a squared residual norm.
@@ -445,14 +489,10 @@ pub fn bundle_adjust_affine(
     fixed_points: &[bool],
     params: &AffineBaParams,
 ) -> Result<AffineBaResult, AffineBaError> {
-    validate(cameras, points, observations, fixed_points, params)?;
+    let by_point = validate(cameras, points, observations, fixed_points, params)?;
     let (center, scale) = centroid_and_rms(points);
     if !scale.is_finite() {
         return Err(invalid("world coordinates overflow normalization"));
-    }
-    let mut by_point = vec![Vec::new(); points.len()];
-    for (i, o) in observations.iter().enumerate() {
-        by_point[o.point_index].push(i);
     }
     if !anchors_define_frame(points, fixed_points, &by_point) {
         return Err(AffineBaError::InvalidGauge);
@@ -529,14 +569,14 @@ pub fn bundle_adjust_affine(
                     break;
                 };
                 inv[p] = chol.solve(&PointBlock::identity());
-                for &a in &by_point[p] {
+                for &a in by_point.row(p) {
                     let ca = observations[a].camera_index;
                     let t = normal.cp[a] * inv[p];
                     let b = t * normal.gp[p];
                     for i in 0..CAMERA_DIM {
                         rhs[ca * CAMERA_DIM + i] += b[i];
                     }
-                    for &b in &by_point[p] {
+                    for &b in by_point.row(p) {
                         let cb = observations[b].camera_index;
                         let block = t * normal.cp[b].transpose();
                         for i in 0..CAMERA_DIM {
@@ -566,7 +606,7 @@ pub fn bundle_adjust_affine(
                         continue;
                     }
                     let mut b = normal.gp[p];
-                    for &o in &by_point[p] {
+                    for &o in by_point.row(p) {
                         b += normal.cp[o].transpose() * dc[observations[o].camera_index];
                     }
                     dp[p] = -inv[p] * b;
@@ -1284,6 +1324,40 @@ mod tests {
             .filter(|o| o.camera_index != 2 || o.point_index < 3)
             .collect();
         assert!(message(&starved).contains("camera 2"));
+        // Repeats appended in the opposite order to their points, and separated from the
+        // original by the other cameras: the earliest observation is the one reported.
+        let of_point = |p| {
+            s.observations
+                .iter()
+                .copied()
+                .find(|o| o.point_index == p)
+                .unwrap()
+        };
+        let mut repeated = s.observations.clone();
+        let first_repeat = repeated.len();
+        repeated.push(of_point(50));
+        repeated.push(of_point(2));
+        assert!(message(&repeated).contains(&format!(
+            "observation {first_repeat}: duplicate of camera {} and point 50",
+            of_point(50).camera_index
+        )));
+    }
+
+    #[test]
+    fn observation_index_keeps_observation_order_and_empty_rows() {
+        let observations: Vec<_> = [2, 0, 2, 0, 2]
+            .into_iter()
+            .map(|point_index| AffineObservation {
+                camera_index: 0,
+                point_index,
+                pixel: Vec2F64::new(0., 0.),
+            })
+            .collect();
+        let index = ObservationIndex::new(4, &observations, |o| o.point_index);
+        assert_eq!(index.row(0), [1, 3]);
+        assert_eq!(index.row(1), [] as [usize; 0]);
+        assert_eq!(index.row(2), [0, 2, 4]);
+        assert_eq!(index.row(3), [] as [usize; 0]);
     }
 
     /// Moves every free point and camera far enough that steps get rejected.
