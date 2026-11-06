@@ -554,6 +554,10 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
         feature_match::match_descriptors_py,
         &features_mod
     )?)?;
+    features_mod.add_function(wrap_pyfunction!(
+        feature_match::match_smnn_py,
+        &features_mod
+    )?)?;
     m.add_submodule(&features_mod)?;
 
     // Augmentations submodule
