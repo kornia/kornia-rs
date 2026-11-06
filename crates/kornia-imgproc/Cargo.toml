@@ -95,6 +95,10 @@ name = "bench_hamming_match"
 
 [[bench]]
 harness = false
+name = "bench_float_match"
+
+[[bench]]
+harness = false
 name = "bench_pyramid"
 
 [[bench]]
