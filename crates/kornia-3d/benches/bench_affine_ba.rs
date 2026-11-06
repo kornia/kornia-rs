@@ -38,7 +38,7 @@ fn bench(c: &mut Criterion) {
                 .map(move |(p, x)| AffineObservation {
                     camera_index: c,
                     point_index: p,
-                    pixel: cam.project(x).to_array(),
+                    pixel: cam.project(x),
                 })
         })
         .collect();

@@ -33,7 +33,9 @@ there is no unique optical centre or inverse projection.
 `ba_affine::bundle_adjust_affine` jointly refines affine camera matrices and 3D
 points in float64. It uses analytical Jacobians, vector-norm Cauchy loss and
 Levenberg–Marquardt with Schur elimination of point blocks. Four noncoplanar
-fixed points define the affine frame; extra fixed points add geometric
+fixed points define the affine frame; when any point is free, each of the four
+must be seen in at least two views with non-parallel viewing directions (the
+directions cannot be checked before solving). Extra fixed points add geometric
 constraints. Inputs must form one connected observation graph, with at least
 four observations per camera and two views per free point. These visibility
 checks are necessary, but do not guarantee local geometric identifiability.
@@ -43,8 +45,10 @@ coordinate frame, exact fixed points, costs and convergence statistics.
 It targets few-camera, many-point problems: the reduced camera matrix is dense
 (O(C²) storage and O(C³) factorization). It does not impose metric camera
 constraints, optimize shared intrinsics, or mix camera types. Exhausting the
-iteration budget returns the last accepted state with `converged = false`;
-exhausting damping trials returns an error.
+iteration budget, or the damping trials after some progress, returns the last
+accepted state with `converged = false`. Reaching the numerical floor of the
+cost counts as converged. Only exhausting the damping trials before any accepted
+step, away from that floor, returns an error.
 
 Run the deterministic four-camera, 10,000-point benchmark with:
 `cargo bench -p kornia-3d --bench bench_affine_ba`.
