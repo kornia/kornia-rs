@@ -4,47 +4,43 @@ use kornia_3d::{
     ba_affine::{bundle_adjust_affine, AffineBaParams, AffineObservation},
     camera::AffineCamera,
 };
-use kornia_algebra::Vec3F64;
+use kornia_algebra::{Vec2F64, Vec3F64};
 use numpy::{PyArray1, PyArray2, PyArray3, PyArrayMethods, PyUntypedArrayMethods};
 use pyo3::{prelude::*, types::PyDict};
 
 /// Simultaneous float64 affine BA with Cauchy loss and fixed-point gauge.
 ///
-/// Arrays must be aligned and C-contiguous. Cameras are (C,2,4), points (N,3),
-/// pixels (O,2), camera_indices and point_indices (O,) int64. Fixed point indices
-/// must include four noncoplanar anchors. No inputs are modified. The returned
-/// dictionary contains cameras, points, initial_cost, cost, iterations,
-/// accepted_steps and converged. Costs use 0.5*robust_scale**2*sum(log1p(r²/scale²)).
+/// Arrays must be aligned and C-contiguous. No inputs are modified. Costs use
+/// 0.5*robust_scale**2*sum(log1p(r²/robust_scale²)), summed per 2D observation.
 ///
-/// # Arguments
-/// * `py` - Interpreter token; released during the owned-buffer solve.
-/// * `cameras` - Float64 world-to-pixel matrices, shape (C, 2, 4).
-/// * `points` - Float64 initial world points, shape (N, 3).
-/// * `camera_indices` - Int64 camera index per observation, shape (O,).
-/// * `point_indices` - Int64 point index per observation, shape (O,).
-/// * `pixels` - Float64 measured pixels, shape (O, 2).
-/// * `fixed_point_indices` - Indices of points to hold exactly.
-/// * `max_iterations` - Maximum linearizations.
-/// * `robust_scale` - Positive Cauchy scale in pixels.
-/// * `cost_tolerance` - Positive relative accepted cost decrease threshold.
-/// * `initial_damping` - Positive initial LM diagonal multiplier.
-/// * `max_trials` - Maximum damping trials per linearization.
+/// Args:
+///     cameras: `(C, 2, 4)` float64 world-to-pixel matrices.
+///     points: `(N, 3)` float64 initial world points.
+///     camera_indices: `(O,)` int64 camera index per observation.
+///     point_indices: `(O,)` int64 point index per observation.
+///     pixels: `(O, 2)` float64 measured pixels.
+///     fixed_point_indices: Sequence of indices of points to hold exactly. Must
+///         include four noncoplanar anchors, each seen in at least two views
+///         when any point is free.
+///     max_iterations: Maximum linearizations (default 100).
+///     robust_scale: Positive Cauchy scale in pixels (default 2.0).
+///     cost_tolerance: Positive relative cost decrease at which to stop, once
+///         damping is at most 1 (default 1e-7).
+///     initial_damping: Positive initial LM diagonal multiplier (default 1e-3).
+///     max_trials: Maximum damping trials per linearization (default 30).
 ///
-/// # Returns
-/// A dictionary with new cameras/points arrays and scalar convergence statistics.
+/// Returns:
+///     A dict with new `cameras` and `points` arrays, plus `initial_cost`, `cost`,
+///     `iterations`, `accepted_steps` and `converged`. Exhausting `max_iterations`,
+///     or the damping trials after some progress, returns the last accepted state
+///     with `converged=False`.
 ///
-/// # Errors
-/// Raises `ValueError` for invalid shapes, memory layout, indices, nonfinite
-/// values, solver parameters, degenerate gauge, or exhausted damping trials.
-/// PyO3 rejects incompatible array dtypes/dimensions and invalid unsigned
-/// scalar conversions before entering this function, using its conversion exceptions.
-///
-/// # Example
-/// ```python
-/// from kornia_rs import k3d
-/// result = k3d.bundle_adjust_affine(cameras, points, camera_indices,
-///                                  point_indices, pixels, [0, 1, 2, 3])
-/// ```
+/// Raises:
+///     ValueError: Invalid shapes, memory layout, indices, nonfinite values or
+///         solver parameters, a degenerate gauge, or damping trials exhausted
+///         before any accepted step.
+///     TypeError: An array has the wrong dtype or dimensions.
+///     OverflowError: A negative `fixed_point_indices` entry or integer option.
 #[pyfunction(name = "bundle_adjust_affine")]
 #[pyo3(signature=(cameras,points,camera_indices,point_indices,pixels,fixed_point_indices,*,max_iterations=100,robust_scale=2.0,cost_tolerance=1e-7,initial_damping=1e-3,max_trials=30))]
 #[allow(clippy::too_many_arguments)]
@@ -96,7 +92,7 @@ pub fn bundle_adjust_affine_py<'py>(
             Ok(AffineObservation {
                 camera_index: usize::try_from(ci[i]).map_err(value_err)?,
                 point_index: usize::try_from(pi[i]).map_err(value_err)?,
-                pixel: [xy[2 * i], xy[2 * i + 1]],
+                pixel: Vec2F64::new(xy[2 * i], xy[2 * i + 1]),
             })
         })
         .collect::<PyResult<_>>()?;

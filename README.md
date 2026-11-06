@@ -386,15 +386,19 @@ Full pipelines: [`examples/cuda_camera_preprocess`](examples/cuda_camera_preproc
 matrices and 3D points with Cauchy loss and Schur LM. Pass C-contiguous, aligned
 NumPy arrays: cameras `(C, 2, 4)`, points `(N, 3)`, pixels `(O, 2)`, and int64
 camera/point indices `(O,)`. Fixed-point indices must include four noncoplanar
-anchors. Coordinates use the world frame and pixels described by each camera's
-2×4 matrix; no metric camera constraints are imposed.
+anchors, each seen in at least two views when any point is free. Coordinates use
+the world frame and pixels described by each camera's 2×4 matrix; no metric camera
+constraints are imposed.
 
 The function copies inputs into owned Rust buffers, releases the GIL for the
 solve, and returns new `cameras`/`points` arrays plus `initial_cost`, `cost`,
 `iterations`, `accepted_steps`, and `converged`. It never modifies the inputs.
 Costs are `0.5 * scale**2 * sum(log1p(||residual||**2 / scale**2))`, summed per
-2D observation. Check `converged` when the iteration budget is exhausted;
-invalid inputs or exhausted damping trials raise `ValueError`.
+2D observation. Check `converged`: exhausting the iteration budget, or the damping
+trials after some progress, returns the last accepted state with `converged=False`.
+Invalid values, or damping trials exhausted before any accepted step, raise
+`ValueError`. A wrong array dtype raises `TypeError`, and a negative fixed-point
+index or integer option raises `OverflowError`.
 
 Run a deterministic example that generates all its geometry and observations:
 

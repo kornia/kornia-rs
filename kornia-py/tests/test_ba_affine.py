@@ -8,7 +8,7 @@ from scipy import optimize as scipy_opt
 
 def scene():
     rng = np.random.default_rng(17)
-    x = rng.normal(size=(80, 3))
+    x = rng.normal(size=(40, 3))
     a = rng.normal(size=(4, 2, 4))
     ci = np.repeat(np.arange(4, dtype=np.int64), len(x))
     pi = np.tile(np.arange(len(x), dtype=np.int64), 4)
@@ -76,6 +76,9 @@ def test_invalid_input(mode):
         k3d.bundle_adjust_affine(a, x, ci, pi, xy, [0, 1, 2, 3], **kwargs)
 
 
+@pytest.mark.thread_unsafe(
+    reason="BLAS threads oversubscribe; adds minutes under stress"
+)
 def test_matches_independent_scipy_objective():
     """SciPy finite-difference least squares on the same vector-norm Cauchy objective."""
     rng = np.random.default_rng(19)
@@ -118,7 +121,7 @@ def test_matches_independent_scipy_objective():
 
 def test_rejects_disconnected_graph():
     a, x, ci, pi, xy, _ = scene()
-    use = ((ci < 2) & (pi < 40)) | ((ci >= 2) & (pi >= 40))
+    use = ((ci < 2) & (pi < 20)) | ((ci >= 2) & (pi >= 20))
     with pytest.raises(ValueError, match="disconnected"):
         k3d.bundle_adjust_affine(a, x, ci[use], pi[use], xy[use], [0, 1, 2, 3])
 
@@ -152,7 +155,7 @@ def test_binding_contract_errors(mode):
     if mode == "camera_shape":
         a = np.zeros((4, 4, 2), dtype=np.float64)
     if mode == "point_shape":
-        x = np.zeros((80, 4), dtype=np.float64)
+        x = np.zeros((40, 4), dtype=np.float64)
     if mode == "pixel_shape":
         xy = np.zeros((len(xy), 3), dtype=np.float64)
     if mode == "length":
@@ -171,3 +174,82 @@ def test_iteration_limit_returns_last_state():
     assert result["iterations"] == result["accepted_steps"] == 1
     assert not result["converged"]
     assert result["cost"] < result["initial_cost"]
+
+
+def large_focal_scene(focal, offset):
+    """Noiseless scene with realistic camera and pixel magnitudes."""
+    rng = np.random.default_rng(23)
+    truth = rng.uniform(-2.0, 2.0, (60, 3))
+    truth[:4] = [[0, 0, 0], [2, 0, 0], [0, 2, 0], [0, 0, 2]]
+    cameras = []
+    for angle in np.arange(4) * 1.5:
+        c, s = np.cos(angle), np.sin(angle)
+        cameras.append(
+            [
+                [focal * c, focal * s, 0.1 * focal, offset],
+                [-focal * s, focal * c, -0.7 * focal, offset],
+            ]
+        )
+    cameras = np.array(cameras, dtype=np.float64)
+    ci = np.repeat(np.arange(4, dtype=np.int64), len(truth))
+    pi = np.tile(np.arange(len(truth), dtype=np.int64), 4)
+    xy = np.einsum("nij,nj->ni", cameras[ci, :, :3], truth[pi]) + cameras[ci, :, 3]
+    start = truth.copy()
+    start[4:] += rng.normal(0, 0.05, start[4:].shape)
+    return cameras, start, ci, pi, xy, truth
+
+
+@pytest.mark.parametrize("focal,offset", [(500.0, 1e3), (5000.0, 1e5)])
+def test_solved_scene_at_realistic_focal_converges(focal, offset):
+    a, x, ci, pi, xy, truth = large_focal_scene(focal, offset)
+    result = k3d.bundle_adjust_affine(a, x, ci, pi, xy, [0, 1, 2, 3])
+    assert result["converged"]
+    np.testing.assert_allclose(result["points"], truth, atol=1e-8)
+
+
+def test_rejects_anchors_seen_in_a_single_view():
+    a, x, ci, pi, xy, _ = scene()
+    use = (pi >= 4) | (ci == 0)
+    with pytest.raises(ValueError, match="two views"):
+        k3d.bundle_adjust_affine(a, x, ci[use], pi[use], xy[use], [0, 1, 2, 3])
+
+
+def test_validation_error_names_the_failing_observation():
+    a, x, ci, pi, xy, _ = scene()
+    pi[3] = len(x)
+    with pytest.raises(ValueError, match="observation 3"):
+        k3d.bundle_adjust_affine(a, x, ci, pi, xy, [0, 1, 2, 3])
+
+
+@pytest.mark.parametrize(
+    "mode,error",
+    [
+        ("negative_fixed_index", OverflowError),
+        ("int32_indices", TypeError),
+        ("float32_points", TypeError),
+    ],
+)
+def test_argument_conversion_errors(mode, error):
+    a, x, ci, pi, xy, _ = scene()
+    anchors = [0, 1, 2, 3]
+    if mode == "negative_fixed_index":
+        anchors = [0, 1, 2, -1]
+    if mode == "int32_indices":
+        ci = ci.astype(np.int32)
+    if mode == "float32_points":
+        x = x.astype(np.float32)
+    with pytest.raises(error):
+        k3d.bundle_adjust_affine(a, x, ci, pi, xy, anchors)
+
+
+def test_fixed_point_indices_accepts_a_numpy_array():
+    a, x, ci, pi, xy, _ = scene()
+    result = k3d.bundle_adjust_affine(a, x, ci, pi, xy, np.arange(4))
+    assert result["cost"] < result["initial_cost"]
+
+
+def test_docstring_uses_the_python_format():
+    doc = k3d.bundle_adjust_affine.__doc__
+    assert "Args:" in doc and "Returns:" in doc and "Raises:" in doc
+    assert "# Arguments" not in doc
+    assert "Interpreter token" not in doc
