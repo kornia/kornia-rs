@@ -12,3 +12,6 @@ pub use pinhole::{PinholeCamera, ProjectionReject};
 
 pub use fisheye::project_point_fisheye;
 pub use pinhole::project_point;
+
+mod affine;
+pub use affine::AffineCamera;
