@@ -20,6 +20,14 @@
     `pose::RansacParams::confidence` accepts an explicit sampling target; `None` preserves each model family's default. Exhaustive struct literals must add `confidence: None` or use `..Default::default()`. Adaptive caps use the all-inlier probability for distinct sampling without replacement.
 *   **PnP Solvers:** Solve for camera pose given 3D-2D point correspondences.
 
+### Affine cameras
+
+`camera::AffineCamera` stores a float64 2×4 world-to-pixel matrix, with
+analytical Jacobians for its eight additive coefficients and the 3D point.
+It supports affine reconstruction and weak-perspective approximations without
+imposing orthogonality or metric scale. Extrinsics are included in the matrix;
+there is no unique optical centre or inverse projection.
+
 ## 📦 Installation
 
 Add the following to your `Cargo.toml`:
