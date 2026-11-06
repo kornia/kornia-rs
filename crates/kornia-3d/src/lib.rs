@@ -7,6 +7,9 @@ pub mod ba;
 /// Schur-complement bundle adjustment (dense reduced camera system).
 pub mod ba_schur;
 
+/// Float64 affine bundle adjustment with dense Schur elimination.
+pub mod ba_affine;
+
 /// Pinhole camera model with Brown-Conrady distortion and Kannala-Brandt fisheye model.
 pub mod camera;
 
