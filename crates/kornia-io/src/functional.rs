@@ -1,5 +1,5 @@
 use crate::{
-    error::IoError, jpeg::read_image_jpeg_rgb8, png::read_image_png_rgb8,
+    bmp::read_image_bmp_rgb8, error::IoError, jpeg::read_image_jpeg_rgb8, png::read_image_png_rgb8,
     tiff::read_image_tiff_rgb8, webp::read_image_webp_rgb8,
 };
 use kornia_image::color_spaces::Rgb8;
@@ -7,7 +7,7 @@ use std::path::Path;
 
 /// Reads a RGB8 image from the given file path.
 ///
-/// The method tries to read from any image format supported by the image crate.
+/// Supported extensions are `bmp`, `jpeg`, `jpg`, `png`, `tiff`, and `webp`.
 ///
 /// # Warning
 ///
@@ -18,6 +18,8 @@ use std::path::Path;
 /// - `jpeg::read_image_jpeg_rgb8()` for JPEG
 /// - `png::read_image_png_rgb8()` for PNG
 /// - `tiff::read_image_tiff_rgb8()` for TIFF
+/// - `webp::read_image_webp_rgb8()` for WebP
+/// - `bmp::read_image_bmp_rgb8()` for BMP
 ///
 /// # Arguments
 ///
@@ -48,12 +50,12 @@ pub fn read_image_any_rgb8(file_path: impl AsRef<Path>) -> Result<Rgb8, IoError>
     }
 
     // try to read the image from the file path
-    // TODO: handle more image formats
     if let Some(extension) = file_path.extension() {
         match extension.to_string_lossy().to_lowercase().as_ref() {
             "jpeg" | "jpg" => read_image_jpeg_rgb8(file_path),
             "png" => read_image_png_rgb8(file_path),
             "tiff" => read_image_tiff_rgb8(file_path),
+            "bmp" => read_image_bmp_rgb8(file_path),
             "webp" => read_image_webp_rgb8(file_path),
             _ => Err(IoError::InvalidFileExtension(file_path)),
         }

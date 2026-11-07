@@ -47,6 +47,7 @@ thiserror = { workspace = true }
 tiff = "0.11"
 # for fast jpeg encoding/decoding
 turbojpeg = { version = "1.4", optional = true }
+zune-bmp = "0.5.2"
 zune-jpeg = "0.5"
 
 [dev-dependencies]
