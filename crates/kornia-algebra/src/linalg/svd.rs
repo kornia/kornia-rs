@@ -1063,32 +1063,35 @@ mod tests {
 
     #[test]
     fn test_svd3_f64_accuracy_is_scale_independent() {
-        let a = Mat3F64::from_cols(
-            Vec3F64::new(0.8, -0.3, 0.5),
-            Vec3F64::new(0.1, 0.9, -0.4),
-            Vec3F64::new(-0.6, 0.2, 0.7),
-        );
-        let s_ref = *svd3_f64(&a).s();
-        let s_ref = [s_ref.x_axis().x, s_ref.y_axis().y, s_ref.z_axis().z];
-        for scale in [1e-6, 1e-3, 1.0, 1e3] {
-            let m = a * scale;
-            let svd = svd3_f64(&m);
-            let diff = *svd.u() * *svd.s() * svd.v().transpose() - m;
-            let err = diff.x_axis().length() + diff.y_axis().length() + diff.z_axis().length();
-            let norm = m.x_axis().length() + m.y_axis().length() + m.z_axis().length();
-            assert!(
-                err / norm < 1e-12,
-                "scale {scale}: relative reconstruction error {}",
-                err / norm
-            );
-            let s = svd.s();
-            let got = [s.x_axis().x, s.y_axis().y, s.z_axis().z];
-            for i in 0..3 {
-                let rel = (got[i] / scale - s_ref[i]).abs() / s_ref[i];
+        let c0 = Vec3F64::new(0.8, -0.3, 0.5);
+        let c1 = Vec3F64::new(0.1, 0.9, -0.4);
+        let full_rank = Mat3F64::from_cols(c0, c1, Vec3F64::new(-0.6, 0.2, 0.7));
+        let rank_two = Mat3F64::from_cols(c0, c1, c0 * 0.5 - c1 * 2.0);
+        for a in [full_rank, rank_two] {
+            let s_ref = *svd3_f64(&a).s();
+            let s_ref = [s_ref.x_axis().x, s_ref.y_axis().y, s_ref.z_axis().z];
+            // Below ~1e-15 the QR step's absolute threshold takes over.
+            for scale in [1e-12, 1e-6, 1e-3, 1.0, 1e3, 1e50] {
+                let m = a * scale;
+                let svd = svd3_f64(&m);
+                let diff = *svd.u() * *svd.s() * svd.v().transpose() - m;
+                let err = diff.x_axis().length() + diff.y_axis().length() + diff.z_axis().length();
+                let norm = m.x_axis().length() + m.y_axis().length() + m.z_axis().length();
                 assert!(
-                    rel < 1e-12,
-                    "scale {scale}: singular value {i} relative error {rel}"
+                    err / norm < 1e-12,
+                    "scale {scale}: relative reconstruction error {}",
+                    err / norm
                 );
+                // Relative to the largest singular value, so a zero one is checked too.
+                let s = svd.s();
+                let got = [s.x_axis().x, s.y_axis().y, s.z_axis().z];
+                for i in 0..3 {
+                    let err = (got[i] / scale - s_ref[i]).abs() / s_ref[0];
+                    assert!(
+                        err < 1e-12,
+                        "scale {scale}: singular value {i} error {err} (relative to the largest)"
+                    );
+                }
             }
         }
     }
