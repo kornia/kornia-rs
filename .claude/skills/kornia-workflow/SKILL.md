@@ -75,5 +75,5 @@ or `rust_test.yml`. Clippy warnings are errors.
 
 A stacked PR gets no test or lint CI: those workflows filter on `branches: main`,
 and retargeting alone does not start them (no `edited` trigger). Push after
-retargeting, then check that `gh pr checks` lists the workflows whose path filters
-match the diff.
+retargeting, then check that `gh pr checks --json workflow,name,state` lists the
+workflows whose path filters match the diff; piped plain output omits workflow names.
