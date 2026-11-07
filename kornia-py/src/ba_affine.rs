@@ -73,14 +73,15 @@ impl PyAffineBaResult {
 /// Returns:
 ///     An `AffineBaResult` with new `cameras` and `points` arrays, plus `initial_cost`,
 ///     `cost`, `iterations`, `accepted_steps` and `converged`. Exhausting
-///     `max_iterations`, or the damping trials after some progress, returns the last
-///     accepted state with `converged=False`.
+///     `max_iterations` returns the last accepted state with `converged=False`. When
+///     the damping trials run out, a numerically stationary cost returns
+///     `converged=True`, with or without earlier accepted steps. Otherwise, the last
+///     accepted state returns with `converged=False` after some progress.
 ///
 /// Raises:
 ///     ValueError: Invalid shapes, memory layout, indices, nonfinite values or
 ///         solver parameters, a degenerate gauge, or damping trials exhausted
-///         before any accepted step. A cost already numerically stationary returns
-///         `converged=True` instead.
+///         before any accepted step, away from a numerically stationary cost.
 ///     TypeError: An array has the wrong dtype or dimensions.
 ///     OverflowError: A negative `fixed_point_indices` entry or integer option.
 #[pyfunction(name = "bundle_adjust_affine")]

@@ -395,11 +395,12 @@ solve, and returns an `AffineBaResult` with new `cameras`/`points` arrays plus
 `initial_cost`, `cost`, `iterations`, `accepted_steps`, and `converged`. It never
 modifies the inputs.
 Costs are `0.5 * scale**2 * sum(log1p(||residual||**2 / scale**2))`, summed per
-2D observation. Check `converged`: exhausting the iteration budget, or the damping
-trials after some progress, returns the last accepted state with `converged=False`.
-Invalid values, or damping trials exhausted before any accepted step, raise
-`ValueError`; a cost that is already numerically stationary returns `converged=True`
-instead. A wrong array dtype raises `TypeError`, and a negative fixed-point
+2D observation. Check `converged`: exhausting the iteration budget returns the last
+accepted state with `converged=False`. When the damping trials run out, a numerically
+stationary cost returns `converged=True`, with or without earlier accepted steps.
+Otherwise, the last accepted state returns with `converged=False` after some progress,
+and `ValueError` is raised before any accepted step. Invalid values also raise
+`ValueError`. A wrong array dtype raises `TypeError`, and a negative fixed-point
 index or integer option raises `OverflowError`.
 
 Run a deterministic example that generates all its geometry and observations:
