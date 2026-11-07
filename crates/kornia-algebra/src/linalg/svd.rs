@@ -1071,7 +1071,7 @@ mod tests {
             let s_ref = *svd3_f64(&a).s();
             let s_ref = [s_ref.x_axis().x, s_ref.y_axis().y, s_ref.z_axis().z];
             // Below ~1e-15 the QR step's absolute threshold takes over.
-            for scale in [1e-12, 1e-6, 1e-3, 1.0, 1e3, 1e50] {
+            for scale in [1e-13, 1e-12, 1e-6, 1e-3, 1.0, 1e3, 1e50] {
                 let m = a * scale;
                 let svd = svd3_f64(&m);
                 let diff = *svd.u() * *svd.s() * svd.v().transpose() - m;
