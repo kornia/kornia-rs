@@ -498,10 +498,10 @@ mod impl_f64 {
     use super::*;
 
     const EPSILON: f64 = 1e-15;
-    // Squared off-diagonal mass of AᵀA, relative to its squared diagonal, below
+    // Off-diagonal magnitude of AᵀA, relative to its diagonal magnitude, below
     // which the Jacobi sweeps stop. Relative so the result does not depend on
     // the scale of the input matrix.
-    const JACOBI_TOLERANCE: f64 = 1e-30;
+    const JACOBI_TOLERANCE: f64 = 1e-15;
     // Standard Jacobi rotation requires more sweeps for f64 Exact Givens
     // to ensure convergence without hitting the limit prematurely.
     const MAX_SWEEPS: usize = 20;
@@ -652,11 +652,10 @@ mod impl_f64 {
             );
             q_accum = q_accum.normalize();
 
-            let off_diag_sq =
-                s_mat.m_10 * s_mat.m_10 + s_mat.m_20 * s_mat.m_20 + s_mat.m_21 * s_mat.m_21;
-            let diag_sq =
-                s_mat.m_00 * s_mat.m_00 + s_mat.m_11 * s_mat.m_11 + s_mat.m_22 * s_mat.m_22;
-            if off_diag_sq <= JACOBI_TOLERANCE * diag_sq {
+            // Sums of magnitudes, not squares, so large inputs do not overflow.
+            let off_diag = s_mat.m_10.abs() + s_mat.m_20.abs() + s_mat.m_21.abs();
+            let diag = s_mat.m_00.abs() + s_mat.m_11.abs() + s_mat.m_22.abs();
+            if off_diag <= JACOBI_TOLERANCE * diag {
                 break;
             }
         }
