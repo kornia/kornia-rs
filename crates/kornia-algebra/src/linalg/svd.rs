@@ -498,7 +498,10 @@ mod impl_f64 {
     use super::*;
 
     const EPSILON: f64 = 1e-15;
-    const JACOBI_TOLERANCE: f64 = 1e-12;
+    // Squared off-diagonal mass of AᵀA, relative to its squared diagonal, below
+    // which the Jacobi sweeps stop. Relative so the result does not depend on
+    // the scale of the input matrix.
+    const JACOBI_TOLERANCE: f64 = 1e-30;
     // Standard Jacobi rotation requires more sweeps for f64 Exact Givens
     // to ensure convergence without hitting the limit prematurely.
     const MAX_SWEEPS: usize = 20;
@@ -531,7 +534,7 @@ mod impl_f64 {
 
     #[inline(always)]
     fn exact_givens(app: f64, aqq: f64, apq: f64) -> (f64, f64) {
-        if apq.abs() < EPSILON {
+        if apq.abs() <= EPSILON * (app.abs() + aqq.abs()) {
             return (1.0, 0.0);
         }
         let tau = (aqq - app) / (2.0 * apq);
@@ -651,7 +654,9 @@ mod impl_f64 {
 
             let off_diag_sq =
                 s_mat.m_10 * s_mat.m_10 + s_mat.m_20 * s_mat.m_20 + s_mat.m_21 * s_mat.m_21;
-            if off_diag_sq < JACOBI_TOLERANCE {
+            let diag_sq =
+                s_mat.m_00 * s_mat.m_00 + s_mat.m_11 * s_mat.m_11 + s_mat.m_22 * s_mat.m_22;
+            if off_diag_sq <= JACOBI_TOLERANCE * diag_sq {
                 break;
             }
         }
@@ -1055,6 +1060,38 @@ mod tests {
         assert!((s_vec.x - 1.0).abs() < TEST_EPSILON_F64);
         assert!((s_vec.y - 1.0).abs() < TEST_EPSILON_F64);
         assert!((s_vec.z - 1.0).abs() < TEST_EPSILON_F64);
+    }
+
+    #[test]
+    fn test_svd3_f64_accuracy_is_scale_independent() {
+        let a = Mat3F64::from_cols(
+            Vec3F64::new(0.8, -0.3, 0.5),
+            Vec3F64::new(0.1, 0.9, -0.4),
+            Vec3F64::new(-0.6, 0.2, 0.7),
+        );
+        let s_ref = *svd3_f64(&a).s();
+        let s_ref = [s_ref.x_axis().x, s_ref.y_axis().y, s_ref.z_axis().z];
+        for scale in [1e-6, 1e-3, 1.0, 1e3] {
+            let m = a * scale;
+            let svd = svd3_f64(&m);
+            let diff = *svd.u() * *svd.s() * svd.v().transpose() - m;
+            let err = diff.x_axis().length() + diff.y_axis().length() + diff.z_axis().length();
+            let norm = m.x_axis().length() + m.y_axis().length() + m.z_axis().length();
+            assert!(
+                err / norm < 1e-12,
+                "scale {scale}: relative reconstruction error {}",
+                err / norm
+            );
+            let s = svd.s();
+            let got = [s.x_axis().x, s.y_axis().y, s.z_axis().z];
+            for i in 0..3 {
+                let rel = (got[i] / scale - s_ref[i]).abs() / s_ref[i];
+                assert!(
+                    rel < 1e-12,
+                    "scale {scale}: singular value {i} relative error {rel}"
+                );
+            }
+        }
     }
 
     #[test]
