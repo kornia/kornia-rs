@@ -532,6 +532,8 @@ mod impl_f64 {
         }
     }
 
+    /// Cosine and sine of the Jacobi rotation that zeroes the off-diagonal
+    /// `apq` of the symmetric 2×2 block `[[app, apq], [apq, aqq]]`.
     #[inline(always)]
     fn exact_givens(app: f64, aqq: f64, apq: f64) -> (f64, f64) {
         if apq.abs() <= EPSILON * (app.abs() + aqq.abs()) {
@@ -677,19 +679,25 @@ mod impl_f64 {
 
     #[inline(always)]
     fn qr_givens_quaternion(a1: f64, a2: f64) -> GivensF64 {
-        let rho = (a1 * a1 + a2 * a2).sqrt();
+        // `hypot` and an exact-zero test instead of an absolute threshold, so
+        // small inputs are rotated like large ones.
+        let rho = a1.hypot(a2);
+        if rho == 0.0 {
+            return GivensF64 {
+                cos_theta: 1.0,
+                sin_theta: 0.0,
+            };
+        }
         let mut g = GivensF64 {
-            cos_theta: a1.abs() + f64::max(rho, EPSILON),
-            sin_theta: if rho > EPSILON { a2 } else { 0.0 },
+            cos_theta: a1.abs() + rho,
+            sin_theta: a2,
         };
 
         if a1 < 0.0 {
             std::mem::swap(&mut g.sin_theta, &mut g.cos_theta);
         }
 
-        let w = (g.cos_theta * g.cos_theta + g.sin_theta * g.sin_theta)
-            .sqrt()
-            .recip();
+        let w = g.cos_theta.hypot(g.sin_theta).recip();
         g.cos_theta *= w;
         g.sin_theta *= w;
         g
@@ -819,7 +827,8 @@ mod impl_f64 {
     }
 
     pub fn svd3(mat: &Mat3F64) -> SVD3Set {
-        let mut s_mat = Symmetric3x3::from_mat3x3(&(mat.transpose() * *mat));
+        // `from_mat3x3` already forms the Gram matrix AᵀA from the columns of A.
+        let mut s_mat = Symmetric3x3::from_mat3x3(mat);
         let q = compute_v_quat(&mut s_mat);
         let mut v_mat = Mat3F64::from_quat(q);
 
@@ -1070,8 +1079,7 @@ mod tests {
         for a in [full_rank, rank_two] {
             let s_ref = *svd3_f64(&a).s();
             let s_ref = [s_ref.x_axis().x, s_ref.y_axis().y, s_ref.z_axis().z];
-            // Below ~1e-15 the QR step's absolute threshold takes over.
-            for scale in [1e-13, 1e-12, 1e-6, 1e-3, 1.0, 1e3, 1e50] {
+            for scale in [1e-100, 1e-13, 1e-6, 1e-3, 1.0, 1e3, 1e50, 1e100] {
                 let m = a * scale;
                 let svd = svd3_f64(&m);
                 let diff = *svd.u() * *svd.s() * svd.v().transpose() - m;
