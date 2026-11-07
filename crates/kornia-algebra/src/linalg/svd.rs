@@ -1072,13 +1072,14 @@ mod tests {
 
     #[test]
     fn test_svd3_f64_accuracy_is_scale_independent() {
-        let c0 = Vec3F64::new(0.8, -0.3, 0.5);
-        let c1 = Vec3F64::new(0.1, 0.9, -0.4);
-        let full_rank = Mat3F64::from_cols(c0, c1, Vec3F64::new(-0.6, 0.2, 0.7));
-        let rank_two = Mat3F64::from_cols(c0, c1, c0 * 0.5 - c1 * 2.0);
-        for a in [full_rank, rank_two] {
-            let s_ref = *svd3_f64(&a).s();
-            let s_ref = [s_ref.x_axis().x, s_ref.y_axis().y, s_ref.z_axis().z];
+        // A = U · diag(sigma) · Vᵀ with known rotations, so the singular values
+        // are known independently of the solver.
+        let u = Mat3F64::from_quat(QuatF64::from_xyzw(0.3, -0.5, 0.2, 0.8).normalize());
+        let v = Mat3F64::from_quat(QuatF64::from_xyzw(-0.6, 0.1, 0.4, 0.7).normalize());
+        for s_ref in [[3.0, 2.0, 0.5], [3.0, 2.0, 0.0]] {
+            let a = u
+                * Mat3F64::from_diagonal(Vec3F64::new(s_ref[0], s_ref[1], s_ref[2]))
+                * v.transpose();
             for scale in [1e-100, 1e-13, 1e-6, 1e-3, 1.0, 1e3, 1e50, 1e100] {
                 let m = a * scale;
                 let svd = svd3_f64(&m);
@@ -1090,7 +1091,7 @@ mod tests {
                     "scale {scale}: relative reconstruction error {}",
                     err / norm
                 );
-                // Relative to the largest singular value, so a zero one is checked too.
+                // Errors relative to the largest singular value, so a zero one is checked too.
                 let s = svd.s();
                 let got = [s.x_axis().x, s.y_axis().y, s.z_axis().z];
                 for i in 0..3 {
@@ -1100,6 +1101,17 @@ mod tests {
                         "scale {scale}: singular value {i} error {err} (relative to the largest)"
                     );
                 }
+                // S must be diagonal: reconstruction alone holds for any orthonormal V.
+                let off_diag = s.x_axis().y.abs()
+                    + s.x_axis().z.abs()
+                    + s.y_axis().x.abs()
+                    + s.y_axis().z.abs()
+                    + s.z_axis().x.abs()
+                    + s.z_axis().y.abs();
+                assert!(
+                    off_diag / (s_ref[0] * scale) < 1e-12,
+                    "scale {scale}: off-diagonal of S {off_diag}"
+                );
             }
         }
     }
