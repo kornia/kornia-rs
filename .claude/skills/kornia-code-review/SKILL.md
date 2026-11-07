@@ -212,6 +212,11 @@ filters, features, SIMD, CUDA, tensor ops):
   `ci` feature set, not only on local stable.
 - Public API change ⇒ bindings updated or the PR says it is not exposed
   (see `kornia-bindings`).
+- Iterative solver: run exact data at realistic input magnitudes, not only unit
+  scale. A solved state must not be an error, and stopping tolerances must be
+  relative.
+- A claim that constraints remove a gauge is checked by the numerical Jacobian
+  nullity on a reduced-visibility scene.
 - Docs, units and coordinate frames match the code. A change that weakens a
   check the `# Errors` rustdoc promises is a behaviour change: cite the
   rustdoc line.
