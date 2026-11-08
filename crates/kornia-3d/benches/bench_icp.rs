@@ -6,8 +6,9 @@
 
 use criterion::{criterion_group, BenchmarkId, Criterion};
 use kornia_3d::registration::{
-    icp_projective_plane, icp_projective_plane_with, Association, DepthIntrinsics, IcpKernel,
-    IcpPlaneCriteria, IcpWorkspace, PyramidScratch, RgbdPyramid,
+    icp_projective_plane, icp_projective_plane_prepared, icp_projective_plane_with, Association,
+    DepthIntrinsics, IcpKernel, IcpPlaneCriteria, IcpWorkspace, PreparedTarget, PyramidScratch,
+    RgbdPyramid,
 };
 use std::time::Instant;
 
@@ -127,6 +128,10 @@ enum Variant {
     SimdHybrid,
     /// As `Simd` on the input halved once: the decimated input contract.
     Decimated,
+    /// As `Simd` against a [`PreparedTarget`] keyframe.
+    Prepared,
+    /// As `Decimated` against a [`PreparedTarget`] keyframe: the real-time configuration.
+    DecimatedPrepared,
 }
 
 impl Variant {
@@ -137,13 +142,15 @@ impl Variant {
             Variant::Simd => "simd",
             Variant::SimdHybrid => "simd-hybrid",
             Variant::Decimated => "decimated",
+            Variant::Prepared => "prepared",
+            Variant::DecimatedPrepared => "decimated-prepared",
         }
     }
 
     /// (decimation, levels) of both pyramids.
     fn pyramid(self) -> (usize, usize) {
         match self {
-            Variant::Decimated => (1, LEVELS),
+            Variant::Decimated | Variant::DecimatedPrepared => (1, LEVELS),
             _ => (0, LEVELS),
         }
     }
@@ -156,9 +163,10 @@ fn variants(case: &Case) -> Vec<Variant> {
         Variant::Scalar,
         Variant::Simd,
         Variant::SimdHybrid,
+        Variant::Prepared,
     ];
     if case.intr.width == 320 {
-        v.push(Variant::Decimated);
+        v.extend([Variant::Decimated, Variant::DecimatedPrepared]);
     }
     v
 }
@@ -171,6 +179,8 @@ struct Runner {
     scratch: PyramidScratch,
     pyr: RgbdPyramid,
     keyframe: RgbdPyramid,
+    /// The keyframe prepared once, for the prepared variants.
+    prepared: Option<PreparedTarget>,
 }
 
 impl Runner {
@@ -196,16 +206,20 @@ impl Runner {
                 &mut scratch,
             )
             .expect("keyframe");
+        let criteria = IcpPlaneCriteria {
+            association,
+            ..Default::default()
+        };
+        let prepared = matches!(variant, Variant::Prepared | Variant::DecimatedPrepared)
+            .then(|| PreparedTarget::new(keyframe.clone(), criteria.depth_noise));
         Self {
             variant,
-            criteria: IcpPlaneCriteria {
-                association,
-                ..Default::default()
-            },
+            criteria,
             ws: IcpWorkspace::new(kernel),
             scratch,
             pyr: RgbdPyramid { levels: Vec::new() },
             keyframe,
+            prepared,
         }
     }
 
@@ -237,14 +251,24 @@ impl Runner {
                 )
                 .expect("pyramid");
             let c1 = thread_cpu_ns().unwrap_or(0);
-            let r = icp_projective_plane_with(
-                &mut self.ws,
-                &self.pyr,
-                &self.keyframe,
-                IDENTITY,
-                [0.0; 3],
-                &self.criteria,
-            );
+            let r = match &self.prepared {
+                Some(p) => icp_projective_plane_prepared(
+                    &mut self.ws,
+                    &self.pyr,
+                    p,
+                    IDENTITY,
+                    [0.0; 3],
+                    &self.criteria,
+                ),
+                None => icp_projective_plane_with(
+                    &mut self.ws,
+                    &self.pyr,
+                    &self.keyframe,
+                    IDENTITY,
+                    [0.0; 3],
+                    &self.criteria,
+                ),
+            };
             (c1, r)
         };
         let c2 = thread_cpu_ns().unwrap_or(0);

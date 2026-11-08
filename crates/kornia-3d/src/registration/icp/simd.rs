@@ -14,7 +14,8 @@
 //! so correspondence counts can differ by a handful.
 
 use super::{
-    sample_target, DepthNoise, IcpPlaneCriteria, NormalEquations, RgbdLevel, MIN_RAY_INCIDENCE,
+    sample_target, DepthNoise, IcpPlaneCriteria, NormalEquations, RgbdLevel, TargetPx,
+    MIN_RAY_INCIDENCE,
 };
 use crate::registration::rgbd::{is_valid_normal, is_valid_vertex};
 use wide::f32x8;
@@ -119,13 +120,16 @@ fn flush(block: &mut [f32x8; NUM_SUMS], total: &mut [f64; NUM_SUMS]) {
 
 /// One association pass over `len` SoA points; the SIMD twin of `accumulate_level`.
 ///
-/// `depths`, when given, receives the inlier depths (for the exact median of the final pass).
+/// `packed`, when given, is `tgt`'s [`super::PreparedTarget`] cache: nearest lookups read it,
+/// bilinear ones still read `tgt`. `depths`, when given, receives the inlier depths (for the
+/// exact median of the final pass).
 // index loops: the 21 upper-triangle accumulators are addressed by (row, col)
 #[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
 pub(crate) fn accumulate(
     soa: &SourceSoa,
     src_has_map: bool,
     tgt: &RgbdLevel,
+    packed: Option<&[TargetPx]>,
     rotation: &[[f64; 3]; 3],
     translation: &[f64; 3],
     criteria: &IcpPlaneCriteria,
@@ -180,6 +184,7 @@ pub(crate) fn accumulate(
         let mut ok = [false; LANES];
         let (mut vt, mut nt) = ([[0.0, 0.0, 1.0]; LANES], [[0.0, 0.0, -1.0]; LANES]);
         let mut sig_t = [1.0f32; LANES];
+        let mut var_t = [1.0f32; LANES];
         for l in 0..LANES {
             if i + l >= len || pz[l] <= 0.0 {
                 continue;
@@ -194,6 +199,18 @@ pub(crate) fn accumulate(
                     continue;
                 }
                 let idx = vi * tw + ui;
+                if let Some(px) = packed {
+                    let q = &px[idx];
+                    // packed z is a valid depth or exactly 0, never NaN
+                    if q.v[2] <= 0.0 {
+                        continue;
+                    }
+                    ok[l] = true;
+                    vt[l] = q.v;
+                    nt[l] = q.n;
+                    var_t[l] = q.var;
+                    continue;
+                }
                 let (a, b) = (&tgt.vertices[idx], &tgt.normals[idx]);
                 if !is_valid_vertex(a) || !is_valid_normal(b) {
                     continue;
@@ -252,10 +269,15 @@ pub(crate) fn accumulate(
         let sigma = if ray_model {
             let zs = ps[2];
             let ray_s = [rp[0] / zs, rp[1] / zs, rp[2] / zs];
-            let ray_t = [vt[0] / vt[2], vt[1] / vt[2], one];
             let ss = f32x8::new(ch.sig);
-            let st = f32x8::new(sig_t);
-            (projected_ray_sq(nt, ray_s) * ss * ss + projected_ray_sq(nt, ray_t) * st * st).sqrt()
+            let target_var = if packed.is_some() && !bilinear {
+                f32x8::new(var_t)
+            } else {
+                let ray_t = [vt[0] / vt[2], vt[1] / vt[2], one];
+                let st = f32x8::new(sig_t);
+                projected_ray_sq(nt, ray_t) * st * st
+            };
+            (projected_ray_sq(nt, ray_s) * ss * ss + target_var).sqrt()
         } else {
             constant_sigma
         }

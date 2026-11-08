@@ -80,6 +80,10 @@ pub enum RgbdIcpError {
     /// matrix.
     #[error("pose prior covariance is not symmetric positive definite")]
     InvalidPriorCovariance,
+    /// A [`super::PreparedTarget`] was prepared under a different depth noise model than the
+    /// call's [`super::IcpPlaneCriteria::depth_noise`], so its cached target sigmas do not apply.
+    #[error("prepared target was built for a different depth noise model")]
+    PreparedTargetNoiseMismatch,
 }
 
 /// Pinhole intrinsics of a depth image (OpenCV convention, +Z forward).

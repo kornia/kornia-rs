@@ -4,8 +4,9 @@
 //! thread so the harness's other threads cannot leak into it.
 
 use kornia_3d::registration::{
-    icp_projective_plane_with, Association, DepthIntrinsics, DepthNoise, IcpKernel,
-    IcpPlaneCriteria, IcpWorkspace, PyramidScratch, RgbdPyramid,
+    icp_projective_plane_prepared, icp_projective_plane_with, Association, DepthIntrinsics,
+    DepthNoise, IcpKernel, IcpPlaneCriteria, IcpWorkspace, PreparedTarget, PyramidScratch,
+    RgbdPyramid,
 };
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -101,12 +102,15 @@ fn warmed_call_does_not_allocate() -> Result<(), Box<dyn std::error::Error>> {
     let frames = [render(&intr, 0.01), render(&intr, 0.02)];
     const IDENTITY: [[f64; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
-    for (kernel, association, decimation) in [
-        (IcpKernel::Simd, Association::Nearest, 0),
-        (IcpKernel::Simd, Association::Hybrid, 0),
-        (IcpKernel::Simd, Association::Nearest, 1),
-        (IcpKernel::Scalar, Association::Nearest, 0),
-        (IcpKernel::Scalar, Association::Hybrid, 0),
+    // (kernel, association, decimation, prepared target)
+    for (kernel, association, decimation, prepare) in [
+        (IcpKernel::Simd, Association::Nearest, 0, false),
+        (IcpKernel::Simd, Association::Hybrid, 0, false),
+        (IcpKernel::Simd, Association::Nearest, 1, false),
+        (IcpKernel::Simd, Association::Nearest, 1, true),
+        (IcpKernel::Simd, Association::Hybrid, 0, true),
+        (IcpKernel::Scalar, Association::Nearest, 0, false),
+        (IcpKernel::Scalar, Association::Hybrid, 0, false),
     ] {
         let criteria = IcpPlaneCriteria {
             association,
@@ -138,7 +142,13 @@ fn warmed_call_does_not_allocate() -> Result<(), Box<dyn std::error::Error>> {
             kernel,
             &mut scratch,
         )?;
-        icp_projective_plane_with(&mut ws, &pyr, &keyframe, IDENTITY, [0.0; 3], &criteria)?;
+        // built once per keyframe, outside the counted call
+        let prepared = prepare.then(|| PreparedTarget::new(keyframe.clone(), criteria.depth_noise));
+        let call = |ws: &mut IcpWorkspace, pyr: &RgbdPyramid| match &prepared {
+            Some(p) => icp_projective_plane_prepared(ws, pyr, p, IDENTITY, [0.0; 3], &criteria),
+            None => icp_projective_plane_with(ws, pyr, &keyframe, IDENTITY, [0.0; 3], &criteria),
+        };
+        call(&mut ws, &pyr)?;
 
         let before = allocs();
         pyr.rebuild_decimated_from_depth_mm(
@@ -149,7 +159,7 @@ fn warmed_call_does_not_allocate() -> Result<(), Box<dyn std::error::Error>> {
             kernel,
             &mut scratch,
         )?;
-        let r = icp_projective_plane_with(&mut ws, &pyr, &keyframe, IDENTITY, [0.0; 3], &criteria)?;
+        let r = call(&mut ws, &pyr)?;
         let n = allocs() - before;
         assert!(r.num_associated > 1000);
         assert_eq!(

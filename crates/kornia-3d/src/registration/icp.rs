@@ -47,6 +47,13 @@
 //! validity- and discontinuity-aware halving, so it neither fills holes nor averages across
 //! depth edges. What it gives up is the finest level's sub-pixel detail: the snapping bias of
 //! [`Association::Nearest`] doubles in metres per pixel.
+//!
+//! # Keyframe cache
+//!
+//! Odometry registers many source frames against one keyframe. [`PreparedTarget`] holds what
+//! depends on the target alone, built once per keyframe; [`icp_projective_plane_prepared`] then
+//! skips it on every call. It owns the keyframe pyramid, so the cache cannot go stale: the
+//! only way to change the target is [`PreparedTarget::replace`], which rebuilds the cache.
 
 use super::rgbd::{is_valid_normal, is_valid_vertex, RgbdIcpError, RgbdLevel, RgbdPyramid};
 use nalgebra::Matrix6;
@@ -466,6 +473,184 @@ impl IcpWorkspace {
     }
 }
 
+/// One pixel of a [`PreparedTarget`] level: vertex and normal side by side, so a nearest
+/// lookup reads one 32-byte record instead of two maps. Invalid (no vertex or no normal) is
+/// `v[2] == 0`, one test instead of two.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct TargetPx {
+    pub(crate) v: [f32; 3],
+    pub(crate) n: [f32; 3],
+    /// The target's share of a nearest-association row's residual variance,
+    /// `projected_ray_sq(n, v / v_z) * sigma_z^2`, under the prepared noise model.
+    pub(crate) var: f32,
+    _pad: f32,
+}
+
+/// An ICP target (keyframe) prepared once for many source frames.
+///
+/// Holds the target pyramid and, per level, what the association pass needs from the target
+/// alone: vertex and normal packed per pixel with validity folded in, and the target's term of
+/// the residual variance (its depth sigma projected on its normal), which costs two divisions
+/// and a square root per lookup otherwise. [`icp_projective_plane_prepared`] reads it instead
+/// of recomputing it on every pass of every call.
+///
+/// Invalidated by construction: it owns the pyramid and exposes it read-only, so the cache
+/// always describes the target it is used with. [`Self::replace`] swaps in a new keyframe and
+/// rebuilds the cache in the same buffers. The cache depends on the depth noise model too,
+/// which is fixed here; a call under a different model is an error, not a silent mix.
+#[derive(Debug, Clone)]
+pub struct PreparedTarget {
+    pyramid: RgbdPyramid,
+    noise: DepthNoise,
+    packed: Vec<Vec<TargetPx>>,
+}
+
+impl PreparedTarget {
+    /// Prepare `pyramid` as an ICP target under `noise`.
+    ///
+    /// # Arguments
+    ///
+    /// * `pyramid` - The target (keyframe) pyramid; taken by value, see [`Self::into_pyramid`].
+    /// * `noise` - The depth noise model the calls will use, [`IcpPlaneCriteria::depth_noise`].
+    ///
+    /// # Returns
+    ///
+    /// The prepared target.
+    pub fn new(pyramid: RgbdPyramid, noise: DepthNoise) -> Self {
+        let mut p = Self {
+            pyramid: RgbdPyramid { levels: Vec::new() },
+            noise,
+            packed: Vec::new(),
+        };
+        p.replace(pyramid, noise);
+        p
+    }
+
+    /// Make `pyramid` the target, rebuilding the cache in place.
+    ///
+    /// Allocates nothing once the cache has held a pyramid of this size. The returned pyramid
+    /// can be rebuilt into for the next frame, so a re-key allocates nothing either.
+    ///
+    /// # Arguments
+    ///
+    /// * `pyramid` - The new target pyramid.
+    /// * `noise` - The depth noise model the calls will use.
+    ///
+    /// # Returns
+    ///
+    /// The previous target pyramid.
+    pub fn replace(&mut self, pyramid: RgbdPyramid, noise: DepthNoise) -> RgbdPyramid {
+        let old = std::mem::replace(&mut self.pyramid, pyramid);
+        self.noise = noise;
+        self.packed
+            .resize_with(self.pyramid.levels.len(), Default::default);
+        for (buf, level) in self.packed.iter_mut().zip(&self.pyramid.levels) {
+            pack_level(level, &noise, buf);
+        }
+        old
+    }
+
+    /// The target pyramid.
+    ///
+    /// # Returns
+    ///
+    /// The pyramid the cache was built from.
+    pub fn pyramid(&self) -> &RgbdPyramid {
+        &self.pyramid
+    }
+
+    /// The depth noise model the cache was built under.
+    ///
+    /// # Returns
+    ///
+    /// The model passed to [`Self::new`] or [`Self::replace`].
+    pub fn depth_noise(&self) -> DepthNoise {
+        self.noise
+    }
+
+    /// Give the pyramid back, dropping the cache.
+    ///
+    /// # Returns
+    ///
+    /// The target pyramid.
+    pub fn into_pyramid(self) -> RgbdPyramid {
+        self.pyramid
+    }
+}
+
+/// Fill one level's [`TargetPx`] records.
+fn pack_level(level: &RgbdLevel, noise: &DepthNoise, out: &mut Vec<TargetPx>) {
+    out.clear();
+    out.extend(
+        level
+            .vertices
+            .iter()
+            .zip(&level.normals)
+            .enumerate()
+            .map(|(i, (v, n))| {
+                if !is_valid_vertex(v) || !is_valid_normal(n) {
+                    return TargetPx::default();
+                }
+                let z = v[2] as f64;
+                let sig = point_depth_sigma(level, i, z, noise);
+                let ray = [v[0] as f64 / z, v[1] as f64 / z, 1.0];
+                TargetPx {
+                    v: *v,
+                    n: *n,
+                    var: (projected_ray_sq(&n.map(|c| c as f64), &ray) * sig * sig) as f32,
+                    _pad: 0.0,
+                }
+            }),
+    );
+}
+
+/// [`icp_projective_plane_with`] against a [`PreparedTarget`]: the per-target work is done once
+/// per keyframe instead of on every call.
+///
+/// Same algorithm; with [`IcpKernel::Simd`] the target's variance term is read from the cache
+/// (computed in `f64`, stored in `f32`) instead of recomputed in `f32` lanes, so results agree
+/// with [`icp_projective_plane_with`] to `f32` rounding. [`IcpKernel::Scalar`] reads the
+/// pyramid and gives exactly the unprepared result.
+///
+/// # Arguments
+///
+/// * `workspace` - Buffers and kernel choice, reused across calls.
+/// * `source` - Source frame pyramid.
+/// * `target` - The prepared target (keyframe).
+/// * `initial_rot` - Initial rotation from the source to the target frame.
+/// * `initial_trans` - Initial translation from the source to the target frame.
+/// * `criteria` - Gating, robustness and convergence parameters.
+///
+/// # Returns
+///
+/// As [`icp_projective_plane`].
+///
+/// # Errors
+///
+/// As [`icp_projective_plane`], plus [`RgbdIcpError::PreparedTargetNoiseMismatch`] when
+/// `criteria.depth_noise` is not the model `target` was prepared under.
+pub fn icp_projective_plane_prepared(
+    workspace: &mut IcpWorkspace,
+    source: &RgbdPyramid,
+    target: &PreparedTarget,
+    initial_rot: [[f64; 3]; 3],
+    initial_trans: [f64; 3],
+    criteria: &IcpPlaneCriteria,
+) -> Result<IcpPlaneResult, RgbdIcpError> {
+    if criteria.depth_noise != target.noise {
+        return Err(RgbdIcpError::PreparedTargetNoiseMismatch);
+    }
+    run_icp(
+        workspace,
+        source,
+        &target.pyramid,
+        Some(&target.packed),
+        initial_rot,
+        initial_trans,
+        criteria,
+    )
+}
+
 /// [`icp_projective_plane`] with caller-owned buffers, for real-time loops.
 ///
 /// Same algorithm and results (to rounding between kernels). Reusing one `workspace` across
@@ -491,6 +676,27 @@ pub fn icp_projective_plane_with(
     workspace: &mut IcpWorkspace,
     source: &RgbdPyramid,
     target: &RgbdPyramid,
+    initial_rot: [[f64; 3]; 3],
+    initial_trans: [f64; 3],
+    criteria: &IcpPlaneCriteria,
+) -> Result<IcpPlaneResult, RgbdIcpError> {
+    run_icp(
+        workspace,
+        source,
+        target,
+        None,
+        initial_rot,
+        initial_trans,
+        criteria,
+    )
+}
+
+/// The solver behind every entry point; `packed` is a [`PreparedTarget`]'s cache, per level.
+fn run_icp(
+    workspace: &mut IcpWorkspace,
+    source: &RgbdPyramid,
+    target: &RgbdPyramid,
+    packed: Option<&[Vec<TargetPx>]>,
     initial_rot: [[f64; 3]; 3],
     initial_trans: [f64; 3],
     criteria: &IcpPlaneCriteria,
@@ -541,6 +747,7 @@ pub fn icp_projective_plane_with(
                 &soa[level],
                 !src.depth_sigmas.is_empty(),
                 tgt,
+                packed.map(|p| p[level].as_slice()),
                 rotation,
                 translation,
                 criteria,
@@ -2830,6 +3037,109 @@ mod tests {
             }
         }
         eprintln!("SIMD vs scalar ICP: worst relative difference {worst:.2e}");
+        Ok(())
+    }
+
+    /// A prepared target gives the unprepared answer: exactly with the scalar kernel, to `f32`
+    /// rounding with SIMD. A call under another noise model is refused, and `replace` re-keys.
+    #[test]
+    fn prepared_target_matches_unprepared() -> Result<(), Box<dyn std::error::Error>> {
+        let intr = test_intrinsics();
+        let scene = Scene::corner_and_sphere();
+        let rot_wc = axis_angle_to_rotation_matrix(&[0.3, 1.0, 0.2], 1.5_f64.to_radians())?;
+        let t_wc = [0.02, -0.01, 0.015];
+        let src = RgbdPyramid::from_depth_mm(
+            &render_depth_mm(&scene, &intr, &IDENTITY_ROT, &[0.0; 3]),
+            &intr,
+            3,
+        )?;
+        let tgt =
+            RgbdPyramid::from_depth_mm(&render_depth_mm(&scene, &intr, &rot_wc, &t_wc), &intr, 3)?;
+        let mut worst: f64 = 0.0;
+        for association in [
+            Association::Nearest,
+            Association::Bilinear,
+            Association::Hybrid,
+        ] {
+            for noise in [DepthNoise::Constant { sigma_m: 0.01 }, TEST_STEREO] {
+                let criteria = IcpPlaneCriteria {
+                    association,
+                    depth_noise: noise,
+                    ..Default::default()
+                };
+                let prepared = PreparedTarget::new(tgt.clone(), noise);
+                for kernel in [IcpKernel::Scalar, IcpKernel::Simd] {
+                    let a = icp_projective_plane_with(
+                        &mut IcpWorkspace::new(kernel),
+                        &src,
+                        &tgt,
+                        IDENTITY_ROT,
+                        [0.0; 3],
+                        &criteria,
+                    )?;
+                    let b = icp_projective_plane_prepared(
+                        &mut IcpWorkspace::new(kernel),
+                        &src,
+                        &prepared,
+                        IDENTITY_ROT,
+                        [0.0; 3],
+                        &criteria,
+                    )?;
+                    let info = |r: &IcpPlaneResult| -> Vec<f64> {
+                        r.information.iter().flatten().copied().collect()
+                    };
+                    if kernel == IcpKernel::Scalar {
+                        assert_eq!(a.rotation, b.rotation);
+                        assert_eq!(a.translation, b.translation);
+                        assert_eq!(a.information, b.information);
+                        continue;
+                    }
+                    let scale = info(&a).iter().fold(0.0f64, |m, v| m.max(v.abs()));
+                    let flat = |r: &IcpPlaneResult| -> Vec<f64> {
+                        r.rotation.iter().flatten().copied().collect()
+                    };
+                    let m = [
+                        rel_diff(&flat(&a), &flat(&b), 1.0),
+                        rel_diff(&a.translation, &b.translation, 1e-2),
+                        rel_diff(&info(&a), &info(&b), scale),
+                    ]
+                    .into_iter()
+                    .fold(0.0f64, f64::max);
+                    assert!(
+                        m < 1e-4,
+                        "{association:?} {noise:?}: prepared differs by {m:.2e}"
+                    );
+                    assert_eq!(a.num_associated, b.num_associated);
+                    worst = worst.max(m);
+                }
+            }
+        }
+        eprintln!("prepared vs unprepared SIMD: worst relative difference {worst:.2e}");
+
+        let mut prepared = PreparedTarget::new(tgt.clone(), TEST_STEREO);
+        let mut ws = IcpWorkspace::default();
+        let other = IcpPlaneCriteria::default();
+        assert!(matches!(
+            icp_projective_plane_prepared(&mut ws, &src, &prepared, IDENTITY_ROT, [0.0; 3], &other),
+            Err(RgbdIcpError::PreparedTargetNoiseMismatch)
+        ));
+        // re-key onto the source itself: the old keyframe comes back, the solve is identity
+        let old = prepared.replace(src.clone(), TEST_STEREO);
+        assert_eq!(old.levels[0].vertices, tgt.levels[0].vertices);
+        let criteria = IcpPlaneCriteria {
+            depth_noise: TEST_STEREO,
+            ..Default::default()
+        };
+        let r = icp_projective_plane_prepared(
+            &mut ws,
+            &src,
+            &prepared,
+            IDENTITY_ROT,
+            [0.0; 3],
+            &criteria,
+        )?;
+        assert!(rotation_error_deg(&r.rotation, &IDENTITY_ROT) < 1e-3);
+        assert!(translation_error(&r.translation, &[0.0; 3]) < 1e-5);
         Ok(())
     }
 }
