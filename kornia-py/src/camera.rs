@@ -2,7 +2,7 @@
 
 use crate::pyutils::{c_slice, rows_to_numpy};
 use kornia_3d::camera::{CameraModel, PinholeCamera};
-use kornia_algebra::Vec3F64;
+use kornia_algebra::{Vec2F64, Vec3F64};
 use numpy::{PyArray2, PyUntypedArrayMethods};
 use pyo3::prelude::*;
 
@@ -75,6 +75,46 @@ impl PyPinholeCamera {
             }
         }
         rows_to_numpy(py, out, 2)
+    }
+
+    /// Unproject distorted image pixels to unit camera-frame bearing rays.
+    ///
+    /// Args:
+    ///     pixels: `(N, 2)` float64 array of distorted image pixels.
+    ///
+    /// Returns:
+    ///     `(N, 3)` float64 array of unit bearing vectors.
+    ///     Rows whose pixels cannot be unprojected are returned as `[nan, nan, nan]`.
+    ///
+    /// Raises:
+    ///     ValueError: if `pixels` is not C-contiguous, aligned, or shape `(N, 2)`.
+    fn unproject<'py>(
+        &self,
+        py: Python<'py>,
+        pixels: Bound<'py, PyArray2<f64>>,
+    ) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        let shape = pixels.shape();
+        if shape.len() != 2 || shape[1] != 2 {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "expected (N, 2) float64 pixels, got shape {:?}",
+                shape
+            )));
+        }
+        let raw = c_slice(&pixels, "pixels")?;
+        let mut out = Vec::with_capacity(shape[0] * 3);
+        for pixel in raw.chunks_exact(2) {
+            let pixel = Vec2F64::new(pixel[0], pixel[1]);
+            if let Some(bearing) = self.inner.unproject(&pixel) {
+                out.push(bearing.x);
+                out.push(bearing.y);
+                out.push(bearing.z);
+            } else {
+                out.push(f64::NAN);
+                out.push(f64::NAN);
+                out.push(f64::NAN);
+            }
+        }
+        rows_to_numpy(py, out, 3)
     }
 
     fn __repr__(&self) -> String {
