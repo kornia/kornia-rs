@@ -13,6 +13,9 @@
 //! * Normal maps: unit `[f32; 3]` oriented towards the camera (`n · v < 0`),
 //!   `[0, 0, 0]` = invalid.
 
+use super::IcpKernel;
+use wide::{f32x8, f64x4};
+
 /// Errors produced by the RGBD depth-geometry and projective ICP routines.
 #[derive(Debug, thiserror::Error)]
 pub enum RgbdIcpError {
@@ -462,6 +465,185 @@ fn downsample_depth_half_m(
     }
 }
 
+/// Reused buffers for [`RgbdPyramid::rebuild_from_depth_mm`].
+#[derive(Debug, Default, Clone)]
+pub struct PyramidScratch {
+    cur: Vec<u16>,
+    next: Vec<u16>,
+    xs: Vec<f32>,
+    ys: Vec<f32>,
+    zs: Vec<f32>,
+}
+
+/// SIMD twin of [`depth_to_vertex_map`], four pixels per `f64x4`, also filling x/y/z planes
+/// for [`normal_map_simd`]. The same `f64` operations in the same order as
+/// [`DepthIntrinsics::unproject`], so the map is bit-identical to the scalar one.
+fn vertex_map_simd(
+    depth_mm: &[u16],
+    intr: &DepthIntrinsics,
+    out: &mut Vec<[f32; 3]>,
+    planes: (&mut Vec<f32>, &mut Vec<f32>, &mut Vec<f32>),
+) -> Result<(), RgbdIcpError> {
+    let (w, h) = (intr.width, intr.height);
+    let expected = w * h;
+    if depth_mm.len() != expected {
+        return Err(RgbdIcpError::InvalidDepthSize {
+            width: w,
+            height: h,
+            expected,
+            got: depth_mm.len(),
+        });
+    }
+    let (xs, ys, zs) = planes;
+    for p in [&mut *xs, &mut *ys, &mut *zs] {
+        p.clear();
+        p.resize(expected, 0.0);
+    }
+    out.clear();
+    out.resize(expected, [0.0; 3]);
+    let (fx, fy) = (f64x4::splat(intr.fx), f64x4::splat(intr.fy));
+    let cx = f64x4::splat(intr.cx);
+    let lane_u = f64x4::new([0.0, 1.0, 2.0, 3.0]);
+    let milli = f64x4::splat(1e-3);
+    for v in 0..h {
+        let vy = f64x4::splat(v as f64 - intr.cy);
+        let row = v * w;
+        let mut u = 0;
+        while u + 4 <= w {
+            let d: [f64; 4] = std::array::from_fn(|l| depth_mm[row + u + l] as f64);
+            // z = 0 (invalid) gives x = y = 0: the invalid vertex, no blend needed
+            let z = f64x4::new(d) * milli;
+            let x = ((lane_u + f64x4::splat(u as f64)) - cx) * z / fx;
+            let y = vy * z / fy;
+            let (xa, ya, za) = (x.to_array(), y.to_array(), z.to_array());
+            for l in 0..4 {
+                let p = [xa[l] as f32, ya[l] as f32, za[l] as f32];
+                xs[row + u + l] = p[0];
+                ys[row + u + l] = p[1];
+                zs[row + u + l] = p[2];
+                out[row + u + l] = p;
+            }
+            u += 4;
+        }
+        for u in u..w {
+            let d = depth_mm[row + u];
+            if d == 0 {
+                continue;
+            }
+            let q = intr.unproject(u as f64, v as f64, d as f64 * 1e-3);
+            let p = [q[0] as f32, q[1] as f32, q[2] as f32];
+            xs[row + u] = p[0];
+            ys[row + u] = p[1];
+            zs[row + u] = p[2];
+            out[row + u] = p;
+        }
+    }
+    Ok(())
+}
+
+#[inline]
+fn load8(p: &[f32], i: usize) -> f32x8 {
+    let a: [f32; 8] = std::array::from_fn(|l| p[i + l]);
+    f32x8::new(a)
+}
+
+/// SIMD twin of [`vertex_map_to_normal_map`] on x/y/z planes: the same `f32` operations in the
+/// same order, eight pixels per `f32x8`, so it matches the scalar normals bit for bit.
+fn normal_map_simd(
+    xs: &[f32],
+    ys: &[f32],
+    zs: &[f32],
+    width: usize,
+    height: usize,
+    out: &mut Vec<[f32; 3]>,
+) {
+    out.clear();
+    out.resize(width * height, [0.0; 3]);
+    if width < 3 || height < 3 {
+        return;
+    }
+    let zero = f32x8::splat(0.0);
+    let one = f32x8::splat(1.0);
+    let scalar_px = |out: &mut Vec<[f32; 3]>, idx: usize| {
+        let at = |i: usize| [xs[i], ys[i], zs[i]];
+        let (c, l, r, u, d) = (
+            at(idx),
+            at(idx - 1),
+            at(idx + 1),
+            at(idx - width),
+            at(idx + width),
+        );
+        if !(c[2] > 0.0 && l[2] > 0.0 && r[2] > 0.0 && u[2] > 0.0 && d[2] > 0.0) {
+            return;
+        }
+        let du = [r[0] - l[0], r[1] - l[1], r[2] - l[2]];
+        let dv = [d[0] - u[0], d[1] - u[1], d[2] - u[2]];
+        let n = [
+            du[1] * dv[2] - du[2] * dv[1],
+            du[2] * dv[0] - du[0] * dv[2],
+            du[0] * dv[1] - du[1] * dv[0],
+        ];
+        let norm = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+        if norm < 1e-12 {
+            return;
+        }
+        let flip = if n[0] * c[0] + n[1] * c[1] + n[2] * c[2] > 0.0 {
+            -1.0
+        } else {
+            1.0
+        };
+        out[idx] = [flip * n[0] / norm, flip * n[1] / norm, flip * n[2] / norm];
+    };
+    for y in 1..height - 1 {
+        let row = y * width;
+        let mut x = 1;
+        while x + 8 < width {
+            let i = row + x;
+            let (cz, lz, rz, uz, dz) = (
+                load8(zs, i),
+                load8(zs, i - 1),
+                load8(zs, i + 1),
+                load8(zs, i - width),
+                load8(zs, i + width),
+            );
+            let valid = cz.simd_gt(zero)
+                & lz.simd_gt(zero)
+                & rz.simd_gt(zero)
+                & uz.simd_gt(zero)
+                & dz.simd_gt(zero);
+            if valid.to_bitmask() != 0 {
+                let du = [
+                    load8(xs, i + 1) - load8(xs, i - 1),
+                    load8(ys, i + 1) - load8(ys, i - 1),
+                    rz - lz,
+                ];
+                let dv = [
+                    load8(xs, i + width) - load8(xs, i - width),
+                    load8(ys, i + width) - load8(ys, i - width),
+                    dz - uz,
+                ];
+                let n = [
+                    du[1] * dv[2] - du[2] * dv[1],
+                    du[2] * dv[0] - du[0] * dv[2],
+                    du[0] * dv[1] - du[1] * dv[0],
+                ];
+                let norm = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+                let valid = valid & norm.simd_ge(f32x8::splat(1e-12));
+                let facing = n[0] * load8(xs, i) + n[1] * load8(ys, i) + n[2] * cz;
+                let flip = facing.simd_gt(zero).blend(-one, one);
+                let comp = n.map(|c| valid.blend(flip * c / norm, zero).to_array());
+                for l in 0..8 {
+                    out[i + l] = [comp[0][l], comp[1][l], comp[2][l]];
+                }
+            }
+            x += 8;
+        }
+        for x in x..width - 1 {
+            scalar_px(out, row + x);
+        }
+    }
+}
+
 /// One resolution level of an [`RgbdPyramid`]: intrinsics plus vertex and normal maps.
 #[derive(Debug, Clone)]
 pub struct RgbdLevel {
@@ -533,6 +715,97 @@ impl RgbdPyramid {
         }
 
         Ok(Self { levels })
+    }
+
+    /// Rebuild this pyramid in place from a `u16` millimetre depth image, reusing its buffers.
+    ///
+    /// Same output as [`Self::from_depth_mm`], bit for bit, with either kernel;
+    /// [`IcpKernel::Simd`] runs the vertex and normal maps on `wide` vectors, downsampling stays
+    /// scalar. Once the pyramid and `scratch` have seen this image
+    /// size, the call allocates nothing.
+    ///
+    /// # Arguments
+    ///
+    /// * `depth_mm` - Depth in millimetres, `0` = invalid.
+    /// * `intr` - Intrinsics of the finest level.
+    /// * `num_levels` - Number of levels, at least 1.
+    /// * `kernel` - Scalar or SIMD vertex/normal maps.
+    /// * `scratch` - Reused intermediate buffers.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::from_depth_mm`].
+    pub fn rebuild_from_depth_mm(
+        &mut self,
+        depth_mm: &[u16],
+        intr: &DepthIntrinsics,
+        num_levels: usize,
+        kernel: IcpKernel,
+        scratch: &mut PyramidScratch,
+    ) -> Result<(), RgbdIcpError> {
+        if num_levels == 0 {
+            return Err(RgbdIcpError::InvalidNumLevels(num_levels));
+        }
+        let blank = || RgbdLevel {
+            intrinsics: intr.clone(),
+            vertices: Vec::new(),
+            normals: Vec::new(),
+            depth_sigmas: Vec::new(),
+        };
+        self.levels.truncate(num_levels);
+        while self.levels.len() < num_levels {
+            self.levels.push(blank());
+        }
+        let PyramidScratch {
+            cur,
+            next,
+            xs,
+            ys,
+            zs,
+        } = scratch;
+        let mut level_intr = intr.clone();
+        for level in 0..num_levels {
+            if level > 0 {
+                let src: &[u16] = if level == 1 { depth_mm } else { cur };
+                downsample_depth_half(src, level_intr.width, level_intr.height, next)?;
+                std::mem::swap(cur, next);
+                level_intr = level_intr.half();
+            }
+            if level_intr.width < 3 || level_intr.height < 3 {
+                return Err(RgbdIcpError::ImageTooSmall {
+                    level,
+                    width: level_intr.width,
+                    height: level_intr.height,
+                });
+            }
+            let depth: &[u16] = if level == 0 { depth_mm } else { cur };
+            let out = &mut self.levels[level];
+            out.intrinsics = level_intr.clone();
+            out.depth_sigmas.clear();
+            match kernel {
+                IcpKernel::Scalar => {
+                    depth_to_vertex_map(depth, &level_intr, &mut out.vertices)?;
+                    vertex_map_to_normal_map(
+                        &out.vertices,
+                        level_intr.width,
+                        level_intr.height,
+                        &mut out.normals,
+                    )?;
+                }
+                IcpKernel::Simd => {
+                    vertex_map_simd(depth, &level_intr, &mut out.vertices, (xs, ys, zs))?;
+                    normal_map_simd(
+                        xs,
+                        ys,
+                        zs,
+                        level_intr.width,
+                        level_intr.height,
+                        &mut out.normals,
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Build a pyramid with `num_levels` levels from an `f32` metre depth image.
@@ -873,6 +1146,43 @@ mod tests {
             Err(RgbdIcpError::ImageTooSmall { .. })
         ));
 
+        Ok(())
+    }
+
+    /// The in-place rebuild must equal `from_depth_mm`, bit for bit, with either kernel.
+    #[test]
+    fn rebuild_matches_from_depth_mm() -> Result<(), Box<dyn std::error::Error>> {
+        let intr = test_intrinsics();
+        let depth = render_depth_mm(&Scene::corner_and_sphere(), &intr, &IDENTITY_ROT, &[0.0; 3]);
+        let reference = RgbdPyramid::from_depth_mm(&depth, &intr, 3)?;
+        let mut scratch = PyramidScratch::default();
+        let mut pyr = RgbdPyramid { levels: Vec::new() };
+        pyr.rebuild_from_depth_mm(&depth, &intr, 3, IcpKernel::Scalar, &mut scratch)?;
+        for (a, b) in reference.levels.iter().zip(&pyr.levels) {
+            assert_eq!(a.intrinsics, b.intrinsics);
+            assert_eq!(a.vertices, b.vertices);
+            assert_eq!(a.normals, b.normals);
+        }
+        pyr.rebuild_from_depth_mm(&depth, &intr, 3, IcpKernel::Simd, &mut scratch)?;
+        let (mut worst_v, mut worst_n) = (0.0f32, 0.0f32);
+        for (a, b) in reference.levels.iter().zip(&pyr.levels) {
+            for (p, q) in a.vertices.iter().zip(&b.vertices) {
+                for k in 0..3 {
+                    worst_v = worst_v.max((p[k] - q[k]).abs() / p[2].abs().max(1e-3));
+                }
+            }
+            for (p, q) in a.normals.iter().zip(&b.normals) {
+                assert_eq!(is_valid_normal(p), is_valid_normal(q), "validity differs");
+                for k in 0..3 {
+                    worst_n = worst_n.max((p[k] - q[k]).abs());
+                }
+            }
+        }
+        eprintln!("SIMD vs scalar pyramid: vertex {worst_v:.2e} rel, normal {worst_n:.2e} abs");
+        assert!(
+            worst_v < 1e-6 && worst_n < 1e-5,
+            "{worst_v:.2e} / {worst_n:.2e}"
+        );
         Ok(())
     }
 }

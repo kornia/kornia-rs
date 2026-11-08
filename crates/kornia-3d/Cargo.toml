@@ -35,6 +35,10 @@ name = "bench_affine_camera"
 harness = false
 name = "bench_affine_ba"
 
+[[bench]]
+harness = false
+name = "bench_icp"
+
 [dependencies]
 bincode = { workspace = true }
 cudarc = { workspace = true, optional = true }
@@ -50,6 +54,7 @@ rand = { workspace = true }
 rayon = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
+wide = { workspace = true }
 
 [dev-dependencies]
 approx = { workspace = true }

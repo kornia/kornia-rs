@@ -30,6 +30,8 @@
 use super::rgbd::{is_valid_normal, is_valid_vertex, RgbdIcpError, RgbdLevel, RgbdPyramid};
 use nalgebra::Matrix6;
 
+mod simd;
+
 /// Parameters of [`icp_projective_plane`].
 #[derive(Debug, Clone)]
 pub struct IcpPlaneCriteria {
@@ -393,6 +395,83 @@ pub fn icp_projective_plane(
     initial_trans: [f64; 3],
     criteria: IcpPlaneCriteria,
 ) -> Result<IcpPlaneResult, RgbdIcpError> {
+    icp_projective_plane_with(
+        &mut IcpWorkspace::default(),
+        source,
+        target,
+        initial_rot,
+        initial_trans,
+        &criteria,
+    )
+}
+
+/// Which implementation of the per-pixel loops runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IcpKernel {
+    /// Plain loops: the reference the SIMD kernel is tested against.
+    Scalar,
+    /// `wide` vectors: portable, SSE2/AVX on x86, NEON on aarch64.
+    #[default]
+    Simd,
+}
+
+/// Reusable buffers for [`icp_projective_plane_with`]: after the first call at a given image
+/// size, a call allocates nothing.
+#[derive(Debug, Default, Clone)]
+pub struct IcpWorkspace {
+    /// Kernel for the association passes.
+    pub kernel: IcpKernel,
+    soa: Vec<simd::SourceSoa>,
+    depths: Vec<f32>,
+}
+
+impl IcpWorkspace {
+    /// An empty workspace running `kernel`.
+    ///
+    /// # Arguments
+    ///
+    /// * `kernel` - Kernel for the association passes.
+    ///
+    /// # Returns
+    ///
+    /// The workspace; buffers grow on first use.
+    pub fn new(kernel: IcpKernel) -> Self {
+        Self {
+            kernel,
+            ..Default::default()
+        }
+    }
+}
+
+/// [`icp_projective_plane`] with caller-owned buffers, for real-time loops.
+///
+/// Same algorithm and results (to rounding between kernels). Reusing one `workspace` across
+/// calls keeps the call free of allocation once warmed.
+///
+/// # Arguments
+///
+/// * `workspace` - Buffers and kernel choice, reused across calls.
+/// * `source` - Source frame pyramid.
+/// * `target` - Target frame pyramid.
+/// * `initial_rot` - Initial rotation from the source to the target frame.
+/// * `initial_trans` - Initial translation from the source to the target frame.
+/// * `criteria` - Gating, robustness and convergence parameters.
+///
+/// # Returns
+///
+/// As [`icp_projective_plane`].
+///
+/// # Errors
+///
+/// As [`icp_projective_plane`].
+pub fn icp_projective_plane_with(
+    workspace: &mut IcpWorkspace,
+    source: &RgbdPyramid,
+    target: &RgbdPyramid,
+    initial_rot: [[f64; 3]; 3],
+    initial_trans: [f64; 3],
+    criteria: &IcpPlaneCriteria,
+) -> Result<IcpPlaneResult, RgbdIcpError> {
     let num_levels = source.levels.len().min(target.levels.len());
     if num_levels == 0 {
         return Err(RgbdIcpError::InvalidNumLevels(0));
@@ -411,8 +490,42 @@ pub fn icp_projective_plane(
     let mut iterations = 0;
     let mut rotation_conditioning = 0.0;
     let mut translation_conditioning = 0.0;
-    // reused across passes for the median depth
-    let mut depth_scratch: Vec<f32> = Vec::new();
+    let IcpWorkspace {
+        kernel,
+        soa,
+        depths,
+    } = workspace;
+    let kernel = *kernel;
+    if kernel == IcpKernel::Simd && soa.len() < num_levels {
+        soa.resize_with(num_levels, Default::default);
+    }
+    if kernel == IcpKernel::Simd {
+        for (buf, level) in soa.iter_mut().zip(&source.levels).take(num_levels) {
+            buf.fill(level, &criteria.depth_noise);
+        }
+    }
+    let pass = |level: usize,
+                rotation: &[[f64; 3]; 3],
+                translation: &[f64; 3],
+                bilinear: bool,
+                depths: Option<&mut Vec<f32>>| {
+        let (src, tgt) = (&source.levels[level], &target.levels[level]);
+        match kernel {
+            IcpKernel::Scalar => {
+                accumulate_level(src, tgt, rotation, translation, criteria, bilinear, depths)
+            }
+            IcpKernel::Simd => simd::accumulate(
+                &soa[level],
+                !src.depth_sigmas.is_empty(),
+                tgt,
+                rotation,
+                translation,
+                criteria,
+                bilinear,
+                depths,
+            ),
+        }
+    };
     // Hybrid starts on nearest and switches once on the finest level
     let mut bilinear = criteria.association == Association::Bilinear;
 
@@ -424,8 +537,6 @@ pub fn icp_projective_plane(
             .or(criteria.iters_per_level.last())
             .copied()
             .unwrap_or(0);
-        let src = &source.levels[level_idx];
-        let tgt = &target.levels[level_idx];
         let finest = level_idx == 0;
         // Hybrid refines with bilinear on the finest level only, after nearest has converged
         // to within HYBRID_SWITCH_NORM, with its own budget of `iters` more iterations.
@@ -434,15 +545,7 @@ pub fn icp_projective_plane(
 
         while it < budget {
             it += 1;
-            let eqs = accumulate_level(
-                src,
-                tgt,
-                &rotation,
-                &translation,
-                &criteria,
-                bilinear,
-                &mut depth_scratch,
-            );
+            let eqs = pass(level_idx, &rotation, &translation, bilinear, None);
             if eqs.num_inliers < 6 {
                 return Err(RgbdIcpError::TooFewCorrespondences(eqs.num_inliers));
             }
@@ -451,7 +554,7 @@ pub fn icp_projective_plane(
             let (data_rot_cond, data_trans_cond) = block_conditioning(&eqs.a);
             // Unobserved directions are decided on the data alone, before any prior is added,
             // for the same reason.
-            let split = split_degenerate(&eqs.a, eqs.median_depth, criteria.degeneracy_rtol);
+            let split = split_degenerate(&eqs.a, eqs.depth_scale, criteria.degeneracy_rtol);
             let x = solve_step(
                 &eqs,
                 &split,
@@ -493,18 +596,8 @@ pub fn icp_projective_plane(
     }
 
     // final metrics: one association pass at the finest level, final pose
-    let finest_src = &source.levels[0];
-    let finest_tgt = &target.levels[0];
-    let eqs = accumulate_level(
-        finest_src,
-        finest_tgt,
-        &rotation,
-        &translation,
-        &criteria,
-        bilinear,
-        &mut depth_scratch,
-    );
-    let split = split_degenerate(&eqs.a, eqs.median_depth, criteria.degeneracy_rtol);
+    let eqs = pass(0, &rotation, &translation, bilinear, Some(depths));
+    let split = split_degenerate(&eqs.a, eqs.depth_scale, criteria.degeneracy_rtol);
     let information = if split.num_degenerate == 0 {
         eqs.a
     } else {
@@ -540,7 +633,7 @@ pub fn icp_projective_plane(
         information,
         degenerate_directions: split.directions,
         num_degenerate: split.num_degenerate,
-        median_depth_m: eqs.median_depth,
+        median_depth_m: eqs.depth_scale,
     })
 }
 
@@ -558,8 +651,26 @@ struct NormalEquations {
     num_valid: usize,
     /// Unweighted sum of squared residuals over the inliers.
     sum_sq_residual: f64,
-    /// Median target-frame depth of the inliers (1 m when there are none).
-    median_depth: f64,
+    /// Target-frame depth of the inliers that scales rotation in the degeneracy test: their
+    /// median on the final pass, their mean during iterations (a per-iteration select was ~0.5
+    /// ms of a 9 ms pass at 320x200); 1 m when there are none.
+    depth_scale: f64,
+}
+
+/// [`NormalEquations::depth_scale`]: the median of `depths` when collected, else the mean.
+fn depth_scale(sum_z: f64, num_inliers: usize, depths: Option<&mut Vec<f32>>) -> f64 {
+    if let Some(d) = depths.filter(|d| !d.is_empty()) {
+        let mid = d.len() / 2;
+        let (_, m, _) = d.select_nth_unstable_by(mid, f32::total_cmp);
+        if *m > 0.0 {
+            return *m as f64;
+        }
+    }
+    if num_inliers > 0 && sum_z > 0.0 {
+        sum_z / num_inliers as f64
+    } else {
+        1.0
+    }
 }
 
 /// One gated correspondence of a projective-association pass.
@@ -646,11 +757,15 @@ struct TargetSample {
 /// Nearest-pixel sample: the target vertex and normal of the pixel `(u, v)` rounds to.
 fn sample_nearest(tgt: &RgbdLevel, u: f64, v: f64) -> Option<TargetSample> {
     let (tw, th) = (tgt.intrinsics.width, tgt.intrinsics.height);
-    let (u, v) = (u.round(), v.round());
-    if u < 0.0 || v < 0.0 || u > (tw - 1) as f64 || v > (th - 1) as f64 {
+    // round half up by truncation: `f64::round` is a libm call on the x86-64 baseline target
+    if !(u >= -0.5 && v >= -0.5) {
         return None;
     }
-    let idx = v as usize * tw + u as usize;
+    let (ui, vi) = ((u + 0.5) as usize, (v + 0.5) as usize);
+    if ui > tw - 1 || vi > th - 1 {
+        return None;
+    }
+    let idx = vi * tw + ui;
     let (vt, nt) = (&tgt.vertices[idx], &tgt.normals[idx]);
     if !is_valid_vertex(vt) || !is_valid_normal(nt) {
         return None;
@@ -678,8 +793,9 @@ fn sample_target(tgt: &RgbdLevel, u: f64, v: f64) -> Option<TargetSample> {
         return None;
     }
     // the last row/column has no right/lower neighbour: clamp so its weight is zero there
-    let u0 = (u.floor() as usize).min(tw.saturating_sub(2));
-    let v0 = (v.floor() as usize).min(th.saturating_sub(2));
+    // u, v >= 0 here, so truncation is floor (and no libm call)
+    let u0 = (u as usize).min(tw.saturating_sub(2));
+    let v0 = (v as usize).min(th.saturating_sub(2));
     let (fu, fv) = (u - u0 as f64, v - v0 as f64);
     let idx = [
         v0 * tw + u0,
@@ -857,7 +973,7 @@ fn accumulate_level(
     translation: &[f64; 3],
     criteria: &IcpPlaneCriteria,
     bilinear: bool,
-    depths: &mut Vec<f32>,
+    mut depths: Option<&mut Vec<f32>>,
 ) -> NormalEquations {
     let mut eqs = NormalEquations {
         a: [[0.0; 6]; 6],
@@ -866,9 +982,12 @@ fn accumulate_level(
         num_associated: 0,
         num_valid: 0,
         sum_sq_residual: 0.0,
-        median_depth: 1.0,
+        depth_scale: 1.0,
     };
-    depths.clear();
+    if let Some(d) = depths.as_deref_mut() {
+        d.clear();
+    }
+    let mut sum_z = 0.0;
     let counts =
         for_each_correspondence(src, tgt, rotation, translation, criteria, bilinear, |c| {
             let w = row_weight(c.r, c.sigma, criteria.huber_delta);
@@ -880,7 +999,10 @@ fn accumulate_level(
             }
             eqs.num_inliers += 1;
             eqs.sum_sq_residual += c.r * c.r;
-            depths.push(c.z as f32);
+            sum_z += c.z;
+            if let Some(d) = depths.as_deref_mut() {
+                d.push(c.z as f32);
+            }
         });
     eqs.num_valid = counts.num_valid;
     eqs.num_associated = counts.num_associated;
@@ -892,14 +1014,7 @@ fn accumulate_level(
         }
     }
 
-    if !depths.is_empty() {
-        let mid = depths.len() / 2;
-        let (_, m, _) = depths.select_nth_unstable_by(mid, f32::total_cmp);
-        if *m > 0.0 {
-            eqs.median_depth = *m as f64;
-        }
-    }
-
+    eqs.depth_scale = depth_scale(sum_z, eqs.num_inliers, depths);
     eqs
 }
 
@@ -2520,9 +2635,9 @@ mod tests {
                 &r.translation,
                 &c,
                 false,
-                &mut Vec::new(),
+                Some(&mut Vec::new()),
             );
-            let (pairs, lmax) = scaled_eigen(&eqs.a, eqs.median_depth);
+            let (pairs, lmax) = scaled_eigen(&eqs.a, eqs.depth_scale);
             smallest.push((pairs[0].0 / lmax, pairs[3].0 / lmax, r.num_degenerate));
         }
         let (wall, bump, rich) = (smallest[0], smallest[1], smallest[2]);
@@ -2536,6 +2651,91 @@ mod tests {
             "bump must still be solved: {bump:?}"
         );
         assert!(rich.0 > 1e-3 && rich.2 == 0, "rich: {rich:?}");
+        Ok(())
+    }
+
+    /// Largest |a - b| / max(|a|, |b|, floor) over two equally long slices.
+    fn rel_diff(a: &[f64], b: &[f64], floor: f64) -> f64 {
+        a.iter()
+            .zip(b)
+            .map(|(x, y)| (x - y).abs() / x.abs().max(y.abs()).max(floor))
+            .fold(0.0, f64::max)
+    }
+
+    /// The SIMD kernel must give the scalar kernel's answer: pose and information within 1e-6
+    /// relative, every association mode, both noise models, with and without a prior.
+    #[test]
+    fn simd_kernel_matches_scalar() -> Result<(), Box<dyn std::error::Error>> {
+        let intr = test_intrinsics();
+        let scene = Scene::corner_and_sphere();
+        let rot_wc = axis_angle_to_rotation_matrix(&[0.3, 1.0, 0.2], 1.5_f64.to_radians())?;
+        let t_wc = [0.02, -0.01, 0.015];
+        let src = RgbdPyramid::from_depth_mm(
+            &render_depth_mm(&scene, &intr, &IDENTITY_ROT, &[0.0; 3]),
+            &intr,
+            3,
+        )?;
+        let tgt =
+            RgbdPyramid::from_depth_mm(&render_depth_mm(&scene, &intr, &rot_wc, &t_wc), &intr, 3)?;
+        let (rot_gt, t_gt) = gt_target_source(&rot_wc, &t_wc);
+        let mut worst: f64 = 0.0;
+        for association in [
+            Association::Nearest,
+            Association::Bilinear,
+            Association::Hybrid,
+        ] {
+            for noise in [DepthNoise::Constant { sigma_m: 0.01 }, TEST_STEREO] {
+                for prior in [false, true] {
+                    let criteria = IcpPlaneCriteria {
+                        association,
+                        depth_noise: noise,
+                        rotation_prior: prior.then_some(RotationPrior {
+                            rotation: rot_gt,
+                            sigma_rad: 0.2_f64.to_radians(),
+                        }),
+                        ..Default::default()
+                    };
+                    let run = |kernel| {
+                        icp_projective_plane_with(
+                            &mut IcpWorkspace::new(kernel),
+                            &src,
+                            &tgt,
+                            IDENTITY_ROT,
+                            [0.0; 3],
+                            &criteria,
+                        )
+                    };
+                    let (a, b) = (run(IcpKernel::Scalar)?, run(IcpKernel::Simd)?);
+                    let flat = |r: &IcpPlaneResult| -> Vec<f64> {
+                        r.rotation.iter().flatten().copied().collect()
+                    };
+                    let info = |r: &IcpPlaneResult| -> Vec<f64> {
+                        r.information.iter().flatten().copied().collect()
+                    };
+                    let scale = info(&a).iter().fold(0.0f64, |m, v| m.max(v.abs()));
+                    let d = [
+                        rel_diff(&flat(&a), &flat(&b), 1.0),
+                        rel_diff(&a.translation, &b.translation, 1e-2),
+                        rel_diff(&info(&a), &info(&b), scale),
+                        rel_diff(
+                            &[a.rmse, a.median_depth_m],
+                            &[b.rmse, b.median_depth_m],
+                            1e-9,
+                        ),
+                    ];
+                    let m = d.iter().fold(0.0f64, |m, v| m.max(*v));
+                    assert_eq!(a.num_associated, b.num_associated, "{association:?}");
+                    assert_eq!(a.iterations, b.iterations, "{association:?}");
+                    assert!(
+                        m < 1e-6,
+                        "{association:?} {noise:?} prior {prior}: kernels differ by {d:?}"
+                    );
+                    assert!(translation_error(&b.translation, &t_gt) < 5e-3);
+                    worst = worst.max(m);
+                }
+            }
+        }
+        eprintln!("SIMD vs scalar ICP: worst relative difference {worst:.2e}");
         Ok(())
     }
 }
