@@ -9,7 +9,9 @@
 //!
 //! Per correspondence the point-to-plane residual is `r = n_t . (T*p_s - v_t)`
 //! with Jacobian row `[(p' x n_t)^T, n_t^T]` where `p' = T*p_s` (left
-//! perturbation `T <- exp([w, t]) * T`). Maps stay `f32`; `J^T W J` / `J^T W r`
+//! perturbation `T <- exp([w, t]) * T`). The target vertex and normal are
+//! bilinearly interpolated at the projection of `p'` and held fixed within an
+//! iteration. Maps stay `f32`; `J^T W J` / `J^T W r`
 //! are accumulated in `f64` and the 6x6 system is solved by Cholesky.
 //!
 //! Each row is weighted by `1 / sigma^2`, the variance of its residual under
@@ -505,10 +507,13 @@ struct Correspondence {
     /// Index of the source pixel in its level.
     #[cfg_attr(not(test), allow(dead_code))]
     src_idx: usize,
-    /// Index of the associated target pixel in its level.
+    /// Interpolated target vertex the residual is measured against.
     #[cfg_attr(not(test), allow(dead_code))]
-    tgt_idx: usize,
-    /// Jacobian row `[(p' x n_t)^T, n_t^T]`.
+    v_t: [f64; 3],
+    /// Interpolated, renormalised target normal.
+    #[cfg_attr(not(test), allow(dead_code))]
+    n_t: [f64; 3],
+    /// Jacobian row `[(p' x n_t)^T, n_t^T]`, the interpolated target held fixed.
     j: [f64; 6],
     /// Point-to-plane residual in metres.
     r: f64,
@@ -561,6 +566,87 @@ fn projected_ray_sq(n: &[f64; 3], ray: &[f64; 3]) -> f64 {
     (c * c).max(MIN_RAY_INCIDENCE * MIN_RAY_INCIDENCE * len_sq)
 }
 
+/// Largest relative depth spread `(z_max - z_min) / z_min` across the four pixels of a bilinear
+/// target sample; beyond it the four straddle a depth discontinuity and the sample is dropped.
+///
+/// A surface 80 deg from fronto-parallel spreads ~3% across one pixel at fx = 200, so 5% keeps
+/// steep surfaces and still drops any foreground/background pair (a 10 cm step at 2 m). Chosen
+/// on that geometry, not tuned on data.
+const MAX_BILINEAR_DEPTH_JUMP: f64 = 0.05;
+
+/// A target vertex/normal interpolated at a sub-pixel location.
+struct TargetSample {
+    vertex: [f64; 3],
+    /// Unit length.
+    normal: [f64; 3],
+    /// Interpolated sigma-map value, when all four pixels carry one.
+    depth_sigma: Option<f64>,
+}
+
+/// Bilinear sample of the target vertex and normal maps at continuous pixel `(u, v)`.
+///
+/// Nearest-pixel snapping biases the residual: the matched vertex is up to half a pixel from the
+/// ray, which on a curved or slanted surface leaves a residual that does not average out (measured
+/// 0.18 mrad / 0.3 mm on noise-free corner + sphere). Interpolating removes it to first order.
+/// `None` when any of the four pixels is invalid, when they straddle a depth discontinuity (see
+/// [`MAX_BILINEAR_DEPTH_JUMP`]) or when the normals nearly cancel.
+fn sample_target(tgt: &RgbdLevel, u: f64, v: f64) -> Option<TargetSample> {
+    let (tw, th) = (tgt.intrinsics.width, tgt.intrinsics.height);
+    if !(u >= 0.0 && v >= 0.0) || u > (tw - 1) as f64 || v > (th - 1) as f64 {
+        return None;
+    }
+    // the last row/column has no right/lower neighbour: clamp so its weight is zero there
+    let u0 = (u.floor() as usize).min(tw.saturating_sub(2));
+    let v0 = (v.floor() as usize).min(th.saturating_sub(2));
+    let (fu, fv) = (u - u0 as f64, v - v0 as f64);
+    let idx = [
+        v0 * tw + u0,
+        v0 * tw + u0 + 1,
+        (v0 + 1) * tw + u0,
+        (v0 + 1) * tw + u0 + 1,
+    ];
+    let wts = [
+        (1.0 - fu) * (1.0 - fv),
+        fu * (1.0 - fv),
+        (1.0 - fu) * fv,
+        fu * fv,
+    ];
+    let (mut z_min, mut z_max) = (f64::INFINITY, 0.0f64);
+    let mut vertex = [0.0; 3];
+    let mut normal = [0.0; 3];
+    let (mut sig, mut sig_ok) = (0.0, !tgt.depth_sigmas.is_empty());
+    for (&i, &w) in idx.iter().zip(&wts) {
+        let (vt, nt) = (&tgt.vertices[i], &tgt.normals[i]);
+        if !is_valid_vertex(vt) || !is_valid_normal(nt) {
+            return None;
+        }
+        z_min = z_min.min(vt[2] as f64);
+        z_max = z_max.max(vt[2] as f64);
+        for k in 0..3 {
+            vertex[k] += w * vt[k] as f64;
+            normal[k] += w * nt[k] as f64;
+        }
+        if sig_ok {
+            match tgt.depth_sigmas[i] {
+                s if s.is_finite() && s > 0.0 => sig += w * s as f64,
+                _ => sig_ok = false,
+            }
+        }
+    }
+    if z_max - z_min > MAX_BILINEAR_DEPTH_JUMP * z_min {
+        return None;
+    }
+    let n = (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
+    if n < 0.5 {
+        return None;
+    }
+    Some(TargetSample {
+        vertex,
+        normal: normal.map(|c| c / n),
+        depth_sigma: sig_ok.then_some(sig),
+    })
+}
+
 /// One projective-association pass: gate each source pixel and hand every surviving
 /// correspondence to `visit`.
 fn for_each_correspondence(
@@ -577,7 +663,6 @@ fn for_each_correspondence(
     };
     let cos_max_angle = criteria.max_normal_angle_rad.cos();
     let max_dist_sq = criteria.max_dist_m * criteria.max_dist_m;
-    let (tw, th) = (tgt.intrinsics.width, tgt.intrinsics.height);
     // Constant noise with no map anywhere is the legacy uniform weighting: a residual sigma.
     let ray_model = !src.depth_sigmas.is_empty()
         || !tgt.depth_sigmas.is_empty()
@@ -603,28 +688,17 @@ fn for_each_correspondence(
         let Some(uv) = tgt.intrinsics.project(&p) else {
             continue;
         };
-        let (u, v) = (uv[0].round(), uv[1].round());
-        if u < 0.0 || v < 0.0 || u > (tw - 1) as f64 || v > (th - 1) as f64 {
+        let Some(sample) = sample_target(tgt, uv[0], uv[1]) else {
             continue;
-        }
-        let idx = v as usize * tw + u as usize;
-        let v_t = &tgt.vertices[idx];
-        let n_t = &tgt.normals[idx];
-        if !is_valid_vertex(v_t) || !is_valid_normal(n_t) {
-            continue;
-        }
+        };
+        let (v_t, n_t) = (sample.vertex, sample.normal);
         counts.num_associated += 1;
 
-        let diff = [
-            p[0] - v_t[0] as f64,
-            p[1] - v_t[1] as f64,
-            p[2] - v_t[2] as f64,
-        ];
+        let diff = [p[0] - v_t[0], p[1] - v_t[1], p[2] - v_t[2]];
         if diff[0] * diff[0] + diff[1] * diff[1] + diff[2] * diff[2] > max_dist_sq {
             continue;
         }
 
-        let n_t = [n_t[0] as f64, n_t[1] as f64, n_t[2] as f64];
         let n_s = [n_s[0] as f64, n_s[1] as f64, n_s[2] as f64];
         let n_s_rot = [
             mat3_row_dot(rotation, 0, &n_s),
@@ -636,7 +710,12 @@ fn for_each_correspondence(
         }
 
         let r = n_t[0] * diff[0] + n_t[1] * diff[1] + n_t[2] * diff[2];
-        // Jacobian row [(p' x n_t)^T, n_t^T]
+        // Jacobian row [(p' x n_t)^T, n_t^T]: the interpolated target is held fixed within an
+        // iteration. Its motion through the projection is a real term: on noise-free corner +
+        // sphere, re-associating finite differences exceed this information by 7.3% on t_y, and
+        // modelling that motion and the normal's cut it to 1.4%. But that term is built from
+        // derivatives of the noisy vertex and normal maps, and on noisy depth it inflated static
+        // NEES to ~2470, against ~6.6 without it. Held fixed is the consistent choice.
         let j = [
             p[1] * n_t[2] - p[2] * n_t[1],
             p[2] * n_t[0] - p[0] * n_t[2],
@@ -653,10 +732,12 @@ fn for_each_correspondence(
                 (p[1] - translation[1]) / z_s,
                 (p[2] - translation[2]) / z_s,
             ];
-            let z_t = v_t[2] as f64;
-            let ray_t = [v_t[0] as f64 / z_t, v_t[1] as f64 / z_t, 1.0];
+            let z_t = v_t[2];
+            let ray_t = [v_t[0] / z_t, v_t[1] / z_t, 1.0];
             let sig_s = point_depth_sigma(src, src_idx, z_s, &criteria.depth_noise);
-            let sig_t = point_depth_sigma(tgt, idx, z_t, &criteria.depth_noise);
+            let sig_t = sample
+                .depth_sigma
+                .unwrap_or_else(|| criteria.depth_noise.depth_sigma(z_t));
             (projected_ray_sq(&n_t, &ray_s) * sig_s * sig_s
                 + projected_ray_sq(&n_t, &ray_t) * sig_t * sig_t)
                 .sqrt()
@@ -667,7 +748,8 @@ fn for_each_correspondence(
 
         visit(&Correspondence {
             src_idx,
-            tgt_idx: idx,
+            v_t,
+            n_t,
             j,
             r,
             sigma,
@@ -1837,8 +1919,8 @@ mod tests {
             let f = |v: &[f32; 3]| [v[0] as f64, v[1] as f64, v[2] as f64];
             rows.push((
                 f(&s0.vertices[c.src_idx]),
-                f(&t0.vertices[c.tgt_idx]),
-                f(&t0.normals[c.tgt_idx]),
+                c.v_t,
+                c.n_t,
                 row_weight(c.r, c.sigma, criteria.huber_delta),
             ));
         });
@@ -1873,13 +1955,69 @@ mod tests {
             }
         }
         eprintln!(
-            "information vs finite-difference Hessian: worst normalised entry error {worst:.3e} \
-             over {} rows",
+            "information vs fixed-target finite differences: worst {worst:.3e} over {} rows",
             rows.len()
         );
         assert!(
             worst < 1e-3,
-            "information disagrees with the Hessian: {worst:.3e}"
+            "information disagrees with the fixed-target Hessian: {worst:.3e}"
+        );
+
+        // Re-associating at every perturbed pose, so the interpolated target moves with the
+        // estimate (weights frozen as Gauss-Newton holds them), measures what holding the target
+        // fixed costs: worst entry (t_y, t_y) 7.3%, stable from h = 1e-3 to 3e-5 so not gate
+        // noise. Modelling the target's motion cut it to 1.4% but broke NEES on noisy depth
+        // (see `for_each_correspondence`), so the gap is bounded here, not closed.
+        // weights frozen at the final pass, keyed by source pixel, as Gauss-Newton holds them
+        let mut w_fixed = vec![f64::NAN; s0.vertices.len()];
+        for_each_correspondence(s0, t0, &res.rotation, &res.translation, &criteria, |c| {
+            w_fixed[c.src_idx] = row_weight(c.r, c.sigma, criteria.huber_delta);
+        });
+        let reassoc = |xi: &[f64; 6]| -> f64 {
+            let dr = so3_exp(&[xi[0], xi[1], xi[2]]);
+            let r = mat3_mul(&dr, &res.rotation);
+            let t: [f64; 3] =
+                std::array::from_fn(|i| mat3_row_dot(&dr, i, &res.translation) + xi[3 + i]);
+            let mut e = 0.0;
+            for_each_correspondence(s0, t0, &r, &t, &criteria, |c| {
+                let w = w_fixed[c.src_idx];
+                if w.is_finite() {
+                    e += 0.5 * w * c.r * c.r;
+                }
+            });
+            e
+        };
+        let mut worst_re: f64 = 0.0;
+        for hh in [1e-3, 3e-4, 1e-4, 3e-5] {
+            let mut worst_h: f64 = 0.0;
+            let mut worst_at = (0, 0);
+            for j in 0..6 {
+                for k in 0..6 {
+                    let at = |sj: f64, sk: f64| {
+                        let mut xi = [0.0; 6];
+                        xi[j] += sj * hh;
+                        xi[k] += sk * hh;
+                        reassoc(&xi)
+                    };
+                    let fd = (at(1.0, 1.0) - at(1.0, -1.0) - at(-1.0, 1.0) + at(-1.0, -1.0))
+                        / (4.0 * hh * hh);
+                    let norm = (res.information[j][j] * res.information[k][k]).sqrt();
+                    let err = (fd - res.information[j][k]).abs() / norm;
+                    if err > worst_h {
+                        worst_h = err;
+                        worst_at = (j, k);
+                    }
+                }
+            }
+            eprintln!("re-associating FD, h={hh:.0e}: worst {worst_h:.3e} at {worst_at:?}");
+            if hh == 1e-4 {
+                worst_re = worst_h;
+            }
+        }
+        eprintln!("information vs re-associating finite differences: worst {worst_re:.3e}");
+        assert!(
+            worst_re < 0.1,
+            "fixed-target information is off the re-associated cost by {worst_re:.3e}"
         );
         Ok(())
     }
@@ -1986,13 +2124,13 @@ mod tests {
     /// The information is a covariance you can trust: NEES of the estimate over independent
     /// noisy frames must average the 6 of a chi-square with 6 DoF.
     ///
-    /// Measured against the truth on a moving pair, NEES is ~209, and nearly all of it is there
-    /// with NO noise: the noise-free solve itself is off by 0.18 mrad / 0.3 mm on corner+sphere
-    /// (0.015 mrad / 0.015 mm on the corner alone), a bias from nearest-pixel projective
-    /// association on curved and slanted surfaces. 57k rows shrink the noise sigma to ~5 um, so a
-    /// fraction of a millimetre of model error is dozens of sigmas. The information describes the
-    /// depth noise, not that bias. So the noise is judged two ways: against the truth where the
-    /// bias is zero (identical poses), and against the noise-free solve where it is not.
+    /// Measured against the truth on a moving pair, NEES is ~117, and most of it is there with
+    /// NO noise: the noise-free solve is off by 0.017 mrad / 0.068 mm on corner + sphere (0.18
+    /// mrad / 0.31 mm before bilinear association replaced nearest-pixel snapping, when this
+    /// NEES was ~226). 57k rows shrink the noise sigma to ~5 um, so tens of microns of model
+    /// error is still many sigmas. The information describes the depth noise, not that bias. So
+    /// the noise is judged two ways: against the truth where the bias is zero (identical poses),
+    /// and against the noise-free solve where it is not.
     #[test]
     fn nees_is_six_on_noisy_stereo_depth() -> Result<(), Box<dyn std::error::Error>> {
         let intr = test_intrinsics();
