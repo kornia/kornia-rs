@@ -284,9 +284,9 @@ pub(crate) fn accumulate(
         .max(floor);
         let inv_sigma = one / sigma;
         let rn = (res * inv_sigma).abs();
-        let huber = rn.simd_le(k).blend(one, k / rn);
-        let w = mask.blend(huber * inv_sigma * inv_sigma, zero);
-        let res = mask.blend(res, zero);
+        let huber = rn.simd_le(k).bitselect(one, k / rn);
+        let w = mask.bitselect(huber * inv_sigma * inv_sigma, zero);
+        let res = mask.bitselect(res, zero);
 
         let wj = j.map(|ji| w * ji);
         let mut n = 0;
@@ -298,7 +298,7 @@ pub(crate) fn accumulate(
             }
         }
         block[27] += res * res;
-        block[28] += mask.blend(p[2], zero);
+        block[28] += mask.bitselect(p[2], zero);
         num_inliers += bits.count_ones() as usize;
         if let Some(d) = depths.as_deref_mut() {
             for (l, &zl) in p[2].to_array().iter().enumerate() {

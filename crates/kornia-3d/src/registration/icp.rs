@@ -1561,8 +1561,8 @@ fn cholesky_factor(a: &[[f64; 6]; 6]) -> Option<([[f64; 6]; 6], f64, f64)> {
     for i in 0..6 {
         for j in 0..=i {
             let mut sum = a[i][j];
-            for k in 0..j {
-                sum -= l[i][k] * l[j][k];
+            for (lik, ljk) in l[i][..j].iter().zip(&l[j][..j]) {
+                sum -= lik * ljk;
             }
             if i == j {
                 let block_scale = if i < 3 { max_diag_rot } else { max_diag_trans };

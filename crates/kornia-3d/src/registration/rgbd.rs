@@ -657,8 +657,8 @@ fn normal_map_simd(
                 let norm = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
                 let valid = valid & norm.simd_ge(f32x8::splat(1e-12));
                 let facing = n[0] * load8(xs, i) + n[1] * load8(ys, i) + n[2] * cz;
-                let flip = facing.simd_gt(zero).blend(-one, one);
-                let comp = n.map(|c| valid.blend(flip * c / norm, zero).to_array());
+                let flip = facing.simd_gt(zero).bitselect(-one, one);
+                let comp = n.map(|c| valid.bitselect(flip * c / norm, zero).to_array());
                 for l in 0..8 {
                     out[i + l] = [comp[0][l], comp[1][l], comp[2][l]];
                 }
