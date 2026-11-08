@@ -155,6 +155,25 @@ pub(crate) fn render_depth_mm(
     depth
 }
 
+/// Render an `f32` metre z-depth image (0 = miss) from pose `T_world_cam`, without the
+/// millimetre quantization of [`render_depth_mm`].
+pub(crate) fn render_depth_m(
+    scene: &Scene,
+    intr: &DepthIntrinsics,
+    rot_world_cam: &[[f64; 3]; 3],
+    t_world_cam: &[f64; 3],
+) -> Vec<f32> {
+    let mut depth = vec![0.0f32; intr.width * intr.height];
+    for v in 0..intr.height {
+        for u in 0..intr.width {
+            if let Some(z) = raycast_pixel(scene, intr, rot_world_cam, t_world_cam, u, v) {
+                depth[v * intr.width + u] = z as f32;
+            }
+        }
+    }
+    depth
+}
+
 /// Render an exact `f32` camera-frame vertex map (no millimetre quantization),
 /// `[0, 0, 0]` = miss. Same conventions as [`super::rgbd::depth_to_vertex_map`].
 pub(crate) fn render_vertex_map(

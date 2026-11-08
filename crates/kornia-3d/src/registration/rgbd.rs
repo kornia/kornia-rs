@@ -3,7 +3,11 @@
 //! Conventions used throughout this module (and the projective ICP built on it):
 //!
 //! * Camera model: OpenCV pinhole, +Z forward, +X right, +Y down.
-//! * Depth images: `u16` in millimetres, row-major, `0` = invalid (no measurement).
+//! * Depth images: `u16` in millimetres, row-major, `0` = invalid (no measurement), or `f32`
+//!   in metres where `0` or any non-finite value is invalid ([`RgbdPyramid::from_depth_m`];
+//!   [`depth_m_from_mm`] converts the first into the second).
+//! * Depth sigma maps: optional per-pixel one-sigma error of the depth (`z`) in metres, same
+//!   layout as the depth; `0` or non-finite = no value for that pixel.
 //! * Vertex maps: `[f32; 3]` camera-frame points in metres, `[0, 0, 0]` = invalid
 //!   (a valid vertex always has `z > 0`).
 //! * Normal maps: unit `[f32; 3]` oriented towards the camera (`n · v < 0`),
@@ -61,6 +65,18 @@ pub enum RgbdIcpError {
     /// causes are distinct variants.
     #[error("only {0} correspondences survived gating; need at least 6")]
     TooFewCorrespondences(usize),
+    /// The depth sigma map length does not match the depth image.
+    #[error("sigma map has {got} pixels, expected {expected}")]
+    InvalidSigmaMapSize {
+        /// Expected number of pixels (`width * height`).
+        expected: usize,
+        /// Actual buffer length.
+        got: usize,
+    },
+    /// A pose prior's covariance is not symmetric positive definite, so it has no information
+    /// matrix.
+    #[error("pose prior covariance is not symmetric positive definite")]
+    InvalidPriorCovariance,
 }
 
 /// Pinhole intrinsics of a depth image (OpenCV convention, +Z forward).
@@ -163,6 +179,70 @@ pub fn depth_to_vertex_map(
             }
             let z = d as f64 * 1e-3;
             let p = intr.unproject(u as f64, v as f64, z);
+            *out_px = [p[0] as f32, p[1] as f32, p[2] as f32];
+        }
+    }
+
+    Ok(())
+}
+
+/// Returns true if an `f32` metre depth sample is a measurement (`> 0` and finite).
+#[inline]
+fn is_valid_depth_m(d: f32) -> bool {
+    d.is_finite() && d > 0.0
+}
+
+/// Convert a `u16` millimetre depth image into `f32` metres, `0` staying `0` (invalid).
+///
+/// # Arguments
+///
+/// * `depth_mm` - Depth in millimetres, `0` = invalid.
+/// * `out` - Output buffer, resized to `depth_mm.len()`.
+pub fn depth_m_from_mm(depth_mm: &[u16], out: &mut Vec<f32>) {
+    out.clear();
+    out.extend(depth_mm.iter().map(|&d| d as f32 * 1e-3));
+}
+
+/// Back-project an `f32` metre depth image into a camera-frame vertex map in metres.
+///
+/// Invalid depth (`0`, negative or non-finite) maps to `[0, 0, 0]`. `out` is resized to
+/// `width * height`.
+///
+/// # Arguments
+///
+/// * `depth_m` - Z-depth in metres, row-major.
+/// * `intr` - Intrinsics of the depth image.
+/// * `out` - Output vertex map.
+///
+/// # Errors
+///
+/// [`RgbdIcpError::InvalidDepthSize`] if `depth_m` does not hold `width * height` samples.
+pub fn depth_m_to_vertex_map(
+    depth_m: &[f32],
+    intr: &DepthIntrinsics,
+    out: &mut Vec<[f32; 3]>,
+) -> Result<(), RgbdIcpError> {
+    let expected = intr.width * intr.height;
+    if depth_m.len() != expected {
+        return Err(RgbdIcpError::InvalidDepthSize {
+            width: intr.width,
+            height: intr.height,
+            expected,
+            got: depth_m.len(),
+        });
+    }
+
+    out.clear();
+    out.resize(expected, [0.0; 3]);
+
+    for v in 0..intr.height {
+        let row = &depth_m[v * intr.width..(v + 1) * intr.width];
+        let out_row = &mut out[v * intr.width..(v + 1) * intr.width];
+        for (u, (&d, out_px)) in row.iter().zip(out_row.iter_mut()).enumerate() {
+            if !is_valid_depth_m(d) {
+                continue;
+            }
+            let p = intr.unproject(u as f64, v as f64, d as f64);
             *out_px = [p[0] as f32, p[1] as f32, p[2] as f32];
         }
     }
@@ -312,6 +392,76 @@ pub fn downsample_depth_half(
     Ok(())
 }
 
+/// [`DOWNSAMPLE_JUMP_MM`] in metres, for the `f32` path.
+const DOWNSAMPLE_JUMP_M: f32 = DOWNSAMPLE_JUMP_MM as f32 * 1e-3;
+
+/// Downsample an `f32` metre depth image (and optionally its sigma map) by 2x.
+///
+/// Same rule as [`downsample_depth_half`]: the lower median of the valid samples of each 2x2
+/// block is the pivot and only samples within 50 mm of it are averaged. The sigma of that mean
+/// of `n` independent samples is `sqrt(sum sigma_k^2) / n`; it is `0` (no value) when any
+/// averaged sample has none.
+fn downsample_depth_half_m(
+    depth_m: &[f32],
+    sigma_m: Option<&[f32]>,
+    width: usize,
+    height: usize,
+    out: &mut Vec<f32>,
+    out_sigma: &mut Vec<f32>,
+) {
+    let half_w = width / 2;
+    let half_h = height / 2;
+    out.clear();
+    out.resize(half_w * half_h, 0.0);
+    out_sigma.clear();
+    if sigma_m.is_some() {
+        out_sigma.resize(half_w * half_h, 0.0);
+    }
+
+    for y in 0..half_h {
+        for x in 0..half_w {
+            let idx = [
+                2 * y * width + 2 * x,
+                2 * y * width + 2 * x + 1,
+                (2 * y + 1) * width + 2 * x,
+                (2 * y + 1) * width + 2 * x + 1,
+            ];
+            let mut valid = [(0.0f32, 0usize); 4];
+            let mut n = 0;
+            for &i in &idx {
+                if is_valid_depth_m(depth_m[i]) {
+                    valid[n] = (depth_m[i], i);
+                    n += 1;
+                }
+            }
+            if n == 0 {
+                continue;
+            }
+            valid[..n].sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+            let pivot = valid[(n - 1) / 2].0;
+            let (mut sum, mut var, mut count, mut sigma_ok) = (0.0f64, 0.0f64, 0u32, true);
+            for &(d, i) in &valid[..n] {
+                if (d - pivot).abs() <= DOWNSAMPLE_JUMP_M {
+                    sum += d as f64;
+                    count += 1;
+                    if let Some(s) = sigma_m {
+                        let s = s[i];
+                        if s.is_finite() && s > 0.0 {
+                            var += (s as f64) * (s as f64);
+                        } else {
+                            sigma_ok = false;
+                        }
+                    }
+                }
+            }
+            out[y * half_w + x] = (sum / count as f64) as f32;
+            if sigma_m.is_some() && sigma_ok {
+                out_sigma[y * half_w + x] = (var.sqrt() / count as f64) as f32;
+            }
+        }
+    }
+}
+
 /// One resolution level of an [`RgbdPyramid`]: intrinsics plus vertex and normal maps.
 #[derive(Debug, Clone)]
 pub struct RgbdLevel {
@@ -321,6 +471,10 @@ pub struct RgbdLevel {
     pub vertices: Vec<[f32; 3]>,
     /// Unit normal map oriented towards the camera, `[0, 0, 0]` = invalid.
     pub normals: Vec<[f32; 3]>,
+    /// Optional per-pixel one-sigma depth (`z`) error in metres, empty when the frame carries
+    /// none. When present it takes precedence over [`super::IcpPlaneCriteria::depth_noise`] for
+    /// this frame's points; `0` or non-finite entries fall back to that model.
+    pub depth_sigmas: Vec<f32>,
 }
 
 /// Coarse-to-fine pyramid of vertex/normal maps built from a single depth image.
@@ -374,6 +528,129 @@ impl RgbdPyramid {
                 intrinsics: level_intr.clone(),
                 vertices,
                 normals,
+                depth_sigmas: Vec::new(),
+            });
+        }
+
+        Ok(Self { levels })
+    }
+
+    /// Build a pyramid with `num_levels` levels from an `f32` metre depth image.
+    ///
+    /// Same downsampling rule as [`Self::from_depth_mm`], without the millimetre quantisation.
+    ///
+    /// # Arguments
+    ///
+    /// * `depth_m` - Z-depth in metres; `0`, negative or non-finite = invalid.
+    /// * `intr` - Intrinsics of the finest level.
+    /// * `num_levels` - Number of levels, at least 1.
+    ///
+    /// # Errors
+    ///
+    /// [`RgbdIcpError::InvalidNumLevels`], [`RgbdIcpError::InvalidDepthSize`] or
+    /// [`RgbdIcpError::ImageTooSmall`].
+    pub fn from_depth_m(
+        depth_m: &[f32],
+        intr: &DepthIntrinsics,
+        num_levels: usize,
+    ) -> Result<Self, RgbdIcpError> {
+        Self::build_m(depth_m, None, intr, num_levels)
+    }
+
+    /// Like [`Self::from_depth_m`], with a per-pixel depth sigma map carried into every level.
+    ///
+    /// Coarser levels average depth, so their sigma is that of the mean (see
+    /// [`RgbdLevel::depth_sigmas`]).
+    ///
+    /// # Arguments
+    ///
+    /// * `depth_m` - Z-depth in metres; `0`, negative or non-finite = invalid.
+    /// * `sigma_m` - One-sigma depth error in metres per pixel, same layout as `depth_m`.
+    /// * `intr` - Intrinsics of the finest level.
+    /// * `num_levels` - Number of levels, at least 1.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::from_depth_m`], plus [`RgbdIcpError::InvalidSigmaMapSize`].
+    pub fn from_depth_m_with_sigma(
+        depth_m: &[f32],
+        sigma_m: &[f32],
+        intr: &DepthIntrinsics,
+        num_levels: usize,
+    ) -> Result<Self, RgbdIcpError> {
+        if sigma_m.len() != depth_m.len() {
+            return Err(RgbdIcpError::InvalidSigmaMapSize {
+                expected: depth_m.len(),
+                got: sigma_m.len(),
+            });
+        }
+        Self::build_m(depth_m, Some(sigma_m), intr, num_levels)
+    }
+
+    fn build_m(
+        depth_m: &[f32],
+        sigma_m: Option<&[f32]>,
+        intr: &DepthIntrinsics,
+        num_levels: usize,
+    ) -> Result<Self, RgbdIcpError> {
+        if num_levels == 0 {
+            return Err(RgbdIcpError::InvalidNumLevels(num_levels));
+        }
+        let expected = intr.width * intr.height;
+        if depth_m.len() != expected {
+            return Err(RgbdIcpError::InvalidDepthSize {
+                width: intr.width,
+                height: intr.height,
+                expected,
+                got: depth_m.len(),
+            });
+        }
+
+        let mut levels = Vec::with_capacity(num_levels);
+        let (mut owned, mut owned_sigma) = (Vec::new(), Vec::new());
+        let mut level_intr = intr.clone();
+
+        for level in 0..num_levels {
+            if level > 0 {
+                let (mut half, mut half_sigma) = (Vec::new(), Vec::new());
+                let (cur, cur_sigma): (&[f32], Option<&[f32]>) = if level == 1 {
+                    (depth_m, sigma_m)
+                } else {
+                    (&owned, sigma_m.map(|_| owned_sigma.as_slice()))
+                };
+                downsample_depth_half_m(
+                    cur,
+                    cur_sigma,
+                    level_intr.width,
+                    level_intr.height,
+                    &mut half,
+                    &mut half_sigma,
+                );
+                owned = half;
+                owned_sigma = half_sigma;
+                level_intr = level_intr.half();
+            }
+            if level_intr.width < 3 || level_intr.height < 3 {
+                return Err(RgbdIcpError::ImageTooSmall {
+                    level,
+                    width: level_intr.width,
+                    height: level_intr.height,
+                });
+            }
+            let (depth, sigma): (&[f32], Option<&[f32]>) = if level == 0 {
+                (depth_m, sigma_m)
+            } else {
+                (&owned, sigma_m.map(|_| owned_sigma.as_slice()))
+            };
+            let mut vertices = Vec::new();
+            depth_m_to_vertex_map(depth, &level_intr, &mut vertices)?;
+            let mut normals = Vec::new();
+            vertex_map_to_normal_map(&vertices, level_intr.width, level_intr.height, &mut normals)?;
+            levels.push(RgbdLevel {
+                intrinsics: level_intr.clone(),
+                vertices,
+                normals,
+                depth_sigmas: sigma.map(<[f32]>::to_vec).unwrap_or_default(),
             });
         }
 

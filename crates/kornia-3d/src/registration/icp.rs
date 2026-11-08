@@ -11,8 +11,22 @@
 //! with Jacobian row `[(p' x n_t)^T, n_t^T]` where `p' = T*p_s` (left
 //! perturbation `T <- exp([w, t]) * T`). Maps stay `f32`; `J^T W J` / `J^T W r`
 //! are accumulated in `f64` and the 6x6 system is solved by Cholesky.
+//!
+//! Each row is weighted by `1 / sigma^2`, the variance of its residual under
+//! [`IcpPlaneCriteria::depth_noise`] (or a per-pixel sigma map, see
+//! [`RgbdLevel::depth_sigmas`]), times a Huber weight on `r / sigma`. The final
+//! data-only `J^T W J` is returned as [`IcpPlaneResult::information`].
+//!
+//! Tangent convention, shared by the update, the priors and the reported
+//! information: `xi = [w, v]` (rotation first, radians then metres) acts on the
+//! LEFT, `R <- exp(w) R`, `t <- exp(w) t + v`.
+//!
+//! A system that does not constrain all six DoF still gets an answer: directions
+//! whose eigenvalue is negligible get zero information and take their update
+//! from a prior, or none (see [`IcpPlaneCriteria::degeneracy_rtol`]).
 
 use super::rgbd::{is_valid_normal, is_valid_vertex, RgbdIcpError, RgbdLevel, RgbdPyramid};
+use nalgebra::Matrix6;
 
 /// Parameters of [`icp_projective_plane`].
 #[derive(Debug, Clone)]
@@ -29,8 +43,14 @@ pub struct IcpPlaneCriteria {
     /// Reject correspondences whose (rotated) source and target normals
     /// disagree by more than this angle in radians.
     pub max_normal_angle_rad: f64,
-    /// Huber loss scale in metres: residuals beyond it get weight `delta/|r|`.
-    pub huber_delta_m: f64,
+    /// Huber threshold on the NORMALISED residual `r / sigma` (dimensionless): rows beyond it
+    /// get weight `delta / |r / sigma|` on top of `1 / sigma^2`. Replaces the former metric
+    /// `huber_delta_m`; the defaults (`2.0` here, `sigma = 0.01` m in
+    /// [`DepthNoise::Constant`]) reproduce its old 0.02 m threshold exactly.
+    pub huber_delta: f64,
+    /// Depth noise model that sets each row's `sigma`. A frame's per-pixel sigma map
+    /// ([`RgbdLevel::depth_sigmas`]) takes precedence over it point by point.
+    pub depth_noise: DepthNoise,
     /// Optional independent estimate of the rotation, e.g. an integrated gyro.
     ///
     /// Depth geometry does not always determine rotation: on a swept view the rotation block of
@@ -42,7 +62,98 @@ pub struct IcpPlaneCriteria {
     ///
     /// Regularises, never overrides: it enters as three weighted rows, so ample geometry
     /// outvotes it and weak geometry defers to it.
+    ///
+    /// Equivalent to a [`PosePrior`] with infinite translation variance; both may be set, and
+    /// their rows add.
     pub rotation_prior: Option<RotationPrior>,
+    /// Optional 6-DoF prior on the whole transform, e.g. the fused pose's delta.
+    ///
+    /// Enters as six weighted rows like [`Self::rotation_prior`], so it shapes the answer only
+    /// where the data are weak, and it carries the update along directions the data cannot
+    /// observe at all. It never enters [`IcpPlaneResult::information`] or the conditioning.
+    pub pose_prior: Option<PosePrior>,
+    /// Relative eigenvalue threshold below which a direction of the data-only `J^T W J` counts
+    /// as unobserved.
+    ///
+    /// The eigen-decomposition runs with the rotation rows scaled by the median inlier depth
+    /// (radians to metres of arc), so rotation and translation compare in one unit. A direction
+    /// whose eigenvalue is at most `degeneracy_rtol` times the largest gets zero information in
+    /// the result, and its update comes from the priors, or is zero without one. Set it to sit
+    /// between rounding noise on an exact null space and the weakest geometry you still want
+    /// solved; see the measurements on [`DEFAULT_DEGENERACY_RTOL`].
+    pub degeneracy_rtol: f64,
+}
+
+/// Default of [`IcpPlaneCriteria::degeneracy_rtol`].
+///
+/// Same value as the Cholesky guard's `PIVOT_RTOL`. Measured smallest/largest eigenvalue of the
+/// depth-scaled data matrix on the synthetic 320x180 scenes: a bare wall 0 (three directions),
+/// a wall with a 6 cm bump 5.1e-8, a roll-invariant sphere-on-wall 2.7e-5, corner + sphere
+/// 2.8e-2. So the default flags only an exact null space and still solves the bump, as the
+/// solver always did. Real sensor noise lifts a wall's null space far above zero; to treat
+/// real weak geometry as degenerate, calibrate this on real data.
+pub const DEFAULT_DEGENERACY_RTOL: f64 = 1e-8;
+
+/// Depth noise model for the row weights of [`icp_projective_plane`].
+///
+/// Each point's depth sigma (`z`, metres) moves it along its viewing ray, so a row's residual
+/// sigma is `sqrt((n . r_s)^2 sigma_s^2 + (n . r_t)^2 sigma_t^2)` with `r = p / z` the ray of
+/// the source point (rotated into the target) and of the target point, and `n` the target
+/// normal. [`Self::Constant`] with no sigma map on either frame is the exception: it is a
+/// residual sigma used as-is, the uniform weighting this solver always had.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DepthNoise {
+    /// One sigma for every row, in metres of point-to-plane residual. Where a sigma map is
+    /// present on either frame, a point without a map value uses it as its depth sigma instead.
+    Constant {
+        /// One-sigma error in metres.
+        sigma_m: f64,
+    },
+    /// Stereo depth: `sigma_z = z^2 * sigma_disparity_px / (focal_px * baseline_m)`.
+    Stereo {
+        /// Focal length in pixels at the finest level, the one the disparity was measured at.
+        focal_px: f64,
+        /// Stereo baseline in metres.
+        baseline_m: f64,
+        /// One-sigma disparity error in pixels.
+        sigma_disparity_px: f64,
+    },
+}
+
+impl DepthNoise {
+    /// One-sigma depth error in metres at depth `z_m`.
+    ///
+    /// # Arguments
+    ///
+    /// * `z_m` - Z-depth in metres.
+    ///
+    /// # Returns
+    ///
+    /// The model's sigma; for [`Self::Constant`] the constant itself.
+    pub fn depth_sigma(&self, z_m: f64) -> f64 {
+        match *self {
+            DepthNoise::Constant { sigma_m } => sigma_m,
+            DepthNoise::Stereo {
+                focal_px,
+                baseline_m,
+                sigma_disparity_px,
+            } => z_m * z_m * sigma_disparity_px / (focal_px * baseline_m),
+        }
+    }
+}
+
+/// A 6-DoF prior for [`IcpPlaneCriteria::pose_prior`].
+#[derive(Debug, Clone, Copy)]
+pub struct PosePrior {
+    /// Prior on the source-to-target rotation, same convention as [`IcpPlaneResult::rotation`].
+    pub rotation: [[f64; 3]; 3],
+    /// Prior on the source-to-target translation in metres.
+    pub translation: [f64; 3],
+    /// Covariance of the prior's error `xi` in the module's tangent convention
+    /// (`[w, v]`, rotation first: rad^2, rad*m, m^2), where the true transform is
+    /// `exp(xi)` applied on the left of the prior. Must be symmetric positive definite; scale
+    /// it with the interval it spans, as for [`RotationPrior::sigma_rad`].
+    pub covariance: [[f64; 6]; 6],
 }
 
 /// An external rotation estimate for [`IcpPlaneCriteria::rotation_prior`].
@@ -90,8 +201,11 @@ impl Default for IcpPlaneCriteria {
             update_tolerance: 1e-6,
             max_dist_m: 0.10,
             max_normal_angle_rad: 30.0_f64.to_radians(),
-            huber_delta_m: 0.02,
+            huber_delta: 2.0,
+            depth_noise: DepthNoise::Constant { sigma_m: 0.01 },
             rotation_prior: None,
+            pose_prior: None,
+            degeneracy_rtol: DEFAULT_DEGENERACY_RTOL,
         }
     }
 }
@@ -168,6 +282,26 @@ pub struct IcpPlaneResult {
     pub translation_conditioning: f64,
     /// The weaker of the two blocks: a single scalar for callers that just need a gate.
     pub observability: f64,
+    /// Data-only information `J^T W J` (6x6, tangent order `[w, v]`, see the module docs) at
+    /// the finest level under the final transform, rows weighted by `1 / sigma^2` and Huber.
+    ///
+    /// Priors never enter it, and it is zero along [`Self::degenerate_directions`]. Its inverse,
+    /// where it exists, is the covariance of the estimate's error `xi`, where the estimate is
+    /// `exp(xi)` applied on the left of the truth. It is only as calibrated as the sigmas
+    /// behind it: the default [`DepthNoise::Constant`] is a weighting, not a sensor model.
+    pub information: [[f64; 6]; 6],
+    /// Unit tangent directions (`[w, v]`) with zero information, in rows
+    /// `0..num_degenerate`; the remaining rows are zero.
+    ///
+    /// They span the null space of [`Self::information`]. They come from the eigen-
+    /// decomposition with rotation scaled by [`Self::median_depth_m`] and are mapped back to the
+    /// unscaled tangent, so they are unit but not necessarily orthogonal.
+    pub degenerate_directions: [[f64; 6]; 6],
+    /// Number of directions in [`Self::degenerate_directions`].
+    pub num_degenerate: usize,
+    /// Median depth of the final pass's inliers in the target frame, metres: the scale that
+    /// makes rotation comparable to translation in the degeneracy test.
+    pub median_depth_m: f64,
 }
 
 /// Relative Cholesky pivot threshold of the degeneracy guard: while factoring
@@ -178,9 +312,11 @@ pub struct IcpPlaneResult {
 /// a collapsed translation pivot pass at large depth) means some twist
 /// direction is (numerically) unobserved — e.g. a single plane leaves its two
 /// in-plane translations and the in-plane rotation unconstrained, so three
-/// pivots collapse to rounding noise — and the solve is rejected as
-/// [`RgbdIcpError::SingularNormalEquations`] instead of returning a pose made
-/// up along the null space.
+/// pivots collapse to rounding noise. Such a system no longer fails: the
+/// Cholesky fast path is skipped and the eigen solve (see
+/// [`IcpPlaneCriteria::degeneracy_rtol`]) answers along the observed directions
+/// only. The guard still zeroes the reported conditioning (see
+/// `block_conditioning`).
 const PIVOT_RTOL: f64 = 1e-8;
 
 /// Projective point-to-plane ICP between two RGBD pyramids.
@@ -193,13 +329,20 @@ const PIVOT_RTOL: f64 = 1e-8;
 /// * `initial_trans` - Initial translation from the source to the target frame.
 /// * `criteria` - Gating, robustness and convergence parameters.
 ///
+/// # Returns
+///
+/// The estimate with its quality figures, data-only information and degenerate directions.
+/// Geometry that does not constrain all six DoF is NOT an error: the result carries the
+/// unobserved directions in [`IcpPlaneResult::degenerate_directions`], zero information along
+/// them, and an update along them taken from the priors (none without one).
+///
 /// # Errors
 ///
-/// [`RgbdIcpError::SingularNormalEquations`] when the geometry does not
-/// constrain all six DoF (see [`PIVOT_RTOL`]);
 /// [`RgbdIcpError::TooFewCorrespondences`] when fewer than 6 correspondences
 /// survive gating (low overlap / bad initial guess);
-/// [`RgbdIcpError::InvalidNumLevels`] if either pyramid is empty.
+/// [`RgbdIcpError::InvalidNumLevels`] if either pyramid is empty;
+/// [`RgbdIcpError::InvalidPriorCovariance`] if [`IcpPlaneCriteria::pose_prior`] has a
+/// covariance that is not symmetric positive definite.
 pub fn icp_projective_plane(
     source: &RgbdPyramid,
     target: &RgbdPyramid,
@@ -212,11 +355,21 @@ pub fn icp_projective_plane(
         return Err(RgbdIcpError::InvalidNumLevels(0));
     }
 
+    let priors = [
+        criteria.rotation_prior.map(PriorRows::from_rotation),
+        criteria
+            .pose_prior
+            .map(|p| PriorRows::from_pose(&p))
+            .transpose()?,
+    ];
+
     let mut rotation = initial_rot;
     let mut translation = initial_trans;
     let mut iterations = 0;
     let mut rotation_conditioning = 0.0;
     let mut translation_conditioning = 0.0;
+    // reused across passes for the median depth
+    let mut depth_scratch: Vec<f32> = Vec::new();
 
     // coarse-to-fine: level num_levels-1 down to 0 (levels[0] is finest)
     for (coarse_idx, level_idx) in (0..num_levels).rev().enumerate() {
@@ -230,36 +383,31 @@ pub fn icp_projective_plane(
         let tgt = &target.levels[level_idx];
 
         for _ in 0..iters {
-            let mut eqs = accumulate_level(src, tgt, &rotation, &translation, &criteria);
+            let eqs = accumulate_level(
+                src,
+                tgt,
+                &rotation,
+                &translation,
+                &criteria,
+                &mut depth_scratch,
+            );
             if eqs.num_inliers < 6 {
                 return Err(RgbdIcpError::TooFewCorrespondences(eqs.num_inliers));
             }
             // Diagnostic first, on the DATA-only equations — see `block_conditioning`. A prior
             // must not be able to make weak geometry look strong to the caller.
             let (data_rot_cond, data_trans_cond) = block_conditioning(&eqs.a);
-            if let Some(prior) = criteria.rotation_prior {
-                // Three rows penalising the current rotation's deviation from the prior.
-                //
-                // The error must live in the frame the update acts in. The solver applies
-                // `R <- exp(w) R`, a LEFT multiply, so the error is `e = log(R R_prior^T)`, also
-                // on the left: then `R_new R_prior^T = exp(w) exp(e)` and the residual in `w` is
-                // `e + w` to first order, with an identity Jacobian. Writing the body-frame error
-                // `log(R_prior^T R)` here instead would agree only when the prior is near
-                // identity and would otherwise pull toward the wrong attitude.
-                //
-                // Contribution is `1/sigma^2` on the rotation block's diagonal and `w e` on its
-                // gradient. Only that block is touched — the prior says nothing about translation.
-                let e = so3_log(&mat3_mul(&rotation, &mat3_transpose(&prior.rotation)));
-                let w = 1.0 / (prior.sigma_rad * prior.sigma_rad).max(f64::MIN_POSITIVE);
-                for i in 0..3 {
-                    eqs.a[i][i] += w;
-                    eqs.b[i] += w * e[i];
-                }
-            }
-            // solve A x = -b for the twist x = [w, dt]
-            let neg_b = eqs.b.map(|v| -v);
-            let (x, _, _) =
-                cholesky_solve_6x6(&eqs.a, &neg_b).ok_or(RgbdIcpError::SingularNormalEquations)?;
+            // Unobserved directions are decided on the data alone, before any prior is added,
+            // for the same reason.
+            let split = split_degenerate(&eqs.a, eqs.median_depth, criteria.degeneracy_rtol);
+            let x = solve_step(
+                &eqs,
+                &split,
+                &priors,
+                &rotation,
+                &translation,
+                criteria.degeneracy_rtol,
+            );
             // Report the finest level's last solve: the geometry the pose actually rests on,
             // which is the data-only conditioning even when a prior carried the solve.
             rotation_conditioning = data_rot_cond;
@@ -286,7 +434,20 @@ pub fn icp_projective_plane(
     // final metrics: one association pass at the finest level, final pose
     let finest_src = &source.levels[0];
     let finest_tgt = &target.levels[0];
-    let eqs = accumulate_level(finest_src, finest_tgt, &rotation, &translation, &criteria);
+    let eqs = accumulate_level(
+        finest_src,
+        finest_tgt,
+        &rotation,
+        &translation,
+        &criteria,
+        &mut depth_scratch,
+    );
+    let split = split_degenerate(&eqs.a, eqs.median_depth, criteria.degeneracy_rtol);
+    let information = if split.num_degenerate == 0 {
+        eqs.a
+    } else {
+        split.a_observed
+    };
     let rmse = if eqs.num_inliers > 0 {
         (eqs.sum_sq_residual / eqs.num_inliers as f64).sqrt()
     } else {
@@ -314,6 +475,10 @@ pub fn icp_projective_plane(
         observability: rotation_conditioning.min(translation_conditioning),
         overlap_fraction,
         iterations,
+        information,
+        degenerate_directions: split.directions,
+        num_degenerate: split.num_degenerate,
+        median_depth_m: eqs.median_depth,
     })
 }
 
@@ -331,34 +496,102 @@ struct NormalEquations {
     num_valid: usize,
     /// Unweighted sum of squared residuals over the inliers.
     sum_sq_residual: f64,
+    /// Median target-frame depth of the inliers (1 m when there are none).
+    median_depth: f64,
 }
 
-/// One projective-association pass: gate, weight and accumulate `J^T W J`,
-/// `J^T W r` in f64.
-fn accumulate_level(
+/// One gated correspondence of a projective-association pass.
+struct Correspondence {
+    /// Index of the source pixel in its level.
+    #[cfg_attr(not(test), allow(dead_code))]
+    src_idx: usize,
+    /// Index of the associated target pixel in its level.
+    #[cfg_attr(not(test), allow(dead_code))]
+    tgt_idx: usize,
+    /// Jacobian row `[(p' x n_t)^T, n_t^T]`.
+    j: [f64; 6],
+    /// Point-to-plane residual in metres.
+    r: f64,
+    /// One-sigma error of `r` in metres.
+    sigma: f64,
+    /// Depth of `p'` in the target frame.
+    z: f64,
+}
+
+/// Counts of one association pass, besides the correspondences themselves.
+struct PassCounts {
+    num_valid: usize,
+    num_associated: usize,
+}
+
+/// Lower bound on `|n . ray| / |ray|` in the residual sigma.
+///
+/// The first-order projection of depth noise onto the plane vanishes at grazing incidence, where
+/// the error that remains is the normal's, which this model does not carry; unbounded, those rows
+/// would get near-infinite weight. 0.2 is about 78 deg from the normal. Not measured.
+const MIN_RAY_INCIDENCE: f64 = 0.2;
+
+/// Huber-and-sigma weight of a row: `huber(r / sigma) / sigma^2`.
+#[inline]
+fn row_weight(r: f64, sigma: f64, huber_delta: f64) -> f64 {
+    let rn = (r / sigma).abs();
+    let huber = if rn <= huber_delta {
+        1.0
+    } else {
+        huber_delta / rn
+    };
+    huber / (sigma * sigma)
+}
+
+/// Depth sigma of one point: its level's map entry when present, else the model.
+#[inline]
+fn point_depth_sigma(level: &RgbdLevel, idx: usize, z: f64, noise: &DepthNoise) -> f64 {
+    match level.depth_sigmas.get(idx) {
+        Some(&s) if s.is_finite() && s > 0.0 => s as f64,
+        _ => noise.depth_sigma(z),
+    }
+}
+
+/// Squared cosine between a normal and a ray, bounded below by [`MIN_RAY_INCIDENCE`], times
+/// the ray's squared length.
+#[inline]
+fn projected_ray_sq(n: &[f64; 3], ray: &[f64; 3]) -> f64 {
+    let c = n[0] * ray[0] + n[1] * ray[1] + n[2] * ray[2];
+    let len_sq = ray[0] * ray[0] + ray[1] * ray[1] + ray[2] * ray[2];
+    (c * c).max(MIN_RAY_INCIDENCE * MIN_RAY_INCIDENCE * len_sq)
+}
+
+/// One projective-association pass: gate each source pixel and hand every surviving
+/// correspondence to `visit`.
+fn for_each_correspondence(
     src: &RgbdLevel,
     tgt: &RgbdLevel,
     rotation: &[[f64; 3]; 3],
     translation: &[f64; 3],
     criteria: &IcpPlaneCriteria,
-) -> NormalEquations {
-    let mut eqs = NormalEquations {
-        a: [[0.0; 6]; 6],
-        b: [0.0; 6],
-        num_inliers: 0,
-        num_associated: 0,
+    mut visit: impl FnMut(&Correspondence),
+) -> PassCounts {
+    let mut counts = PassCounts {
         num_valid: 0,
-        sum_sq_residual: 0.0,
+        num_associated: 0,
     };
     let cos_max_angle = criteria.max_normal_angle_rad.cos();
     let max_dist_sq = criteria.max_dist_m * criteria.max_dist_m;
     let (tw, th) = (tgt.intrinsics.width, tgt.intrinsics.height);
+    // Constant noise with no map anywhere is the legacy uniform weighting: a residual sigma.
+    let ray_model = !src.depth_sigmas.is_empty()
+        || !tgt.depth_sigmas.is_empty()
+        || !matches!(criteria.depth_noise, DepthNoise::Constant { .. });
+    let constant_sigma = match criteria.depth_noise {
+        DepthNoise::Constant { sigma_m } => sigma_m,
+        DepthNoise::Stereo { .. } => 0.0,
+    };
 
-    for (v_s, n_s) in src.vertices.iter().zip(src.normals.iter()) {
+    for (src_idx, (v_s, n_s)) in src.vertices.iter().zip(src.normals.iter()).enumerate() {
         if !is_valid_vertex(v_s) || !is_valid_normal(n_s) {
             continue;
         }
-        eqs.num_valid += 1;
+        counts.num_valid += 1;
 
         let p_s = [v_s[0] as f64, v_s[1] as f64, v_s[2] as f64];
         // p' = T * p_s in the target frame
@@ -380,7 +613,7 @@ fn accumulate_level(
         if !is_valid_vertex(v_t) || !is_valid_normal(n_t) {
             continue;
         }
-        eqs.num_associated += 1;
+        counts.num_associated += 1;
 
         let diff = [
             p[0] - v_t[0] as f64,
@@ -412,21 +645,73 @@ fn accumulate_level(
             n_t[1],
             n_t[2],
         ];
-        let w = if r.abs() <= criteria.huber_delta_m {
-            1.0
+        let sigma = if ray_model {
+            // Depth noise moves each point along its own ray `p / z`; project both onto n_t.
+            let z_s = p_s[2];
+            let ray_s = [
+                (p[0] - translation[0]) / z_s,
+                (p[1] - translation[1]) / z_s,
+                (p[2] - translation[2]) / z_s,
+            ];
+            let z_t = v_t[2] as f64;
+            let ray_t = [v_t[0] as f64 / z_t, v_t[1] as f64 / z_t, 1.0];
+            let sig_s = point_depth_sigma(src, src_idx, z_s, &criteria.depth_noise);
+            let sig_t = point_depth_sigma(tgt, idx, z_t, &criteria.depth_noise);
+            (projected_ray_sq(&n_t, &ray_s) * sig_s * sig_s
+                + projected_ray_sq(&n_t, &ray_t) * sig_t * sig_t)
+                .sqrt()
         } else {
-            criteria.huber_delta_m / r.abs()
-        };
+            constant_sigma
+        }
+        .max(f64::MIN_POSITIVE.sqrt());
 
+        visit(&Correspondence {
+            src_idx,
+            tgt_idx: idx,
+            j,
+            r,
+            sigma,
+            z: p[2],
+        });
+    }
+
+    counts
+}
+
+/// One projective-association pass: gate, weight and accumulate `J^T W J`,
+/// `J^T W r` in f64.
+fn accumulate_level(
+    src: &RgbdLevel,
+    tgt: &RgbdLevel,
+    rotation: &[[f64; 3]; 3],
+    translation: &[f64; 3],
+    criteria: &IcpPlaneCriteria,
+    depths: &mut Vec<f32>,
+) -> NormalEquations {
+    let mut eqs = NormalEquations {
+        a: [[0.0; 6]; 6],
+        b: [0.0; 6],
+        num_inliers: 0,
+        num_associated: 0,
+        num_valid: 0,
+        sum_sq_residual: 0.0,
+        median_depth: 1.0,
+    };
+    depths.clear();
+    let counts = for_each_correspondence(src, tgt, rotation, translation, criteria, |c| {
+        let w = row_weight(c.r, c.sigma, criteria.huber_delta);
         for i in 0..6 {
-            eqs.b[i] += w * j[i] * r;
+            eqs.b[i] += w * c.j[i] * c.r;
             for k in i..6 {
-                eqs.a[i][k] += w * j[i] * j[k];
+                eqs.a[i][k] += w * c.j[i] * c.j[k];
             }
         }
         eqs.num_inliers += 1;
-        eqs.sum_sq_residual += r * r;
-    }
+        eqs.sum_sq_residual += c.r * c.r;
+        depths.push(c.z as f32);
+    });
+    eqs.num_valid = counts.num_valid;
+    eqs.num_associated = counts.num_associated;
 
     // mirror the accumulated upper triangle
     for i in 1..6 {
@@ -435,7 +720,256 @@ fn accumulate_level(
         }
     }
 
+    if !depths.is_empty() {
+        let mid = depths.len() / 2;
+        let (_, m, _) = depths.select_nth_unstable_by(mid, f32::total_cmp);
+        if *m > 0.0 {
+            eqs.median_depth = *m as f64;
+        }
+    }
+
     eqs
+}
+
+/// Prior rows in information form: error `e = [log(R R_p^T), t - R R_p^T t_p]` with weight
+/// `info`. A rotation prior is the same thing with zero translation information.
+struct PriorRows {
+    rotation: [[f64; 3]; 3],
+    translation: [f64; 3],
+    info: [[f64; 6]; 6],
+}
+
+impl PriorRows {
+    fn from_rotation(p: RotationPrior) -> Self {
+        let w = 1.0 / (p.sigma_rad * p.sigma_rad).max(f64::MIN_POSITIVE);
+        let mut info = [[0.0; 6]; 6];
+        for (i, row) in info.iter_mut().enumerate().take(3) {
+            row[i] = w;
+        }
+        Self {
+            rotation: p.rotation,
+            translation: [0.0; 3],
+            info,
+        }
+    }
+
+    fn from_pose(p: &PosePrior) -> Result<Self, RgbdIcpError> {
+        let c = &p.covariance;
+        for (i, row) in c.iter().enumerate() {
+            for (k, &a) in row.iter().enumerate() {
+                let b = c[k][i];
+                if !a.is_finite() || (a - b).abs() > 1e-9 * (a.abs() + b.abs()) {
+                    return Err(RgbdIcpError::InvalidPriorCovariance);
+                }
+            }
+        }
+        let inv = Matrix6::from_fn(|i, k| c[i][k])
+            .cholesky()
+            .ok_or(RgbdIcpError::InvalidPriorCovariance)?
+            .inverse();
+        let mut info = [[0.0; 6]; 6];
+        for (i, row) in info.iter_mut().enumerate() {
+            for (k, v) in row.iter_mut().enumerate() {
+                // symmetrise away the inverse's rounding
+                *v = 0.5 * (inv[(i, k)] + inv[(k, i)]);
+            }
+        }
+        Ok(Self {
+            rotation: p.rotation,
+            translation: p.translation,
+            info,
+        })
+    }
+
+    /// Add `J^T info J` and `J^T info e` for the current estimate.
+    ///
+    /// The error must live in the frame the update acts in. The solver applies `R <- exp(w) R`,
+    /// a LEFT multiply, so the rotation error is `log(R R_prior^T)`, also on the left: then
+    /// `R_new R_prior^T = exp(w) exp(e)` and its residual in `w` is `e + w` to first order, with
+    /// an identity Jacobian. Writing the body-frame error `log(R_prior^T R)` here instead would
+    /// agree only when the prior is near identity and would otherwise pull toward the wrong
+    /// attitude. The translation error `e_t = t - R R_p^T t_p` moves to `exp(w) e_t + v`, so its
+    /// Jacobian is `[-[e_t]x, I]`.
+    fn add_to(
+        &self,
+        rotation: &[[f64; 3]; 3],
+        translation: &[f64; 3],
+        a: &mut [[f64; 6]; 6],
+        b: &mut [f64; 6],
+    ) {
+        let rr = mat3_mul(rotation, &mat3_transpose(&self.rotation));
+        let e_r = so3_log(&rr);
+        let e_t = [
+            translation[0] - mat3_row_dot(&rr, 0, &self.translation),
+            translation[1] - mat3_row_dot(&rr, 1, &self.translation),
+            translation[2] - mat3_row_dot(&rr, 2, &self.translation),
+        ];
+        let e = [e_r[0], e_r[1], e_r[2], e_t[0], e_t[1], e_t[2]];
+        // J = [[I, 0], [-[e_t]x, I]]
+        let mut jac = [[0.0; 6]; 6];
+        for (i, row) in jac.iter_mut().enumerate() {
+            row[i] = 1.0;
+        }
+        let skew = [
+            [0.0, -e_t[2], e_t[1]],
+            [e_t[2], 0.0, -e_t[0]],
+            [-e_t[1], e_t[0], 0.0],
+        ];
+        for i in 0..3 {
+            for k in 0..3 {
+                jac[3 + i][k] = -skew[i][k];
+            }
+        }
+        // info * J and info * e
+        let mut ij = [[0.0; 6]; 6];
+        let mut ie = [0.0; 6];
+        for i in 0..6 {
+            for k in 0..6 {
+                ie[i] += self.info[i][k] * e[k];
+                for m in 0..6 {
+                    ij[i][m] += self.info[i][k] * jac[k][m];
+                }
+            }
+        }
+        for i in 0..6 {
+            for k in 0..6 {
+                b[i] += jac[k][i] * ie[k];
+                for m in 0..6 {
+                    a[i][m] += jac[k][i] * ij[k][m];
+                }
+            }
+        }
+    }
+}
+
+/// Eigen split of a data-only `J^T W J` into observed and unobserved directions.
+struct DegenerateSplit {
+    /// Rotation scale used for the decomposition (median depth, metres).
+    scale: f64,
+    /// `J^T W J` with the unobserved eigen-directions removed, unscaled tangent.
+    a_observed: [[f64; 6]; 6],
+    /// Projector onto the observed eigen-directions, in SCALED coordinates.
+    projector: [[f64; 6]; 6],
+    /// Unit unobserved directions in the unscaled tangent, rows `0..num_degenerate`.
+    directions: [[f64; 6]; 6],
+    num_degenerate: usize,
+}
+
+#[inline]
+fn tangent_scale(d: f64) -> [f64; 6] {
+    [d, d, d, 1.0, 1.0, 1.0]
+}
+
+/// Symmetric eigen-decomposition of `S^-1 A S^-1` with `S = diag(d, d, d, 1, 1, 1)`, eigenpairs
+/// in ascending order.
+fn scaled_eigen(a: &[[f64; 6]; 6], d: f64) -> ([(f64, [f64; 6]); 6], f64) {
+    let s = tangent_scale(d);
+    let m = Matrix6::from_fn(|i, k| 0.5 * (a[i][k] + a[k][i]) / (s[i] * s[k]));
+    let eig = m.symmetric_eigen();
+    let mut pairs: [(f64, [f64; 6]); 6] = std::array::from_fn(|c| {
+        let col = eig.eigenvectors.column(c);
+        (
+            eig.eigenvalues[c],
+            [col[0], col[1], col[2], col[3], col[4], col[5]],
+        )
+    });
+    pairs.sort_unstable_by(|x, y| x.0.total_cmp(&y.0));
+    (pairs, pairs[5].0)
+}
+
+fn split_degenerate(a: &[[f64; 6]; 6], median_depth: f64, rtol: f64) -> DegenerateSplit {
+    let d = if median_depth.is_finite() && median_depth > 0.0 {
+        median_depth
+    } else {
+        1.0
+    };
+    let s = tangent_scale(d);
+    let (pairs, lmax) = scaled_eigen(a, d);
+    let mut out = DegenerateSplit {
+        scale: d,
+        a_observed: [[0.0; 6]; 6],
+        projector: [[0.0; 6]; 6],
+        directions: [[0.0; 6]; 6],
+        num_degenerate: 0,
+    };
+    for (lambda, v) in pairs {
+        // `!(x > y)` so a NaN or an all-zero system counts as unobserved
+        #[allow(clippy::neg_cmp_op_on_partial_ord)]
+        let unobserved = !(lambda > rtol * lmax) || lmax <= 0.0;
+        if unobserved {
+            let x: [f64; 6] = std::array::from_fn(|i| v[i] / s[i]);
+            let n = x.iter().map(|c| c * c).sum::<f64>().sqrt();
+            out.directions[out.num_degenerate] = x.map(|c| c / n);
+            out.num_degenerate += 1;
+        } else {
+            for i in 0..6 {
+                for k in 0..6 {
+                    out.a_observed[i][k] += s[i] * s[k] * lambda * v[i] * v[k];
+                    out.projector[i][k] += v[i] * v[k];
+                }
+            }
+        }
+    }
+    out
+}
+
+/// One Gauss-Newton step `x = [w, v]` from the data equations and the priors.
+///
+/// Full-rank data take the Cholesky path on `A + prior`, numerically the solver it always was.
+/// Otherwise the unobserved directions are removed from the data (both `A` and `b`, so a
+/// rounding-noise gradient cannot push along them), the priors are added, and the sum is solved
+/// by eigen pseudo-inverse in the depth-scaled tangent: a direction neither data nor prior
+/// observes gets a zero update.
+fn solve_step(
+    eqs: &NormalEquations,
+    split: &DegenerateSplit,
+    priors: &[Option<PriorRows>],
+    rotation: &[[f64; 3]; 3],
+    translation: &[f64; 3],
+    rtol: f64,
+) -> [f64; 6] {
+    let (mut a, mut b) = if split.num_degenerate == 0 {
+        (eqs.a, eqs.b)
+    } else {
+        let s = tangent_scale(split.scale);
+        let b_scaled: [f64; 6] = std::array::from_fn(|i| eqs.b[i] / s[i]);
+        let b_obs: [f64; 6] = std::array::from_fn(|i| {
+            s[i] * (0..6)
+                .map(|k| split.projector[i][k] * b_scaled[k])
+                .sum::<f64>()
+        });
+        (split.a_observed, b_obs)
+    };
+    for p in priors.iter().flatten() {
+        p.add_to(rotation, translation, &mut a, &mut b);
+    }
+    let neg_b = b.map(|v| -v);
+    if split.num_degenerate == 0 {
+        if let Some((x, _, _)) = cholesky_solve_6x6(&a, &neg_b) {
+            return x;
+        }
+    }
+    pseudo_solve(&a, &neg_b, split.scale, rtol)
+}
+
+/// Minimum-norm solve of `A x = rhs` in the depth-scaled tangent, dropping eigen-directions at
+/// or below `rtol` times the largest eigenvalue.
+fn pseudo_solve(a: &[[f64; 6]; 6], rhs: &[f64; 6], d: f64, rtol: f64) -> [f64; 6] {
+    let s = tangent_scale(d);
+    let rhs_scaled: [f64; 6] = std::array::from_fn(|i| rhs[i] / s[i]);
+    let (pairs, lmax) = scaled_eigen(a, d);
+    let mut y = [0.0; 6];
+    if lmax > 0.0 {
+        for (lambda, v) in pairs {
+            if lambda > rtol * lmax {
+                let coef = v.iter().zip(&rhs_scaled).map(|(a, b)| a * b).sum::<f64>() / lambda;
+                for i in 0..6 {
+                    y[i] += coef * v[i];
+                }
+            }
+        }
+    }
+    std::array::from_fn(|i| y[i] / s[i])
 }
 
 /// Solve the SPD system `A x = b` by Cholesky. Returns `None` when a squared
@@ -643,7 +1177,7 @@ fn so3_exp(w: &[f64; 3]) -> [[f64; 3]; 3] {
 #[cfg(test)]
 mod tests {
     use super::super::rgbd::DepthIntrinsics;
-    use super::super::synth::{render_depth_mm, Plane, Scene, Sphere};
+    use super::super::synth::{render_depth_m, render_depth_mm, Plane, Scene, Sphere};
     use super::*;
     use crate::transforms::axis_angle_to_rotation_matrix;
 
@@ -909,8 +1443,8 @@ mod tests {
     fn observability_exposes_weak_geometry() -> Result<(), Box<dyn std::error::Error>> {
         let intr = test_intrinsics();
         // A wall with one small bump. The plane alone leaves three DoF free; the bump pins them,
-        // but only just — the near-degenerate regime, not the exactly-singular one the guard
-        // already rejects. (Two planes at any angle stay rank-deficient along their intersection,
+        // but only just — the near-degenerate regime, not the exactly-singular one that comes
+        // back with degenerate directions. (Two planes at any angle stay rank-deficient along their intersection,
         // so a "shallow wedge" is the wrong shape for this test.)
         let weak = Scene {
             planes: vec![Plane {
@@ -1020,8 +1554,9 @@ mod tests {
             },
         )?;
 
-        // The prior rescues the solve — without it the guard rejects this scene outright — but
-        // the rotation it rescued must still be REPORTED as unobservable, because it is.
+        // The prior rescues the solve — without it roll is an unobserved direction and gets no
+        // update at all — but the rotation it rescued must still be REPORTED as unobservable,
+        // because it is.
         assert!(
             with.rotation_conditioning < 1e-3,
             "prior inflated reported rotation conditioning to {:.3e}; the geometry did not change",
@@ -1147,9 +1682,10 @@ mod tests {
                 icp_projective_plane(&src, &tgt, IDENTITY_ROT, [0.0; 3], c)
             };
             let (prior_gt, _) = gt_target_source(&prior_rot, &true_t);
-            // Without the prior the weak scene is rejected outright by the degeneracy guard —
-            // rotation is not merely poorly determined, it is unconstrained. Record that as an
-            // infinite error so the two cases compare on one scale.
+            // Without the prior roll on the weak scene is an unobserved direction — not merely
+            // poorly determined, unconstrained — so the solve leaves it at the initial guess
+            // (identity, 3 deg from truth). It used to be rejected as an error; an error still
+            // counts as infinite so the two cases compare on one scale.
             let without = solve(None)
                 .map(|r| rotation_error_deg(&r.rotation, &rot_gt))
                 .unwrap_or(f64::INFINITY);
@@ -1179,6 +1715,10 @@ mod tests {
         Ok(())
     }
 
+    /// A single plane used to be rejected as `SingularNormalEquations`. It now gets the partial
+    /// answer instead — the three directions the plane cannot see (in-plane translation and
+    /// rotation about its normal) come back as degenerate with zero information, and the solve
+    /// moves only along the other three — so this test asserts that answer rather than the error.
     #[test]
     fn test_single_plane_is_degenerate() -> Result<(), Box<dyn std::error::Error>> {
         let intr = test_intrinsics();
@@ -1200,11 +1740,519 @@ mod tests {
             IDENTITY_ROT,
             [0.0; 3],
             IcpPlaneCriteria::default(),
+        )?;
+        assert_eq!(
+            result.num_degenerate, 3,
+            "single plane must report three unobserved directions"
+        );
+        // nothing moved: the observed directions have nothing to correct, the others no update
+        assert!(rotation_error_deg(&result.rotation, &IDENTITY_ROT) < 1e-6);
+        assert!(translation_error(&result.translation, &[0.0; 3]) < 1e-9);
+        assert!(result.observability < 1e-6);
+        Ok(())
+    }
+
+    /// `x^T A x` for a 6x6 matrix.
+    fn quad(a: &[[f64; 6]; 6], x: &[f64; 6]) -> f64 {
+        (0..6)
+            .map(|i| (0..6).map(|k| x[i] * a[i][k] * x[k]).sum::<f64>())
+            .sum()
+    }
+
+    /// Error of an estimate against the truth in the module's tangent: the estimate is
+    /// `exp(xi)` on the left of the truth, `xi = [log(R R_gt^T), t - R R_gt^T t_gt]`.
+    fn tangent_error(
+        rot: &[[f64; 3]; 3],
+        t: &[f64; 3],
+        rot_gt: &[[f64; 3]; 3],
+        t_gt: &[f64; 3],
+    ) -> [f64; 6] {
+        let rr = mat3_mul(rot, &mat3_transpose(rot_gt));
+        let w = so3_log(&rr);
+        [
+            w[0],
+            w[1],
+            w[2],
+            t[0] - mat3_row_dot(&rr, 0, t_gt),
+            t[1] - mat3_row_dot(&rr, 1, t_gt),
+            t[2] - mat3_row_dot(&rr, 2, t_gt),
+        ]
+    }
+
+    /// Deterministic standard normal samples (splitmix64 + Box-Muller).
+    struct Gauss(u64);
+    impl Gauss {
+        fn uniform(&mut self) -> f64 {
+            self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^= z >> 31;
+            ((z >> 11) as f64 + 0.5) / (1u64 << 53) as f64
+        }
+        fn sample(&mut self) -> f64 {
+            let (u1, u2) = (self.uniform(), self.uniform());
+            (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
+        }
+    }
+
+    const TEST_STEREO: DepthNoise = DepthNoise::Stereo {
+        focal_px: 200.0,
+        baseline_m: 0.075,
+        // ~2 mm at 2 m: small enough that central-difference normals stay meaningful
+        sigma_disparity_px: 0.0075,
+    };
+
+    /// The reported information must be the Hessian of the cost the solver minimises.
+    ///
+    /// Fixes the final pass's correspondences and their weights, perturbs the estimate in the
+    /// module's tangent and takes central second differences of `0.5 * sum w r^2`. At a
+    /// converged, noise-free solve the residuals are near zero, so the Gauss-Newton `J^T W J`
+    /// and the true Hessian agree; a wrong Jacobian, sign or weight would not.
+    #[test]
+    fn information_matches_finite_difference_hessian() -> Result<(), Box<dyn std::error::Error>> {
+        let intr = test_intrinsics();
+        let scene = Scene::corner_and_sphere();
+        let rot_wc = axis_angle_to_rotation_matrix(&[1.0, 1.0, 1.0], 1.5_f64.to_radians())?;
+        let t_wc = [0.02, -0.01, 0.015];
+        let src = RgbdPyramid::from_depth_m(
+            &render_depth_m(&scene, &intr, &IDENTITY_ROT, &[0.0; 3]),
+            &intr,
+            3,
+        )?;
+        let tgt =
+            RgbdPyramid::from_depth_m(&render_depth_m(&scene, &intr, &rot_wc, &t_wc), &intr, 3)?;
+        let criteria = IcpPlaneCriteria {
+            depth_noise: TEST_STEREO,
+            ..Default::default()
+        };
+        let res = icp_projective_plane(&src, &tgt, IDENTITY_ROT, [0.0; 3], criteria.clone())?;
+        assert_eq!(res.num_degenerate, 0);
+
+        let (s0, t0) = (&src.levels[0], &tgt.levels[0]);
+        // (source point, target point, target normal, weight)
+        type Row = ([f64; 3], [f64; 3], [f64; 3], f64);
+        let mut rows: Vec<Row> = Vec::new();
+        for_each_correspondence(s0, t0, &res.rotation, &res.translation, &criteria, |c| {
+            let f = |v: &[f32; 3]| [v[0] as f64, v[1] as f64, v[2] as f64];
+            rows.push((
+                f(&s0.vertices[c.src_idx]),
+                f(&t0.vertices[c.tgt_idx]),
+                f(&t0.normals[c.tgt_idx]),
+                row_weight(c.r, c.sigma, criteria.huber_delta),
+            ));
+        });
+        let cost = |xi: &[f64; 6]| -> f64 {
+            let dr = so3_exp(&[xi[0], xi[1], xi[2]]);
+            let r = mat3_mul(&dr, &res.rotation);
+            let t: [f64; 3] =
+                std::array::from_fn(|i| mat3_row_dot(&dr, i, &res.translation) + xi[3 + i]);
+            rows.iter()
+                .map(|(p, v, n, w)| {
+                    let q: [f64; 3] = std::array::from_fn(|i| mat3_row_dot(&r, i, p) + t[i]);
+                    let e = n[0] * (q[0] - v[0]) + n[1] * (q[1] - v[1]) + n[2] * (q[2] - v[2]);
+                    0.5 * w * e * e
+                })
+                .sum()
+        };
+
+        let h = 1e-4;
+        let mut worst: f64 = 0.0;
+        for j in 0..6 {
+            for k in 0..6 {
+                let at = |sj: f64, sk: f64| {
+                    let mut xi = [0.0; 6];
+                    xi[j] += sj * h;
+                    xi[k] += sk * h;
+                    cost(&xi)
+                };
+                let fd =
+                    (at(1.0, 1.0) - at(1.0, -1.0) - at(-1.0, 1.0) + at(-1.0, -1.0)) / (4.0 * h * h);
+                let norm = (res.information[j][j] * res.information[k][k]).sqrt();
+                worst = worst.max((fd - res.information[j][k]).abs() / norm);
+            }
+        }
+        eprintln!(
+            "information vs finite-difference Hessian: worst normalised entry error {worst:.3e} \
+             over {} rows",
+            rows.len()
         );
         assert!(
-            matches!(result, Err(RgbdIcpError::SingularNormalEquations)),
-            "single plane must be rejected as degenerate, got {result:?}"
+            worst < 1e-3,
+            "information disagrees with the Hessian: {worst:.3e}"
         );
+        Ok(())
+    }
+
+    /// A wall gives exactly its three blind directions zero information, and the solve takes
+    /// the prior along them instead of failing.
+    #[test]
+    fn wall_takes_prior_along_its_null_space() -> Result<(), Box<dyn std::error::Error>> {
+        let intr = test_intrinsics();
+        let wall = Scene {
+            planes: vec![Plane {
+                normal: [0.0, 0.0, 1.0],
+                d: 2.0,
+            }],
+            spheres: vec![],
+        };
+        // roll and in-plane slide are invisible, the approach along z is not
+        let rot_wc = axis_angle_to_rotation_matrix(&[0.0, 0.0, 1.0], 1.0_f64.to_radians())?;
+        let t_wc = [0.02, -0.01, 0.005];
+        let (rot_gt, t_gt) = gt_target_source(&rot_wc, &t_wc);
+        let src = RgbdPyramid::from_depth_m(
+            &render_depth_m(&wall, &intr, &IDENTITY_ROT, &[0.0; 3]),
+            &intr,
+            3,
+        )?;
+        let tgt =
+            RgbdPyramid::from_depth_m(&render_depth_m(&wall, &intr, &rot_wc, &t_wc), &intr, 3)?;
+
+        let check_null_space = |r: &IcpPlaneResult| {
+            assert_eq!(r.num_degenerate, 3, "wall must have three blind directions");
+            let scale = (0..6).map(|i| r.information[i][i]).fold(0.0, f64::max);
+            let mut basis = [[0.0; 3]; 3];
+            for (row, d) in r.degenerate_directions[..3].iter().enumerate() {
+                // only rotation about the normal and in-plane translation
+                for &i in &[0usize, 1, 5] {
+                    assert!(d[i].abs() < 1e-6, "direction {d:?} leaks into axis {i}");
+                }
+                assert!(
+                    quad(&r.information, d) <= 1e-12 * scale,
+                    "information along {d:?}"
+                );
+                basis[row] = [d[2], d[3], d[4]];
+            }
+            let det = basis[0][0] * (basis[1][1] * basis[2][2] - basis[1][2] * basis[2][1])
+                - basis[0][1] * (basis[1][0] * basis[2][2] - basis[1][2] * basis[2][0])
+                + basis[0][2] * (basis[1][0] * basis[2][1] - basis[1][1] * basis[2][0]);
+            assert!(
+                det.abs() > 0.5,
+                "directions do not span w_z, t_x, t_y: {det}"
+            );
+            assert!(r.information[5][5] > 0.0, "t_z is observed");
+        };
+
+        // No prior: the blind directions get no update at all, the observed one is solved.
+        let bare = icp_projective_plane(&src, &tgt, IDENTITY_ROT, [0.0; 3], Default::default())?;
+        check_null_space(&bare);
+        assert!(bare.translation[0].abs() < 1e-6 && bare.translation[1].abs() < 1e-6);
+        assert!(so3_log(&bare.rotation)[2].abs() < 1e-6);
+        assert!((bare.translation[2] - t_gt[2]).abs() < 1e-4);
+
+        // A prior 3 mm off along x: the blind directions follow it exactly, z still follows the
+        // data, and the reported information is unchanged in kind.
+        let mut prior_t = t_gt;
+        prior_t[0] += 0.003;
+        prior_t[2] += 0.004; // wrong along an OBSERVED axis: the data must win there
+        let mut cov = [[0.0; 6]; 6];
+        for (i, row) in cov.iter_mut().enumerate() {
+            row[i] = if i < 3 {
+                0.2_f64.to_radians().powi(2)
+            } else {
+                0.01_f64.powi(2)
+            };
+        }
+        let with = icp_projective_plane(
+            &src,
+            &tgt,
+            IDENTITY_ROT,
+            [0.0; 3],
+            IcpPlaneCriteria {
+                pose_prior: Some(PosePrior {
+                    rotation: rot_gt,
+                    translation: prior_t,
+                    covariance: cov,
+                }),
+                ..Default::default()
+            },
+        )?;
+        check_null_space(&with);
+        let e = tangent_error(&with.rotation, &with.translation, &rot_gt, &prior_t);
+        eprintln!("wall + prior: error against the prior {e:?}");
+        assert!(
+            e[3].abs() < 1e-5 && e[4].abs() < 1e-5,
+            "slide must follow the prior"
+        );
+        assert!(e[2].abs() < 1e-5, "roll must follow the prior");
+        assert!(
+            (with.translation[2] - t_gt[2]).abs() < 2e-4,
+            "z must follow the data, not the 4 mm-off prior: {}",
+            with.translation[2] - t_gt[2]
+        );
+        Ok(())
+    }
+
+    /// The information is a covariance you can trust: NEES of the estimate over independent
+    /// noisy frames must average the 6 of a chi-square with 6 DoF.
+    ///
+    /// Measured against the truth on a moving pair, NEES is ~209, and nearly all of it is there
+    /// with NO noise: the noise-free solve itself is off by 0.18 mrad / 0.3 mm on corner+sphere
+    /// (0.015 mrad / 0.015 mm on the corner alone), a bias from nearest-pixel projective
+    /// association on curved and slanted surfaces. 57k rows shrink the noise sigma to ~5 um, so a
+    /// fraction of a millimetre of model error is dozens of sigmas. The information describes the
+    /// depth noise, not that bias. So the noise is judged two ways: against the truth where the
+    /// bias is zero (identical poses), and against the noise-free solve where it is not.
+    #[test]
+    fn nees_is_six_on_noisy_stereo_depth() -> Result<(), Box<dyn std::error::Error>> {
+        let intr = test_intrinsics();
+        let scene = Scene::corner_and_sphere();
+        let criteria = IcpPlaneCriteria {
+            depth_noise: TEST_STEREO,
+            ..Default::default()
+        };
+        let mut g = Gauss(7);
+        let mut noisy = |clean: &[f32]| -> Vec<f32> {
+            clean
+                .iter()
+                .map(|&z| {
+                    if z > 0.0 {
+                        z + (TEST_STEREO.depth_sigma(z as f64) * g.sample()) as f32
+                    } else {
+                        0.0
+                    }
+                })
+                .collect()
+        };
+        let moving = (
+            axis_angle_to_rotation_matrix(&[0.3, 1.0, 0.2], 1.0_f64.to_radians())?,
+            [0.02, 0.0, 0.01],
+        );
+        let trials = 40;
+        for (name, (rot_wc, t_wc)) in [("static", (IDENTITY_ROT, [0.0; 3])), ("moving", moving)] {
+            let (rot_gt, t_gt) = gt_target_source(&rot_wc, &t_wc);
+            let clean_src = render_depth_m(&scene, &intr, &IDENTITY_ROT, &[0.0; 3]);
+            let clean_tgt = render_depth_m(&scene, &intr, &rot_wc, &t_wc);
+            let clean = icp_projective_plane(
+                &RgbdPyramid::from_depth_m(&clean_src, &intr, 3)?,
+                &RgbdPyramid::from_depth_m(&clean_tgt, &intr, 3)?,
+                IDENTITY_ROT,
+                [0.0; 3],
+                criteria.clone(),
+            )?;
+            let e0 = tangent_error(&clean.rotation, &clean.translation, &rot_gt, &t_gt);
+            let (mut vs_truth, mut vs_clean) = (Vec::new(), Vec::new());
+            for _ in 0..trials {
+                let src = RgbdPyramid::from_depth_m(&noisy(&clean_src), &intr, 3)?;
+                let tgt = RgbdPyramid::from_depth_m(&noisy(&clean_tgt), &intr, 3)?;
+                let r = icp_projective_plane(&src, &tgt, IDENTITY_ROT, [0.0; 3], criteria.clone())?;
+                assert_eq!(r.num_degenerate, 0);
+                let e = tangent_error(&r.rotation, &r.translation, &rot_gt, &t_gt);
+                let d: [f64; 6] = std::array::from_fn(|i| e[i] - e0[i]);
+                vs_truth.push(quad(&r.information, &e));
+                vs_clean.push(quad(&r.information, &d));
+            }
+            let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len() as f64;
+            let (m_truth, m_clean) = (mean(&vs_truth), mean(&vs_clean));
+            eprintln!(
+                "NEES {name}, {trials} trials: vs truth {m_truth:.2}, vs noise-free solve \
+                 {m_clean:.2}; noise-free error {:?}",
+                e0.map(|v| format!("{v:.1e}"))
+            );
+            // chi2(6): mean 6, sd of a 40-trial mean ~0.55
+            assert!(
+                (4.0..9.0).contains(&m_clean),
+                "{name}: NEES {m_clean:.2} about the noise-free solve is not consistent with 6"
+            );
+            if name == "static" {
+                assert!(
+                    (4.0..9.0).contains(&m_truth),
+                    "static: NEES {m_truth:.2} against the truth is not consistent with 6"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// `RotationPrior` is a `PosePrior` with no translation information: the same weighted
+    /// rows, so the same answer.
+    #[test]
+    fn rotation_prior_equals_pose_prior_without_translation(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let intr = test_intrinsics();
+        let scene = Scene {
+            planes: vec![Plane {
+                normal: [0.0, 0.0, 1.0],
+                d: 2.5,
+            }],
+            spheres: vec![Sphere {
+                center: [0.0, 0.0, 1.8],
+                radius: 0.55,
+            }],
+        };
+        let true_rot = axis_angle_to_rotation_matrix(&[0.0, 0.0, 1.0], 3.0_f64.to_radians())?;
+        let src = RgbdPyramid::from_depth_mm(
+            &render_depth_mm(&scene, &intr, &IDENTITY_ROT, &[0.0; 3]),
+            &intr,
+            3,
+        )?;
+        let tgt = RgbdPyramid::from_depth_mm(
+            &render_depth_mm(&scene, &intr, &true_rot, &[0.01, 0.0, 0.0]),
+            &intr,
+            3,
+        )?;
+        let (prior_rot, _) = gt_target_source(&true_rot, &[0.01, 0.0, 0.0]);
+        let sigma = 0.1_f64.to_radians();
+        let a = icp_projective_plane(
+            &src,
+            &tgt,
+            IDENTITY_ROT,
+            [0.0; 3],
+            IcpPlaneCriteria {
+                rotation_prior: Some(RotationPrior {
+                    rotation: prior_rot,
+                    sigma_rad: sigma,
+                }),
+                ..Default::default()
+            },
+        )?;
+        let mut cov = [[0.0; 6]; 6];
+        for (i, row) in cov.iter_mut().enumerate() {
+            // translation variance huge: (1 km)^2
+            row[i] = if i < 3 { sigma * sigma } else { 1e6 };
+        }
+        let b = icp_projective_plane(
+            &src,
+            &tgt,
+            IDENTITY_ROT,
+            [0.0; 3],
+            IcpPlaneCriteria {
+                pose_prior: Some(PosePrior {
+                    rotation: prior_rot,
+                    translation: [5.0, -3.0, 1.0], // irrelevant at that variance
+                    covariance: cov,
+                }),
+                ..Default::default()
+            },
+        )?;
+        assert!(rotation_error_deg(&a.rotation, &b.rotation) < 1e-4);
+        assert!(translation_error(&a.translation, &b.translation) < 1e-6);
+        // and the prior never shows in the reported information
+        assert!(a.rotation_conditioning < 1e-3 && b.rotation_conditioning < 1e-3);
+
+        let mut bad = cov;
+        bad[0][0] = -1.0;
+        let err = icp_projective_plane(
+            &src,
+            &tgt,
+            IDENTITY_ROT,
+            [0.0; 3],
+            IcpPlaneCriteria {
+                pose_prior: Some(PosePrior {
+                    rotation: prior_rot,
+                    translation: [0.0; 3],
+                    covariance: bad,
+                }),
+                ..Default::default()
+            },
+        );
+        assert!(matches!(err, Err(RgbdIcpError::InvalidPriorCovariance)));
+        Ok(())
+    }
+
+    /// A per-pixel sigma map equal to the stereo model must weight like the model.
+    #[test]
+    fn sigma_map_matches_stereo_model() -> Result<(), Box<dyn std::error::Error>> {
+        let intr = test_intrinsics();
+        let scene = Scene::corner_and_sphere();
+        let rot_wc = axis_angle_to_rotation_matrix(&[0.0, 1.0, 0.0], 1.0_f64.to_radians())?;
+        let t_wc = [0.01, 0.0, 0.0];
+        let ds = render_depth_m(&scene, &intr, &IDENTITY_ROT, &[0.0; 3]);
+        let dt = render_depth_m(&scene, &intr, &rot_wc, &t_wc);
+        let sig = |d: &[f32]| -> Vec<f32> {
+            d.iter()
+                .map(|&z| TEST_STEREO.depth_sigma(z as f64) as f32)
+                .collect()
+        };
+        let model = icp_projective_plane(
+            &RgbdPyramid::from_depth_m(&ds, &intr, 3)?,
+            &RgbdPyramid::from_depth_m(&dt, &intr, 3)?,
+            IDENTITY_ROT,
+            [0.0; 3],
+            IcpPlaneCriteria {
+                depth_noise: TEST_STEREO,
+                ..Default::default()
+            },
+        )?;
+        // the map wins over the (deliberately wrong) constant model
+        let mapped = icp_projective_plane(
+            &RgbdPyramid::from_depth_m_with_sigma(&ds, &sig(&ds), &intr, 3)?,
+            &RgbdPyramid::from_depth_m_with_sigma(&dt, &sig(&dt), &intr, 3)?,
+            IDENTITY_ROT,
+            [0.0; 3],
+            IcpPlaneCriteria {
+                depth_noise: DepthNoise::Constant { sigma_m: 1.0 },
+                ..Default::default()
+            },
+        )?;
+        for i in 0..6 {
+            let rel = (model.information[i][i] - mapped.information[i][i]).abs()
+                / model.information[i][i];
+            assert!(rel < 1e-3, "information[{i}][{i}] differs by {rel:.3e}");
+        }
+        Ok(())
+    }
+
+    /// The default degeneracy threshold sits between an exact null space and the weakest
+    /// geometry the solver has always solved.
+    ///
+    /// Measured smallest/largest eigenvalue of the depth-scaled data matrix after a 20 mm slide,
+    /// same on mm and float depth: wall 0 (three directions), wall + 6 cm bump 5.1e-8, roll scene
+    /// 2.7e-5, corner + sphere 2.8e-2. Real sensor noise lifts a wall's null space far above 0,
+    /// so a caller gating on real data sets its own threshold.
+    #[test]
+    fn default_degeneracy_rtol_separates_null_space_from_weak_geometry(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let intr = test_intrinsics();
+        let plane = || Plane {
+            normal: [0.0, 0.0, 1.0],
+            d: 2.0,
+        };
+        let wall = Scene {
+            planes: vec![plane()],
+            spheres: vec![],
+        };
+        let bump = Scene {
+            planes: vec![plane()],
+            spheres: vec![Sphere {
+                center: [0.0, 0.0, 1.9],
+                radius: 0.06,
+            }],
+        };
+        let mut smallest = Vec::new();
+        for scene in [&wall, &bump, &Scene::corner_and_sphere()] {
+            let pyr = |t: &[f64; 3]| {
+                RgbdPyramid::from_depth_mm(
+                    &render_depth_mm(scene, &intr, &IDENTITY_ROT, t),
+                    &intr,
+                    3,
+                )
+            };
+            let (s, t) = (pyr(&[0.0; 3])?, pyr(&[0.02, 0.0, 0.0])?);
+            let c = IcpPlaneCriteria::default();
+            let r = icp_projective_plane(&s, &t, IDENTITY_ROT, [0.0; 3], c.clone())?;
+            let eqs = accumulate_level(
+                &s.levels[0],
+                &t.levels[0],
+                &r.rotation,
+                &r.translation,
+                &c,
+                &mut Vec::new(),
+            );
+            let (pairs, lmax) = scaled_eigen(&eqs.a, eqs.median_depth);
+            smallest.push((pairs[0].0 / lmax, pairs[3].0 / lmax, r.num_degenerate));
+        }
+        let (wall, bump, rich) = (smallest[0], smallest[1], smallest[2]);
+        assert!(wall.0 < 1e-12 && wall.2 == 3, "wall: {wall:?}");
+        assert!(
+            wall.1 > 1e-3,
+            "wall keeps three observed directions: {wall:?}"
+        );
+        assert!(
+            bump.0 > DEFAULT_DEGENERACY_RTOL && bump.2 == 0,
+            "bump must still be solved: {bump:?}"
+        );
+        assert!(rich.0 > 1e-3 && rich.2 == 0, "rich: {rich:?}");
         Ok(())
     }
 }
