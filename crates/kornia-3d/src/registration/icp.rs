@@ -26,6 +26,27 @@
 //! A system that does not constrain all six DoF still gets an answer: directions
 //! whose eigenvalue is negligible get zero information and take their update
 //! from a prior, or none (see [`IcpPlaneCriteria::degeneracy_rtol`]).
+//!
+//! # Input size: register on decimated depth, map at full resolution
+//!
+//! The cost of a call is linear in the pixels of pyramid level 0, so the real-time budget
+//! (20 ms on one Jetson Orin core at 15 Hz depth, about 8 ms on one x86 laptop core) is a
+//! contract on the input size, not on the sensor: **level 0 is at most 160x100 (16k pixels)**.
+//! Measured per call (pyramid of the new frame plus every level, 3 levels, on-CPU, x86 laptop
+//! under load, `benches/bench_icp.rs`): 320x200 costs 4.3x 160x100 (43.6 vs 10.2 ms), and a
+//! 320x200 frame decimated to 160x100 costs 12.6 ms, the halving included.
+//!
+//! A coarse-to-fine alternative that keeps a full-resolution top level (160x100 and coarser,
+//! then 2 iterations at 320x200) costs 32.0 ms on the same run: every pass at the top level is
+//! a 320x200 pass, and the pyramid still builds at full resolution. It is not the contract.
+//!
+//! Larger depth images are decimated before ICP, as RGB-D odometry systems do: build the
+//! source and the keyframe pyramids with [`RgbdPyramid::rebuild_decimated_from_depth_mm`] and
+//! [`super::rgbd::halvings_to_fit`]`(width, 160)`, and keep the full-resolution depth for map
+//! integration, where the detail is worth its cost. The decimation is the pyramid's own
+//! validity- and discontinuity-aware halving, so it neither fills holes nor averages across
+//! depth edges. What it gives up is the finest level's sub-pixel detail: the snapping bias of
+//! [`Association::Nearest`] doubles in metres per pixel.
 
 use super::rgbd::{is_valid_normal, is_valid_vertex, RgbdIcpError, RgbdLevel, RgbdPyramid};
 use nalgebra::Matrix6;
@@ -2651,6 +2672,65 @@ mod tests {
             "bump must still be solved: {bump:?}"
         );
         assert!(rich.0 > 1e-3 && rich.2 == 0, "rich: {rich:?}");
+        Ok(())
+    }
+
+    /// The decimated input contract keeps the motion grid's accuracy: registering on the input
+    /// halved once (160x90) recovers every motion within the full-resolution test's bounds.
+    #[test]
+    fn decimated_input_recovers_the_motion_grid() -> Result<(), Box<dyn std::error::Error>> {
+        let intr = test_intrinsics();
+        let scene = Scene::corner_and_sphere();
+        let mut scratch = super::super::rgbd::PyramidScratch::default();
+        let decimated = |depth: &[u16], scratch: &mut _| -> Result<RgbdPyramid, RgbdIcpError> {
+            let mut p = RgbdPyramid { levels: Vec::new() };
+            let k = super::super::rgbd::halvings_to_fit(intr.width, 160);
+            p.rebuild_decimated_from_depth_mm(depth, &intr, k, 3, IcpKernel::Simd, scratch)?;
+            Ok(p)
+        };
+        let src_depth = render_depth_mm(&scene, &intr, &IDENTITY_ROT, &[0.0; 3]);
+        let src_full = RgbdPyramid::from_depth_mm(&src_depth, &intr, 3)?;
+        let src_dec = decimated(&src_depth, &mut scratch)?;
+        assert_eq!(src_dec.levels[0].intrinsics.width, 160);
+        let cases: &[([f64; 3], f64, [f64; 3])] = &[
+            ([0.0, 1.0, 0.0], -2.0, [0.0, 0.0, 0.0]),
+            ([1.0, 0.0, 0.0], 0.0, [0.03, 0.0, 0.0]),
+            ([1.0, 0.0, 0.0], 0.0, [0.0, 0.0, 0.03]),
+            ([1.0, 1.0, 1.0], 2.0, [0.02, -0.02, 0.015]),
+        ];
+        for (axis, angle_deg, t_wc) in cases {
+            let rot_wc = axis_angle_to_rotation_matrix(axis, angle_deg.to_radians())?;
+            let tgt_depth = render_depth_mm(&scene, &intr, &rot_wc, t_wc);
+            let (rot_gt, t_gt) = gt_target_source(&rot_wc, t_wc);
+            let full = icp_projective_plane(
+                &src_full,
+                &RgbdPyramid::from_depth_mm(&tgt_depth, &intr, 3)?,
+                IDENTITY_ROT,
+                [0.0; 3],
+                IcpPlaneCriteria::default(),
+            )?;
+            let dec = icp_projective_plane(
+                &src_dec,
+                &decimated(&tgt_depth, &mut scratch)?,
+                IDENTITY_ROT,
+                [0.0; 3],
+                IcpPlaneCriteria::default(),
+            )?;
+            let err = |r: &IcpPlaneResult| {
+                (
+                    rotation_error_deg(&r.rotation, &rot_gt),
+                    translation_error(&r.translation, &t_gt) * 1e3,
+                )
+            };
+            let (ef, ed) = (err(&full), err(&dec));
+            eprintln!(
+                "{axis:?}/{angle_deg} deg/{t_wc:?}: full {:.4} deg {:.3} mm, decimated {:.4} deg \
+                 {:.3} mm",
+                ef.0, ef.1, ed.0, ed.1
+            );
+            assert!(ed.0 < 0.2 && ed.1 < 5.0, "decimated: {ed:?}");
+            assert_eq!(dec.num_degenerate, 0);
+        }
         Ok(())
     }
 

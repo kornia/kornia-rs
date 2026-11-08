@@ -1,7 +1,7 @@
 //! Real-time budget of one projective ICP call: pyramid build of the new frame plus every level.
 //!
-//! Budget: 20 ms on one Jetson Orin core at 320x200 (15 Hz depth); 8 ms single-threaded on an
-//! x86 laptop. Besides criterion, prints the per-call distribution (median / p95) of wall time and
+//! Budget: 20 ms on one Jetson Orin core at 15 Hz depth; 8 ms single-threaded on an x86 laptop.
+//! The 320x200 case also runs the decimated input contract (`decimated`: register at 160x100). Besides criterion, prints the per-call distribution (median / p95) of wall time and
 //! of on-CPU time from `/proc/thread-self/schedstat`, which stays meaningful on a loaded box.
 
 use criterion::{criterion_group, BenchmarkId, Criterion};
@@ -79,12 +79,15 @@ fn yaw(deg: f64) -> [[f64; 3]; 3] {
     [[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]]
 }
 
+/// Translation of the frame's camera from the keyframe's, metres.
+const TRUE_T: [f64; 3] = [0.02, 0.0, 0.01];
+
 const IDENTITY: [[f64; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
 struct Case {
     name: &'static str,
     intr: DepthIntrinsics,
-    keyframe: RgbdPyramid,
+    keyframe_depth: Vec<u16>,
     frame: Vec<u16>,
 }
 
@@ -93,13 +96,12 @@ fn cases() -> Vec<Case> {
         .into_iter()
         .map(|(w, h, name)| {
             let intr = intrinsics(w, h);
-            let kf = render(&intr, &IDENTITY, &[0.0; 3]);
-            let keyframe = RgbdPyramid::from_depth_mm(&kf, &intr, LEVELS).expect("keyframe");
-            let frame = render(&intr, &yaw(1.0), &[0.02, 0.0, 0.01]);
+            let keyframe_depth = render(&intr, &IDENTITY, &[0.0; 3]);
+            let frame = render(&intr, &yaw(1.0), &TRUE_T);
             Case {
                 name,
                 intr,
-                keyframe,
+                keyframe_depth,
                 frame,
             }
         })
@@ -123,6 +125,8 @@ enum Variant {
     Simd,
     /// As `Simd`, hybrid association.
     SimdHybrid,
+    /// As `Simd` on the input halved once: the decimated input contract.
+    Decimated,
 }
 
 impl Variant {
@@ -132,16 +136,32 @@ impl Variant {
             Variant::Scalar => "scalar",
             Variant::Simd => "simd",
             Variant::SimdHybrid => "simd-hybrid",
+            Variant::Decimated => "decimated",
+        }
+    }
+
+    /// (decimation, levels) of both pyramids.
+    fn pyramid(self) -> (usize, usize) {
+        match self {
+            Variant::Decimated => (1, LEVELS),
+            _ => (0, LEVELS),
         }
     }
 }
 
-const VARIANTS: [Variant; 4] = [
-    Variant::Legacy,
-    Variant::Scalar,
-    Variant::Simd,
-    Variant::SimdHybrid,
-];
+/// Variants of a case; the decimated ones only where halving lands on 160x100.
+fn variants(case: &Case) -> Vec<Variant> {
+    let mut v = vec![
+        Variant::Legacy,
+        Variant::Scalar,
+        Variant::Simd,
+        Variant::SimdHybrid,
+    ];
+    if case.intr.width == 320 {
+        v.push(Variant::Decimated);
+    }
+    v
+}
 
 /// Per-variant state reused across calls, as a real-time loop would hold it.
 struct Runner {
@@ -150,10 +170,11 @@ struct Runner {
     ws: IcpWorkspace,
     scratch: PyramidScratch,
     pyr: RgbdPyramid,
+    keyframe: RgbdPyramid,
 }
 
 impl Runner {
-    fn new(variant: Variant) -> Self {
+    fn new(variant: Variant, case: &Case) -> Self {
         let kernel = match variant {
             Variant::Scalar => IcpKernel::Scalar,
             _ => IcpKernel::Simd,
@@ -162,6 +183,19 @@ impl Runner {
             Variant::SimdHybrid => Association::Hybrid,
             _ => Association::Nearest,
         };
+        let (decimation, levels) = variant.pyramid();
+        let mut scratch = PyramidScratch::default();
+        let mut keyframe = RgbdPyramid { levels: Vec::new() };
+        keyframe
+            .rebuild_decimated_from_depth_mm(
+                &case.keyframe_depth,
+                &case.intr,
+                decimation,
+                levels,
+                kernel,
+                &mut scratch,
+            )
+            .expect("keyframe");
         Self {
             variant,
             criteria: IcpPlaneCriteria {
@@ -169,31 +203,35 @@ impl Runner {
                 ..Default::default()
             },
             ws: IcpWorkspace::new(kernel),
-            scratch: PyramidScratch::default(),
+            scratch,
             pyr: RgbdPyramid { levels: Vec::new() },
+            keyframe,
         }
     }
 
-    /// One call; returns (pyramid, icp) on-CPU ms and the iteration count.
-    fn call(&mut self, case: &Case) -> (f64, f64, usize) {
+    /// One call; returns (pyramid, icp) on-CPU ms, the iteration count and the error against
+    /// the rendered motion (rotation deg, translation mm).
+    fn call(&mut self, case: &Case) -> (f64, f64, usize, [f64; 2]) {
         let c0 = thread_cpu_ns().unwrap_or(0);
         let (c1, r) = if let Variant::Legacy = self.variant {
             let pyr = RgbdPyramid::from_depth_mm(&case.frame, &case.intr, LEVELS).expect("pyramid");
             let c1 = thread_cpu_ns().unwrap_or(0);
             let r = icp_projective_plane(
                 &pyr,
-                &case.keyframe,
+                &self.keyframe,
                 IDENTITY,
                 [0.0; 3],
                 self.criteria.clone(),
             );
             (c1, r)
         } else {
+            let (decimation, levels) = self.variant.pyramid();
             self.pyr
-                .rebuild_from_depth_mm(
+                .rebuild_decimated_from_depth_mm(
                     &case.frame,
                     &case.intr,
-                    LEVELS,
+                    decimation,
+                    levels,
                     self.ws.kernel,
                     &mut self.scratch,
                 )
@@ -202,7 +240,7 @@ impl Runner {
             let r = icp_projective_plane_with(
                 &mut self.ws,
                 &self.pyr,
-                &case.keyframe,
+                &self.keyframe,
                 IDENTITY,
                 [0.0; 3],
                 &self.criteria,
@@ -210,8 +248,23 @@ impl Runner {
             (c1, r)
         };
         let c2 = thread_cpu_ns().unwrap_or(0);
-        let iterations = std::hint::black_box(r.expect("icp")).iterations;
-        ((c1 - c0) as f64 * 1e-6, (c2 - c1) as f64 * 1e-6, iterations)
+        let r = std::hint::black_box(r.expect("icp"));
+        // the frame was rendered from the keyframe camera moved by (yaw(1 deg), TRUE_T)
+        let gt = yaw(1.0);
+        let trace: f64 = (0..3)
+            .map(|i| (0..3).map(|k| gt[k][i] * r.rotation[k][i]).sum::<f64>())
+            .sum();
+        let rot_err = ((trace - 1.0) / 2.0).clamp(-1.0, 1.0).acos().to_degrees();
+        let t_err = (0..3)
+            .map(|i| (r.translation[i] - TRUE_T[i]).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        (
+            (c1 - c0) as f64 * 1e-6,
+            (c2 - c1) as f64 * 1e-6,
+            r.iterations,
+            [rot_err, t_err * 1e3],
+        )
     }
 }
 
@@ -225,24 +278,25 @@ fn distribution() {
     let load = std::fs::read_to_string("/proc/loadavg").unwrap_or_default();
     println!("loadavg: {}", load.trim());
     for case in cases() {
-        for variant in VARIANTS {
-            let mut runner = Runner::new(variant);
+        for variant in variants(&case) {
+            let mut runner = Runner::new(variant, &case);
             for _ in 0..20 {
                 runner.call(&case);
             }
             let (mut wall, mut cpu, mut pyr_t, mut icp_t) =
                 (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-            let mut iters = 0;
+            let (mut iters, mut err) = (0, [0.0; 2]);
             let n = 200;
             let total0 = thread_cpu_ns().unwrap_or(0);
             for _ in 0..n {
                 let t0 = Instant::now();
-                let (p, i, it) = runner.call(&case);
+                let (p, i, it, e) = runner.call(&case);
                 wall.push(t0.elapsed().as_secs_f64() * 1e3);
                 cpu.push(p + i);
                 pyr_t.push(p);
                 icp_t.push(i);
                 iters = it;
+                err = e;
             }
             // schedstat only advances at scheduler ticks, so per-call CPU is quantised to ~1 ms;
             // the mean over all calls is exact
@@ -250,7 +304,8 @@ fn distribution() {
             let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len() as f64;
             println!(
                 "{} {:<11}: wall median {:6.2} p95 {:6.2} ms | on-CPU mean {:6.2} ms, p95 {:6.2} \
-                 (tick-quantised) | pyramid {:.2} + icp {:.2} ms mean, {iters} iterations",
+                 (tick-quantised) | pyramid {:.2} + icp {:.2} ms mean, {iters} iterations | \
+                 error {:.4} deg {:.3} mm",
                 case.name,
                 variant.name(),
                 pct(&mut wall, 0.5),
@@ -259,6 +314,8 @@ fn distribution() {
                 pct(&mut cpu, 0.95),
                 mean(&pyr_t),
                 mean(&icp_t),
+                err[0],
+                err[1],
             );
         }
     }
@@ -267,8 +324,8 @@ fn distribution() {
 fn bench_icp(c: &mut Criterion) {
     let mut group = c.benchmark_group("icp_call");
     for case in cases() {
-        for variant in VARIANTS {
-            let mut runner = Runner::new(variant);
+        for variant in variants(&case) {
+            let mut runner = Runner::new(variant, &case);
             group.bench_with_input(
                 BenchmarkId::new(variant.name(), case.name),
                 &case,

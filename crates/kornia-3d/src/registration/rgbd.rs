@@ -140,6 +140,29 @@ impl DepthIntrinsics {
     }
 }
 
+/// Number of 2x halvings that bring an image `width` pixels wide down to at most `max_width`.
+///
+/// The `decimation` argument of [`RgbdPyramid::rebuild_decimated_from_depth_mm`] for the ICP
+/// input contract (see the `registration::icp` module docs), e.g. `halvings_to_fit(320, 160)`
+/// is 1 and `halvings_to_fit(640, 160)` is 2.
+///
+/// # Arguments
+///
+/// * `width` - Input image width in pixels.
+/// * `max_width` - Largest width ICP should register at; `0` is treated as `1`.
+///
+/// # Returns
+///
+/// The smallest `k` with `width >> k <= max_width`.
+pub fn halvings_to_fit(width: usize, max_width: usize) -> usize {
+    let (mut w, mut k) = (width, 0);
+    while w > max_width.max(1) {
+        w /= 2;
+        k += 1;
+    }
+    k
+}
+
 /// Returns true if a vertex-map entry is a valid measurement (`z > 0`).
 #[inline]
 pub fn is_valid_vertex(v: &[f32; 3]) -> bool {
@@ -743,8 +766,51 @@ impl RgbdPyramid {
         kernel: IcpKernel,
         scratch: &mut PyramidScratch,
     ) -> Result<(), RgbdIcpError> {
+        self.rebuild_decimated_from_depth_mm(depth_mm, intr, 0, num_levels, kernel, scratch)
+    }
+
+    /// Rebuild this pyramid in place from a `u16` millimetre depth image halved `decimation`
+    /// times first, so level 0 is the decimated image, not the input.
+    ///
+    /// This is the decimation stage of the real-time ICP input contract (see the
+    /// `registration::icp` module docs): register on decimated depth, map at full resolution.
+    /// Each halving is [`downsample_depth_half`], the same validity- and discontinuity-aware rule
+    /// as between pyramid levels, so `decimation = 1` with `num_levels` levels equals levels
+    /// `1..=num_levels` of a full-resolution pyramid. Allocates nothing once warmed.
+    ///
+    /// # Arguments
+    ///
+    /// * `depth_mm` - Full-resolution depth in millimetres, `0` = invalid.
+    /// * `intr` - Intrinsics of `depth_mm`.
+    /// * `decimation` - Number of 2x halvings before level 0; see [`halvings_to_fit`].
+    /// * `num_levels` - Number of levels, at least 1.
+    /// * `kernel` - Scalar or SIMD vertex/normal maps.
+    /// * `scratch` - Reused intermediate buffers.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::from_depth_mm`]; [`RgbdIcpError::ImageTooSmall`] reports the level counted
+    /// from the decimated image.
+    pub fn rebuild_decimated_from_depth_mm(
+        &mut self,
+        depth_mm: &[u16],
+        intr: &DepthIntrinsics,
+        decimation: usize,
+        num_levels: usize,
+        kernel: IcpKernel,
+        scratch: &mut PyramidScratch,
+    ) -> Result<(), RgbdIcpError> {
         if num_levels == 0 {
             return Err(RgbdIcpError::InvalidNumLevels(num_levels));
+        }
+        let expected = intr.width * intr.height;
+        if depth_mm.len() != expected {
+            return Err(RgbdIcpError::InvalidDepthSize {
+                width: intr.width,
+                height: intr.height,
+                expected,
+                got: depth_mm.len(),
+            });
         }
         let blank = || RgbdLevel {
             intrinsics: intr.clone(),
@@ -764,13 +830,16 @@ impl RgbdPyramid {
             zs,
         } = scratch;
         let mut level_intr = intr.clone();
-        for level in 0..num_levels {
-            if level > 0 {
-                let src: &[u16] = if level == 1 { depth_mm } else { cur };
+        for step in 0..decimation + num_levels {
+            if step > 0 {
+                let src: &[u16] = if step == 1 { depth_mm } else { cur };
                 downsample_depth_half(src, level_intr.width, level_intr.height, next)?;
                 std::mem::swap(cur, next);
                 level_intr = level_intr.half();
             }
+            let Some(level) = step.checked_sub(decimation) else {
+                continue;
+            };
             if level_intr.width < 3 || level_intr.height < 3 {
                 return Err(RgbdIcpError::ImageTooSmall {
                     level,
@@ -778,7 +847,7 @@ impl RgbdPyramid {
                     height: level_intr.height,
                 });
             }
-            let depth: &[u16] = if level == 0 { depth_mm } else { cur };
+            let depth: &[u16] = if step == 0 { depth_mm } else { cur };
             let out = &mut self.levels[level];
             out.intrinsics = level_intr.clone();
             out.depth_sigmas.clear();
@@ -1183,6 +1252,33 @@ mod tests {
             worst_v < 1e-6 && worst_n < 1e-5,
             "{worst_v:.2e} / {worst_n:.2e}"
         );
+        Ok(())
+    }
+
+    /// Decimating once is dropping level 0: levels `1..=n` of a full pyramid, bit for bit.
+    #[test]
+    fn decimated_rebuild_is_the_full_pyramid_minus_its_finest_level(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let intr = test_intrinsics();
+        let depth = render_depth_mm(&Scene::corner_and_sphere(), &intr, &IDENTITY_ROT, &[0.0; 3]);
+        let mut scratch = PyramidScratch::default();
+        let mut full = RgbdPyramid { levels: Vec::new() };
+        let mut pyr = RgbdPyramid { levels: Vec::new() };
+        for kernel in [IcpKernel::Scalar, IcpKernel::Simd] {
+            full.rebuild_from_depth_mm(&depth, &intr, 4, kernel, &mut scratch)?;
+            pyr.rebuild_decimated_from_depth_mm(&depth, &intr, 1, 3, kernel, &mut scratch)?;
+            assert_eq!(pyr.levels.len(), 3);
+            for (a, b) in full.levels[1..].iter().zip(&pyr.levels) {
+                assert_eq!(a.intrinsics, b.intrinsics);
+                assert_eq!(a.vertices, b.vertices, "{kernel:?}");
+                assert_eq!(a.normals, b.normals, "{kernel:?}");
+            }
+        }
+        assert_eq!(pyr.levels[0].intrinsics.width, 160);
+        assert_eq!(halvings_to_fit(320, 160), 1);
+        assert_eq!(halvings_to_fit(640, 160), 2);
+        assert_eq!(halvings_to_fit(160, 160), 0);
+        assert_eq!(halvings_to_fit(330, 160), 2);
         Ok(())
     }
 }

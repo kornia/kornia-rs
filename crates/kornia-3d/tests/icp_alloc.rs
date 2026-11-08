@@ -97,39 +97,66 @@ fn warmed_call_does_not_allocate() -> Result<(), Box<dyn std::error::Error>> {
         width: 320,
         height: 200,
     };
-    let keyframe = RgbdPyramid::from_depth_mm(&render(&intr, 0.0), &intr, 3)?;
+    let kf_depth = render(&intr, 0.0);
     let frames = [render(&intr, 0.01), render(&intr, 0.02)];
     const IDENTITY: [[f64; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
-    for kernel in [IcpKernel::Simd, IcpKernel::Scalar] {
-        for association in [Association::Nearest, Association::Hybrid] {
-            let criteria = IcpPlaneCriteria {
-                association,
-                depth_noise: DepthNoise::Stereo {
-                    focal_px: 200.0,
-                    baseline_m: 0.075,
-                    sigma_disparity_px: 0.05,
-                },
-                ..Default::default()
-            };
-            let mut ws = IcpWorkspace::new(kernel);
-            let mut scratch = PyramidScratch::default();
-            let mut pyr = RgbdPyramid { levels: Vec::new() };
-            // warm-up: buffers grow to this image size
-            pyr.rebuild_from_depth_mm(&frames[0], &intr, 3, kernel, &mut scratch)?;
-            icp_projective_plane_with(&mut ws, &pyr, &keyframe, IDENTITY, [0.0; 3], &criteria)?;
+    for (kernel, association, decimation) in [
+        (IcpKernel::Simd, Association::Nearest, 0),
+        (IcpKernel::Simd, Association::Hybrid, 0),
+        (IcpKernel::Simd, Association::Nearest, 1),
+        (IcpKernel::Scalar, Association::Nearest, 0),
+        (IcpKernel::Scalar, Association::Hybrid, 0),
+    ] {
+        let criteria = IcpPlaneCriteria {
+            association,
+            depth_noise: DepthNoise::Stereo {
+                focal_px: 200.0,
+                baseline_m: 0.075,
+                sigma_disparity_px: 0.05,
+            },
+            ..Default::default()
+        };
+        let mut ws = IcpWorkspace::new(kernel);
+        let mut scratch = PyramidScratch::default();
+        let mut pyr = RgbdPyramid { levels: Vec::new() };
+        let mut keyframe = RgbdPyramid { levels: Vec::new() };
+        keyframe.rebuild_decimated_from_depth_mm(
+            &kf_depth,
+            &intr,
+            decimation,
+            3,
+            kernel,
+            &mut scratch,
+        )?;
+        // warm-up: buffers grow to this image size
+        pyr.rebuild_decimated_from_depth_mm(
+            &frames[0],
+            &intr,
+            decimation,
+            3,
+            kernel,
+            &mut scratch,
+        )?;
+        icp_projective_plane_with(&mut ws, &pyr, &keyframe, IDENTITY, [0.0; 3], &criteria)?;
 
-            let before = allocs();
-            pyr.rebuild_from_depth_mm(&frames[1], &intr, 3, kernel, &mut scratch)?;
-            let r =
-                icp_projective_plane_with(&mut ws, &pyr, &keyframe, IDENTITY, [0.0; 3], &criteria)?;
-            let n = allocs() - before;
-            assert!(r.num_associated > 1000);
-            assert_eq!(
-                n, 0,
-                "{kernel:?} {association:?}: {n} allocations in a warmed call"
-            );
-        }
+        let before = allocs();
+        pyr.rebuild_decimated_from_depth_mm(
+            &frames[1],
+            &intr,
+            decimation,
+            3,
+            kernel,
+            &mut scratch,
+        )?;
+        let r = icp_projective_plane_with(&mut ws, &pyr, &keyframe, IDENTITY, [0.0; 3], &criteria)?;
+        let n = allocs() - before;
+        assert!(r.num_associated > 1000);
+        assert_eq!(
+            n, 0,
+            "{kernel:?} {association:?} decimation {decimation}: {n} allocations in a \
+                 warmed call"
+        );
     }
     Ok(())
 }
