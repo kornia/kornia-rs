@@ -1095,6 +1095,89 @@ unsafe fn error_pass_interior_neon(
     }
 }
 
+/// One axis of a 21-tap window in `BorderMode::Clamp`: the clamped
+/// integer coordinate, its fraction, and whether the next pixel exists,
+/// exactly as `sample_at` -> `bilinear_interpolation` derive them.
+#[derive(Clone, Copy)]
+struct ClampTap {
+    idx: usize,
+    frac: f32,
+    has_next: bool,
+}
+
+fn clamp_taps(center: f32, len: usize) -> [ClampTap; 24] {
+    let max = len as f32 - 1.0;
+    let tap = |offset: i32| {
+        let f = (center + offset as f32).clamp(0.0, max);
+        let idx = (f.trunc() as usize).min(len - 1);
+        ClampTap {
+            idx,
+            frac: f.fract(),
+            has_next: idx + 1 < len,
+        }
+    };
+    // Lanes 21..24 pad the last vector and are discarded.
+    std::array::from_fn(|k| tap(k.min(20) as i32 - 10))
+}
+
+/// Samples the 21x21 window centred at `(cx, cy)` in `BorderMode::Clamp`
+/// into `out` (row-major), bit-identical to calling `sample_at` per pixel.
+///
+/// The clamp/trunc/fract work depends on one axis only, so it is tabulated
+/// once per window; the bilinear expression keeps `bilinear_interpolation`'s
+/// exact shape, evaluated 8 lanes at a time.
+fn sample_window_clamp(img: &Image<f32, 1>, cx: f32, cy: f32, out: &mut [f32; 441]) {
+    use wide::f32x8;
+    let cols = img.cols();
+    let data = img.as_slice();
+    let xs = clamp_taps(cx, cols);
+    let ys = clamp_taps(cy, img.rows());
+    let one = f32x8::splat(1.0);
+    for (wy, row) in ys.iter().take(21).enumerate() {
+        let base = row.idx * cols;
+        let fv = f32x8::splat(row.frac);
+        let fvv = one - fv;
+        for chunk in 0..3 {
+            let lanes = &xs[chunk * 8..chunk * 8 + 8];
+            let mut v00 = [0.0f32; 8];
+            let mut v01 = [0.0f32; 8];
+            let mut v10 = [0.0f32; 8];
+            let mut v11 = [0.0f32; 8];
+            let mut fu = [0.0f32; 8];
+            for (l, col) in lanes.iter().enumerate() {
+                let i00 = base + col.idx;
+                let val00 = data[i00];
+                v00[l] = val00;
+                v01[l] = if col.has_next { data[i00 + 1] } else { val00 };
+                v10[l] = if row.has_next {
+                    data[i00 + cols]
+                } else {
+                    val00
+                };
+                v11[l] = if col.has_next && row.has_next {
+                    data[i00 + cols + 1]
+                } else {
+                    val00
+                };
+                fu[l] = col.frac;
+            }
+            let fu = f32x8::from(fu);
+            let fuu = one - fu;
+            let w00 = fvv * fuu;
+            let w10 = fvv * fu;
+            let w01 = fv * fuu;
+            let w11 = fv * fu;
+            let v = w00 * f32x8::from(v00)
+                + w10 * f32x8::from(v01)
+                + w01 * f32x8::from(v10)
+                + w11 * f32x8::from(v11);
+            let v = v.to_array();
+            let n = (21 - chunk * 8).min(8);
+            out[wy * 21 + chunk * 8..wy * 21 + chunk * 8 + n].copy_from_slice(&v[..n]);
+        }
+    }
+}
+
 fn track_feature(
     pt: [f32; 2],
     initial_flow: Option<[f32; 2]>,
@@ -1161,6 +1244,21 @@ fn track_feature(
                 &mut ix_patch,
                 &mut iy_patch,
             );
+        } else if params.border_mode == BorderMode::Clamp {
+            sample_window_clamp(prev, xc, yc, &mut prev_patch);
+            sample_window_clamp(ix, xc, yc, &mut ix_patch);
+            sample_window_clamp(iy, xc, yc, &mut iy_patch);
+            let mut aa = 0.0f32;
+            let mut bb = 0.0f32;
+            let mut cc = 0.0f32;
+            for (&ixv, &iyv) in ix_patch.iter().zip(iy_patch.iter()) {
+                aa += ixv * ixv;
+                bb += ixv * iyv;
+                cc += iyv * iyv;
+            }
+            a = aa;
+            b = bb;
+            c = cc;
         } else {
             let mut aa = 0.0f32;
             let mut bb = 0.0f32;
@@ -1214,6 +1312,17 @@ fn track_feature(
 
             let (d, e) = if is_interior_for_lk(xnc, ync, next.cols(), next.rows()) {
                 iter_step_interior(next, xnc, ync, &prev_patch, &ix_patch, &iy_patch)
+            } else if params.border_mode == BorderMode::Clamp {
+                let mut next_patch = [0.0f32; WIN_PIXELS];
+                sample_window_clamp(next, xnc, ync, &mut next_patch);
+                let mut dd = 0.0f32;
+                let mut ee = 0.0f32;
+                for idx in 0..WIN_PIXELS {
+                    let it = next_patch[idx] - prev_patch[idx];
+                    dd -= ix_patch[idx] * it;
+                    ee -= iy_patch[idx] * it;
+                }
+                (dd, ee)
             } else {
                 let mut dd = 0.0f32;
                 let mut ee = 0.0f32;
@@ -1249,6 +1358,14 @@ fn track_feature(
             let ey = pt[1] + dy;
             let err_sum = if is_interior_for_lk(ex, ey, next.cols(), next.rows()) {
                 error_pass_interior(next, ex, ey, &prev_patch)
+            } else if params.border_mode == BorderMode::Clamp {
+                let mut next_patch = [0.0f32; WIN_PIXELS];
+                sample_window_clamp(next, ex, ey, &mut next_patch);
+                let mut err = 0.0f32;
+                for (i1, p0) in next_patch.iter().zip(prev_patch.iter()) {
+                    err += (i1 - p0).abs();
+                }
+                err
             } else {
                 let mut err = 0.0f32;
                 let mut idx = 0usize;
@@ -1471,6 +1588,42 @@ pub fn calc_optical_flow_pyr_lk_with_precomputed(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The tabulated Clamp window must equal `sample_at` per pixel, bit for
+    /// bit, for centres inside, on and past every border.
+    #[test]
+    fn clamp_window_matches_sample_at_bits() -> Result<(), PyrLKError> {
+        let (w, h) = (47usize, 30usize);
+        let data: Vec<f32> = (0..w * h)
+            .map(|i| ((i * 7919) % 257) as f32 * 0.731 + 0.125)
+            .collect();
+        let img = Image::<f32, 1>::new(
+            ImageSize {
+                width: w,
+                height: h,
+            },
+            data,
+        )?;
+        let mut out = [0.0f32; 441];
+        let centres = [
+            -12.3f32, -0.5, 0.0, 3.75, 9.99, 10.0, 23.5, 35.2, 36.0, 46.0, 46.9, 58.1,
+        ];
+        for &cx in &centres {
+            for &cy in &centres {
+                sample_window_clamp(&img, cx, cy, &mut out);
+                let mut idx = 0;
+                for wy in -10i32..=10 {
+                    for wx in -10i32..=10 {
+                        let want =
+                            sample_at(&img, cx + wx as f32, cy + wy as f32, BorderMode::Clamp);
+                        assert_eq!(out[idx].to_bits(), want.to_bits(), "({cx},{cy}) {wx},{wy}");
+                        idx += 1;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 
     fn default_params() -> PyrLKParams {
         PyrLKParams::default()
