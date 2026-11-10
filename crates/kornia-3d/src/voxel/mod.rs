@@ -47,6 +47,8 @@ pub use grid::VoxelGrid;
 #[cfg(feature = "cuda")]
 pub use cuda::{CudaNeighbourCounts, CudaVoxelCloud, CudaVoxelFilter, MAX_CUDA_VOXEL_POINTS};
 
+pub(crate) use downsample::CellRuns;
+
 use crate::pointcloud::filter::FilterError;
 
 /// Integer voxel coordinates `(x, y, z)`.
