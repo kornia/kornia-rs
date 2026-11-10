@@ -1,0 +1,1 @@
+`kornia_algebra::simd` adds `F32x8` and `Mask32x8`, eight-lane `f32` and mask types held as two `F32x4`/`Mask32x4` halves (SSE2 x2 on x86-64, NEON x2 on aarch64), with the `F32x4` API and NaN rules; `bitmask` bit `i` is lane `i` over 8 bits. `bench_simd_lanes` now also runs `F32x8`.
