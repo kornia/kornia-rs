@@ -1,3 +1,4 @@
+use kornia_algebra::Vec4F32;
 use kornia_image::{Image, ImageError, ImageSize};
 use rayon::{
     iter::{IndexedParallelIterator, ParallelIterator},
@@ -501,6 +502,65 @@ pub fn spatial_gradient_float_parallel<const C: usize>(
     Ok(())
 }
 
+/// Interior columns of one single-channel row of
+/// [`scharr_spatial_gradient_float`], 4 outputs per [`Vec4F32`].
+///
+/// Each lane runs the scalar kernel's exact sequence (nine products added in
+/// `dy`-major order, separate `*` and `+`, no FMA), so the output is
+/// bit-identical to the per-pixel loop.
+fn scharr_row_interior_c1(
+    src: &[f32],
+    cols: usize,
+    r: usize,
+    kx: &[[f32; 3]; 3],
+    ky: &[[f32; 3]; 3],
+    dx_row: &mut [f32],
+    dy_row: &mut [f32],
+) {
+    use crate::simd::load_vec4f32;
+    let load = |i: usize| load_vec4f32(src, i);
+    let end = cols - 1;
+    let mut c = 1usize;
+    // Eight vectors per step: independent add chains for the add ports.
+    for width in [8usize, 1] {
+        while c + 4 * width <= end {
+            let mut sum_x = [Vec4F32::ZERO; 8];
+            let mut sum_y = [Vec4F32::ZERO; 8];
+            for dy in 0..3 {
+                let row = (r + dy - 1) * cols;
+                for dx in 0..3 {
+                    let (wx, wy) = (kx[dy][dx], ky[dy][dx]);
+                    for v in 0..width {
+                        let val = load(row + c + 4 * v + dx - 1);
+                        sum_x[v] += val * wx;
+                        sum_y[v] += val * wy;
+                    }
+                }
+            }
+            for v in 0..width {
+                let cv = c + 4 * v;
+                dx_row[cv..cv + 4].copy_from_slice(&sum_x[v].to_array());
+                dy_row[cv..cv + 4].copy_from_slice(&sum_y[v].to_array());
+            }
+            c += 4 * width;
+        }
+    }
+    for c in c..end {
+        let mut sum_x = 0.0f32;
+        let mut sum_y = 0.0f32;
+        for dy in 0..3 {
+            let row = (r + dy - 1) * cols;
+            for dx in 0..3 {
+                let val = src[row + c + dx - 1];
+                sum_x += val * kx[dy][dx];
+                sum_y += val * ky[dy][dx];
+            }
+        }
+        dx_row[c] = sum_x;
+        dy_row[c] = sum_y;
+    }
+}
+
 /// Compute the first order image derivative in both x and y using a Scharr operator.
 ///
 /// # Arguments
@@ -541,11 +601,19 @@ pub fn scharr_spatial_gradient_float<const C: usize>(
         .zip(dy.as_slice_mut().par_chunks_mut(cols * C))
         .enumerate()
         .for_each(|(r, (dx_row, dy_row))| {
+            let vector_row =
+                C == 1 && src.rows() >= 2 && src.cols() >= 2 && r > 0 && r < src.rows() - 1;
+            if vector_row {
+                scharr_row_interior_c1(src_data, cols, r, &scharr_x, &scharr_y, dx_row, dy_row);
+            }
             dx_row
                 .chunks_mut(C)
                 .zip(dy_row.chunks_mut(C))
                 .enumerate()
                 .for_each(|(c, (dx_c, dy_c))| {
+                    if vector_row && c > 0 && c < cols - 1 {
+                        return;
+                    }
                     let mut sum_x = [0.0; C];
                     let mut sum_y = [0.0; C];
                     if src.rows() >= 2
@@ -1985,6 +2053,38 @@ unsafe fn hpass_sym7_row_avx2<const C: usize>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The single-channel vector rows must match the per-pixel loop bit for
+    /// bit; a 3-channel copy takes that loop, so its channel 0 is the oracle.
+    #[test]
+    fn test_scharr_float_vector_matches_scalar_bits() -> Result<(), ImageError> {
+        let mut state = 0x2545_f491_u32;
+        for (width, height) in [(2, 2), (3, 5), (9, 4), (17, 9), (94, 60), (752, 480)] {
+            let size = ImageSize { width, height };
+            let plane: Vec<f32> = (0..width * height)
+                .map(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 17;
+                    state ^= state << 5;
+                    (state % 25_500) as f32 / 100.0
+                })
+                .collect();
+            let rgb: Vec<f32> = plane.iter().flat_map(|&v| [v, v, v]).collect();
+            let src1 = Image::<f32, 1>::new(size, plane)?;
+            let src3 = Image::<f32, 3>::new(size, rgb)?;
+            let mut dx1 = Image::<f32, 1>::from_size_val(size, 0.0)?;
+            let mut dy1 = Image::<f32, 1>::from_size_val(size, 0.0)?;
+            let mut dx3 = Image::<f32, 3>::from_size_val(size, 0.0)?;
+            let mut dy3 = Image::<f32, 3>::from_size_val(size, 0.0)?;
+            scharr_spatial_gradient_float(&src1, &mut dx1, &mut dy1)?;
+            scharr_spatial_gradient_float(&src3, &mut dx3, &mut dy3)?;
+            for i in 0..width * height {
+                assert_eq!(dx1.as_slice()[i].to_bits(), dx3.as_slice()[i * 3].to_bits());
+                assert_eq!(dy1.as_slice()[i].to_bits(), dy3.as_slice()[i * 3].to_bits());
+            }
+        }
+        Ok(())
+    }
 
     #[cfg(target_arch = "aarch64")]
     #[test]
