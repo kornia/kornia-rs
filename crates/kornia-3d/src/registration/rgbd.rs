@@ -1,5 +1,5 @@
-//! Depth-image (RGB-D) geometry for projective registration: vertex and normal maps, and
-//! depth halving.
+//! Depth-image (RGB-D) geometry for projective registration: vertex and normal maps, depth
+//! halving, and the coarse-to-fine [`RgbdPyramid`].
 //!
 //! The surface measurement of KinectFusion (Newcombe et al., "KinectFusion: Real-time dense
 //! surface mapping and tracking", ISMAR 2011, section 3.2): each depth pixel back-projected
@@ -47,6 +47,19 @@ pub enum RgbdIcpError {
         expected: ImageSize,
         /// Size of the given output.
         got: ImageSize,
+    },
+    /// A pyramid was requested with zero levels.
+    #[error("pyramid needs at least 1 level, got {0}")]
+    InvalidNumLevels(usize),
+    /// The image becomes too small to process at the requested pyramid level.
+    #[error("image is {width}x{height} at pyramid level {level}; need at least 3x3")]
+    ImageTooSmall {
+        /// Pyramid level at which the image became too small (0 = finest).
+        level: usize,
+        /// Image width at that level.
+        width: usize,
+        /// Image height at that level.
+        height: usize,
     },
     /// An image operation failed.
     #[error(transparent)]
@@ -299,6 +312,162 @@ pub fn downsample_depth_half(
     }
 
     Ok(())
+}
+
+/// Intrinsics of the image [`downsample_depth_half`] produces from one seen by `camera`.
+///
+/// With pixel centres at integer coordinates, a half-resolution pixel `u` covers the 2x2
+/// full-resolution block centred at `2u + 0.5`, so `u_full = 2 u_half + 0.5`. Substituting into
+/// the projection gives `fx' = fx / 2` and `cx' = (cx + 0.5) / 2 - 0.5` (likewise for y).
+fn half_camera(camera: &PinholeCamera) -> PinholeCamera {
+    PinholeCamera {
+        fx: camera.fx / 2.0,
+        fy: camera.fy / 2.0,
+        cx: (camera.cx + 0.5) / 2.0 - 0.5,
+        cy: (camera.cy + 0.5) / 2.0 - 0.5,
+        ..camera.clone()
+    }
+}
+
+/// One resolution level of an [`RgbdPyramid`]: intrinsics plus vertex and normal maps.
+///
+/// Built by [`RgbdPyramid`] only; later per-level maps become new fields.
+#[derive(Clone)]
+#[non_exhaustive]
+pub struct RgbdLevel {
+    /// Intrinsics at this level's resolution, without distortion.
+    pub(crate) camera: PinholeCamera,
+    /// Camera-frame vertex map in metres, `[0, 0, 0]` = invalid.
+    pub(crate) vertices: Image<f32, 3>,
+    /// Unit normal map oriented towards the camera, `[0, 0, 0]` = invalid.
+    pub(crate) normals: Image<f32, 3>,
+}
+
+// Fields stay crate-private so the maps always share one size and match `camera`: the
+// association indexes all of them with one pixel index.
+impl RgbdLevel {
+    /// Size of this level's maps in pixels.
+    pub fn size(&self) -> ImageSize {
+        self.vertices.size()
+    }
+
+    /// Intrinsics at this level's resolution, without distortion.
+    pub fn camera(&self) -> &PinholeCamera {
+        &self.camera
+    }
+
+    /// Camera-frame vertex map in metres, `[0, 0, 0]` = invalid.
+    pub fn vertices(&self) -> &Image<f32, 3> {
+        &self.vertices
+    }
+
+    /// Unit normal map oriented towards the camera, `[0, 0, 0]` = invalid.
+    pub fn normals(&self) -> &Image<f32, 3> {
+        &self.normals
+    }
+}
+
+/// Coarse-to-fine pyramid of vertex and normal maps built from one depth image.
+///
+/// `levels[0]` is the input resolution; each further level halves the depth with
+/// [`downsample_depth_half`] and the intrinsics to match.
+#[derive(Clone)]
+pub struct RgbdPyramid {
+    /// Pyramid levels, finest first.
+    pub(crate) levels: Vec<RgbdLevel>,
+}
+
+impl RgbdPyramid {
+    /// Pyramid levels, finest first.
+    pub fn levels(&self) -> &[RgbdLevel] {
+        &self.levels
+    }
+
+    /// Builds a pyramid with `num_levels` levels from a millimetre depth image.
+    ///
+    /// # Arguments
+    ///
+    /// * `depth` - Depth in millimetres, `0` = invalid.
+    /// * `camera` - Intrinsics of `depth`, without distortion.
+    /// * `num_levels` - Number of levels, at least 1.
+    ///
+    /// # Returns
+    ///
+    /// The pyramid, finest level first.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RgbdIcpError::InvalidNumLevels`] if `num_levels` is 0,
+    /// [`RgbdIcpError::ImageTooSmall`] if a level would be smaller than 3x3, and
+    /// [`RgbdIcpError::DistortedCamera`] if `camera` has non-zero distortion, and
+    /// [`RgbdIcpError::InvalidIntrinsics`] if its focal lengths are not finite and positive or
+    /// its principal point is not finite.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_3d::camera::PinholeCamera;
+    /// use kornia_3d::registration::RgbdPyramid;
+    /// use kornia_image::{Image, ImageSize};
+    ///
+    /// let size = ImageSize { width: 64, height: 48 };
+    /// let depth = Image::<u16, 1>::from_size_val(size, 1500)?;
+    /// let camera = PinholeCamera { fx: 50.0, fy: 50.0, cx: 31.5, cy: 23.5, ..PinholeCamera::IDENTITY };
+    /// let pyramid = RgbdPyramid::from_depth_mm(&depth, &camera, 3)?;
+    /// assert_eq!(pyramid.levels()[2].size(), ImageSize { width: 16, height: 12 });
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn from_depth_mm(
+        depth: &Image<u16, 1>,
+        camera: &PinholeCamera,
+        num_levels: usize,
+    ) -> Result<Self, RgbdIcpError> {
+        if num_levels == 0 {
+            return Err(RgbdIcpError::InvalidNumLevels(num_levels));
+        }
+        check_camera(camera)?;
+
+        let mut levels = Vec::with_capacity(num_levels);
+        let mut level_camera = camera.clone();
+        // level 0 reads `depth` directly; `halved` holds the depth from level 1 on
+        let mut halved: Option<Image<u16, 1>> = None;
+        for level in 0..num_levels {
+            let cur = halved.as_ref().unwrap_or(depth);
+            let size = if level == 0 {
+                cur.size()
+            } else {
+                ImageSize {
+                    width: cur.width() / 2,
+                    height: cur.height() / 2,
+                }
+            };
+            if size.width < 3 || size.height < 3 {
+                return Err(RgbdIcpError::ImageTooSmall {
+                    level,
+                    width: size.width,
+                    height: size.height,
+                });
+            }
+            if level > 0 {
+                let mut half = Image::from_size_val(size, 0u16)?;
+                downsample_depth_half(cur, &mut half)?;
+                halved = Some(half);
+                level_camera = half_camera(&level_camera);
+            }
+            let cur = halved.as_ref().unwrap_or(depth);
+            let mut vertices = Image::from_size_val(size, 0.0f32)?;
+            vertex_map_from_depth_mm(cur, &level_camera, &mut vertices)?;
+            let mut normals = Image::from_size_val(size, 0.0f32)?;
+            normal_map_from_vertex_map(&vertices, &mut normals)?;
+            levels.push(RgbdLevel {
+                camera: level_camera.clone(),
+                vertices,
+                normals,
+            });
+        }
+
+        Ok(Self { levels })
+    }
 }
 
 #[cfg(test)]
@@ -578,6 +747,92 @@ mod tests {
         assert!(matches!(
             downsample_depth_half(&src, &mut wrong),
             Err(RgbdIcpError::SizeMismatch { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn test_pyramid_levels_and_intrinsics() -> Result<(), Box<dyn std::error::Error>> {
+        let camera = test_camera();
+        let mut depth = render_depth_mm(
+            &Scene::corner_and_sphere(),
+            &camera,
+            TEST_SIZE,
+            &Mat3F64::IDENTITY,
+            &Vec3F64::ZERO,
+        )?;
+        // punch a 4x4 hole so coarser levels must keep it invalid
+        for y in 60..64 {
+            for x in 100..104 {
+                depth.as_slice_mut()[y * TEST_SIZE.width + x] = 0;
+            }
+        }
+
+        let pyr = RgbdPyramid::from_depth_mm(&depth, &camera, 3)?;
+        assert_eq!(pyr.levels.len(), 3);
+
+        let mut expected = camera.clone();
+        for (i, level) in pyr.levels.iter().enumerate() {
+            if i > 0 {
+                expected = half_camera(&expected);
+            }
+            assert_eq!(
+                level.camera.intrinsics(),
+                expected.intrinsics(),
+                "intrinsics at level {i}"
+            );
+            let n = level.size().width * level.size().height;
+            assert_eq!(level.normals.size(), level.size());
+            let valid = level
+                .vertices
+                .as_slice()
+                .chunks_exact(3)
+                .filter(|v| v[2] > 0.0)
+                .count();
+            assert!(valid > n / 2, "level {i} should be mostly valid");
+        }
+        assert_eq!(
+            pyr.levels[1].size(),
+            ImageSize {
+                width: 160,
+                height: 90
+            }
+        );
+        assert_eq!(
+            pyr.levels[2].size(),
+            ImageSize {
+                width: 80,
+                height: 45
+            }
+        );
+        // cx convention: cx' = (cx + 0.5) / 2 - 0.5
+        assert!((pyr.levels[1].camera.cx - ((159.5 + 0.5) / 2.0 - 0.5)).abs() < 1e-12);
+        assert!((pyr.levels[1].camera.fx - 100.0).abs() < 1e-12);
+
+        // the hole survives downsampling: the level-1 block covering the hole centre is invalid
+        let l1 = &pyr.levels[1];
+        assert_eq!(
+            l1.vertices.as_slice()[3 * (31 * l1.size().width + 51) + 2],
+            0.0
+        );
+
+        // a level-1 vertex projects back onto its own pixel with the halved intrinsics
+        let idx = 45 * l1.size().width + 80;
+        let p = &l1.vertices.as_slice()[3 * idx..3 * idx + 3];
+        let uv = l1
+            .camera
+            .project_to_pixel(&Vec3F64::new(p[0] as f64, p[1] as f64, p[2] as f64), 0.0)
+            .ok_or("valid vertex must project")?;
+        assert!((uv.x - 80.0).abs() < 1e-3 && (uv.y - 45.0).abs() < 1e-3);
+
+        // errors
+        assert!(matches!(
+            RgbdPyramid::from_depth_mm(&depth, &camera, 0),
+            Err(RgbdIcpError::InvalidNumLevels(0))
+        ));
+        assert!(matches!(
+            RgbdPyramid::from_depth_mm(&depth, &camera, 8),
+            Err(RgbdIcpError::ImageTooSmall { level: 6, .. })
         ));
         Ok(())
     }
