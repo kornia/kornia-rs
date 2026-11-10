@@ -4,14 +4,22 @@
 //! between two depth frames given as [`RgbdPyramid`]s, coarse-to-fine.
 //! Correspondences come from projective association (no kd-tree): each source
 //! vertex is transformed by the current estimate, projected into the target
-//! grid with the target level intrinsics, and matched to the nearest pixel's
-//! vertex/normal.
+//! grid with the target level intrinsics, and matched to the target vertex/normal
+//! at that projection.
+//!
+//! Reference: projective data association with the point-to-plane metric as in
+//! R. A. Newcombe et al., "KinectFusion: Real-Time Dense Surface Mapping and
+//! Tracking", ISMAR 2011 (Section 3.5), after Y. Chen and G. Medioni, "Object
+//! Modelling by Registration of Multiple Range Images", 1992. Departures: frame
+//! to keyframe rather than frame to model, Huber and depth-noise row weights,
+//! and the degenerate-direction handling described below.
 //!
 //! Per correspondence the point-to-plane residual is `r = n_t . (T*p_s - v_t)`
 //! with Jacobian row `[(p' x n_t)^T, n_t^T]` where `p' = T*p_s` (left
-//! perturbation `T <- exp([w, t]) * T`). The target vertex and normal are
-//! bilinearly interpolated at the projection of `p'` and held fixed within an
-//! iteration. Maps stay `f32`; `J^T W J` / `J^T W r`
+//! perturbation `T <- exp([w, t]) * T`). The target vertex and normal are read at
+//! the projection of `p'` as [`IcpPlaneCriteria::association`] selects (the
+//! nearest pixel by default, or a bilinear blend, see [`Association`]) and held
+//! fixed within an iteration. Maps stay `f32`; `J^T W J` / `J^T W r`
 //! are accumulated in `f64` and the 6x6 system is solved by Cholesky.
 //!
 //! Each row is weighted by `1 / sigma^2`, the variance of its residual under

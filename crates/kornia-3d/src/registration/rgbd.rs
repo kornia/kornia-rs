@@ -182,6 +182,11 @@ pub fn is_valid_normal(n: &[f32; 3]) -> bool {
 /// Back-project a `u16` millimetre depth image into a camera-frame vertex map in metres.
 ///
 /// Invalid depth (`0`) maps to `[0, 0, 0]`. `out` is resized to `width * height`.
+///
+/// # Errors
+///
+/// Returns [`RgbdIcpError::InvalidDepthSize`] if `depth_mm.len()` is not
+/// `intr.width * intr.height`.
 pub fn depth_to_vertex_map(
     depth_mm: &[u16],
     intr: &DepthIntrinsics,
@@ -286,6 +291,11 @@ pub fn depth_m_to_vertex_map(
 /// normal is `normalize((v[u+1] - v[u-1]) x (v[v+1] - v[v-1]))`, flipped to face
 /// the camera (`n · vertex < 0`). Border pixels and pixels with any invalid
 /// neighbor get `[0, 0, 0]`. `out` is resized to `width * height`.
+///
+/// # Errors
+///
+/// Returns [`RgbdIcpError::InvalidVertexMapSize`] if `vertices.len()` is not
+/// `width * height`.
 pub fn vertex_map_to_normal_map(
     vertices: &[[f32; 3]],
     width: usize,
@@ -362,10 +372,15 @@ const DOWNSAMPLE_JUMP_MM: i32 = 50;
 ///
 /// Each output pixel covers a 2x2 input block: invalid (`0`) samples are
 /// ignored, the lower median of the valid samples is taken as pivot, and only
-/// samples within [`DOWNSAMPLE_JUMP_MM`] of the pivot are averaged. This never
+/// samples within `DOWNSAMPLE_JUMP_MM` (50 mm) of the pivot are averaged. This never
 /// averages across depth discontinuities and never fills holes: a fully
 /// invalid block stays `0`. `out` is resized to `(width / 2) * (height / 2)`
 /// (floor; a trailing odd row/column is dropped).
+///
+/// # Errors
+///
+/// Returns [`RgbdIcpError::InvalidDepthSize`] if `depth_mm.len()` is not
+/// `width * height`.
 pub fn downsample_depth_half(
     depth_mm: &[u16],
     width: usize,
@@ -698,6 +713,13 @@ pub struct RgbdPyramid {
 
 impl RgbdPyramid {
     /// Build a pyramid with `num_levels` levels from a `u16` millimetre depth image.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RgbdIcpError::InvalidNumLevels`] if `num_levels` is 0,
+    /// [`RgbdIcpError::InvalidDepthSize`] if `depth_mm.len()` is not
+    /// `intr.width * intr.height`, and [`RgbdIcpError::ImageTooSmall`] if a level
+    /// would be smaller than 3x3.
     pub fn from_depth_mm(
         depth_mm: &[u16],
         intr: &DepthIntrinsics,
