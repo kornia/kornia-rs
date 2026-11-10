@@ -29,6 +29,10 @@ impl PyCpuFeatures {
         self.0.has_avx512bw
     }
     #[getter]
+    fn has_popcnt(&self) -> bool {
+        self.0.has_popcnt
+    }
+    #[getter]
     fn has_neon(&self) -> bool {
         self.0.has_neon
     }
@@ -48,8 +52,8 @@ impl PyCpuFeatures {
     fn __repr__(&self) -> String {
         let f = &self.0;
         format!(
-            "CpuFeatures(avx2={}, fma={}, avx512f={}, avx512bw={}, neon={}, fp16={}, dotprod={}, sve={})",
-            f.has_avx2, f.has_fma, f.has_avx512f, f.has_avx512bw,
+            "CpuFeatures(avx2={}, fma={}, avx512f={}, avx512bw={}, popcnt={}, neon={}, fp16={}, dotprod={}, sve={})",
+            f.has_avx2, f.has_fma, f.has_avx512f, f.has_avx512bw, f.has_popcnt,
             f.has_neon, f.has_fp16, f.has_dotprod, f.has_sve,
         )
     }

@@ -21,6 +21,8 @@ pub struct CpuFeatures {
     pub has_avx512f: bool,
     /// AVX-512BW (byte + word ops on 512-bit lanes).
     pub has_avx512bw: bool,
+    /// POPCNT (population count on 64-bit registers).
+    pub has_popcnt: bool,
 
     /// NEON (Advanced SIMD) — architectural on aarch64.
     pub has_neon: bool,
@@ -40,6 +42,7 @@ impl CpuFeatures {
             has_fma: std::is_x86_feature_detected!("fma"),
             has_avx512f: std::is_x86_feature_detected!("avx512f"),
             has_avx512bw: std::is_x86_feature_detected!("avx512bw"),
+            has_popcnt: std::is_x86_feature_detected!("popcnt"),
             has_neon: false,
             has_fp16: false,
             has_dotprod: false,
@@ -54,6 +57,7 @@ impl CpuFeatures {
             has_fma: false,
             has_avx512f: false,
             has_avx512bw: false,
+            has_popcnt: false,
             has_neon: true,
             has_fp16: std::arch::is_aarch64_feature_detected!("fp16"),
             has_dotprod: std::arch::is_aarch64_feature_detected!("dotprod"),
@@ -68,6 +72,7 @@ impl CpuFeatures {
             has_fma: false,
             has_avx512f: false,
             has_avx512bw: false,
+            has_popcnt: false,
             has_neon: false,
             has_fp16: false,
             has_dotprod: false,
@@ -83,6 +88,28 @@ impl CpuFeatures {
 pub fn cpu_features() -> &'static CpuFeatures {
     static CPU: OnceLock<CpuFeatures> = OnceLock::new();
     CPU.get_or_init(CpuFeatures::probe)
+}
+
+/// Horizontal sum of a `__m256` of 8 f32 lanes.
+///
+/// # Safety
+///
+/// The caller must ensure AVX is available.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+pub(crate) unsafe fn hsum_avx_ps(v: std::arch::x86_64::__m256) -> f32 {
+    use std::arch::x86_64::*;
+    // SAFETY: caller guarantees AVX; these intrinsics only use registers.
+    unsafe {
+        let hi = _mm256_extractf128_ps::<1>(v);
+        let lo = _mm256_castps256_ps128(v);
+        let s128 = _mm_add_ps(lo, hi);
+        let shuf = _mm_movehdup_ps(s128);
+        let sums = _mm_add_ps(s128, shuf);
+        let shuf = _mm_movehl_ps(sums, sums);
+        let sums = _mm_add_ss(sums, shuf);
+        _mm_cvtss_f32(sums)
+    }
 }
 
 #[cfg(test)]
