@@ -19,8 +19,9 @@ const MIN_ITEMS_PER_TASK: usize = 4096;
 /// Flips the sign bit so that unsigned order equals signed order.
 const KEY_BIAS: u32 = 0x8000_0000;
 
-/// Sort word of a point that has no valid key; sorts after every valid one
-/// (a valid word's index is at most [`MAX_VOXEL_POINTS`] − 1 < `u32::MAX`).
+/// Sort word of a point that has no valid key: no valid word can equal it
+/// (a valid word's index is at most [`MAX_VOXEL_POINTS`] − 1 < `u32::MAX`),
+/// so it marks the offending point without disturbing the others.
 const INVALID_WORD: u128 = u128::MAX;
 
 /// Which point represents a voxel in [`voxel_downsample`].
@@ -126,12 +127,16 @@ impl VoxelDownsampler {
         self.words.clear();
         self.words.resize(n, 0);
         let (s, o, r) = (layout.voxel_size(), layout.origin(), layout.inv_size());
-        self.words
+        // The key is computed once per point, and the smallest index whose
+        // key is not representable is found in the same pass (`min` is
+        // associative, so the task split does not change it).
+        let first_invalid = self
+            .words
             .par_iter_mut()
             .with_min_len(MIN_ITEMS_PER_TASK)
             .zip(points.par_iter())
             .enumerate()
-            .for_each(|(i, (w, p))| {
+            .map(|(i, (w, p))| {
                 *w = match (
                     axis_key(p[0], o[0], s, r),
                     axis_key(p[1], o[1], s, r),
@@ -140,13 +145,11 @@ impl VoxelDownsampler {
                     (Some(x), Some(y), Some(z)) => word_from_key(&[x, y, z], i as u32),
                     _ => INVALID_WORD,
                 };
-            });
-        if let Some(index) = self
-            .words
-            .par_iter()
-            .with_min_len(MIN_ITEMS_PER_TASK)
-            .position_first(|&w| w == INVALID_WORD)
-        {
+                (*w == INVALID_WORD).then_some(i)
+            })
+            .flatten()
+            .min();
+        if let Some(index) = first_invalid {
             return Err(VoxelError::PointOutOfRange { index });
         }
         // Words are unique (distinct indices), so the unstable sort is
@@ -877,7 +880,8 @@ impl<'a> VoxelView<'a> {
 /// copied into an owned cloud.
 ///
 /// The output is in ascending voxel key order (lexicographic `(x, y, z)`),
-/// the same for any permutation-free rerun. Open3D's `voxel_down_sample`
+/// so rerunning on the same input gives the same cloud. Open3D's
+/// `voxel_down_sample`
 /// returns the same centroids in hash-map order; compare with it as sets.
 /// For [`DownsampleMode::First`] and [`DownsampleMode::NearestToCentre`]
 /// the chosen points are input points: [`VoxelView::first`] and

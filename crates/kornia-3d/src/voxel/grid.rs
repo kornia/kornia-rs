@@ -5,6 +5,14 @@ use super::{VoxelConnectivity, VoxelKey, VoxelLayout};
 /// A sparse voxel grid: one value of type `T` per occupied voxel, stored in
 /// a [`HashMap`] keyed by [`VoxelKey`].
 ///
+/// This is the user-facing map for state held per voxel (counts, labels,
+/// accumulated statistics), the role of PCL's `VoxelGrid`. The ops in this
+/// module do not use it: downsampling,
+/// [`voxel_neighbour_counts`](super::voxel_neighbour_counts) and
+/// [`remove_sparse_voxels`](super::remove_sparse_voxels) sort packed
+/// `(key, index)` words instead, which stays deterministic and avoids a hash
+/// probe per point.
+///
 /// [`iter`](Self::iter) visits the voxels in hash order, which is not part
 /// of the API and changes between runs (the map is randomly seeded);
 /// [`sorted_keys`](Self::sorted_keys) gives a deterministic order.

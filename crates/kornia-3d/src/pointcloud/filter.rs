@@ -63,6 +63,7 @@ type KdTree = ImmutableKdTree<f64, u32, 3, KD_BUCKET>;
 
 /// Errors of the point cloud filters.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum FilterError {
     /// The search radius is not finite and positive, or its square
     /// overflows `f64`.
