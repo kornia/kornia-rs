@@ -54,7 +54,14 @@ __device__ __forceinline__ float clamp01(float v) {
     return fminf(fmaxf(v, 0.0f), 1.0f);
 }
 
-// BT.601 luma weights (the u8 Q14 kernel is cuda-oxide, see gray.rs).
+// BT.601 luma weights.
+// u8: OpenCV's Q14 fixed point — matches color/gray/kernels.rs
+// (4899*R + 9617*G + 1868*B + 8192) >> 14, byte-parity with cv2. Used by the
+// NVRTC fallback of the cuda-oxide gray kernel (gray.rs).
+#define GRAY_WR_Q14 4899u
+#define GRAY_WG_Q14 9617u
+#define GRAY_WB_Q14 1868u
+#define GRAY_Q14_HALF 8192u
 // f32 — matches color/gray/kernels.rs RW_F32/GW_F32/BW_F32.
 #define GRAY_WR_F 0.299f
 #define GRAY_WG_F 0.587f
@@ -127,9 +134,9 @@ __device__ __forceinline__ void store_c3_quad(
 /// Error type returned by the CUDA color-conversion launchers.
 #[derive(Debug, thiserror::Error)]
 pub enum CudaColorError {
-    /// The kernel is unavailable: NVRTC compilation failed, the cuda-oxide
-    /// module failed to load, or the build has stub PTX (deterministic; cached
-    /// and returned on every call).
+    /// The kernel is unavailable: NVRTC compilation failed (deterministic;
+    /// cached and returned on every call). A cuda-oxide kernel that cannot
+    /// load falls back to NVRTC, so this means the fallback failed too.
     #[error("CUDA color kernel unavailable: {0}")]
     Compile(String),
     /// CUDA driver / launch failure.

@@ -1,15 +1,24 @@
 //! kornia's CUDA kernels written in Rust (`device/`), compiled to one PTX
 //! module by [cuda-oxide](https://github.com/NVIDIA/cuda-rust) ahead of time
 //! and shipped in this crate (`ptx` feature). Without `cuda` this is
-//! host-only, `no_std` data; the `cuda` feature adds the loader ([`kernel`],
-//! [`load_ptx_many`]). See `docs/cuda-oxide.md`.
+//! host-only, `no_std` data; the `cuda` feature adds [`OxideError`] and the
+//! loader, which only kornia's own launchers call (hidden `__private` path:
+//! a loaded kernel's launch takes unchecked arguments). See `docs/cuda-oxide.md`.
 #![cfg_attr(not(feature = "cuda"), no_std)]
 #![deny(missing_docs)]
 
 #[cfg(feature = "cuda")]
 mod loader;
 #[cfg(feature = "cuda")]
-pub use loader::{kernel, load_ptx_many, OxideError};
+pub use loader::OxideError;
+
+/// Not public API: the loader, for kornia's launchers only. A kernel from it
+/// launches with whatever arguments the caller passes, unchecked.
+#[cfg(feature = "cuda")]
+#[doc(hidden)]
+pub mod __private {
+    pub use crate::loader::{kernel, load_ptx_many};
+}
 
 /// The PTX module (target `sm_75`) holding every entry in [`ENTRIES`].
 /// Empty when [`IS_STUB`].

@@ -2,15 +2,62 @@
 //!
 //! u8 mirrors the CPU Q14 fixed-point math bit-for-bit
 //! (`color/gray/kernels.rs`); f32 uses the same BT.601 weights. RGB8 → Gray8
-//! is a cuda-oxide kernel (`kornia-oxide-kernels/device/src/color.rs`); the
-//! rest are NVRTC.
+//! is a cuda-oxide kernel (`kornia-oxide-kernels/device/src/color.rs`), with
+//! its NVRTC twin below as the fallback; the rest are NVRTC.
 
 use std::sync::Arc;
 
 use cudarc::driver::{CudaSlice, CudaStream};
 use kornia_oxide_kernels as oxide;
 
+use kornia_tensor::CudaKernel;
+
 use super::{get_kernel, launch_map, CudaColorError, KernelCell, PxPerThread};
+
+// The NVRTC twin of the cuda-oxide kernel, for GPUs older than sm_75
+// (Maxwell/Pascal, e.g. Jetson Nano/TX2) and builds without real PTX.
+// Vectorized: each thread handles 4 pixels = 12 src bytes (three 32-bit word
+// loads; `launch_map` rejects unaligned pointers) and stores the 4 grays as
+// one 32-bit word. The last (partial) quad falls back to byte addressing.
+// Math is the same rounding Q14 formula as the CPU path (OpenCV's) —
+// bit-exact with CPU and cv2.
+static GRAY_FROM_RGB_U8_SRC: &str = r#"
+__device__ __forceinline__ unsigned int gray_q14(
+    unsigned int r, unsigned int g, unsigned int b)
+{
+    return (GRAY_WR_Q14 * r + GRAY_WG_Q14 * g + GRAY_WB_Q14 * b + GRAY_Q14_HALF) >> 14;
+}
+
+extern "C" __global__ void gray_from_rgb_u8(
+    const unsigned char* __restrict__ src,
+    unsigned char* __restrict__ dst,
+    unsigned int npixels)
+{
+    unsigned int q = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int nquads = (npixels + 3u) / 4u;
+    if (q >= nquads) return;
+
+    unsigned int p = q * 4u;
+    if (p + 4u <= npixels) {
+        const unsigned int* s32 = (const unsigned int*)src;
+        unsigned int w0 = __ldg(&s32[q * 3u]);
+        unsigned int w1 = __ldg(&s32[q * 3u + 1u]);
+        unsigned int w2 = __ldg(&s32[q * 3u + 2u]);
+        // Byte layout: w0 = r0 g0 b0 r1 | w1 = g1 b1 r2 g2 | w2 = b2 r3 g3 b3
+        unsigned int g0 = gray_q14(w0 & 0xFFu, (w0 >> 8) & 0xFFu, (w0 >> 16) & 0xFFu);
+        unsigned int g1 = gray_q14(w0 >> 24, w1 & 0xFFu, (w1 >> 8) & 0xFFu);
+        unsigned int g2 = gray_q14((w1 >> 16) & 0xFFu, w1 >> 24, w2 & 0xFFu);
+        unsigned int g3 = gray_q14((w2 >> 8) & 0xFFu, (w2 >> 16) & 0xFFu, w2 >> 24);
+        ((unsigned int*)dst)[q] = g0 | (g1 << 8) | (g2 << 16) | (g3 << 24);
+    } else {
+        for (unsigned int i = p; i < npixels; ++i) {
+            unsigned int b = i * 3u;
+            dst[i] = (unsigned char)gray_q14(
+                __ldg(&src[b]), __ldg(&src[b + 1u]), __ldg(&src[b + 2u]));
+        }
+    }
+}
+"#;
 
 static GRAY_FROM_RGB_F32_SRC: &str = r#"
 extern "C" __global__ void gray_from_rgb_f32(
@@ -82,6 +129,7 @@ extern "C" __global__ void rgb_from_gray_f32(
 "#;
 
 static GRAY_F64: super::KernelSuiteCell = super::KernelSuiteCell::new();
+static GRAY_FROM_RGB_U8: KernelCell = KernelCell::new();
 static GRAY_FROM_RGB_F32: KernelCell = KernelCell::new();
 static RGB_FROM_GRAY_U8: KernelCell = KernelCell::new();
 static RGB_FROM_GRAY_F32: KernelCell = KernelCell::new();
@@ -90,7 +138,9 @@ static RGB_FROM_GRAY_F32: KernelCell = KernelCell::new();
 /// (OpenCV Q14, bit-exact vs CPU).
 ///
 /// Word-vectorized 4 px/thread; the kernel is written in Rust
-/// (`kornia-oxide-kernels/device/src/color.rs`) and needs an sm_75+ GPU.
+/// (`kornia-oxide-kernels/device/src/color.rs`). On a GPU older than sm_75,
+/// in a build without real PTX, or if that module fails to load, the same
+/// kernel compiled from CUDA C by NVRTC runs instead.
 ///
 /// # Arguments
 ///
@@ -105,8 +155,8 @@ static RGB_FROM_GRAY_F32: KernelCell = KernelCell::new();
 ///
 /// # Errors
 ///
-/// Returns [`CudaColorError::Compile`] if the kernel module fails to load (or
-/// the build has stub PTX), [`CudaColorError::TooManyPixels`] if `3 * npixels`
+/// Returns [`CudaColorError::Compile`] if neither kernel is available (the
+/// NVRTC fallback failed to compile), [`CudaColorError::TooManyPixels`] if `3 * npixels`
 /// exceeds `u32::MAX`, [`CudaColorError::SliceTooSmall`] if a buffer is short,
 /// [`CudaColorError::Misaligned`] if `src` or `dst` is not 4-byte aligned (an
 /// alias at an odd offset), or [`CudaColorError::Cuda`] if the launch fails.
@@ -116,11 +166,50 @@ pub fn launch_gray_from_rgb_u8(
     dst: &mut CudaSlice<u8>,
     npixels: usize,
 ) -> Result<(), CudaColorError> {
-    // Before the module load, so zero pixels is a no-op even with stub PTX.
+    launch_gray_from_rgb_u8_with(stream, src, dst, npixels, GrayU8Kernel::Auto)
+}
+
+/// Which RGB8 → Gray8 kernel to launch; tests force the fallback.
+#[derive(Clone, Copy)]
+enum GrayU8Kernel {
+    /// cuda-oxide, else NVRTC.
+    Auto,
+    /// NVRTC only. Only tests pick it.
+    #[cfg_attr(not(test), allow(dead_code))]
+    Nvrtc,
+}
+
+fn gray_from_rgb_u8_kernel(
+    stream: &Arc<CudaStream>,
+    which: GrayU8Kernel,
+) -> Result<&'static CudaKernel, CudaColorError> {
+    if let GrayU8Kernel::Auto = which {
+        // Any oxide error (old GPU, stub PTX, failed load) means NVRTC; the
+        // loader retries a failed load on the next call.
+        if let Ok(k) = oxide::__private::kernel(stream, oxide::entry::GRAY_FROM_RGB_U8) {
+            return Ok(k);
+        }
+    }
+    get_kernel(
+        &GRAY_FROM_RGB_U8,
+        stream,
+        GRAY_FROM_RGB_U8_SRC,
+        "gray_from_rgb_u8",
+    )
+}
+
+fn launch_gray_from_rgb_u8_with(
+    stream: &Arc<CudaStream>,
+    src: &CudaSlice<u8>,
+    dst: &mut CudaSlice<u8>,
+    npixels: usize,
+    which: GrayU8Kernel,
+) -> Result<(), CudaColorError> {
+    // Before the kernel fetch, so zero pixels never loads or compiles one.
     if npixels == 0 {
         return Ok(());
     }
-    let kernel = oxide::kernel(stream, oxide::entry::GRAY_FROM_RGB_U8)?;
+    let kernel = gray_from_rgb_u8_kernel(stream, which)?;
     launch_map(kernel, stream, src, dst, npixels, 3, 1, PxPerThread::Four)
 }
 
@@ -300,6 +389,36 @@ mod tests {
             ),
             "n={n} must reach the length check"
         );
+    }
+
+    /// The NVRTC fallback (pre-sm_75 GPUs, stub PTX, a failed module load),
+    /// forced here, matches the CPU path byte for byte on every tail.
+    #[test]
+    fn gray_from_rgb_u8_nvrtc_fallback_bit_exact() {
+        let stream = default_stream();
+        for n in [1, 2, 3, 4, 5, 7, 8, 1023, 37 * 23, 640 * 480 + 1] {
+            let src = pattern_u8(n * 3);
+            let mut cpu = vec![0u8; n];
+            crate::color::gray::kernels::gray_from_rgb_u8(&src, &mut cpu, n);
+
+            let d_src = stream.clone_htod(&src).unwrap();
+            let mut d_dst = stream.alloc_zeros::<u8>(n).unwrap();
+            launch_gray_from_rgb_u8_with(&stream, &d_src, &mut d_dst, n, GrayU8Kernel::Nvrtc)
+                .unwrap();
+            let out: Vec<u8> = stream.clone_dtoh(&d_dst).unwrap();
+            stream.synchronize().unwrap();
+            assert_eq!(out, cpu, "NVRTC vs CPU (n={n})");
+        }
+    }
+
+    /// Without real PTX the public launcher picks the NVRTC kernel instead of
+    /// failing; with it, the cuda-oxide one.
+    #[test]
+    fn gray_from_rgb_u8_kernel_selection() {
+        let stream = default_stream();
+        let auto = gray_from_rgb_u8_kernel(&stream, GrayU8Kernel::Auto).unwrap();
+        let nvrtc = gray_from_rgb_u8_kernel(&stream, GrayU8Kernel::Nvrtc).unwrap();
+        assert_eq!(std::ptr::eq(auto, nvrtc), oxide::IS_STUB);
     }
 
     /// A slice aliasing an allocation at an odd offset (as `from_dlpack` builds
