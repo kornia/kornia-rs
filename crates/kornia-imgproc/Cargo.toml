@@ -121,6 +121,10 @@ name = "bench_optical_flow"
 
 [[bench]]
 harness = false
+name = "bench_frontend"
+
+[[bench]]
+harness = false
 name = "bench_contours"
 required-features = ["opencv_bench"]
 
