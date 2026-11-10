@@ -1,8 +1,9 @@
 //! Synthetic analytic depth renderer for the registration tests.
 //!
 //! Raycasts a scene of (infinite) planes and spheres from a posed pinhole camera, producing a
-//! `u16` millimetre depth image. Conventions match [`super::rgbd`]: OpenCV pinhole, +Z forward,
-//! camera pose given as `T_world_cam` (camera-to-world), depth is z-depth in millimetres.
+//! `u16` millimetre depth image or an exact `f32` vertex map. Conventions match
+//! [`super::rgbd`]: OpenCV pinhole, +Z forward, camera pose given as `T_world_cam`
+//! (camera-to-world), depth is z-depth in millimetres.
 
 use crate::camera::PinholeCamera;
 use kornia_algebra::{Mat3F64, Vec3F64};
@@ -155,4 +156,25 @@ pub(crate) fn render_depth_mm(
         }
     }
     Ok(depth)
+}
+
+/// Renders an exact `f32` camera-frame vertex map (no millimetre quantization), `[0, 0, 0]` =
+/// miss. Same conventions as [`super::rgbd::vertex_map_from_depth_mm`].
+pub(crate) fn render_vertex_map(
+    scene: &Scene,
+    camera: &PinholeCamera,
+    size: ImageSize,
+    rot_world_cam: &Mat3F64,
+    t_world_cam: &Vec3F64,
+) -> Result<Image<f32, 3>, ImageError> {
+    let mut verts = Image::from_size_val(size, 0.0f32)?;
+    for (idx, px) in verts.as_slice_mut().chunks_exact_mut(3).enumerate() {
+        let (u, v) = (idx % size.width, idx / size.width);
+        if let Some(z) = raycast_pixel(scene, camera, rot_world_cam, t_world_cam, u, v) {
+            px[0] = ((u as f64 - camera.cx) * z / camera.fx) as f32;
+            px[1] = ((v as f64 - camera.cy) * z / camera.fy) as f32;
+            px[2] = z as f32;
+        }
+    }
+    Ok(verts)
 }

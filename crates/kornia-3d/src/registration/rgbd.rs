@@ -1,4 +1,5 @@
-//! Depth-image (RGB-D) geometry for projective registration: vertex maps.
+//! Depth-image (RGB-D) geometry for projective registration: vertex and normal maps, and
+//! depth halving.
 //!
 //! The surface measurement of KinectFusion (Newcombe et al., "KinectFusion: Real-time dense
 //! surface mapping and tracking", ISMAR 2011, section 3.2): each depth pixel back-projected
@@ -12,8 +13,11 @@
 //!   [`kornia_imgproc::depth::is_valid_depth_u16`].
 //! * Vertex maps: `Image<f32, 3>` of camera-frame points in metres, `[0, 0, 0]` = invalid
 //!   (a valid vertex always has `z > 0`).
+//! * Normal maps: `Image<f32, 3>` of unit normals oriented towards the camera (`n . v < 0`),
+//!   `[0, 0, 0]` = invalid.
 
 use crate::camera::PinholeCamera;
+use kornia_algebra::Vec3F32;
 use kornia_image::{Image, ImageError, ImageSize};
 use kornia_imgproc::depth::is_valid_depth_u16;
 
@@ -152,9 +156,156 @@ pub fn vertex_map_from_depth_mm(
     Ok(())
 }
 
+/// Returns true if a normal-map entry is valid: finite and non-zero.
+#[inline]
+pub fn is_valid_normal(n: &[f32; 3]) -> bool {
+    (n[0] != 0.0 || n[1] != 0.0 || n[2] != 0.0) && n.iter().all(|c| c.is_finite())
+}
+
+/// Computes a normal map from a vertex map by the cross product of central differences.
+///
+/// For each interior pixel with a valid centre and four valid neighbours, the normal is
+/// `normalize((v[u+1] - v[u-1]) x (v[v+1] - v[v-1]))`, flipped to face the camera
+/// (`n . vertex < 0`). Border pixels and pixels with an invalid neighbour get `[0, 0, 0]`.
+/// This is the normal estimate of KinectFusion (Newcombe et al., ISMAR 2011, eq. 2), with
+/// central instead of forward differences, so the normal is centred on its pixel.
+///
+/// # Arguments
+///
+/// * `src` - Camera-frame vertex map, `[0, 0, 0]` = invalid.
+/// * `dst` - Output normal map, the size of `src`.
+///
+/// # Returns
+///
+/// `Ok(())` once `dst` holds the normal map.
+///
+/// # Errors
+///
+/// Returns [`RgbdIcpError::SizeMismatch`] if `dst` is not the size of `src`.
+pub fn normal_map_from_vertex_map(
+    src: &Image<f32, 3>,
+    dst: &mut Image<f32, 3>,
+) -> Result<(), RgbdIcpError> {
+    check_size(src.size(), dst.size())?;
+    let (width, height) = (src.width(), src.height());
+    let vertex = |idx: usize| -> [f32; 3] {
+        let s = &src.as_slice()[3 * idx..3 * idx + 3];
+        [s[0], s[1], s[2]]
+    };
+    let out = dst.as_slice_mut();
+    out.fill(0.0);
+    if width < 3 || height < 3 {
+        return Ok(());
+    }
+
+    for y in 1..height - 1 {
+        for x in 1..width - 1 {
+            let idx = y * width + x;
+            let center = vertex(idx);
+            let (left, right) = (vertex(idx - 1), vertex(idx + 1));
+            let (up, down) = (vertex(idx - width), vertex(idx + width));
+            if ![center, left, right, up, down].iter().all(is_valid_vertex) {
+                continue;
+            }
+
+            let v = Vec3F32::from_array;
+            // central differences along u and v; their cross product is the surface normal
+            let n = (v(right) - v(left)).cross(v(down) - v(up));
+            let norm = n.length();
+            if norm.is_nan() || norm < 1e-12 {
+                continue;
+            }
+
+            // orient towards the camera: the view ray is the vertex itself
+            let flip = if n.dot(v(center)) > 0.0 { -1.0 } else { 1.0 };
+            out[3 * idx..3 * idx + 3].copy_from_slice(&(n / norm * flip).to_array());
+        }
+    }
+
+    Ok(())
+}
+
+/// Largest in-block depth spread that is still averaged together when downsampling; samples
+/// further than this from the block median belong to another surface (a depth
+/// discontinuity) and are excluded.
+const DOWNSAMPLE_JUMP_MM: i32 = 50;
+
+/// Halves a millimetre depth image, validity- and discontinuity-aware.
+///
+/// Each output pixel covers a 2x2 input block. Invalid (`0`) samples are ignored, the lower
+/// median of the valid samples is the pivot, and only samples within 50 mm of the pivot are
+/// averaged (rounded). So the output never averages across a depth discontinuity and never
+/// fills holes: a fully invalid block stays `0`. A trailing odd row or column is dropped.
+/// KinectFusion builds its depth pyramid the same way (block average within `3 sigma` of the
+/// centre); the median pivot here keeps a single foreground sample from choosing the surface.
+///
+/// # Arguments
+///
+/// * `src` - Depth in millimetres, `0` = invalid.
+/// * `dst` - Output depth of size `(width / 2, height / 2)` (floor).
+///
+/// # Returns
+///
+/// `Ok(())` once `dst` holds the halved depth.
+///
+/// # Errors
+///
+/// Returns [`RgbdIcpError::SizeMismatch`] if `dst` is not `(width / 2, height / 2)`.
+pub fn downsample_depth_half(
+    src: &Image<u16, 1>,
+    dst: &mut Image<u16, 1>,
+) -> Result<(), RgbdIcpError> {
+    let half = ImageSize {
+        width: src.width() / 2,
+        height: src.height() / 2,
+    };
+    check_size(half, dst.size())?;
+    let (width, depth) = (src.width(), src.as_slice());
+
+    for (y, out_row) in dst
+        .as_slice_mut()
+        .chunks_exact_mut(half.width.max(1))
+        .enumerate()
+    {
+        let row0 = &depth[2 * y * width..];
+        let row1 = &depth[(2 * y + 1) * width..];
+        for (x, out) in out_row.iter_mut().enumerate() {
+            let block = [row0[2 * x], row0[2 * x + 1], row1[2 * x], row1[2 * x + 1]];
+            let mut valid = [0u16; 4];
+            let mut n = 0;
+            for &d in &block {
+                if is_valid_depth_u16(d) {
+                    valid[n] = d;
+                    n += 1;
+                }
+            }
+            if n == 0 {
+                *out = 0;
+                continue;
+            }
+            valid[..n].sort_unstable();
+            // lower median: always an actual sample, so it cannot itself straddle a
+            // discontinuity
+            let pivot = valid[(n - 1) / 2] as i32;
+            let (mut sum, mut count) = (0u32, 0u32);
+            for &d in &valid[..n] {
+                if (d as i32 - pivot).abs() <= DOWNSAMPLE_JUMP_MM {
+                    sum += d as u32;
+                    count += 1;
+                }
+            }
+            *out = ((sum + count / 2) / count) as u16;
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::super::synth::{render_depth_mm, test_camera, Scene, TEST_SIZE};
+    use super::super::synth::{
+        render_depth_mm, render_vertex_map, test_camera, Plane, Scene, TEST_SIZE,
+    };
     use super::*;
     use kornia_algebra::{Mat3F64, Vec3F64};
 
@@ -285,6 +436,149 @@ mod tests {
         assert!(!is_valid_vertex(&[0.0, 0.0, f32::NAN]));
         assert!(!is_valid_vertex(&[0.0, 0.0, f32::INFINITY]));
         assert!(!is_valid_vertex(&[0.0, 0.0, 0.0]));
+        Ok(())
+    }
+
+    #[test]
+    fn test_tilted_plane_normals_within_one_degree() -> Result<(), Box<dyn std::error::Error>> {
+        let camera = test_camera();
+        // plane tilted 20 degrees about the x-axis, ~1.5 m in front of the camera
+        let (s, c) = (20.0f64).to_radians().sin_cos();
+        let scene = Scene {
+            planes: vec![Plane {
+                normal: Vec3F64::new(0.0, s, c),
+                d: 1.5,
+            }],
+            spheres: vec![],
+        };
+        // camera-facing ground-truth normal (n_z < 0)
+        let n_gt = [0.0, -s, -c];
+
+        // exact (float) vertex map, so the test isolates the cross-product math from u16
+        // millimetre quantization
+        let verts = render_vertex_map(
+            &scene,
+            &camera,
+            TEST_SIZE,
+            &Mat3F64::IDENTITY,
+            &Vec3F64::ZERO,
+        )?;
+        let mut normals = Image::<f32, 3>::from_size_val(TEST_SIZE, 0.0)?;
+        normal_map_from_vertex_map(&verts, &mut normals)?;
+
+        let max_angle_rad = 1.0f64.to_radians();
+        let mut checked = 0;
+        for (idx, n) in normals.as_slice().chunks_exact(3).enumerate() {
+            if !is_valid_normal(&[n[0], n[1], n[2]]) {
+                continue;
+            }
+            let dot = (n[0] as f64 * n_gt[0] + n[1] as f64 * n_gt[1] + n[2] as f64 * n_gt[2])
+                .clamp(-1.0, 1.0);
+            let angle = dot.acos();
+            assert!(
+                angle < max_angle_rad,
+                "normal at pixel {idx} off by {} deg",
+                angle.to_degrees()
+            );
+            checked += 1;
+        }
+        // all interior pixels see the plane
+        assert_eq!(checked, (TEST_SIZE.width - 2) * (TEST_SIZE.height - 2));
+
+        // same pixel count, different shape
+        let mut wrong = Image::<f32, 3>::from_size_val(
+            ImageSize {
+                width: TEST_SIZE.height,
+                height: TEST_SIZE.width,
+            },
+            0.0,
+        )?;
+        assert!(matches!(
+            normal_map_from_vertex_map(&verts, &mut wrong),
+            Err(RgbdIcpError::SizeMismatch { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn test_downsample_holes_and_discontinuities() -> Result<(), Box<dyn std::error::Error>> {
+        // 8x8: left half at 1000 mm, right half at 2000 mm, one hole block, one block with a
+        // single valid sample
+        let (w, h) = (8usize, 8usize);
+        let mut depth: Vec<u16> = (0..w * h)
+            .map(|i| if i % w < 4 { 1000 } else { 2000 })
+            .collect();
+        // fully invalid 2x2 block at output (0, 0)
+        for i in [0, 1, w, w + 1] {
+            depth[i] = 0;
+        }
+        // single valid sample in block at output (1, 1): keep only (2, 2)
+        for i in [2 * w + 3, 3 * w + 2, 3 * w + 3] {
+            depth[i] = 0;
+        }
+        // 3-valid block at output (2, 0) (input x 4..6, y 0..2) straddling the
+        // discontinuity: one foreground sample, two background
+        depth[w + 4] = 0;
+        depth[4] = 1000;
+        depth[5] = 2000;
+        depth[w + 5] = 2000;
+
+        let src = Image::<u16, 1>::new(
+            ImageSize {
+                width: w,
+                height: h,
+            },
+            depth,
+        )?;
+        let half_size = ImageSize {
+            width: w / 2,
+            height: h / 2,
+        };
+        let mut dst = Image::<u16, 1>::from_size_val(half_size, 7)?;
+        downsample_depth_half(&src, &mut dst)?;
+        let (half, hw) = (dst.as_slice(), w / 2);
+
+        // hole block stays invalid: holes never get filled
+        assert_eq!(half[0], 0);
+        // single valid sample passes through unchanged
+        assert_eq!(half[hw + 1], 1000);
+        // uniform blocks average exactly
+        assert_eq!(half[2 * hw], 1000);
+        assert_eq!(half[2 * hw + 3], 2000);
+        // mixed 1000/2000 block sides with the median surface, never smears
+        assert_eq!(
+            half[2], 2000,
+            "block with samples [1000, 2000, 2000] must resolve to the median surface"
+        );
+        // no output pixel anywhere may be an average across the 1 m jump
+        for &d in half {
+            assert!(
+                d == 0 || (d as i32 - 1500).abs() > 400,
+                "smeared depth {d} across discontinuity"
+            );
+        }
+
+        // a 9x9 input halves to 4x4 (floor); a 5x4 output is a shape error
+        let odd = Image::<u16, 1>::from_size_val(
+            ImageSize {
+                width: 9,
+                height: 9,
+            },
+            1000,
+        )?;
+        downsample_depth_half(&odd, &mut dst)?;
+        assert!(dst.as_slice().iter().all(|&d| d == 1000));
+        let mut wrong = Image::<u16, 1>::from_size_val(
+            ImageSize {
+                width: 5,
+                height: 4,
+            },
+            0,
+        )?;
+        assert!(matches!(
+            downsample_depth_half(&src, &mut wrong),
+            Err(RgbdIcpError::SizeMismatch { .. })
+        ));
         Ok(())
     }
 }
