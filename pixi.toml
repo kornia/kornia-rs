@@ -193,6 +193,8 @@ sysroot_linux-aarch64 = "*"
 scripts = ["scripts/activate-cuda.sh"]
 
 [feature.cuda.tasks]
+# `cuda` needs the Rust CUDA kernels' PTX: in a checkout, build it once with
+# `cargo run -p kornia-oxide-kernels --example build_ptx` (docs/cuda-oxide.md).
 rust-build-cuda = { cmd = "cargo build --features cuda", description = "Build Rust with CUDA support" }
 rust-test-cuda = { cmd = "cargo test --features cuda", description = "Run Rust tests with CUDA support" }
 rust-clippy-cuda = { cmd = "cargo clippy --features cuda --all-targets -- -D warnings", description = "Run clippy with CUDA support" }
