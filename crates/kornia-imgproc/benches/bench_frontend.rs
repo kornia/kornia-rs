@@ -251,6 +251,28 @@ fn bench_frontend(c: &mut Criterion<ProcessCpu>) {
     g.bench_function("orb_detect_and_extract_u8_1000_right", |b| {
         b.iter(|| black_box(detector.detect_and_extract_u8(&fx.right0).expect("orb")))
     });
+    // Cost vs keypoint budget: ORB at N, LK at the about 0.4 N tracks a
+    // SLAM frontend keeps (an even spatial subsample of the ORB points).
+    for n in [500usize, 700, 850, 1000, 1200] {
+        let orb = OrbDetector {
+            n_keypoints: n,
+            ..OrbDetector::default()
+        };
+        g.bench_function(format!("orb_n{n}"), |b| {
+            b.iter(|| black_box(orb.detect_and_extract_u8(&fx.left0).expect("orb")))
+        });
+        let k = n * 2 / 5;
+        let step = (pts.len() / k).max(1);
+        let subset: Vec<[f32; 2]> = pts.iter().step_by(step).take(k).copied().collect();
+        g.bench_function(format!("lk_tracks_{}", subset.len()), |b| {
+            b.iter(|| {
+                black_box(
+                    calc_optical_flow_pyr_lk_with_precomputed(&pre, &subset, None, &params)
+                        .expect("lk"),
+                )
+            })
+        });
+    }
     g.finish();
 }
 
