@@ -121,7 +121,11 @@ We're all volunteers. These policies help us focus on high-impact work.
    pixi run cpp-fmt           # Format C++ code
    pixi run cpp-clean         # Clean C++ build artifacts
 
-   # CUDA development (requires cuda environment)
+   # CUDA development (requires cuda environment). `cuda` also needs the Rust
+   # CUDA kernels' PTX; build it once, and after each kernel edit, with the
+   # cuda-oxide toolchain (docs/cuda-oxide.md):
+   scripts/cuda-oxide/install-toolchain.sh && . ~/.cargo/cuda-oxide/env.sh
+   cargo run -p kornia-oxide-kernels --example build_ptx
    pixi run -e cuda rust-build-cuda  # Build Rust with CUDA support
    pixi run -e cuda rust-test-cuda   # Run Rust tests with CUDA support
 
@@ -434,7 +438,7 @@ CARGO_REGISTRY_TOKEN=cio_xxx ./scripts/release_rust.sh --execute
 
 #### Crates currently published
 
-`kornia-algebra`, `kornia-bow`, `kornia-tensor`, `kornia-tensor-ops`, `kornia-image`, `kornia-io`, `kornia-imgproc`, `kornia-3d` — in that order.
+`kornia-algebra`, `kornia-bow`, `kornia-oxide-kernels`, `kornia-tensor`, `kornia-tensor-ops`, `kornia-image`, `kornia-io`, `kornia-imgproc`, `kornia-3d` — in that order.
 
 #### Crates intentionally skipped
 
@@ -446,7 +450,7 @@ To add them back, append the crate to `PUBLISH_ORDER` in `scripts/release_rust.s
 
 ### Publishing the Python wheel
 
-1. **Run `Python Release Validation` first** (`.github/workflows/python_release_validate.yml`, Actions tab → Run workflow, on the commit you will release). It builds wheels with the exact build definition the release uses (`.github/workflows/python_wheels.yml`), installs the py3.12 wheel of each platform in a clean venv, smoke-tests it and checks its tags — and has no publish job. `minimal` (default) builds py3.12 per platform; `full` builds the whole release matrix but still smoke-tests only the py3.12 wheels. It also runs automatically on PRs that touch the wheel build (workflows, `.cargo/config.toml`, `kornia-py/`, `scripts/cuda-oxide/`, `crates/kornia-imgproc/build.rs`, `crates/kornia-imgproc/kernels-oxide/`). On a PR, add the `ci:wheels-full` label to build the full matrix.
+1. **Run `Python Release Validation` first** (`.github/workflows/python_release_validate.yml`, Actions tab → Run workflow, on the commit you will release). It builds wheels with the exact build definition the release uses (`.github/workflows/python_wheels.yml`), installs the py3.12 wheel of each platform in a clean venv, smoke-tests it and checks its tags — and has no publish job. `minimal` (default) builds py3.12 per platform; `full` builds the whole release matrix but still smoke-tests only the py3.12 wheels. It also runs automatically on PRs that touch the wheel build (workflows, `.cargo/config.toml`, `kornia-py/`, `scripts/cuda-oxide/`, `crates/kornia-oxide-kernels/`, `.github/actions/cuda-oxide-ptx/`, the imgproc and tensor `Cargo.toml`). On a PR, add the `ci:wheels-full` label to build the full matrix.
 2. When it is green, trigger the `Python Release` workflow (`.github/workflows/python_release.yml`) from the Actions tab. It builds wheels for Linux / macOS / Windows × Python 3.8–3.14t and uploads to PyPI using the `PYPI_PASSWORD` secret.
 
 Build changes go in `python_wheels.yml`, never in the release or validation workflow, so the validation keeps testing what ships.
