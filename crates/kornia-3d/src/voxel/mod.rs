@@ -1,22 +1,27 @@
-//! Voxel grids over point clouds: a sparse hash grid ([`VoxelGrid`]), a
-//! cloud grouped by voxel without copying it ([`VoxelView`]), voxel
-//! downsampling as a reduction over that grouping ([`VoxelView::first`],
-//! [`VoxelView::nearest`], [`VoxelView::centroids`], or the one-call
-//! [`voxel_downsample`]) and a voxel neighbour-count filter
-//! ([`remove_sparse_voxels`]), designed after the public APIs of
-//! Open3D (`geometry.VoxelGrid`, `PointCloud.voxel_down_sample`) and PCL
-//! (`pcl::VoxelGrid`).
+//! Voxel grids over point clouds: a sparse hash grid
+//! ([`VoxelGrid`](crate::voxel::VoxelGrid)), a cloud grouped by voxel
+//! without copying it ([`VoxelView`](crate::voxel::VoxelView)), voxel
+//! downsampling as a reduction over that grouping
+//! ([`first`](crate::voxel::VoxelView::first),
+//! [`nearest`](crate::voxel::VoxelView::nearest),
+//! [`centroids`](crate::voxel::VoxelView::centroids), or the one-call
+//! [`voxel_downsample`](crate::voxel::voxel_downsample)) and a voxel
+//! neighbour-count filter
+//! ([`remove_sparse_voxels`](crate::voxel::remove_sparse_voxels)), designed
+//! after the public APIs of Open3D (`geometry.VoxelGrid`,
+//! `PointCloud.voxel_down_sample`) and PCL (`pcl::VoxelGrid`).
 //!
 //! # Voxel indexing
 //!
-//! A [`VoxelLayout`] is a voxel edge length `s` and an origin `o`. A point
-//! `p` lies in the voxel whose integer key is, per axis,
-//! `floor((p - o) / s)` evaluated in `f64` (a division, not a multiply by
-//! `1 / s`, so the boundaries are exact multiples of `s`). Keys are `i32`
-//! per axis, negative keys included: `-0.5 · s` falls in voxel `-1`. A
-//! point whose key is not representable (a non-finite coordinate, or
+//! A [`VoxelLayout`](crate::voxel::VoxelLayout) is a voxel edge length `s`
+//! and an origin `o`. A point `p` lies in the voxel whose integer key is,
+//! per axis, `floor((p - o) / s)` evaluated in `f64` (a division, not a
+//! multiply by `1 / s`, so the boundaries are exact multiples of `s`). Keys
+//! are `i32` per axis, negative keys included: `-0.5 · s` falls in voxel
+//! `-1`. A point whose key is not representable (a non-finite coordinate, or
 //! `|p - o| / s` beyond `i32`) is rejected with
-//! [`VoxelError::PointOutOfRange`] by the ops that index a whole cloud.
+//! [`VoxelError::PointOutOfRange`](crate::voxel::VoxelError::PointOutOfRange)
+//! by the ops that index a whole cloud.
 //!
 //! # Determinism
 //!
@@ -53,6 +58,7 @@ pub const MAX_VOXEL_POINTS: usize = u32::MAX as usize - 1;
 
 /// Errors of the voxel grid ops.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum VoxelError {
     /// The voxel size is not finite and positive.
     #[error("voxel size must be finite and positive, got {0}")]

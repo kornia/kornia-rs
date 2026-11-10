@@ -623,6 +623,104 @@ fn neighbour_counts_at_the_i32_limits() -> TestResult {
     Ok(())
 }
 
+/// A grid with deterministic holes, so every (dx, dy) column the neighbour
+/// search walks is sparse and the gallop has to skip over empty keys; all
+/// three connectivities are checked against the hash-grid reference.
+#[test]
+fn neighbour_counts_match_grid_on_a_holey_grid() -> TestResult {
+    let l = unit_layout()?;
+    let mut grid = VoxelGrid::new(l);
+    let mut points = Vec::new();
+    for x in -6..6i32 {
+        for y in -6..6i32 {
+            for z in -6..6i32 {
+                if (x * 31 + y * 17 + z * 7).rem_euclid(5) == 0 {
+                    continue;
+                }
+                points.push([x as f64 + 0.5, y as f64 + 0.5, z as f64 + 0.5]);
+                grid.insert([x, y, z], ());
+            }
+        }
+    }
+    for conn in [
+        VoxelConnectivity::Six,
+        VoxelConnectivity::Eighteen,
+        VoxelConnectivity::TwentySix,
+    ] {
+        let got = voxel_neighbour_counts(&points, &l, conn)?;
+        for (q, &c) in points.iter().zip(&got) {
+            let k = l.key_from_point(q).ok_or("key")?;
+            assert_eq!(
+                usize::from(c),
+                grid.neighbours(k, conn).count(),
+                "{conn:?} {k:?}"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// [`VoxelView::centroids`] and [`VoxelView::first`] promise the same output
+/// for any thread count: reductions run per voxel, in ascending point index.
+#[test]
+fn voxel_reductions_do_not_depend_on_the_thread_count() -> TestResult {
+    let points = random_points(50_000, -3.0, 3.0, 9);
+    let colors: Vec<[u8; 3]> = (0..points.len())
+        .map(|i| [(i % 251) as u8, (i % 7) as u8, 3])
+        .collect();
+    let normals: Vec<[f64; 3]> = points.iter().map(|p| [p[1], -p[0], 1.0]).collect();
+    let cloud = PointCloud::new(points, Some(colors), Some(normals));
+    let l = VoxelLayout::new(0.37, [0.11, -0.2, 0.05])?;
+    let bits = |c: &PointCloud| -> Vec<[u64; 3]> {
+        c.points().iter().map(|p| p.map(f64::to_bits)).collect()
+    };
+    for mode in [DownsampleMode::Centroid, DownsampleMode::First] {
+        let serial = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()?
+            .install(|| voxel_downsample(&cloud, &l, mode))?;
+        let parallel = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()?
+            .install(|| voxel_downsample(&cloud, &l, mode))?;
+        assert_eq!(bits(&serial), bits(&parallel), "{mode:?}");
+        assert_eq!(serial.colors(), parallel.colors(), "{mode:?}");
+        assert_eq!(
+            serial
+                .normals()
+                .map(|n| n.iter().map(|p| p.map(f64::to_bits)).collect::<Vec<_>>()),
+            parallel
+                .normals()
+                .map(|n| n.iter().map(|p| p.map(f64::to_bits)).collect::<Vec<_>>()),
+            "{mode:?}"
+        );
+    }
+    Ok(())
+}
+
+/// [`VoxelError::PointOutOfRange`] names the **smallest** offending index,
+/// whatever the order the parallel fill visits the points in.
+#[test]
+fn out_of_range_reports_the_smallest_index() -> TestResult {
+    let l = unit_layout()?;
+    let mut points = random_points(20_000, -3.0, 3.0, 13);
+    points[17_000] = [1e300, 0.0, 0.0];
+    points[9_000] = [f64::INFINITY, 0.0, 0.0];
+    points[5] = [f64::NAN; 3];
+    let cloud = PointCloud::new(points.clone(), None, None);
+    for err in [
+        VoxelView::new(&cloud, &l).unwrap_err(),
+        voxel_downsample(&cloud, &l, DownsampleMode::First).unwrap_err(),
+        voxel_neighbour_counts(&points, &l, VoxelConnectivity::TwentySix).unwrap_err(),
+    ] {
+        assert!(
+            matches!(err, VoxelError::PointOutOfRange { index: 5 }),
+            "{err:?}"
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn remove_sparse_voxels_keeps_order_and_attributes() -> TestResult {
     let l = unit_layout()?;
