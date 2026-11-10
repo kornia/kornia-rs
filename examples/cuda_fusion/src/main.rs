@@ -5,7 +5,7 @@
 //! FKL equivalent).
 //!
 //! ```bash
-//! cargo run -p cuda-fusion --release
+//! cargo run -p cuda-fusion --release --features cuda
 //! ```
 //!
 //! Demonstrates:
