@@ -1,3 +1,4 @@
+use kornia_algebra::Vec4F32;
 use kornia_image::{Image, ImageError, ImageSize};
 use rayon::prelude::*;
 
@@ -268,6 +269,98 @@ fn reflect_101(mut p: i32, len: i32) -> i32 {
     p
 }
 
+/// Outputs per column tile of [`pyrdown_interior_c1`]; a multiple of 4.
+const PYRDOWN_TILE: usize = 64;
+
+/// Interior rows of [`pyrdown_f32`] for one channel, 4 outputs per
+/// [`Vec4F32`].
+///
+/// Each lane runs the scalar kernel's exact operation sequence (25 products
+/// added in `ky`-major order, separate `*` and `+`, no FMA), so the result
+/// is bit-identical to the scalar loop. For each tile of [`PYRDOWN_TILE`]
+/// outputs, the even and odd source columns of the 5 rows it reads are split
+/// into stack buffers, so the stride-2 taps become contiguous loads: tap `kx`
+/// of output `x` reads `even[x-1]`, `odd[x-1]`, `even[x]`, `odd[x]`,
+/// `even[x+1]`. The buffers are 5 rows of one tile (about 2.6 KiB), so the
+/// kernel allocates nothing.
+fn pyrdown_interior_c1(
+    src: &[f32],
+    src_width: usize,
+    dst: &mut [f32],
+    dst_width: usize,
+    dst_height: usize,
+    weights: &[f32; 25],
+) {
+    use crate::simd::load_vec4f32 as load;
+
+    // Local index `j` holds source column `2 * (x0 - 1 + j)` (even) and the one
+    // after it (odd), for the tile starting at output `x0`.
+    let mut even = [[0.0f32; PYRDOWN_TILE + 2]; 5];
+    let mut odd = [[0.0f32; PYRDOWN_TILE + 1]; 5];
+
+    let x_end = dst_width.saturating_sub(1);
+    for dst_y in 1..dst_height.saturating_sub(1) {
+        let sy = dst_y * 2;
+        let out = &mut dst[dst_y * dst_width..(dst_y + 1) * dst_width];
+        let mut x0 = 1usize;
+        while x0 < x_end {
+            let n = PYRDOWN_TILE.min(x_end - x0);
+            let lanes = n - n % 4;
+            if lanes > 0 {
+                for (ky, (e, o)) in even.iter_mut().zip(odd.iter_mut()).enumerate() {
+                    let row = &src[(sy + ky - 2) * src_width..(sy + ky - 1) * src_width];
+                    let base = 2 * (x0 - 1);
+                    for (j, v) in e.iter_mut().take(lanes + 2).enumerate() {
+                        *v = row[base + 2 * j];
+                    }
+                    for (j, v) in o.iter_mut().take(lanes + 1).enumerate() {
+                        *v = row[base + 2 * j + 1];
+                    }
+                }
+            }
+            let mut l = 0usize;
+            // Lanes of one vector share a single dependent add chain; eight
+            // vectors per step give the add ports independent chains to overlap.
+            for width in [8usize, 1] {
+                while l + 4 * width <= lanes {
+                    let mut sums = [Vec4F32::ZERO; 8];
+                    for ky in 0..5 {
+                        let (e, o) = (&even[ky][..], &odd[ky][..]);
+                        let w = &weights[ky * 5..ky * 5 + 5];
+                        for (v, sum) in sums.iter_mut().enumerate().take(width) {
+                            let lv = l + 4 * v;
+                            *sum += load(e, lv) * w[0];
+                            *sum += load(o, lv) * w[1];
+                            *sum += load(e, lv + 1) * w[2];
+                            *sum += load(o, lv + 1) * w[3];
+                            *sum += load(e, lv + 2) * w[4];
+                        }
+                    }
+                    for (v, sum) in sums.iter().enumerate().take(width) {
+                        let xv = x0 + l + 4 * v;
+                        out[xv..xv + 4].copy_from_slice(&sum.to_array());
+                    }
+                    l += 4 * width;
+                }
+            }
+            for (dx, slot) in out.iter_mut().enumerate().take(x0 + n).skip(x0 + l) {
+                let sx = dx * 2;
+                let mut sum = 0.0f32;
+                let mut k = 0;
+                for ky in 0..5 {
+                    let row = (sy + ky - 2) * src_width;
+                    for kx in 0..5 {
+                        sum += src[row + sx + kx - 2] * weights[k];
+                        k += 1;
+                    }
+                }
+                *slot = sum;
+            }
+            x0 += n;
+        }
+    }
+}
+
 /// Downsample an image by applying Gaussian blur and then subsampling.
 ///
 /// This function halves the size of the input image by first applying a Gaussian blur
@@ -361,7 +454,23 @@ pub fn pyrdown_f32<const C: usize>(
     let center_x_start = 1;
     let center_x_end = (dst_width - 1).min(dst_width);
 
-    for dst_y in center_y_start..center_y_end {
+    // Single-channel interiors take the vector kernel; the scalar loop below
+    // then covers only multi-channel images.
+    let scalar_rows = if C == 1 {
+        pyrdown_interior_c1(
+            src_data,
+            src_width,
+            dst_data,
+            dst_width,
+            dst_height,
+            &kernel_weights,
+        );
+        0..0
+    } else {
+        center_y_start..center_y_end
+    };
+
+    for dst_y in scalar_rows {
         let src_center_y = dst_y * 2;
 
         for dst_x in center_x_start..center_x_end {
@@ -908,6 +1017,44 @@ mod tests {
             assert!(!val.is_nan());
         }
 
+        Ok(())
+    }
+
+    /// The single-channel vector kernel must match the scalar loop bit for
+    /// bit. A 3-channel copy of the same plane takes the scalar loop, so its
+    /// channel 0 is the oracle.
+    #[test]
+    fn test_pyrdown_f32_vector_matches_scalar_bits() -> Result<(), ImageError> {
+        let mut state = 0x9e37_79b9_u32;
+        for (width, height) in [(5, 5), (17, 9), (18, 11), (33, 34), (752, 480), (101, 63)] {
+            let size = ImageSize { width, height };
+            let plane: Vec<f32> = (0..width * height)
+                .map(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 17;
+                    state ^= state << 5;
+                    (state % 25_500) as f32 / 100.0
+                })
+                .collect();
+            let rgb: Vec<f32> = plane.iter().flat_map(|&v| [v, v, v]).collect();
+            let src1 = Image::<f32, 1>::new(size, plane)?;
+            let src3 = Image::<f32, 3>::new(size, rgb)?;
+            let half = ImageSize {
+                width: width.div_ceil(2),
+                height: height.div_ceil(2),
+            };
+            let mut dst1 = Image::<f32, 1>::from_size_val(half, 0.0)?;
+            let mut dst3 = Image::<f32, 3>::from_size_val(half, 0.0)?;
+            pyrdown_f32(&src1, &mut dst1)?;
+            pyrdown_f32(&src3, &mut dst3)?;
+            for (i, v) in dst1.as_slice().iter().enumerate() {
+                assert_eq!(
+                    v.to_bits(),
+                    dst3.as_slice()[i * 3].to_bits(),
+                    "{width}x{height} at {i}"
+                );
+            }
+        }
         Ok(())
     }
 
