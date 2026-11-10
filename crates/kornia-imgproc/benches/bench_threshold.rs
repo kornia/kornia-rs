@@ -8,6 +8,10 @@ const OFFSET: i16 = 10;
 const MAX_VALUE: u8 = 255;
 
 /// Compare adaptive mean thresholding in kornia and OpenCV.
+///
+/// The input is one synthetic pattern, with `OFFSET` 10 and `MAX_VALUE` 255.
+/// Windows 3 to 101 use the 3 × 3 path and the `u32` streaming path. The `u64`
+/// path starts at window 4097, so the unit tests in `threshold.rs` cover it.
 fn bench_adaptive_mean(c: &mut Criterion) {
     // The kornia path uses one thread. Make OpenCV also use one thread.
     core::set_num_threads(1).unwrap();
@@ -50,11 +54,24 @@ fn bench_adaptive_mean(c: &mut Criterion) {
             // The first call fills the internal scratch. It also lets the
             // bench confirm that both outputs are the same before timing.
             threshold.apply(&src, &mut dst).unwrap();
-            assert_eq!(
-                dst.as_slice(),
-                cv_dst.data_bytes().unwrap(),
-                "kornia and OpenCV outputs differ at {parameter}"
-            );
+            // Report only the first different pixel. A full-buffer assert_eq
+            // prints megabytes of output.
+            let expected = cv_dst.data_bytes().unwrap();
+            assert_eq!(dst.as_slice().len(), expected.len(), "size at {parameter}");
+            if let Some(i) = dst
+                .as_slice()
+                .iter()
+                .zip(expected)
+                .position(|(kornia, opencv)| kornia != opencv)
+            {
+                panic!(
+                    "kornia and OpenCV outputs differ at {parameter}, pixel (x {}, y {}): kornia {}, OpenCV {}",
+                    i % width,
+                    i / width,
+                    dst.as_slice()[i],
+                    expected[i]
+                );
+            }
 
             group.bench_function(BenchmarkId::new("kornia", &parameter), |b| {
                 b.iter(|| {
