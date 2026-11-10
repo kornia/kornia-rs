@@ -2,10 +2,14 @@
 //! `$OUT_DIR/kernels.ptx`: empty without the `ptx` feature; with it, the
 //! prebuilt `kernels.ptx` (shipped in the published crate, made by
 //! `examples/build_ptx.rs` in a checkout) once its stamp matches `device/`
-//! and it passes the gate. Nothing here needs the cuda-oxide toolchain.
+//! and it passes the gate. In a checkout or git dependency a missing
+//! `kernels.ptx` only warns and builds the stub; a packaged crate (publish
+//! verify, crates.io) or an explicit `$KORNIA_OXIDE_PTX` still fails. Nothing
+//! here needs the cuda-oxide toolchain.
 
 use std::{
     env, fs,
+    io::ErrorKind,
     path::{Path, PathBuf},
 };
 
@@ -47,31 +51,57 @@ fn run() -> Result<(), String> {
         String::new()
     } else {
         println!("cargo:rerun-if-env-changed={PTX_ENV}");
-        let path = env::var_os(PTX_ENV)
-            .map(PathBuf::from)
-            .unwrap_or_else(|| manifest_dir.join("kernels.ptx"));
+        let env_ptx = env::var_os(PTX_ENV).map(PathBuf::from);
+        let explicit = env_ptx.is_some();
+        let path = env_ptx.unwrap_or_else(|| manifest_dir.join("kernels.ptx"));
         println!("cargo:rerun-if-changed={}", path.display());
-        let text = fs::read_to_string(&path).map_err(|e| {
-            format!(
-                "the `ptx` feature needs the prebuilt PTX at {} ({e}).\n{BUILD_HINT}",
-                path.display()
-            )
-        })?;
-        let want = device_src::stamp(&device)?;
-        if text.lines().next() != Some(want.as_str()) {
-            return Err(format!(
-                "{} was not built from this device/ (stamp `{want}` expected).\n{BUILD_HINT}",
-                path.display()
-            ));
+        match fs::read_to_string(&path) {
+            Ok(text) => checked(text, &path, &device, &entries)?,
+            // A checkout or git dependency without the toolchain: build the
+            // stub, so users fall back to NVRTC. A packaged crate (the publish
+            // verify build, or crates.io) or an explicit path must have it.
+            Err(e)
+                if e.kind() == ErrorKind::NotFound && !explicit && !is_packaged(&manifest_dir) =>
+            {
+                println!(
+                    "cargo:warning=kornia-oxide-kernels: no prebuilt PTX at {}; building the stub \
+                     (callers fall back to NVRTC). {BUILD_HINT}",
+                    path.display()
+                );
+                String::new()
+            }
+            Err(e) => {
+                return Err(format!(
+                    "the `ptx` feature needs the prebuilt PTX at {} ({e}).\n{BUILD_HINT}",
+                    path.display()
+                ))
+            }
         }
-        ptx_gate::gate(&text, &entries)
-            .map_err(|r| format!("PTX gate failed ({}):\n{}", path.display(), r.join("\n")))?;
-        text
     };
 
     let out_dir = env_path("OUT_DIR")?;
     write_if_changed(&out_dir.join("kernels.ptx"), &text)?;
     write_if_changed(&out_dir.join("entries.rs"), &entries_rs(&entries))
+}
+
+/// `cargo package` writes `Cargo.toml.orig` into every packaged crate, so its
+/// presence marks the publish verify build and a crates.io download.
+fn is_packaged(manifest_dir: &Path) -> bool {
+    manifest_dir.join("Cargo.toml.orig").is_file()
+}
+
+/// `text` once its stamp matches `device/` and it passes the gate.
+fn checked(text: String, path: &Path, device: &Path, entries: &[String]) -> Result<String, String> {
+    let want = device_src::stamp(device)?;
+    if text.lines().next() != Some(want.as_str()) {
+        return Err(format!(
+            "{} was not built from this device/ (stamp `{want}` expected).\n{BUILD_HINT}",
+            path.display()
+        ));
+    }
+    ptx_gate::gate(&text, entries)
+        .map_err(|r| format!("PTX gate failed ({}):\n{}", path.display(), r.join("\n")))?;
+    Ok(text)
 }
 
 /// Write only on change, so dependents are not rebuilt needlessly.
