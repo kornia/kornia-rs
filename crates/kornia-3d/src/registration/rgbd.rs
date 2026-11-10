@@ -95,9 +95,9 @@ pub enum RgbdIcpError {
     /// initial guess.
     #[error("only {0} correspondences passed the gates; need at least 6")]
     TooFewCorrespondences(usize),
-    /// The point-to-plane normal equations do not constrain all six degrees of freedom
-    /// (degenerate geometry such as a single plane), or their solve is not finite.
-    #[error("point-to-plane normal equations are singular or ill-conditioned")]
+    /// The point-to-plane normal equations or their solve are not finite. Degenerate geometry,
+    /// such as a single plane, is not an error: it is solved along its observed directions.
+    #[error("point-to-plane normal equations or their solve are not finite")]
     SingularNormalEquations,
 }
 

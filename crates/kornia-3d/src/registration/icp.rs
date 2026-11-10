@@ -23,9 +23,11 @@
 //!
 //! The solver runs Gauss-Newton coarse to fine: at each level, starting from the coarsest, it
 //! accumulates `A = J^T W J` and `b = J^T W r`, solves `A x = -b` by Cholesky and applies
-//! `R <- exp(w) R`, `t <- exp(w) t + v`. A system whose Cholesky pivots collapse relative to
-//! their block is rejected as singular rather than solved along its null space. The `J^T W J` of
-//! a final pass at the returned pose is reported as [`IcpPlaneResult::information`].
+//! `R <- exp(w) R`, `t <- exp(w) t + v`. A system that does not constrain all six degrees of
+//! freedom still gets an answer: directions whose eigenvalue is negligible
+//! ([`IcpPlaneCriteria::degeneracy_rtol`]) get a zero update and zero information, and the rest
+//! is solved by eigen pseudo-inverse. The `J^T W J` of a final pass at the returned pose is
+//! reported as [`IcpPlaneResult::information`].
 
 use super::rgbd::{is_valid_normal, is_valid_vertex, RgbdIcpError, RgbdLevel, RgbdPyramid};
 use crate::ransac::{HuberKernel, RobustKernel};
@@ -45,10 +47,20 @@ const MIN_SIGMA_M: f64 = 1e-9;
 const MIN_RAY_INCIDENCE: f64 = 0.2;
 
 /// Relative Cholesky pivot threshold: a squared pivot of `J^T W J` below `PIVOT_RTOL` times the
-/// largest diagonal of its block (rotation rows 0-2, translation rows 3-5) marks an unobserved
-/// direction. The blocks are separate because rotation entries grow with depth squared while
-/// translation entries are O(1) from unit normals.
+/// largest diagonal of its block (rotation rows 0-2, translation rows 3-5) skips the Cholesky
+/// solve for the eigen one. The blocks are separate because rotation entries grow with depth
+/// squared while translation entries are O(1) from unit normals.
 const PIVOT_RTOL: f64 = 1e-8;
+
+/// Default of [`IcpPlaneCriteria::degeneracy_rtol`].
+///
+/// Same value as the Cholesky pivot threshold. Smallest over largest eigenvalue of the
+/// depth-scaled `J^T W J` after a 2 cm slide on the synthetic 320x180 test scenes: a bare wall
+/// 0 (three directions), a wall with a 6 cm bump 5.1e-8, corner and sphere 2.8e-2. The default
+/// flags only an exact null space and still solves the bump. Real sensor noise lifts a wall's
+/// null space far above zero; to treat real weak geometry as degenerate, calibrate this on real
+/// data.
+pub const DEFAULT_DEGENERACY_RTOL: f64 = 1e-8;
 
 /// Fewest inliers that can constrain the six pose parameters.
 const MIN_INLIERS: usize = 6;
@@ -73,6 +85,14 @@ pub struct IcpPlaneCriteria {
     /// Depth noise model that sets each row's `sigma`. A frame's per-pixel sigma map
     /// ([`RgbdLevel::depth_sigmas`]) takes precedence over it point by point.
     pub depth_noise: DepthNoise,
+    /// Relative eigenvalue threshold below which a direction of `J^T W J` counts as unobserved.
+    ///
+    /// The eigen-decomposition scales the rotation rows by the inlier depth (radians to metres
+    /// of arc), so rotation and translation compare in one unit. A direction whose eigenvalue
+    /// is at most `degeneracy_rtol` times the largest gets a zero update and zero information.
+    /// Set it between rounding noise on an exact null space and the weakest geometry still to
+    /// be solved; see [`DEFAULT_DEGENERACY_RTOL`].
+    pub degeneracy_rtol: f64,
 }
 
 impl Default for IcpPlaneCriteria {
@@ -85,6 +105,7 @@ impl Default for IcpPlaneCriteria {
             max_normal_angle_rad: 30.0_f64.to_radians(),
             huber_delta: 2.0,
             depth_noise: DepthNoise::Constant { sigma_m: 0.01 },
+            degeneracy_rtol: DEFAULT_DEGENERACY_RTOL,
         }
     }
 }
@@ -215,8 +236,18 @@ pub struct IcpPlaneResult {
     /// ([`IcpPlaneCriteria::depth_noise`] or the sigma maps) its inverse is the covariance of
     /// the estimate's error `xi`, the estimate being `exp(xi)` applied on the left of the truth.
     /// It is only as calibrated as those sigmas: the default [`DepthNoise::Constant`] is a
-    /// weighting, not a sensor model. It can be singular when [`Self::observability`] is `0`.
+    /// weighting, not a sensor model. It is zero along [`Self::degenerate_directions`].
     pub information: Mat6F64,
+    /// Unit tangent directions `[w, v]` the data do not observe, in entries
+    /// `0..num_degenerate`; the other entries are zero.
+    ///
+    /// They span the null space of [`Self::information`] and got no update. They come from the
+    /// eigen-decomposition with rotation scaled by [`Self::median_depth_m`] and are mapped back
+    /// to the unscaled tangent, so they are unit but not necessarily orthogonal.
+    pub degenerate_directions: [Vec6F64; 6],
+    /// Number of directions in [`Self::degenerate_directions`]: `0` when the data constrain all
+    /// six degrees of freedom, `3` for a single plane.
+    pub num_degenerate: usize,
 }
 
 /// Projective point-to-plane ICP between two RGB-D pyramids, coarse to fine.
@@ -232,19 +263,22 @@ pub struct IcpPlaneResult {
 /// # Returns
 ///
 /// The estimate of `T_target_source` with the residual, match quality, overlap, conditioning
-/// and information matrix of a final pass at that pose.
+/// and information matrix of a final pass at that pose. Geometry that does not constrain all six
+/// degrees of freedom is not an error: the unobserved directions get no update and are reported
+/// in [`IcpPlaneResult::degenerate_directions`].
 ///
 /// # Errors
 ///
 /// * [`RgbdIcpError::PyramidLevelsMismatch`] if the pyramids have different level counts.
 /// * [`RgbdIcpError::IterationsLevelsMismatch`] if `criteria.iters_per_level` does not have one
 ///   entry per level.
-/// * [`RgbdIcpError::InvalidCriteria`] if a threshold of `criteria` or a parameter of its
-///   `depth_noise` is not finite and positive, or `max_normal_angle_rad` exceeds pi.
+/// * [`RgbdIcpError::InvalidCriteria`] if a threshold of `criteria` (`degeneracy_rtol`
+///   included) or a parameter of its `depth_noise` is not finite and positive, or
+///   `max_normal_angle_rad` exceeds pi.
 /// * [`RgbdIcpError::TooFewCorrespondences`] if fewer than 6 correspondences pass the gates in
 ///   any pass, the final one included (low overlap or a bad initial guess).
-/// * [`RgbdIcpError::SingularNormalEquations`] if the geometry does not constrain all six
-///   degrees of freedom (for example a single plane), or the solve is not finite.
+/// * [`RgbdIcpError::SingularNormalEquations`] if the normal equations or their solve are not
+///   finite.
 ///
 /// # Example
 ///
@@ -303,6 +337,7 @@ fn check_criteria(criteria: &IcpPlaneCriteria) -> Result<PassGates, RgbdIcpError
         ("max_dist_m", criteria.max_dist_m, inf),
         ("huber_delta", criteria.huber_delta, inf),
         ("update_tolerance", criteria.update_tolerance, inf),
+        ("degeneracy_rtol", criteria.degeneracy_rtol, inf),
         // above pi the cosine gate wraps round and starts rejecting again
         (
             "max_normal_angle_rad",
@@ -595,30 +630,140 @@ fn check_inliers(eqs: &NormalEquations) -> Result<(), RgbdIcpError> {
     Ok(())
 }
 
-/// Solves `A x = -b` by Cholesky, rejecting a collapsed pivot (see [`PIVOT_RTOL`]) or a
-/// non-finite step.
-fn solve_step(a: &Mat6F64, b: &Vec6F64) -> Result<Vec6F64, RgbdIcpError> {
-    let chol = a.cholesky().ok_or(RgbdIcpError::SingularNormalEquations)?;
+/// Solves `A x = -b` by Cholesky, or `None` on a collapsed pivot (see [`PIVOT_RTOL`]).
+fn cholesky_step(a: &Mat6F64, b: &Vec6F64) -> Option<Vec6F64> {
+    let chol = a.cholesky()?;
     // the pivots of the factorisation are the squared diagonal of L
     let l = chol.l_dirty();
     let block_ok = |rows: std::ops::Range<usize>| {
-        let diag_finite = rows.clone().all(|i| a[(i, i)].is_finite());
         let max_diag = rows.clone().map(|i| a[(i, i)]).fold(0.0, f64::max);
         // `>=` so that a NaN pivot fails
-        diag_finite
-            && max_diag > 0.0
+        max_diag > 0.0
             && rows
                 .into_iter()
                 .all(|i| l[(i, i)] * l[(i, i)] >= PIVOT_RTOL * max_diag)
     };
-    if !(block_ok(0..3) && block_ok(3..6)) {
-        return Err(RgbdIcpError::SingularNormalEquations);
-    }
-    let x = chol.solve(&(-b));
+    (block_ok(0..3) && block_ok(3..6)).then(|| chol.solve(&(-b)))
+}
+
+/// One Gauss-Newton step `x = [w, v]` from `A = J^T W J` and `b = J^T W r`.
+///
+/// Full-rank data take the Cholesky path. Otherwise the unobserved directions of `split` are
+/// removed from both `A` and `b`, so that a rounding-noise gradient cannot push along them, and
+/// the rest is solved by eigen pseudo-inverse in the depth-scaled tangent: an unobserved
+/// direction gets a zero update.
+fn solve_step(
+    a: &Mat6F64,
+    b: &Vec6F64,
+    split: &DegenerateSplit,
+    rtol: f64,
+) -> Result<Vec6F64, RgbdIcpError> {
+    let x = if split.num_degenerate == 0 {
+        // a weak pivot the eigen test still counts as observed falls back to the eigen solve
+        cholesky_step(a, b).unwrap_or_else(|| pseudo_solve(a, &(-b), split.scale, rtol))
+    } else {
+        let s = tangent_scale(split.scale);
+        let b_observed = (split.projector * b.component_div(&s)).component_mul(&s);
+        pseudo_solve(&split.a_observed, &(-b_observed), split.scale, rtol)
+    };
     if !x.iter().all(|v| v.is_finite()) {
         return Err(RgbdIcpError::SingularNormalEquations);
     }
     Ok(x)
+}
+
+/// Eigen split of `J^T W J` into observed and unobserved directions.
+struct DegenerateSplit {
+    /// Rotation scale of the decomposition, metres (see [`depth_scale`]).
+    scale: f64,
+    /// `J^T W J` with the unobserved eigen-directions removed, unscaled tangent.
+    a_observed: Mat6F64,
+    /// Projector onto the observed eigen-directions, in the scaled tangent.
+    projector: Mat6F64,
+    /// Unit unobserved directions in the unscaled tangent, entries `0..num_degenerate`.
+    directions: [Vec6F64; 6],
+    /// Number of unobserved directions.
+    num_degenerate: usize,
+}
+
+/// Rotation scale of the degeneracy test: `depth_m` when finite and positive, else 1 m.
+#[inline]
+fn depth_scale(depth_m: f64) -> f64 {
+    if depth_m.is_finite() && depth_m > 0.0 {
+        depth_m
+    } else {
+        1.0
+    }
+}
+
+/// Diagonal of `S = diag(d, d, d, 1, 1, 1)`: radians of rotation to metres of arc at depth `d`.
+#[inline]
+fn tangent_scale(d: f64) -> Vec6F64 {
+    Vec6F64::new(d, d, d, 1.0, 1.0, 1.0)
+}
+
+/// Symmetric eigen-decomposition of `S^-1 A S^-1` (see [`tangent_scale`]): eigenpairs in
+/// ascending order and the largest eigenvalue. `a` must be finite: the eigen iteration does not
+/// terminate on NaN.
+fn scaled_eigen(a: &Mat6F64, d: f64) -> ([(f64, Vec6F64); 6], f64) {
+    let s = tangent_scale(d);
+    // symmetric by construction, as `a` is
+    let m = Mat6F64::from_fn(|i, k| a[(i, k)] / (s[i] * s[k]));
+    let eig = m.symmetric_eigen();
+    let mut pairs: [(f64, Vec6F64); 6] =
+        std::array::from_fn(|c| (eig.eigenvalues[c], eig.eigenvectors.column(c).into_owned()));
+    pairs.sort_unstable_by(|x, y| x.0.total_cmp(&y.0));
+    (pairs, pairs[5].0)
+}
+
+/// Splits `a` at `rtol` times its largest eigenvalue, rotation scaled by `depth_m`.
+///
+/// # Errors
+///
+/// [`RgbdIcpError::SingularNormalEquations`] if `a` is not finite.
+fn split_degenerate(a: &Mat6F64, depth_m: f64, rtol: f64) -> Result<DegenerateSplit, RgbdIcpError> {
+    if !a.iter().all(|v| v.is_finite()) {
+        return Err(RgbdIcpError::SingularNormalEquations);
+    }
+    let d = depth_scale(depth_m);
+    let s = tangent_scale(d);
+    let (pairs, lmax) = scaled_eigen(a, d);
+    let mut out = DegenerateSplit {
+        scale: d,
+        a_observed: Mat6F64::zeros(),
+        projector: Mat6F64::zeros(),
+        directions: [Vec6F64::zeros(); 6],
+        num_degenerate: 0,
+    };
+    for (lambda, v) in pairs {
+        // `lambda > ..` so that an all-zero system counts as unobserved
+        if lambda > rtol * lmax && lmax > 0.0 {
+            let vs = v.component_mul(&s);
+            out.a_observed += vs * vs.transpose() * lambda;
+            out.projector += v * v.transpose();
+        } else {
+            out.directions[out.num_degenerate] = v.component_div(&s).normalize();
+            out.num_degenerate += 1;
+        }
+    }
+    Ok(out)
+}
+
+/// Minimum-norm solve of `A x = rhs` in the depth-scaled tangent, dropping the eigen-directions
+/// at or below `rtol` times the largest eigenvalue.
+fn pseudo_solve(a: &Mat6F64, rhs: &Vec6F64, d: f64, rtol: f64) -> Vec6F64 {
+    let s = tangent_scale(d);
+    let rhs_scaled = rhs.component_div(&s);
+    let (pairs, lmax) = scaled_eigen(a, d);
+    let mut y = Vec6F64::zeros();
+    if lmax > 0.0 {
+        for (lambda, v) in pairs {
+            if lambda > rtol * lmax {
+                y += v * (v.dot(&rhs_scaled) / lambda);
+            }
+        }
+    }
+    y.component_div(&s)
 }
 
 /// Conditioning of each 3x3 block of `a`, `(rotation, translation)`: the weakest Cholesky pivot
@@ -667,7 +812,11 @@ fn run_icp(
         for _ in 0..iters {
             let eqs = accumulate_level(s, t, &rotation, &translation, gates, None);
             check_inliers(&eqs)?;
-            let x = solve_step(&eqs.a, &eqs.b)?;
+            // the mean, not the median: a select per iteration costs more than the scale needs
+            let mean_depth = eqs.sum_depth_m / eqs.num_inliers as f64;
+            let rtol = criteria.degeneracy_rtol;
+            let split = split_degenerate(&eqs.a, mean_depth, rtol)?;
+            let x = solve_step(&eqs.a, &eqs.b, &split, rtol)?;
             let (w, v) = (
                 Vec3F64::new(x[0], x[1], x[2]),
                 Vec3F64::new(x[3], x[4], x[5]),
@@ -678,7 +827,6 @@ fn run_icp(
             iterations += 1;
 
             // relative to the scene depth so that one tolerance fits any scale
-            let mean_depth = eqs.sum_depth_m / eqs.num_inliers as f64;
             let tol = criteria.update_tolerance;
             if w.length() < tol && v.length() < tol * mean_depth {
                 break;
@@ -700,6 +848,13 @@ fn run_icp(
     );
     check_inliers(&eqs)?;
     let (rotation_conditioning, translation_conditioning) = block_conditioning(&eqs.a);
+    let median_depth_m = median_depth_m(&mut depths);
+    let split = split_degenerate(&eqs.a, median_depth_m, criteria.degeneracy_rtol)?;
+    let information = if split.num_degenerate == 0 {
+        eqs.a
+    } else {
+        split.a_observed
+    };
     // num_valid >= num_associated >= num_inliers >= MIN_INLIERS, so no ratio divides by zero
     let PassCounts {
         num_valid,
@@ -717,8 +872,10 @@ fn run_icp(
         rotation_conditioning,
         translation_conditioning,
         observability: rotation_conditioning.min(translation_conditioning),
-        median_depth_m: median_depth_m(&mut depths),
-        information: eqs.a,
+        median_depth_m,
+        information,
+        degenerate_directions: split.directions,
+        num_degenerate: split.num_degenerate,
     })
 }
 
@@ -1065,6 +1222,14 @@ mod tests {
                 max_normal_angle_rad: 4.0,
                 ..ok.clone()
             },
+            IcpPlaneCriteria {
+                degeneracy_rtol: f64::NAN,
+                ..ok.clone()
+            },
+            IcpPlaneCriteria {
+                degeneracy_rtol: 0.0,
+                ..ok.clone()
+            },
         ];
         // every DepthNoise parameter is checked, NaN and infinity included
         let stereo = |i: usize, x: f64| {
@@ -1113,9 +1278,11 @@ mod tests {
         Ok(())
     }
 
-    /// One fronto-parallel plane leaves in-plane translation and rotation unobserved.
+    /// One fronto-parallel plane leaves in-plane translation and the rotation about its normal
+    /// unobserved. It used to be rejected as singular; it now converges along the three observed
+    /// directions and reports the other three, with zero information along them.
     #[test]
-    fn test_single_plane_is_singular() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_single_plane_is_degenerate() -> Result<(), Box<dyn std::error::Error>> {
         let scene = Scene {
             planes: vec![Plane {
                 normal: Vec3F64::new(0.0, 0.0, 1.0),
@@ -1124,26 +1291,102 @@ mod tests {
             spheres: vec![],
         };
         let pyr = pyramid(&scene, &Mat3F64::IDENTITY, &Vec3F64::ZERO)?;
-        let result = icp_from_identity(&pyr, &pyr, &IcpPlaneCriteria::default());
-        assert!(
-            matches!(result, Err(RgbdIcpError::SingularNormalEquations)),
-            "{result:?}"
-        );
+        let result = icp_from_identity(&pyr, &pyr, &IcpPlaneCriteria::default())?;
+        assert_eq!(result.num_degenerate, 3, "{result:?}");
+        // nothing moved: the observed directions have nothing to correct, the others no update
+        assert!(rotation_error_deg(&result.rotation, &Mat3F64::IDENTITY) < 1e-6);
+        assert!(result.translation.length() < 1e-9);
+        assert!(result.observability < 1e-6);
+        // in-plane x, y translation and z rotation, each with zero information
+        for d in &result.degenerate_directions[..3] {
+            assert!((d.norm() - 1.0).abs() < 1e-12);
+            // in the span of w_z, v_x and v_y
+            assert!(d[0].abs() + d[1].abs() + d[5].abs() < 1e-6, "{d:?}");
+            let info = d.dot(&(result.information * d)) / result.information.amax();
+            assert!(info.abs() < 1e-12, "information along {d:?}: {info:.3e}");
+        }
+        assert!(result.degenerate_directions[3..]
+            .iter()
+            .all(|d| *d == Vec6F64::zeros()));
         Ok(())
     }
 
     #[test]
-    fn solve_step_rejects_nan_and_collapsed_pivots() {
+    fn solve_step_zeroes_unobserved_directions_and_rejects_nan() -> Result<(), RgbdIcpError> {
+        let rtol = DEFAULT_DEGENERACY_RTOL;
         let b = Vec6F64::from_element(1.0);
-        let x = solve_step(&Mat6F64::identity(), &b);
-        assert!(matches!(x, Ok(x) if x == -b));
+        let full = Mat6F64::identity();
+        let x = solve_step(&full, &b, &split_degenerate(&full, 1.0, rtol)?, rtol)?;
+        assert_eq!(x, -b);
         let mut nan = Mat6F64::identity();
         nan[(4, 4)] = f64::NAN;
-        assert!(solve_step(&nan, &b).is_err());
-        // positive definite, but one translation pivot is 1e-10 of its block
+        assert!(split_degenerate(&nan, 1.0, rtol).is_err());
+        // positive definite, but one translation eigenvalue is 1e-10 of the largest
         let mut weak = Mat6F64::identity();
         weak[(5, 5)] = 1e-10;
-        assert!(solve_step(&weak, &b).is_err());
+        let split = split_degenerate(&weak, 1.0, rtol)?;
+        assert_eq!(split.num_degenerate, 1);
+        assert_eq!(split.directions[0][5].abs(), 1.0);
+        let x = solve_step(&weak, &b, &split, rtol)?;
+        assert!((x - Vec6F64::new(-1.0, -1.0, -1.0, -1.0, -1.0, 0.0)).amax() < 1e-12);
+        Ok(())
+    }
+
+    /// The default degeneracy threshold sits between an exact null space and the weakest
+    /// geometry the solver has always solved.
+    ///
+    /// Smallest over largest eigenvalue of the depth-scaled `J^T W J` after a 2 cm slide: a
+    /// wall has three null directions, a wall with a 6 cm bump does not, and neither does the
+    /// corner and sphere.
+    #[test]
+    fn default_degeneracy_rtol_separates_null_space_from_weak_geometry(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let plane = || Plane {
+            normal: Vec3F64::new(0.0, 0.0, 1.0),
+            d: 2.0,
+        };
+        let wall = Scene {
+            planes: vec![plane()],
+            spheres: vec![],
+        };
+        let bump = Scene {
+            planes: vec![plane()],
+            spheres: vec![Sphere {
+                center: Vec3F64::new(0.0, 0.0, 1.9),
+                radius: 0.06,
+            }],
+        };
+        let slide = Vec3F64::new(0.02, 0.0, 0.0);
+        let mut smallest = Vec::new();
+        for scene in [&wall, &bump, &Scene::corner_and_sphere()] {
+            let s = pyramid(scene, &Mat3F64::IDENTITY, &Vec3F64::ZERO)?;
+            let t = pyramid(scene, &Mat3F64::IDENTITY, &slide)?;
+            let c = IcpPlaneCriteria::default();
+            let r = icp_from_identity(&s, &t, &c)?;
+            let gates = check_criteria(&c)?;
+            let eqs = accumulate_level(
+                &s.levels[0],
+                &t.levels[0],
+                &r.rotation,
+                &r.translation,
+                &gates,
+                None,
+            );
+            let (pairs, lmax) = scaled_eigen(&eqs.a, r.median_depth_m);
+            smallest.push((pairs[0].0 / lmax, pairs[3].0 / lmax, r.num_degenerate));
+        }
+        let (wall, bump, rich) = (smallest[0], smallest[1], smallest[2]);
+        assert!(wall.0 < 1e-12 && wall.2 == 3, "wall: {wall:?}");
+        assert!(
+            wall.1 > 1e-3,
+            "wall keeps three observed directions: {wall:?}"
+        );
+        assert!(
+            bump.0 > DEFAULT_DEGENERACY_RTOL && bump.2 == 0,
+            "bump must still be solved: {bump:?}"
+        );
+        assert!(rich.0 > 1e-3 && rich.2 == 0, "rich: {rich:?}");
+        Ok(())
     }
 
     /// Pyramid of `levels` levels of `scene` through `camera` at `size`, the camera translated
@@ -1466,6 +1709,107 @@ mod tests {
             "information disagrees with the fixed-target Hessian: {worst:.3e} over {} rows",
             rows.len()
         );
+        Ok(())
+    }
+
+    /// Error of an estimate against the truth in the solver's tangent: the estimate is
+    /// `exp(xi)` on the left of the truth, `xi = [log(R R_gt^T), t - R R_gt^T t_gt]`.
+    fn tangent_error(rot: &Mat3F64, t: &Vec3F64, rot_gt: &Mat3F64, t_gt: &Vec3F64) -> Vec6F64 {
+        let rr = *rot * rot_gt.transpose();
+        let w = SO3F64::from_matrix(&rr).log();
+        let v = *t - rr * *t_gt;
+        Vec6F64::new(w.x, w.y, w.z, v.x, v.y, v.z)
+    }
+
+    /// Deterministic standard normal samples (splitmix64 and Box-Muller).
+    struct Gauss(u64);
+
+    impl Gauss {
+        fn uniform(&mut self) -> f64 {
+            self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^= z >> 31;
+            ((z >> 11) as f64 + 0.5) / (1u64 << 53) as f64
+        }
+
+        fn sample(&mut self) -> f64 {
+            let (u1, u2) = (self.uniform(), self.uniform());
+            (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
+        }
+    }
+
+    /// The information is a covariance to trust: the NEES of the estimate over independent
+    /// noisy frames must average the 6 of a chi-square with 6 degrees of freedom.
+    ///
+    /// Against the truth on a moving pair, most of the NEES is there with no noise at all:
+    /// nearest-pixel snapping biases the noise-free solve by tens of microns, many sigmas of a
+    /// 57k-row solve. The information describes the depth noise, not that bias, so the noise is
+    /// judged against the truth where the bias is zero (identical poses), and against the
+    /// noise-free solve where it is not.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "about 4 min in a debug build; runs in the release test job"
+    )]
+    fn nees_is_six_on_noisy_stereo_depth() -> Result<(), Box<dyn std::error::Error>> {
+        let (camera, scene) = (test_camera(), Scene::corner_and_sphere());
+        let criteria = IcpPlaneCriteria {
+            depth_noise: TEST_STEREO,
+            ..Default::default()
+        };
+        let mut g = Gauss(7);
+        let mut noisy = |clean: &Image<f32, 1>| {
+            let s = clean.as_slice().iter().map(|&z| {
+                if z > 0.0 {
+                    z + (TEST_STEREO.depth_sigma(z as f64) * g.sample()) as f32
+                } else {
+                    0.0
+                }
+            });
+            Image::<f32, 1>::new(clean.size(), s.collect())
+        };
+        let axis = Vec3F64::new(0.3, 1.0, 0.2).normalize();
+        let moving = (
+            SO3F64::exp(axis * 1f64.to_radians()).matrix(),
+            Vec3F64::new(0.02, 0.0, 0.01),
+        );
+        let trials = 40;
+        let still = (Mat3F64::IDENTITY, Vec3F64::ZERO);
+        for (name, (rot_wc, t_wc)) in [("static", still), ("moving", moving)] {
+            let (rot_gt, t_gt) = (rot_wc.transpose(), -(rot_wc.transpose() * t_wc));
+            let clean_src = depth_m(&scene, &Mat3F64::IDENTITY, &Vec3F64::ZERO)?;
+            let clean_tgt = depth_m(&scene, &rot_wc, &t_wc)?;
+            let clean = icp_from_identity(
+                &RgbdPyramid::from_depth_m(&clean_src, &camera, 3)?,
+                &RgbdPyramid::from_depth_m(&clean_tgt, &camera, 3)?,
+                &criteria,
+            )?;
+            let e0 = tangent_error(&clean.rotation, &clean.translation, &rot_gt, &t_gt);
+            let (mut vs_truth, mut vs_clean) = (0.0, 0.0);
+            for _ in 0..trials {
+                let src = RgbdPyramid::from_depth_m(&noisy(&clean_src)?, &camera, 3)?;
+                let tgt = RgbdPyramid::from_depth_m(&noisy(&clean_tgt)?, &camera, 3)?;
+                let r = icp_from_identity(&src, &tgt, &criteria)?;
+                assert_eq!(r.num_degenerate, 0);
+                let e = tangent_error(&r.rotation, &r.translation, &rot_gt, &t_gt);
+                let d = e - e0;
+                vs_truth += e.dot(&(r.information * e)) / trials as f64;
+                vs_clean += d.dot(&(r.information * d)) / trials as f64;
+            }
+            // chi2(6): mean 6, sd of a 40-trial mean ~0.55
+            assert!(
+                (4.0..9.0).contains(&vs_clean),
+                "{name}: NEES {vs_clean:.2} about the noise-free solve is not consistent with 6"
+            );
+            if name == "static" {
+                assert!(
+                    (4.0..9.0).contains(&vs_truth),
+                    "static: NEES {vs_truth:.2} against the truth is not consistent with 6"
+                );
+            }
+        }
         Ok(())
     }
 }
