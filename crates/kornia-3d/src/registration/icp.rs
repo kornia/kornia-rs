@@ -17,8 +17,9 @@
 //!   uniformly, so a few bad matches that pass the gates do not dominate the solve.
 //! * The normal gate compares the rotated source normal `R n_s` with `n_t`, as KinectFusion
 //!   does, but the distance gate is on `|p - v_t|`, the full 3D distance.
-//! * Every row shares one residual sigma, [`IcpPlaneCriteria::sigma_m`], so the Huber threshold
-//!   is dimensionless.
+//! * Each row's residual sigma comes from a depth noise model, [`IcpPlaneCriteria::depth_noise`],
+//!   or a per-pixel sigma map ([`RgbdLevel::depth_sigmas`]), so the Huber threshold is
+//!   dimensionless and far, noisy depth weighs less than near depth.
 //!
 //! The solver runs Gauss-Newton coarse to fine: at each level, starting from the coarsest, it
 //! accumulates `A = J^T W J` and `b = J^T W r`, solves `A x = -b` by Cholesky and applies
@@ -30,9 +31,17 @@ use crate::ransac::{HuberKernel, RobustKernel};
 use kornia_algebra::{Mat3F64, Mat6F64, Vec3F64, Vec6F64, SO3F64};
 use kornia_image::Image;
 
-/// Smallest residual sigma, in metres. A row weight is `1 / sigma^2`, so a floor near
-/// `f64::MIN_POSITIVE` would overflow `J^T W J`; at 1 nm the weight is `1e18`.
+/// Smallest residual sigma, in metres, whatever its source (a model or a sigma map). A row
+/// weight is `1 / sigma^2`, so a floor near `f64::MIN_POSITIVE` would overflow `J^T W J`; at
+/// 1 nm the weight is `1e18`.
 const MIN_SIGMA_M: f64 = 1e-9;
+
+/// Lower bound on `|n . ray| / |ray|` in the residual sigma.
+///
+/// The first-order projection of depth noise onto the plane vanishes at grazing incidence, where
+/// the error that remains is the normal's, which this model does not carry; unbounded, those rows
+/// would get near-infinite weight. 0.2 is about 78 deg from the normal. Not measured.
+const MIN_RAY_INCIDENCE: f64 = 0.2;
 
 /// Relative Cholesky pivot threshold: a squared pivot of `J^T W J` below `PIVOT_RTOL` times the
 /// largest diagonal of its block (rotation rows 0-2, translation rows 3-5) marks an unobserved
@@ -58,14 +67,15 @@ pub struct IcpPlaneCriteria {
     pub max_dist_m: f64,
     /// Largest angle between the rotated source normal and the target normal, in radians.
     pub max_normal_angle_rad: f64,
-    /// Huber threshold on the normalised residual `r / sigma_m`.
+    /// Huber threshold on the normalised residual `r / sigma`.
     pub huber_delta: f64,
-    /// One-sigma error of every point-to-plane residual, in metres.
-    pub sigma_m: f64,
+    /// Depth noise model that sets each row's `sigma`. A frame's per-pixel sigma map
+    /// ([`RgbdLevel::depth_sigmas`]) takes precedence over it point by point.
+    pub depth_noise: DepthNoise,
 }
 
 impl Default for IcpPlaneCriteria {
-    /// Three levels; `huber_delta * sigma_m` puts the Huber knee at 2 cm.
+    /// Three levels; `huber_delta` times the constant 1 cm sigma puts the Huber knee at 2 cm.
     fn default() -> Self {
         Self {
             iters_per_level: vec![10, 7, 5],
@@ -73,7 +83,73 @@ impl Default for IcpPlaneCriteria {
             max_dist_m: 0.1,
             max_normal_angle_rad: 30.0_f64.to_radians(),
             huber_delta: 2.0,
-            sigma_m: 0.01,
+            depth_noise: DepthNoise::Constant { sigma_m: 0.01 },
+        }
+    }
+}
+
+/// Depth noise model for the row weights of [`icp_projective_plane`].
+///
+/// Each point's depth sigma moves it along its viewing ray, so a row's residual sigma is
+/// `sqrt((n . r_s)^2 sigma_s^2 + (n . r_t)^2 sigma_t^2)`, with `r = p / z` the ray of the source
+/// point (rotated into the target) and of the target point, and `n` the target normal.
+/// [`Self::Constant`] with no sigma map on either frame is the exception: a residual sigma used
+/// as-is, the same for every row.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub enum DepthNoise {
+    /// One sigma for every row, in metres of point-to-plane residual. Where a sigma map is
+    /// present on either frame, a point without a map value uses it as its depth sigma instead.
+    Constant {
+        /// One-sigma error in metres.
+        sigma_m: f64,
+    },
+    /// Stereo depth: `sigma_z = z^2 * sigma_disparity_px / (focal_px * baseline_m)`.
+    Stereo {
+        /// Focal length in pixels at the finest level, the one the disparity was measured at.
+        focal_px: f64,
+        /// Stereo baseline in metres.
+        baseline_m: f64,
+        /// One-sigma disparity error in pixels.
+        sigma_disparity_px: f64,
+    },
+}
+
+impl DepthNoise {
+    /// One-sigma depth error in metres at depth `z_m`.
+    ///
+    /// # Arguments
+    ///
+    /// * `z_m` - Z-depth in metres.
+    ///
+    /// # Returns
+    ///
+    /// The model's sigma; for [`Self::Constant`] the constant itself.
+    pub fn depth_sigma(&self, z_m: f64) -> f64 {
+        match *self {
+            DepthNoise::Constant { sigma_m } => sigma_m,
+            DepthNoise::Stereo {
+                focal_px,
+                baseline_m,
+                sigma_disparity_px,
+            } => z_m * z_m * sigma_disparity_px / (focal_px * baseline_m),
+        }
+    }
+
+    /// The model's parameters with their field names, for validation.
+    fn params(&self) -> [(&'static str, f64); 3] {
+        match *self {
+            // repeated so that every arm has three entries
+            DepthNoise::Constant { sigma_m } => [("depth_noise.sigma_m", sigma_m); 3],
+            DepthNoise::Stereo {
+                focal_px,
+                baseline_m,
+                sigma_disparity_px,
+            } => [
+                ("depth_noise.focal_px", focal_px),
+                ("depth_noise.baseline_m", baseline_m),
+                ("depth_noise.sigma_disparity_px", sigma_disparity_px),
+            ],
         }
     }
 }
@@ -149,8 +225,8 @@ pub struct IcpPlaneResult {
 /// * [`RgbdIcpError::PyramidLevelsMismatch`] if the pyramids have different level counts.
 /// * [`RgbdIcpError::IterationsLevelsMismatch`] if `criteria.iters_per_level` does not have one
 ///   entry per level.
-/// * [`RgbdIcpError::InvalidCriteria`] if a threshold of `criteria` is not finite and positive,
-///   or `max_normal_angle_rad` exceeds pi.
+/// * [`RgbdIcpError::InvalidCriteria`] if a threshold of `criteria` or a parameter of its
+///   `depth_noise` is not finite and positive, or `max_normal_angle_rad` exceeds pi.
 /// * [`RgbdIcpError::TooFewCorrespondences`] if fewer than 6 correspondences pass the gates in
 ///   any pass, the final one included (low overlap or a bad initial guess).
 /// * [`RgbdIcpError::SingularNormalEquations`] if the geometry does not constrain all six
@@ -208,10 +284,10 @@ pub fn icp_projective_plane(
 /// The gates of `criteria`, or the first threshold out of its range.
 fn check_criteria(criteria: &IcpPlaneCriteria) -> Result<PassGates, RgbdIcpError> {
     let inf = f64::INFINITY;
+    let noise = criteria.depth_noise.params().map(|(f, v)| (f, v, inf));
     for (field, value, max) in [
         ("max_dist_m", criteria.max_dist_m, inf),
         ("huber_delta", criteria.huber_delta, inf),
-        ("sigma_m", criteria.sigma_m, inf),
         ("update_tolerance", criteria.update_tolerance, inf),
         // above pi the cosine gate wraps round and starts rejecting again
         (
@@ -219,7 +295,10 @@ fn check_criteria(criteria: &IcpPlaneCriteria) -> Result<PassGates, RgbdIcpError
             criteria.max_normal_angle_rad,
             std::f64::consts::PI,
         ),
-    ] {
+    ]
+    .into_iter()
+    .chain(noise)
+    {
         // written so that NaN fails
         if !(value > 0.0 && value.is_finite() && value <= max) {
             return Err(RgbdIcpError::InvalidCriteria { field, value });
@@ -229,7 +308,7 @@ fn check_criteria(criteria: &IcpPlaneCriteria) -> Result<PassGates, RgbdIcpError
         max_dist_m: criteria.max_dist_m,
         cos_max_normal_angle: criteria.max_normal_angle_rad.cos(),
         huber_delta: criteria.huber_delta,
-        sigma_m: criteria.sigma_m,
+        depth_noise: criteria.depth_noise,
     })
 }
 
@@ -242,8 +321,8 @@ pub(crate) struct PassGates {
     pub cos_max_normal_angle: f64,
     /// Huber threshold on the normalised residual `r / sigma`.
     pub huber_delta: f64,
-    /// One-sigma error of a residual, in metres.
-    pub sigma_m: f64,
+    /// Depth noise model behind each residual's sigma.
+    pub depth_noise: DepthNoise,
 }
 
 /// One gated correspondence of a projective-association pass.
@@ -312,11 +391,35 @@ fn vec3(p: [f32; 3]) -> Vec3F64 {
     Vec3F64::new(p[0] as f64, p[1] as f64, p[2] as f64)
 }
 
+/// A valid sigma-map entry of pixel `idx` of `level`, or `None`: no map, or no value there.
+#[inline]
+fn map_sigma(level: &RgbdLevel, idx: usize) -> Option<f64> {
+    let s = *level.depth_sigmas.as_ref()?.as_slice().get(idx)?;
+    // written so that NaN fails
+    (s > 0.0 && s.is_finite()).then_some(s as f64)
+}
+
+/// Depth sigma of one point: its level's map entry when present, else the model.
+#[inline]
+fn point_depth_sigma(level: &RgbdLevel, idx: usize, z: f64, noise: &DepthNoise) -> f64 {
+    map_sigma(level, idx).unwrap_or_else(|| noise.depth_sigma(z))
+}
+
+/// Squared cosine between a normal and a ray, bounded below by [`MIN_RAY_INCIDENCE`], times
+/// the ray's squared length.
+#[inline]
+fn projected_ray_sq(n: &Vec3F64, ray: &Vec3F64) -> f64 {
+    let c = n.dot(*ray);
+    (c * c).max(MIN_RAY_INCIDENCE * MIN_RAY_INCIDENCE * ray.dot(*ray))
+}
+
 /// A target vertex and normal.
 struct TargetSample {
     vertex: Vec3F64,
     /// Unit length.
     normal: Vec3F64,
+    /// The target's sigma-map value at the sample, when it has one.
+    depth_sigma: Option<f64>,
 }
 
 /// Nearest-pixel sample: the target vertex and normal of the pixel `(u, v)` rounds to.
@@ -338,6 +441,7 @@ fn sample_nearest(tgt: &RgbdLevel, u: f64, v: f64) -> Option<TargetSample> {
     Some(TargetSample {
         vertex: vec3(vt),
         normal: vec3(nt),
+        depth_sigma: map_sigma(tgt, idx),
     })
 }
 
@@ -358,7 +462,16 @@ pub(crate) fn for_each_correspondence(
         num_associated: 0,
     };
     let max_dist_sq = gates.max_dist_m * gates.max_dist_m;
-    let sigma = gates.sigma_m.max(MIN_SIGMA_M);
+    let noise = &gates.depth_noise;
+    // constant noise with no map on either frame is a residual sigma, the same for every row
+    let constant_sigma = match *noise {
+        DepthNoise::Constant { sigma_m }
+            if src.depth_sigmas.is_none() && tgt.depth_sigmas.is_none() =>
+        {
+            Some(sigma_m.max(MIN_SIGMA_M))
+        }
+        _ => None,
+    };
     let vertices = src.vertices.as_slice().chunks_exact(3);
     let normals = src.normals.as_slice().chunks_exact(3);
 
@@ -377,6 +490,7 @@ pub(crate) fn for_each_correspondence(
         let Some(TargetSample {
             vertex: v_t,
             normal: n_t,
+            depth_sigma: tgt_sigma,
         }) = sample_nearest(tgt, uv.x, uv.y)
         else {
             continue;
@@ -391,6 +505,18 @@ pub(crate) fn for_each_correspondence(
             continue;
         }
 
+        let sigma = constant_sigma.unwrap_or_else(|| {
+            // depth noise moves each point along its own ray `p / z`; project both onto n_t
+            let z_s = v_s[2] as f64;
+            let ray_s = (p - *translation) / z_s;
+            let ray_t = v_t / v_t.z;
+            let sig_s = point_depth_sigma(src, src_idx, z_s, noise);
+            let sig_t = tgt_sigma.unwrap_or_else(|| noise.depth_sigma(v_t.z));
+            let var = projected_ray_sq(&n_t, &ray_s) * sig_s * sig_s
+                + projected_ray_sq(&n_t, &ray_t) * sig_t * sig_t;
+            // the one floor for every source of sigma, sigma maps included
+            var.sqrt().max(MIN_SIGMA_M)
+        });
         let pxn = p.cross(n_t);
         visit(&Correspondence {
             src_idx,
@@ -584,7 +710,9 @@ fn run_icp(
 #[cfg(test)]
 mod tests {
     use super::super::rgbd::RgbdPyramid;
-    use super::super::synth::{render_depth_mm, test_camera, Plane, Scene, Sphere, TEST_SIZE};
+    use super::super::synth::{
+        depth_m_from_mm, render_depth_mm, test_camera, Plane, Scene, Sphere, TEST_SIZE,
+    };
     use super::*;
     use crate::camera::PinholeCamera;
     use kornia_algebra::SO3F64;
@@ -594,7 +722,7 @@ mod tests {
         max_dist_m: 0.1,
         cos_max_normal_angle: 0.866, // 30 deg
         huber_delta: 1.345,
-        sigma_m: 0.002,
+        depth_noise: DepthNoise::Constant { sigma_m: 0.002 },
     };
 
     /// Source at the origin, target camera moved by a small rotation and translation; returns
@@ -890,7 +1018,7 @@ mod tests {
                 ..ok.clone()
             },
             IcpPlaneCriteria {
-                sigma_m: 0.0,
+                depth_noise: DepthNoise::Constant { sigma_m: 0.0 },
                 ..ok.clone()
             },
             IcpPlaneCriteria {
@@ -902,6 +1030,30 @@ mod tests {
                 ..ok.clone()
             },
         ];
+        // every DepthNoise parameter is checked, NaN and infinity included
+        let stereo = |i: usize, x: f64| {
+            let mut p = [200.0, 0.075, 0.01];
+            p[i] = x;
+            IcpPlaneCriteria {
+                depth_noise: DepthNoise::Stereo {
+                    focal_px: p[0],
+                    baseline_m: p[1],
+                    sigma_disparity_px: p[2],
+                },
+                ..ok.clone()
+            }
+        };
+        let noise_bad =
+            (0..3).flat_map(|i| [0.0, -1.0, f64::NAN, f64::INFINITY].map(|x| stereo(i, x)));
+        let constant_bad = [-1.0, f64::NAN, f64::INFINITY].map(|sigma_m| IcpPlaneCriteria {
+            depth_noise: DepthNoise::Constant { sigma_m },
+            ..ok.clone()
+        });
+        let bad: Vec<_> = bad
+            .into_iter()
+            .chain(noise_bad)
+            .chain(constant_bad)
+            .collect();
         for c in &bad {
             let result = icp_from_identity(&pyr, &pyr, c);
             assert!(
@@ -1116,5 +1268,103 @@ mod tests {
         a[(4, 4)] = f64::NAN;
         assert_eq!(block_conditioning(&a), (0.0, 0.0));
         assert_eq!(block_conditioning(&Mat6F64::zeros()), (0.0, 0.0));
+    }
+
+    const TEST_STEREO: DepthNoise = DepthNoise::Stereo {
+        focal_px: 200.0,
+        baseline_m: 0.075,
+        // ~2 mm at 2 m: small enough that central-difference normals stay meaningful
+        sigma_disparity_px: 0.0075,
+    };
+
+    /// Metre depth of `scene` seen from `T_world_cam = (rot_wc, t_wc)`.
+    fn depth_m(
+        scene: &Scene,
+        rot_wc: &Mat3F64,
+        t_wc: &Vec3F64,
+    ) -> Result<Image<f32, 1>, Box<dyn std::error::Error>> {
+        let mm = render_depth_mm(scene, &test_camera(), TEST_SIZE, rot_wc, t_wc)?;
+        Ok(depth_m_from_mm(&mm)?)
+    }
+
+    /// A per-pixel sigma map equal to the stereo model must weight like the model.
+    #[test]
+    fn sigma_map_matches_stereo_model() -> Result<(), Box<dyn std::error::Error>> {
+        let (camera, scene) = (test_camera(), Scene::corner_and_sphere());
+        let rot_wc = SO3F64::exp(Vec3F64::new(0.0, 1f64.to_radians(), 0.0)).matrix();
+        let t_wc = Vec3F64::new(0.01, 0.0, 0.0);
+        let ds = depth_m(&scene, &Mat3F64::IDENTITY, &Vec3F64::ZERO)?;
+        let dt = depth_m(&scene, &rot_wc, &t_wc)?;
+        let sig = |d: &Image<f32, 1>| {
+            let s = d.as_slice().iter();
+            Image::<f32, 1>::new(
+                d.size(),
+                s.map(|&z| TEST_STEREO.depth_sigma(z as f64) as f32)
+                    .collect(),
+            )
+        };
+        let model = (
+            RgbdPyramid::from_depth_m(&ds, &camera, 3)?,
+            RgbdPyramid::from_depth_m(&dt, &camera, 3)?,
+        );
+        let mapped = (
+            RgbdPyramid::from_depth_m_with_sigma(&ds, &sig(&ds)?, &camera, 3)?,
+            RgbdPyramid::from_depth_m_with_sigma(&dt, &sig(&dt)?, &camera, 3)?,
+        );
+        // the map wins over a deliberately wrong constant model
+        let wrong = DepthNoise::Constant { sigma_m: 1.0 };
+        let (rot_gt, t_gt) = (rot_wc.transpose(), -(rot_wc.transpose() * t_wc));
+        let finest = |p: &(RgbdPyramid, RgbdPyramid), noise| {
+            let gates = PassGates {
+                depth_noise: noise,
+                ..GATES
+            };
+            accumulate_level(&p.0.levels[0], &p.1.levels[0], &rot_gt, &t_gt, &gates, None)
+        };
+        let (a, b) = (finest(&model, TEST_STEREO), finest(&mapped, wrong));
+        assert_eq!(a.num_inliers, b.num_inliers);
+        for i in 0..6 {
+            let rel = (a.a[(i, i)] - b.a[(i, i)]).abs() / a.a[(i, i)];
+            // the map holds the model's sigma rounded to f32
+            assert!(rel < 1e-5, "J^T W J[{i}][{i}] differs by {rel:.3e}");
+        }
+        // without maps the wrong model is used, so the comparison above can fail
+        let c = finest(&model, wrong);
+        assert!(a.a[(3, 3)] > 1e3 * c.a[(3, 3)]);
+
+        let criteria = |depth_noise| IcpPlaneCriteria {
+            depth_noise,
+            ..Default::default()
+        };
+        let rm = icp_from_identity(&model.0, &model.1, &criteria(TEST_STEREO))?;
+        let rp = icp_from_identity(&mapped.0, &mapped.1, &criteria(wrong))?;
+        assert!(rotation_error_deg(&rm.rotation, &rp.rotation) < 0.01);
+        assert!((rm.translation - rp.translation).length() < 1e-4);
+        assert!((rm.translation - t_gt).length() < 5e-3);
+        Ok(())
+    }
+
+    /// A sigma map below the floor weights its rows at `MIN_SIGMA_M`, the floor of every other
+    /// sigma, so `J^T W J` stays finite.
+    #[test]
+    fn sigma_map_shares_the_sigma_floor() -> Result<(), Box<dyn std::error::Error>> {
+        let d = depth_m(
+            &Scene::corner_and_sphere(),
+            &Mat3F64::IDENTITY,
+            &Vec3F64::ZERO,
+        )?;
+        let tiny = Image::<f32, 1>::from_size_val(d.size(), 1e-30)?;
+        let pyr = RgbdPyramid::from_depth_m_with_sigma(&d, &tiny, &test_camera(), 1)?;
+        let l0 = &pyr.levels[0];
+        let (rot, t) = (Mat3F64::IDENTITY, Vec3F64::ZERO);
+        let mut rows = 0;
+        for_each_correspondence(l0, l0, &rot, &t, &GATES, |c| {
+            assert_eq!(c.sigma, MIN_SIGMA_M);
+            rows += 1;
+        });
+        assert!(rows > 10_000, "{rows}");
+        let eqs = accumulate_level(l0, l0, &rot, &t, &GATES, None);
+        assert!(eqs.a.iter().all(|x| x.is_finite()));
+        Ok(())
     }
 }
