@@ -36,6 +36,20 @@ macro_rules! define_vector_type {
                 [$(self.$field),+]
             }
 
+            /// Vector with every component set to `v`.
+            ///
+            /// # Arguments
+            ///
+            /// * `v` - Value of every component.
+            ///
+            /// # Returns
+            ///
+            /// The broadcast vector.
+            #[inline]
+            pub fn splat(v: $scalar) -> Self {
+                Self { $($field: v),+ }
+            }
+
             /// Zero vector.
             pub const ZERO: Self = Self {
                 $($field: 0.0 as $scalar),+
@@ -227,6 +241,29 @@ macro_rules! define_vector_type {
                 *self = *self / rhs;
             }
         }
+
+        /// Component-wise product (Hadamard), via glam.
+        ///
+        /// Each component is one IEEE multiply, the same as the scalar
+        /// `a.x * b.x`, so a lane-wise kernel built from these operations
+        /// matches its scalar loop bit for bit.
+        impl std::ops::Mul for $name {
+            type Output = Self;
+
+            #[inline]
+            fn mul(self, rhs: Self) -> Self::Output {
+                let a: $glam_type = self.into();
+                let b: $glam_type = rhs.into();
+                Self::from(a * b)
+            }
+        }
+
+        impl std::ops::MulAssign for $name {
+            #[inline]
+            fn mul_assign(&mut self, rhs: Self) {
+                *self = *self * rhs;
+            }
+        }
     };
 }
 
@@ -274,6 +311,72 @@ pub type DVecF64 = nalgebra::DVector<f64>;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Component-wise `*`, `+` and `splat` must give the scalar result bit for
+    /// bit, so kernels written lane-wise keep their scalar loop's output.
+    #[test]
+    fn test_vec4f32_lanewise_ops_match_scalar_bits() {
+        let mut state = 0x9e37_79b9_u32;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            f32::from_bits(state & 0xbfff_ffff)
+        };
+        let specials = [
+            0.0f32,
+            -0.0,
+            1e-40,
+            -1e-40,
+            f32::MAX,
+            f32::INFINITY,
+            255.0,
+            1.0 / 3.0,
+        ];
+        for i in 0..4096 {
+            let a: [f32; 4] =
+                std::array::from_fn(|k| if i < 2 { specials[4 * i + k] } else { next() });
+            let b: [f32; 4] = std::array::from_fn(|_| next());
+            let s = next();
+            let (va, vb) = (Vec4F32::from_array(a), Vec4F32::from_array(b));
+            let mut acc = va;
+            acc *= vb;
+            let prod = (va * vb).to_array();
+            let fma_like = (va * vb + Vec4F32::splat(s)).to_array();
+            for k in 0..4 {
+                assert_eq!(prod[k].to_bits(), (a[k] * b[k]).to_bits());
+                assert_eq!(acc.to_array()[k].to_bits(), (a[k] * b[k]).to_bits());
+                assert_eq!(fma_like[k].to_bits(), (a[k] * b[k] + s).to_bits());
+            }
+        }
+    }
+
+    #[test]
+    fn test_splat_and_lanewise_mul_all_types() {
+        assert_eq!(
+            Vec2F32::splat(2.0) * Vec2F32::new(3.0, 4.0),
+            Vec2F32::new(6.0, 8.0)
+        );
+        assert_eq!(
+            Vec2F64::splat(2.0) * Vec2F64::new(3.0, 4.0),
+            Vec2F64::new(6.0, 8.0)
+        );
+        assert_eq!(
+            Vec3F32::splat(-1.0) * Vec3F32::new(1.0, 2.0, 3.0),
+            Vec3F32::new(-1.0, -2.0, -3.0)
+        );
+        assert_eq!(
+            Vec3F64::splat(0.5) * Vec3F64::new(2.0, 4.0, 6.0),
+            Vec3F64::new(1.0, 2.0, 3.0)
+        );
+        assert_eq!(
+            Vec3AF32::splat(3.0) * Vec3AF32::new(1.0, 0.0, -1.0),
+            Vec3AF32::new(3.0, 0.0, -3.0)
+        );
+        let mut v = Vec4F64::new(1.0, 2.0, 3.0, 4.0);
+        v *= Vec4F64::splat(2.0);
+        assert_eq!(v, Vec4F64::new(2.0, 4.0, 6.0, 8.0));
+    }
 
     // Vec2 tests
     #[test]
