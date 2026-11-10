@@ -94,6 +94,39 @@ pub struct IcpPlaneResult {
     pub iterations: usize,
     /// Correspondences that passed the gates in that same final pass.
     pub num_inliers: usize,
+    /// Source pixels of the final pass that projected onto valid target geometry, before the
+    /// distance and normal gates: how much evidence the solve had.
+    pub num_associated: usize,
+    /// [`Self::num_inliers`] over [`Self::num_associated`]: match quality alone.
+    ///
+    /// Not divided by all valid source pixels, which would mix quality with view overlap and
+    /// fall under camera motion on solves that converged. Read it with
+    /// [`Self::overlap_fraction`]: a small patch can match perfectly and still be too little to
+    /// constrain a pose.
+    pub inlier_fraction: f64,
+    /// [`Self::num_associated`] over the valid source pixels: how much of the source view still
+    /// lands on the target. It falls as the camera leaves the target view, which calls for a
+    /// new target frame rather than a rejected solve.
+    pub overlap_fraction: f64,
+    /// Conditioning of the rotation block of `J^T W J` at the returned pose: the weakest
+    /// Cholesky pivot of rows 0-2 over the strongest, in `0..=1`; `0` when the final-pass
+    /// matrix does not factor.
+    ///
+    /// A ratio rather than a pivot magnitude, because pivots grow with the number of
+    /// correspondences and the scene depth while the ratio depends on the geometry only.
+    pub rotation_conditioning: f64,
+    /// Conditioning of the translation block (rows 3-5), defined as
+    /// [`Self::rotation_conditioning`].
+    ///
+    /// It is the one that falls when a single surface fills the view: translation along it is
+    /// barely constrained while the residual and [`Self::inlier_fraction`] stay perfect.
+    pub translation_conditioning: f64,
+    /// The weaker of [`Self::rotation_conditioning`] and [`Self::translation_conditioning`]:
+    /// one scalar to gate a pose on. Either block can collapse first, so gate on this rather
+    /// than on one block.
+    pub observability: f64,
+    /// Median target depth `v_t.z` of the final pass's inliers, in metres.
+    pub median_depth_m: f64,
 }
 
 /// Projective point-to-plane ICP between two RGB-D pyramids, coarse to fine.
@@ -108,7 +141,8 @@ pub struct IcpPlaneResult {
 ///
 /// # Returns
 ///
-/// The estimate of `T_target_source` with the residual and inlier count at that pose.
+/// The estimate of `T_target_source` with the residual, match quality, overlap and conditioning
+/// of a final pass at that pose.
 ///
 /// # Errors
 ///
@@ -250,8 +284,6 @@ pub(crate) struct NormalEquations {
     /// Correspondences that survived gating.
     pub num_inliers: usize,
     /// Pass counts before gating.
-    // read by the gate tests only; not yet part of the public result
-    #[cfg_attr(not(test), allow(dead_code))]
     pub counts: PassCounts,
     /// Unweighted sum of squared residuals over the inliers.
     pub sum_sq_residual: f64,
@@ -374,13 +406,14 @@ pub(crate) fn for_each_correspondence(
 }
 
 /// One projective-association pass: gate, weight and accumulate `J^T W J` and `J^T W r` in
-/// `f64`.
+/// `f64`. With `depths`, also appends each inlier's target depth `v_t.z` to it.
 pub(crate) fn accumulate_level(
     src: &RgbdLevel,
     tgt: &RgbdLevel,
     rotation: &Mat3F64,
     translation: &Vec3F64,
     gates: &PassGates,
+    mut depths: Option<&mut Vec<f32>>,
 ) -> NormalEquations {
     let mut a = Mat6F64::zeros();
     let mut b = Vec6F64::zeros();
@@ -397,6 +430,10 @@ pub(crate) fn accumulate_level(
         num_inliers += 1;
         sum_sq_residual += c.r * c.r;
         sum_depth_m += c.v_t.z;
+        if let Some(d) = depths.as_deref_mut() {
+            // widened from an f32 vertex, so the cast back is exact
+            d.push(c.v_t.z as f32);
+        }
     });
     a.fill_lower_triangle_with_upper_triangle();
 
@@ -444,6 +481,33 @@ fn solve_step(a: &Mat6F64, b: &Vec6F64) -> Result<Vec6F64, RgbdIcpError> {
     Ok(x)
 }
 
+/// Conditioning of each 3x3 block of `a`, `(rotation, translation)`: the weakest Cholesky pivot
+/// of the block over its strongest, in `0..=1`, the pivots being the squared diagonal of `L`.
+/// `(0, 0)` when `a` does not factor or a pivot is not finite, so a NaN never reaches the result.
+fn block_conditioning(a: &Mat6F64) -> (f64, f64) {
+    let Some(chol) = a.cholesky() else {
+        return (0.0, 0.0);
+    };
+    let l = chol.l_dirty();
+    let pivots: [f64; 6] = std::array::from_fn(|i| l[(i, i)] * l[(i, i)]);
+    if !pivots.iter().all(|p| p.is_finite() && *p > 0.0) {
+        return (0.0, 0.0);
+    }
+    let ratio = |block: &[f64]| {
+        let lo = block.iter().copied().fold(f64::INFINITY, f64::min);
+        let hi = block.iter().copied().fold(0.0, f64::max);
+        lo / hi
+    };
+    (ratio(&pivots[..3]), ratio(&pivots[3..]))
+}
+
+/// Median of `depths`, reordering it; `depths` must not be empty.
+fn median_depth_m(depths: &mut [f32]) -> f64 {
+    let mid = depths.len() / 2;
+    let (_, m, _) = depths.select_nth_unstable_by(mid, f32::total_cmp);
+    *m as f64
+}
+
 /// Coarse-to-fine Gauss-Newton from the initial pose; inputs already checked.
 fn run_icp(
     src: &RgbdPyramid,
@@ -461,7 +525,7 @@ fn run_icp(
     for (&iters, level) in criteria.iters_per_level.iter().zip(levels) {
         let (s, t) = (&src.levels[level], &tgt.levels[level]);
         for _ in 0..iters {
-            let eqs = accumulate_level(s, t, &rotation, &translation, gates);
+            let eqs = accumulate_level(s, t, &rotation, &translation, gates, None);
             check_inliers(&eqs)?;
             let x = solve_step(&eqs.a, &eqs.b)?;
             let (w, v) = (
@@ -482,30 +546,49 @@ fn run_icp(
         }
     }
 
-    // the reported figures come from the returned pose, not the last pre-update pass
+    // the reported figures come from the returned pose, not the last pre-update pass; the one
+    // allocation of a call, sized by the image so that it never regrows
+    let finest = &src.levels[0];
+    let mut depths = Vec::with_capacity(finest.size().width * finest.size().height);
     let eqs = accumulate_level(
-        &src.levels[0],
+        finest,
         &tgt.levels[0],
         &rotation,
         &translation,
         gates,
+        Some(&mut depths),
     );
     check_inliers(&eqs)?;
+    let (rotation_conditioning, translation_conditioning) = block_conditioning(&eqs.a);
+    // num_valid >= num_associated >= num_inliers >= MIN_INLIERS, so no ratio divides by zero
+    let PassCounts {
+        num_valid,
+        num_associated,
+    } = eqs.counts;
     Ok(IcpPlaneResult {
         rotation,
         translation,
         rmse: (eqs.sum_sq_residual / eqs.num_inliers as f64).sqrt(),
         iterations,
         num_inliers: eqs.num_inliers,
+        num_associated,
+        inlier_fraction: eqs.num_inliers as f64 / num_associated as f64,
+        overlap_fraction: num_associated as f64 / num_valid as f64,
+        rotation_conditioning,
+        translation_conditioning,
+        observability: rotation_conditioning.min(translation_conditioning),
+        median_depth_m: median_depth_m(&mut depths),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::rgbd::RgbdPyramid;
-    use super::super::synth::{render_depth_mm, test_camera, Plane, Scene, TEST_SIZE};
+    use super::super::synth::{render_depth_mm, test_camera, Plane, Scene, Sphere, TEST_SIZE};
     use super::*;
+    use crate::camera::PinholeCamera;
     use kornia_algebra::SO3F64;
+    use kornia_image::ImageSize;
 
     const GATES: PassGates = PassGates {
         max_dist_m: 0.1,
@@ -549,7 +632,7 @@ mod tests {
         let (rot, t) = (dr * rot_gt, dr * t_gt + Vec3F64::new(0.01, 0.0, -0.005));
         let (s0, t0) = (&src.levels[0], &tgt.levels[0]);
 
-        let eqs = accumulate_level(s0, t0, &rot, &t, &GATES);
+        let eqs = accumulate_level(s0, t0, &rot, &t, &GATES, None);
         assert!(eqs.num_inliers > 20_000, "inliers: {}", eqs.num_inliers);
         assert!(eqs.counts.num_associated >= eqs.num_inliers);
         assert!(eqs.counts.num_valid >= eqs.counts.num_associated);
@@ -616,7 +699,7 @@ mod tests {
         let (src, tgt, rot_gt, t_gt) = moved_pair()?;
         let (s0, t0) = (&src.levels[0], &tgt.levels[0]);
 
-        let eqs = accumulate_level(s0, t0, &rot_gt, &t_gt, &GATES);
+        let eqs = accumulate_level(s0, t0, &rot_gt, &t_gt, &GATES, None);
         assert!(
             eqs.num_inliers as f64 > 0.9 * eqs.counts.num_associated as f64,
             "{} of {} associated kept",
@@ -632,7 +715,7 @@ mod tests {
             max_dist_m: 0.001,
             ..GATES
         };
-        let eqs_far = accumulate_level(s0, t0, &rot_gt, &far, &tight);
+        let eqs_far = accumulate_level(s0, t0, &rot_gt, &far, &tight, None);
         assert!(eqs_far.num_inliers * 20 < eqs.num_inliers);
         assert_eq!(eqs_far.counts.num_valid, eqs.counts.num_valid);
 
@@ -642,7 +725,8 @@ mod tests {
             ..GATES
         };
         assert!(
-            accumulate_level(s0, t0, &rot_gt, &t_gt, &any_angle).num_inliers >= eqs.num_inliers
+            accumulate_level(s0, t0, &rot_gt, &t_gt, &any_angle, None).num_inliers
+                >= eqs.num_inliers
         );
         Ok(())
     }
@@ -872,5 +956,165 @@ mod tests {
         let mut weak = Mat6F64::identity();
         weak[(5, 5)] = 1e-10;
         assert!(solve_step(&weak, &b).is_err());
+    }
+
+    /// Pyramid of `levels` levels of `scene` through `camera` at `size`, the camera translated
+    /// to `t_wc` without rotation.
+    fn pyramid_with(
+        scene: &Scene,
+        camera: &PinholeCamera,
+        size: ImageSize,
+        levels: usize,
+        t_wc: &Vec3F64,
+    ) -> Result<RgbdPyramid, Box<dyn std::error::Error>> {
+        let depth = render_depth_mm(scene, camera, size, &Mat3F64::IDENTITY, t_wc)?;
+        Ok(RgbdPyramid::from_depth_mm(&depth, camera, levels)?)
+    }
+
+    /// A partly overlapping view keeps a high match quality while the overlap falls.
+    ///
+    /// `inlier_fraction` once divided by all valid source pixels, so it fell with the view
+    /// overlap rather than with the match error and rejected converged solves; quality and
+    /// overlap are separate signals.
+    #[test]
+    fn inlier_fraction_measures_quality_not_overlap() -> Result<(), Box<dyn std::error::Error>> {
+        let scene = Scene::corner_and_sphere();
+        let src = pyramid(&scene, &Mat3F64::IDENTITY, &Vec3F64::ZERO)?;
+        // yaw far enough that a large part of the source view leaves the target frustum
+        let rot_wc = SO3F64::exp(Vec3F64::new(0.0, 18f64.to_radians(), 0.0)).matrix();
+        let t_wc = Vec3F64::new(0.35, 0.0, 0.0);
+        let tgt = pyramid(&scene, &rot_wc, &t_wc)?;
+        let rot_gt = rot_wc.transpose();
+        let t_gt = -(rot_gt * t_wc);
+
+        // started at the true rotation: translation alone has to be found
+        let result = icp_projective_plane(
+            &src,
+            &tgt,
+            &rot_gt,
+            &Vec3F64::ZERO,
+            &IcpPlaneCriteria::default(),
+        )?;
+        let rot_err = rotation_error_deg(&result.rotation, &rot_gt);
+        let t_err = (result.translation - t_gt).length();
+        assert!(rot_err < 0.5, "rotation error {rot_err} deg");
+        assert!(t_err < 0.01, "translation error {t_err} m");
+        assert!(
+            result.inlier_fraction > 0.9,
+            "quality fell with overlap: {} ({} associated)",
+            result.inlier_fraction,
+            result.num_associated
+        );
+        assert!(
+            result.overlap_fraction < 0.7,
+            "overlap missed the rotated-away view: {}",
+            result.overlap_fraction
+        );
+        // their product is the old inliers-over-valid figure
+        let inliers_over_valid = result.inlier_fraction * result.overlap_fraction;
+        assert!(result.inlier_fraction > 1.5 * inliers_over_valid);
+        assert!(result.num_associated > 1000, "{}", result.num_associated);
+        Ok(())
+    }
+
+    /// Weak geometry shows in `observability` and in nothing else.
+    ///
+    /// A wall with one small bump: the bump pins the three directions the wall leaves free, but
+    /// only just. Sliding along the wall then costs little residual, so the inlier fraction and
+    /// the rmse look as good as on a well-conditioned scene.
+    #[test]
+    fn observability_exposes_weak_geometry() -> Result<(), Box<dyn std::error::Error>> {
+        let weak = Scene {
+            planes: vec![Plane {
+                normal: Vec3F64::new(0.0, 0.0, 1.0),
+                d: 2.0,
+            }],
+            spheres: vec![Sphere {
+                center: Vec3F64::new(0.0, 0.0, 1.9),
+                radius: 0.06,
+            }],
+        };
+        let slide = Vec3F64::new(0.02, 0.0, 0.0);
+        let mut measured = Vec::new();
+        for scene in [weak, Scene::corner_and_sphere()] {
+            let src = pyramid(&scene, &Mat3F64::IDENTITY, &Vec3F64::ZERO)?;
+            let tgt = pyramid(&scene, &Mat3F64::IDENTITY, &slide)?;
+            let r = icp_from_identity(&src, &tgt, &IcpPlaneCriteria::default())?;
+            assert!((0.0..=1.0).contains(&r.observability));
+            measured.push((r.observability, r.inlier_fraction, r.rmse));
+        }
+        let ((weak_obs, weak_inl, weak_rmse), (rich_obs, rich_inl, _)) = (measured[0], measured[1]);
+        assert!(
+            weak_obs < 1e-4 && rich_obs > 1e-3,
+            "weak {weak_obs:.3e}, rich {rich_obs:.3e}"
+        );
+        // the figures a caller would otherwise trust are no worse on the weak scene
+        assert!(
+            weak_inl >= rich_inl && weak_rmse < 1e-3,
+            "weak inliers {weak_inl} (rich {rich_inl}), weak rmse {weak_rmse}"
+        );
+        Ok(())
+    }
+
+    /// The same geometry at half resolution, a quarter of the correspondences, reports the same
+    /// conditioning: it is a pivot ratio, not a pivot magnitude.
+    #[test]
+    fn conditioning_is_scale_free() -> Result<(), Box<dyn std::error::Error>> {
+        let scene = Scene::corner_and_sphere();
+        let full = test_camera();
+        let half = PinholeCamera {
+            fx: full.fx / 2.0,
+            fy: full.fy / 2.0,
+            cx: (full.cx + 0.5) / 2.0 - 0.5,
+            cy: (full.cy + 0.5) / 2.0 - 0.5,
+            ..full
+        };
+        let half_size = ImageSize {
+            width: TEST_SIZE.width / 2,
+            height: TEST_SIZE.height / 2,
+        };
+        let slide = Vec3F64::new(0.02, 0.0, 0.0);
+        let criteria = IcpPlaneCriteria {
+            iters_per_level: vec![10, 7],
+            ..Default::default()
+        };
+        let mut solved = Vec::new();
+        for (camera, size) in [(&full, TEST_SIZE), (&half, half_size)] {
+            let src = pyramid_with(&scene, camera, size, 2, &Vec3F64::ZERO)?;
+            let tgt = pyramid_with(&scene, camera, size, 2, &slide)?;
+            solved.push(icp_from_identity(&src, &tgt, &criteria)?);
+        }
+        let (a, b) = (&solved[0], &solved[1]);
+        assert!(
+            b.num_associated * 3 < a.num_associated,
+            "{} vs {}",
+            b.num_associated,
+            a.num_associated
+        );
+        for (name, x, y) in [
+            ("rotation", a.rotation_conditioning, b.rotation_conditioning),
+            (
+                "translation",
+                a.translation_conditioning,
+                b.translation_conditioning,
+            ),
+        ] {
+            assert!(x > 0.0 && y > 0.0, "{name}: {x:.3e} vs {y:.3e}");
+            assert!(x.max(y) / x.min(y) < 10.0, "{name}: {x:.3e} vs {y:.3e}");
+        }
+        // the median depth does not depend on the resolution either
+        assert!((a.median_depth_m - b.median_depth_m).abs() < 0.05);
+        Ok(())
+    }
+
+    #[test]
+    fn block_conditioning_is_zero_unless_it_factors() {
+        let mut a = Mat6F64::identity();
+        a[(1, 1)] = 0.25;
+        a[(4, 4)] = 4.0;
+        assert_eq!(block_conditioning(&a), (0.25, 0.25));
+        a[(4, 4)] = f64::NAN;
+        assert_eq!(block_conditioning(&a), (0.0, 0.0));
+        assert_eq!(block_conditioning(&Mat6F64::zeros()), (0.0, 0.0));
     }
 }
