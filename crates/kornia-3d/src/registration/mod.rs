@@ -9,6 +9,7 @@ mod rgbd;
 pub use rgbd::*;
 
 mod icp;
+pub use icp::{icp_projective_plane, IcpPlaneCriteria, IcpPlaneResult};
 
 #[cfg(test)]
 mod synth;
