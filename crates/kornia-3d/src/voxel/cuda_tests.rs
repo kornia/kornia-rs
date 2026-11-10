@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use cudarc::driver::{CudaContext, CudaStream};
 
+use super::cuda::check_compute_capability;
 use super::tests::random_points;
 use super::*;
 
