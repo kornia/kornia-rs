@@ -8,5 +8,7 @@ mod ops;
 mod rgbd;
 pub use rgbd::*;
 
+mod icp;
+
 #[cfg(test)]
 mod synth;
