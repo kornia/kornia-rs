@@ -72,6 +72,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+For grayscale GStreamer streams, use `StreamCapture::grab_gray8()` to read
+`GRAY8` frames as `Image<u8, 1>`. For video files, configure `VideoReader` with
+`ImageFormat::Mono8` and call `VideoReader::grab_gray8()`.
+
 ## 🧩 Modules
 
 *   **`error`**: Error types for the I/O module.
