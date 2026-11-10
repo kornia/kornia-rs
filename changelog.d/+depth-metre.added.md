@@ -1,0 +1,1 @@
+RGB-D pyramids now accept metre depth as `Image<f32, 1>`: `vertex_map_from_depth_m`, `downsample_depth_half_m` and `RgbdPyramid::from_depth_m` mirror their millimetre counterparts without the millimetre quantisation, and treat `0`, negative and non-finite samples as invalid, the rule of `kornia_imgproc::depth::is_valid_depth_f32`.
