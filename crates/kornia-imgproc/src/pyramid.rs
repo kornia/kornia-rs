@@ -268,6 +268,94 @@ fn reflect_101(mut p: i32, len: i32) -> i32 {
     p
 }
 
+/// Interior rows of [`pyrdown_f32`] for one channel, 8 outputs per vector.
+///
+/// Each lane runs the scalar kernel's exact operation sequence (25 products
+/// added in `ky`-major order, separate `*` and `+`, no FMA), so the result
+/// is bit-identical to the scalar loop. Even and odd source columns are
+/// split once into `even`/`odd` planes so the stride-2 taps become
+/// contiguous loads: tap `kx` of output `x` reads `even[x-1]`, `odd[x-1]`,
+/// `even[x]`, `odd[x]`, `even[x+1]`.
+fn pyrdown_interior_c1(
+    src: &[f32],
+    src_width: usize,
+    src_height: usize,
+    dst: &mut [f32],
+    dst_width: usize,
+    dst_height: usize,
+    weights: &[f32; 25],
+) {
+    use wide::f32x8;
+
+    let even_w = src_width.div_ceil(2);
+    let odd_w = src_width / 2;
+    let mut even = vec![0.0f32; even_w * src_height];
+    let mut odd = vec![0.0f32; odd_w * src_height];
+    for y in 0..src_height {
+        let row = &src[y * src_width..(y + 1) * src_width];
+        let e = &mut even[y * even_w..(y + 1) * even_w];
+        let o = &mut odd[y * odd_w..(y + 1) * odd_w];
+        for (i, pair) in row.chunks(2).enumerate() {
+            e[i] = pair[0];
+            if let Some(&v) = pair.get(1) {
+                o[i] = v;
+            }
+        }
+    }
+
+    let wv: [f32x8; 25] = std::array::from_fn(|k| f32x8::splat(weights[k]));
+    let load = |s: &[f32], i: usize| -> f32x8 {
+        let mut a = [0.0f32; 8];
+        a.copy_from_slice(&s[i..i + 8]);
+        f32x8::from(a)
+    };
+
+    let x_end = dst_width.saturating_sub(1);
+    for dst_y in 1..dst_height.saturating_sub(1) {
+        let sy = dst_y * 2;
+        let out = &mut dst[dst_y * dst_width..(dst_y + 1) * dst_width];
+        let mut x = 1usize;
+        // Lanes of one vector share a single dependent add chain; four vectors
+        // per step give the add ports independent chains to overlap.
+        for width in [4usize, 1] {
+            while x + 8 * width <= x_end {
+                let mut sums = [f32x8::splat(0.0); 4];
+                for ky in 0..5 {
+                    let r = sy + ky - 2;
+                    let e = &even[r * even_w..(r + 1) * even_w];
+                    let o = &odd[r * odd_w..(r + 1) * odd_w];
+                    for (v, sum) in sums.iter_mut().enumerate().take(width) {
+                        let xv = x + 8 * v;
+                        *sum += load(e, xv - 1) * wv[ky * 5];
+                        *sum += load(o, xv - 1) * wv[ky * 5 + 1];
+                        *sum += load(e, xv) * wv[ky * 5 + 2];
+                        *sum += load(o, xv) * wv[ky * 5 + 3];
+                        *sum += load(e, xv + 1) * wv[ky * 5 + 4];
+                    }
+                }
+                for (v, sum) in sums.iter().enumerate().take(width) {
+                    let xv = x + 8 * v;
+                    out[xv..xv + 8].copy_from_slice(&sum.to_array());
+                }
+                x += 8 * width;
+            }
+        }
+        for (dx, slot) in out.iter_mut().enumerate().take(x_end).skip(x) {
+            let sx = dx * 2;
+            let mut sum = 0.0f32;
+            let mut k = 0;
+            for ky in 0..5 {
+                let row = (sy + ky - 2) * src_width;
+                for kx in 0..5 {
+                    sum += src[row + sx + kx - 2] * weights[k];
+                    k += 1;
+                }
+            }
+            *slot = sum;
+        }
+    }
+}
+
 /// Downsample an image by applying Gaussian blur and then subsampling.
 ///
 /// This function halves the size of the input image by first applying a Gaussian blur
@@ -361,7 +449,24 @@ pub fn pyrdown_f32<const C: usize>(
     let center_x_start = 1;
     let center_x_end = (dst_width - 1).min(dst_width);
 
-    for dst_y in center_y_start..center_y_end {
+    // Single-channel interiors take the vector kernel; the scalar loop below
+    // then covers only multi-channel images.
+    let scalar_rows = if C == 1 {
+        pyrdown_interior_c1(
+            src_data,
+            src_width,
+            src_height,
+            dst_data,
+            dst_width,
+            dst_height,
+            &kernel_weights,
+        );
+        0..0
+    } else {
+        center_y_start..center_y_end
+    };
+
+    for dst_y in scalar_rows {
         let src_center_y = dst_y * 2;
 
         for dst_x in center_x_start..center_x_end {
@@ -908,6 +1013,44 @@ mod tests {
             assert!(!val.is_nan());
         }
 
+        Ok(())
+    }
+
+    /// The single-channel vector kernel must match the scalar loop bit for
+    /// bit. A 3-channel copy of the same plane takes the scalar loop, so its
+    /// channel 0 is the oracle.
+    #[test]
+    fn test_pyrdown_f32_vector_matches_scalar_bits() -> Result<(), ImageError> {
+        let mut state = 0x9e37_79b9_u32;
+        for (width, height) in [(5, 5), (17, 9), (18, 11), (33, 34), (752, 480), (101, 63)] {
+            let size = ImageSize { width, height };
+            let plane: Vec<f32> = (0..width * height)
+                .map(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 17;
+                    state ^= state << 5;
+                    (state % 25_500) as f32 / 100.0
+                })
+                .collect();
+            let rgb: Vec<f32> = plane.iter().flat_map(|&v| [v, v, v]).collect();
+            let src1 = Image::<f32, 1>::new(size, plane)?;
+            let src3 = Image::<f32, 3>::new(size, rgb)?;
+            let half = ImageSize {
+                width: width.div_ceil(2),
+                height: height.div_ceil(2),
+            };
+            let mut dst1 = Image::<f32, 1>::from_size_val(half, 0.0)?;
+            let mut dst3 = Image::<f32, 3>::from_size_val(half, 0.0)?;
+            pyrdown_f32(&src1, &mut dst1)?;
+            pyrdown_f32(&src3, &mut dst3)?;
+            for (i, v) in dst1.as_slice().iter().enumerate() {
+                assert_eq!(
+                    v.to_bits(),
+                    dst3.as_slice()[i * 3].to_bits(),
+                    "{width}x{height} at {i}"
+                );
+            }
+        }
         Ok(())
     }
 
