@@ -7879,6 +7879,7 @@ dependencies = [
  "kornia-image",
  "kornia-io",
  "kornia-tensor",
+ "libc",
  "ndarray 0.17.2",
  "num-traits",
  "opencv",

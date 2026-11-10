@@ -152,6 +152,10 @@ kornia-io = { workspace = true }
 ndarray = { workspace = true, features = ["rayon"] }
 rand = { workspace = true }
 
+[target.'cfg(unix)'.dev-dependencies]
+# Process CPU clock for `bench_frontend`.
+libc = "0.2"
+
 [features]
 # CUDA device backend + custom CUDA kernels (via the cudarc crate).
 # Enables the `preprocess` module and the `cuda` kernels module.

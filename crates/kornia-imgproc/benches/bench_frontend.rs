@@ -18,29 +18,22 @@ use kornia_imgproc::pyramid::pyrdown_f32;
 use std::hint::black_box;
 use std::path::{Path, PathBuf};
 
-#[repr(C)]
-struct Timespec {
-    tv_sec: i64,
-    tv_nsec: i64,
-}
-
-extern "C" {
-    fn clock_gettime(clock_id: i32, tp: *mut Timespec) -> i32;
-}
-
-/// Linux `CLOCK_PROCESS_CPUTIME_ID`, the same value on x86_64 and aarch64.
-const CLOCK_PROCESS_CPUTIME_ID: i32 = 2;
-
+#[cfg(unix)]
 fn process_cpu_ns() -> f64 {
-    let mut ts = Timespec {
+    let mut ts = libc::timespec {
         tv_sec: 0,
         tv_nsec: 0,
     };
-    // SAFETY: `ts` is a valid, writable timespec with the C layout
-    // (`#[repr(C)]`, two 64-bit fields on 64-bit Linux), and the clock id is a
-    // valid Linux clock.
-    unsafe { clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &mut ts) };
+    // SAFETY: `ts` is a valid, writable `timespec`, and `CLOCK_PROCESS_CPUTIME_ID`
+    // is a valid clock id on Linux and macOS.
+    let rc = unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &mut ts) };
+    assert_eq!(rc, 0, "clock_gettime(CLOCK_PROCESS_CPUTIME_ID) failed");
     ts.tv_sec as f64 * 1e9 + ts.tv_nsec as f64
+}
+
+#[cfg(not(unix))]
+fn process_cpu_ns() -> f64 {
+    panic!("bench_frontend measures process CPU time and needs a unix target");
 }
 
 struct ProcessCpu;
