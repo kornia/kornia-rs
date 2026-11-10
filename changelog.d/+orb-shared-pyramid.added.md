@@ -1,0 +1,1 @@
+`OrbDetector::build_pyramid_u8` and `OrbDetector::detect_and_extract_u8_from_pyramid` split ORB detection into building the u8 pyramid and detecting on it, so a tracker can run ORB on a pyramid it already holds. For the same image the features equal `detect_and_extract_u8` exactly.
