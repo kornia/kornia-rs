@@ -599,11 +599,10 @@ impl OrbDetector {
     /// `pyramid_reduce_u8` for level N+1. This overlaps the serial reduce
     /// chain with the full detect+extract work per octave — pyramid images
     /// are consumed by the spawned tasks and aren't returned.
-    #[allow(clippy::type_complexity)]
     fn build_pyramid_and_process_u8(
         &self,
         img: &Image<u8, 1>,
-    ) -> Result<Vec<(Vec<[f32; 2]>, Vec<f32>, Vec<[u8; 32]>, Vec<u8>)>, ImageError> {
+    ) -> Result<Vec<ProcessedOctaveU8>, ImageError> {
         use std::sync::{Arc, OnceLock};
 
         let trace = std::env::var("KORNIA_ORB_TRACE").is_ok();
@@ -615,8 +614,7 @@ impl OrbDetector {
 
         // OnceLock (not Mutex) — each slot is written by exactly one spawn and
         // read once after scope join, so there's no contention to guard.
-        type ProcessedOctave = (Vec<[f32; 2]>, Vec<f32>, Vec<[u8; 32]>, Vec<u8>);
-        let slots: Vec<OnceLock<Result<ProcessedOctave, ImageError>>> =
+        let slots: Vec<OnceLock<Result<ProcessedOctaveU8, ImageError>>> =
             (0..self.n_scales).map(|_| OnceLock::new()).collect();
 
         let mut build_err: Option<ImageError> = None;
@@ -633,13 +631,9 @@ impl OrbDetector {
 
             let base = pyramid_arcs[0].size();
             for octave in 1..self.n_scales {
-                let prev = pyramid_arcs[octave - 1].clone();
-                let target = pyramid_size_at_level(base, self.downscale, octave);
-                if target == prev.size() || target.width == 0 || target.height == 0 {
-                    break;
-                }
-                let next = match pyramid_reduce_u8(prev.as_ref(), target) {
-                    Ok(n) => n,
+                let next = match self.next_level_u8(base, &pyramid_arcs[octave - 1], octave) {
+                    Ok(Some(n)) => n,
+                    Ok(None) => break,
                     Err(e) => {
                         build_err = Some(e);
                         break;
@@ -802,15 +796,27 @@ impl OrbDetector {
         pyramid.push(Image::from_size_slice(src.size(), src.as_slice())?);
         let base = src.size();
         for octave in 1..self.n_scales {
-            let prev = &pyramid[octave - 1];
-            let target = pyramid_size_at_level(base, self.downscale, octave);
-            if target == prev.size() || target.width == 0 || target.height == 0 {
-                break;
+            match self.next_level_u8(base, &pyramid[octave - 1], octave)? {
+                Some(next) => pyramid.push(next),
+                None => break,
             }
-            let next = pyramid_reduce_u8(prev, target)?;
-            pyramid.push(next);
         }
         Ok(pyramid)
+    }
+
+    /// Level `octave` of the u8 pyramid from level `octave - 1`, or `None`
+    /// where the pyramid stops (the level would not shrink or would be empty).
+    fn next_level_u8(
+        &self,
+        base: ImageSize,
+        prev: &Image<u8, 1>,
+        octave: usize,
+    ) -> Result<Option<Image<u8, 1>>, ImageError> {
+        let target = pyramid_size_at_level(base, self.downscale, octave);
+        if target == prev.size() || target.width == 0 || target.height == 0 {
+            return Ok(None);
+        }
+        pyramid_reduce_u8(prev, target).map(Some)
     }
 
     /// Like [`Self::detect_and_extract_u8`], on a pyramid the caller already
@@ -909,6 +915,7 @@ impl OrbDetector {
     }
 }
 
+/// Keypoints, orientations, descriptors and octave indices of one processed octave.
 type ProcessedOctaveU8 = (Vec<[f32; 2]>, Vec<f32>, Vec<[u8; 32]>, Vec<u8>);
 
 fn concat_octaves(per_octave: Vec<ProcessedOctaveU8>) -> OrbFeatures {
