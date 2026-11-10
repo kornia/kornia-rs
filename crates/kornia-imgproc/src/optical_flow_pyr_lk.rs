@@ -1165,6 +1165,19 @@ fn sample_window_clamp(img: &Image<f32, 1>, cx: f32, cy: f32, out: &mut [f32; 44
     }
 }
 
+/// Whether a border window takes [`sample_window_clamp`] instead of
+/// `sample_at` per pixel.
+#[inline]
+fn tabulated_clamp(mode: BorderMode) -> bool {
+    // Tests force the per-pixel path to compare whole tracks; both paths are
+    // bit-identical, so other tests running meanwhile are unaffected.
+    #[cfg(test)]
+    if tests::FORCE_SAMPLE_AT.load(std::sync::atomic::Ordering::Relaxed) {
+        return false;
+    }
+    mode == BorderMode::Clamp
+}
+
 fn track_feature(
     pt: [f32; 2],
     initial_flow: Option<[f32; 2]>,
@@ -1231,7 +1244,7 @@ fn track_feature(
                 &mut ix_patch,
                 &mut iy_patch,
             );
-        } else if params.border_mode == BorderMode::Clamp {
+        } else if tabulated_clamp(params.border_mode) {
             sample_window_clamp(prev, xc, yc, &mut prev_patch);
             sample_window_clamp(ix, xc, yc, &mut ix_patch);
             sample_window_clamp(iy, xc, yc, &mut iy_patch);
@@ -1299,7 +1312,7 @@ fn track_feature(
 
             let (d, e) = if is_interior_for_lk(xnc, ync, next.cols(), next.rows()) {
                 iter_step_interior(next, xnc, ync, &prev_patch, &ix_patch, &iy_patch)
-            } else if params.border_mode == BorderMode::Clamp {
+            } else if tabulated_clamp(params.border_mode) {
                 let mut next_patch = [0.0f32; WIN_PIXELS];
                 sample_window_clamp(next, xnc, ync, &mut next_patch);
                 let mut dd = 0.0f32;
@@ -1345,7 +1358,7 @@ fn track_feature(
             let ey = pt[1] + dy;
             let err_sum = if is_interior_for_lk(ex, ey, next.cols(), next.rows()) {
                 error_pass_interior(next, ex, ey, &prev_patch)
-            } else if params.border_mode == BorderMode::Clamp {
+            } else if tabulated_clamp(params.border_mode) {
                 let mut next_patch = [0.0f32; WIN_PIXELS];
                 sample_window_clamp(next, ex, ey, &mut next_patch);
                 let mut err = 0.0f32;
@@ -1575,6 +1588,55 @@ pub fn calc_optical_flow_pyr_lk_with_precomputed(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    pub(super) static FORCE_SAMPLE_AT: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+
+    /// Points on and near every border give bit-identical flow, status and
+    /// error with the tabulated window and with `sample_at` per pixel.
+    #[test]
+    fn border_tracks_match_sample_at_path() -> Result<(), PyrLKError> {
+        let (w, h) = (96usize, 72usize);
+        let size = ImageSize {
+            width: w,
+            height: h,
+        };
+        let blob = |dx: f32, dy: f32| -> Vec<f32> {
+            (0..w * h)
+                .map(|i| {
+                    let (x, y) = ((i % w) as f32 - dx, (i / w) as f32 - dy);
+                    (x * 0.31).sin() * (y * 0.23).cos() * 50.0 + ((i * 7919) % 31) as f32
+                })
+                .collect()
+        };
+        let prev = Image::<f32, 1>::new(size, blob(0.0, 0.0))?;
+        let next = Image::<f32, 1>::new(size, blob(1.7, -1.2))?;
+        let mut pts = Vec::new();
+        for &x in &[0.0f32, 2.5, 9.0, 47.3, 85.5, 93.0, 95.0] {
+            for &y in &[0.0f32, 3.2, 10.5, 35.0, 61.0, 70.0, 71.0] {
+                pts.push([x, y]);
+            }
+        }
+        let params = PyrLKParams {
+            max_level: 2,
+            ..PyrLKParams::default()
+        };
+        let table = calc_optical_flow_pyr_lk(&prev, &next, &pts, None, &params)?;
+        FORCE_SAMPLE_AT.store(true, std::sync::atomic::Ordering::Relaxed);
+        let per_pixel = calc_optical_flow_pyr_lk(&prev, &next, &pts, None, &params);
+        FORCE_SAMPLE_AT.store(false, std::sync::atomic::Ordering::Relaxed);
+        let per_pixel = per_pixel?;
+        assert!(table.status.contains(&1));
+        assert_eq!(table.status, per_pixel.status);
+        for (i, (a, b)) in table.next_pts.iter().zip(&per_pixel.next_pts).enumerate() {
+            assert_eq!(a[0].to_bits(), b[0].to_bits(), "point {i} x");
+            assert_eq!(a[1].to_bits(), b[1].to_bits(), "point {i} y");
+        }
+        for (a, b) in table.error.iter().zip(&per_pixel.error) {
+            assert_eq!(a.to_bits(), b.to_bits());
+        }
+        Ok(())
+    }
 
     /// The tabulated Clamp window must equal `sample_at` per pixel, bit for
     /// bit, for centres inside, on and past every border.
