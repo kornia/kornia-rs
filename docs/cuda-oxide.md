@@ -13,7 +13,9 @@ and keep working under the same feature. Roadmap:
 [#1135](https://github.com/kornia/kornia-rs/issues/1135).
 
 `kornia-oxide-kernels` owns the kernels, the PTX build and, behind its `cuda`
-feature, the loader (`kornia_oxide_kernels::kernel`), which wraps the loaded
+feature, the loader (`kornia_oxide_kernels::__private::kernel`, hidden: only
+kornia's own launchers call it, since a loaded kernel launches with unchecked
+arguments), which wraps the loaded
 functions in kornia-tensor's `CudaKernel`. Without `cuda` it is host-only,
 `no_std` data with no dependencies. Because the loader depends on
 kornia-tensor, kornia-tensor itself cannot use oxide kernels (that would be a
@@ -30,7 +32,7 @@ without the toolchain.
 | `crates/kornia-oxide-kernels/examples/build_ptx.rs` | Builds `device/` with cuda-oxide, gates the PTX and writes the stamped `kernels.ptx` (gitignored; the published crate ships it). |
 | `crates/kornia-oxide-kernels/build.rs` | Scans `device/src` for `#[kernel]` items; with `ptx`, checks the stamp of `kernels.ptx` against `device/` and gates it. Writes `$OUT_DIR/kernels.ptx` + `$OUT_DIR/entries.rs`. Needs no toolchain. |
 | `crates/kornia-oxide-kernels/src/lib.rs` | `PTX`, `IS_STUB`, `ENTRIES` and `entry::<NAME>` (the PTX entry name). |
-| `crates/kornia-oxide-kernels/src/loader.rs` | Loader (`cuda` feature): one module per device, `kernel(stream, entry::<NAME>) -> &'static CudaKernel`, lock-free after the first load; `load_ptx_many` for any PTX. |
+| `crates/kornia-oxide-kernels/src/loader.rs` | Loader (`cuda` feature): one module per device, `__private::kernel(stream, entry::<NAME>) -> &'static CudaKernel`, lock-free after the first load and caching only success (a failed load is retried); refuses GPUs older than sm_75; `__private::load_ptx_many` for any PTX. |
 | `crates/kornia-imgproc/src/cuda/<family>/` | The family's existing public launchers; only their kernel fetch changes. |
 | `crates/kornia-imgproc/benches/bench_cuda_oxide.rs` | Every oxide kernel vs its CPU path; one `CASES` row per op and size. |
 | `scripts/cuda-oxide/install-toolchain.sh` | Installs the toolchain below (local and CI share it). |
@@ -56,8 +58,11 @@ without the toolchain.
 - `build.rs` (every build): writes `entries.rs` from the `#[kernel]` scan
   (sorted; a duplicate name is an error). Without `ptx` the PTX is empty
   (`IS_STUB`). With `ptx` it reads `kernels.ptx` (or `$KORNIA_OXIDE_PTX`, e.g.
-  for a git dependency), fails if it is missing or its stamp does not match
-  `device/` (an edited kernel without a rebuilt PTX), and gates it again.
+  for a git dependency), fails if its stamp does not match `device/` (an
+  edited kernel without a rebuilt PTX), and gates it again. If the file is
+  missing in a checkout or git dependency it warns and builds the stub, so
+  launchers fall back to NVRTC; a packaged crate (the publish verify build,
+  crates.io) or an explicit `$KORNIA_OXIDE_PTX` still fails.
 - Release: the Rust release workflow builds the PTX, and
   `scripts/release_rust.sh` publishes the crate with `--features ptx
   --allow-dirty` (cargo counts the gitignored-but-included file as dirty), so
@@ -65,7 +70,8 @@ without the toolchain.
   aborts if any other packaged file is modified, untracked or ignored.
 - The PTX targets `sm_75` (PTX ISA 6.3): the driver JITs it for any
   Turing-or-newer GPU and any host CPU, so one file serves every wheel and
-  platform. Maxwell/Pascal (Jetson Nano/TX2) cannot run ported ops.
+  platform. On Maxwell/Pascal (Jetson Nano/TX2) the loader refuses the
+  module and each ported op runs its NVRTC fallback.
 - Nothing in a plain workspace build enables kornia-imgproc's `cuda`: the CUDA examples
   (`cuda-fusion`, `cuda-camera-sift`, `cuda-camera-preprocess`) have their own
   `cuda` feature and build only with `--features cuda`.
@@ -151,11 +157,13 @@ A second kernel PR (e.g. bicubic resize) does exactly this; nothing else:
    - backend gaps: `Ord::min` and `f32::min`/`max` work; `to_int_unchecked`
      does not compile (use `as`); no `__ldg` (a no-op on sm_87 anyway).
 2. **Launcher.** In the family's public launcher replace the NVRTC kernel fetch
-   with `oxide::kernel(stream, oxide::entry::<NAME>)?` (`use
-   kornia_oxide_kernels as oxide`; add `From<OxideError>` for the family error if
-   it lacks one; a crate other than kornia-imgproc also enables
-   `kornia-oxide-kernels/cuda` and `ptx` in its `cuda` feature) and **delete the NVRTC source** for that op. Validation and
-   launch geometry stay; no new public API, no `_nvrtc` twin, no fallback.
+   with `oxide::__private::kernel(stream, oxide::entry::<NAME>)` (`use
+   kornia_oxide_kernels as oxide`; a crate other than kornia-imgproc also enables
+   `kornia-oxide-kernels/cuda` and `ptx` in its `cuda` feature) and **keep the
+   NVRTC source as the fallback** when that returns an error (pre-sm_75 GPU,
+   stub PTX, failed load), as `gray.rs` does. Validation and launch geometry
+   stay; no new public API. Test the fallback by forcing it
+   (`gray_from_rgb_u8_nvrtc_fallback_bit_exact`).
 3. **Tests.** A family test named `<name>_bit_exact` on the public launcher,
    with the CPU path as the reference (never a test-written one): every tail
    length of the per-thread vector width, 1xN / Nx1 / odd sizes, at least one HD

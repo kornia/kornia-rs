@@ -102,7 +102,7 @@ kornia-cpp/         ← C++ bindings
 | `turbojpeg` | libjpeg-turbo I/O | Requires `nasm` |
 | `gstreamer` | GStreamer video | — |
 | `v4l` | Video4Linux camera | Requires `clang` |
-| `cuda` | CUDA for VLM + kornia-3d (stereo rectifier, via imgproc remap) | In a checkout, build the PTX first: `cargo run -p kornia-oxide-kernels --example build_ptx` (`docs/cuda-oxide.md`) |
+| `cuda` | CUDA for VLM + kornia-3d (stereo rectifier, via imgproc remap) | In a checkout, `cargo run -p kornia-oxide-kernels --example build_ptx` builds the cuda-oxide PTX; without it the build warns and those kernels run their NVRTC fallback (`docs/cuda-oxide.md`) |
 | `ci` | All CI-compatible features | Excludes `cuda` |
 | `serde`, `bincode`, `arrow` | Serialization formats | — |
 

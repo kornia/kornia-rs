@@ -23,7 +23,8 @@ Before publishing wheels, confirm the GPU story:
   present and that `kornia_rs.cuda.is_available()` returns False there.
 - Runtime requirements to put in the release notes: NVIDIA driver (`libcuda.so`)
   **and** `nvrtc` (most kernels are JIT-compiled; the cuda-oxide ones, e.g.
-  `gray_from_rgb_u8`, ship as PTX and need an sm_75+ GPU), matching arch
+  `gray_from_rgb_u8`, ship as PTX for sm_75+ GPUs and fall back to NVRTC on
+  older ones), matching arch
   (x86_64 / aarch64 / Jetson Tegra). Without nvrtc the NVRTC kernels can't
   compile.
 - `--features cuda` needs kornia-oxide-kernels' PTX: the wheel and Rust
