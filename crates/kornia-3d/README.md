@@ -21,6 +21,39 @@
 *   **PnP Solvers:** Solve for camera pose given 3D-2D point correspondences.
 *   **Voxel Grids and Outlier Filters:** `voxel::VoxelGrid` is a sparse hash voxel grid with 6/18/26-neighbour iteration; `voxel::VoxelView` groups a cloud by voxel without copying it and reduces it to one point per voxel (`first` / `nearest` as a zero-copy `pointcloud::PointCloudView`, `centroids` as a new cloud) in a deterministic key order, `voxel::voxel_downsample` is the one-call owned form; `voxel::remove_sparse_voxels` drops points in voxels with few occupied neighbours. `PointCloud::select` gives a `PointCloudView` of the points at given indices. `pointcloud::filter` has radius and statistical outlier removal, which drop non-finite points (as PCL does), with a reusable `OutlierFilter` scratch for repeated calls.
 
+### Affine cameras
+
+`camera::AffineCamera` stores a float64 2×4 world-to-pixel matrix, with
+analytical Jacobians for its eight additive coefficients and the 3D point.
+It supports affine reconstruction and weak-perspective approximations without
+imposing orthogonality or metric scale. Extrinsics are included in the matrix;
+there is no unique optical centre or inverse projection.
+
+### Affine bundle adjustment
+
+`ba_affine::bundle_adjust_affine` jointly refines affine camera matrices and 3D
+points in float64. It uses analytical Jacobians, vector-norm Cauchy loss and
+Levenberg–Marquardt with Schur elimination of point blocks. Four noncoplanar
+fixed points define the affine frame; when any point is free, each of the four
+must be seen in at least two views with non-parallel viewing directions (the
+directions cannot be checked before solving). Extra fixed points add geometric
+constraints. Inputs must form one connected observation graph, with at least
+four observations per camera and two views per free point. These visibility
+checks are necessary, but do not guarantee local geometric identifiability.
+
+The solver normalizes world coordinates internally and returns the original
+coordinate frame, exact fixed points, costs and convergence statistics.
+It targets few-camera, many-point problems: the reduced camera matrix is dense
+(O(C²) storage and O(C³) factorization). It does not impose metric camera
+constraints, optimize shared intrinsics, or mix camera types. Exhausting the
+iteration budget, or the damping trials after some progress, returns the last
+accepted state with `converged = false`. Reaching the numerical floor of the
+cost counts as converged. Only exhausting the damping trials before any accepted
+step, away from that floor, returns an error.
+
+Run the deterministic four-camera, 10,000-point benchmark with:
+`cargo bench -p kornia-3d --bench bench_affine_ba`.
+
 ## 📦 Installation
 
 Add the following to your `Cargo.toml`:

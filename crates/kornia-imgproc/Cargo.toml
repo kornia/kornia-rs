@@ -95,6 +95,10 @@ name = "bench_hamming_match"
 
 [[bench]]
 harness = false
+name = "bench_float_match"
+
+[[bench]]
+harness = false
 name = "bench_pyramid"
 
 [[bench]]
@@ -108,6 +112,18 @@ name = "bench_draw"
 [[bench]]
 harness = false
 name = "bench_morphology"
+
+[[bench]]
+harness = false
+name = "bench_depth"
+
+[[bench]]
+harness = false
+name = "bench_median"
+
+[[bench]]
+harness = false
+name = "bench_label_boundaries"
 
 [[bench]]
 harness = false
