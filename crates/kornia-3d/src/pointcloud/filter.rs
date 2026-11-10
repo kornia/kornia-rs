@@ -5,6 +5,7 @@ use super::PointCloud;
 
 /// Errors of the point cloud filters.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum FilterError {
     /// A selected index is not a point of the cloud.
     #[error("index {index} is out of range for {len} points")]

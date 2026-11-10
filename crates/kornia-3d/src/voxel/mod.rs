@@ -51,6 +51,7 @@ pub const MAX_VOXEL_POINTS: usize = u32::MAX as usize - 1;
 
 /// Errors of the voxel grid ops.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum VoxelError {
     /// The voxel size is not finite and positive.
     #[error("voxel size must be finite and positive, got {0}")]
