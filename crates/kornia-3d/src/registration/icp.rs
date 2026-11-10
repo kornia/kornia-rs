@@ -24,7 +24,8 @@
 //! The solver runs Gauss-Newton coarse to fine: at each level, starting from the coarsest, it
 //! accumulates `A = J^T W J` and `b = J^T W r`, solves `A x = -b` by Cholesky and applies
 //! `R <- exp(w) R`, `t <- exp(w) t + v`. A system whose Cholesky pivots collapse relative to
-//! their block is rejected as singular rather than solved along its null space.
+//! their block is rejected as singular rather than solved along its null space. The `J^T W J` of
+//! a final pass at the returned pose is reported as [`IcpPlaneResult::information`].
 
 use super::rgbd::{is_valid_normal, is_valid_vertex, RgbdIcpError, RgbdLevel, RgbdPyramid};
 use crate::ransac::{HuberKernel, RobustKernel};
@@ -203,6 +204,19 @@ pub struct IcpPlaneResult {
     pub observability: f64,
     /// Median target depth `v_t.z` of the final pass's inliers, in metres.
     pub median_depth_m: f64,
+    /// Information matrix `J^T W J` of the final pass at the returned pose, at the finest level.
+    ///
+    /// Tangent order `[w, v]`: rotation in radians, then translation in metres, for the left
+    /// perturbation the solver applies, `R <- exp(w) R`, `t <- exp(w) t + v`, so both are
+    /// expressed in the target frame. Rows are weighted `huber(r / sigma) / sigma^2` as in the
+    /// solve.
+    ///
+    /// It holds the data term only; no prior enters it. Under the depth noise model
+    /// ([`IcpPlaneCriteria::depth_noise`] or the sigma maps) its inverse is the covariance of
+    /// the estimate's error `xi`, the estimate being `exp(xi)` applied on the left of the truth.
+    /// It is only as calibrated as those sigmas: the default [`DepthNoise::Constant`] is a
+    /// weighting, not a sensor model. It can be singular when [`Self::observability`] is `0`.
+    pub information: Mat6F64,
 }
 
 /// Projective point-to-plane ICP between two RGB-D pyramids, coarse to fine.
@@ -217,8 +231,8 @@ pub struct IcpPlaneResult {
 ///
 /// # Returns
 ///
-/// The estimate of `T_target_source` with the residual, match quality, overlap and conditioning
-/// of a final pass at that pose.
+/// The estimate of `T_target_source` with the residual, match quality, overlap, conditioning
+/// and information matrix of a final pass at that pose.
 ///
 /// # Errors
 ///
@@ -704,6 +718,7 @@ fn run_icp(
         translation_conditioning,
         observability: rotation_conditioning.min(translation_conditioning),
         median_depth_m: median_depth_m(&mut depths),
+        information: eqs.a,
     })
 }
 
@@ -747,6 +762,34 @@ mod tests {
         Ok((src, tgt, rot, -(rot * t_wc)))
     }
 
+    /// A gated row frozen for finite differences: (source point, target point, target normal,
+    /// weight).
+    type Row = (Vec3F64, Vec3F64, Vec3F64, f64);
+
+    /// The rows of one pass at `(rot, t)` with their weights, fixed for the perturbations.
+    fn gated_rows(
+        src: &RgbdLevel,
+        tgt: &RgbdLevel,
+        rot: &Mat3F64,
+        t: &Vec3F64,
+        gates: &PassGates,
+    ) -> Vec<Row> {
+        let mut rows = Vec::new();
+        for_each_correspondence(src, tgt, rot, t, gates, |c| {
+            let w = row_weight(c.r, c.sigma, gates.huber_delta);
+            rows.push((vec3(pixel3(&src.vertices, c.src_idx)), c.v_t, c.n_t, w));
+        });
+        rows
+    }
+
+    /// Residual of `row` at `exp(xi) (rot, t)`, the solver's left perturbation, target fixed.
+    fn perturbed_residual(rot: &Mat3F64, t: &Vec3F64, xi: &[f64; 6], row: &Row) -> f64 {
+        let (p, v, n, _) = row;
+        let d = SO3F64::exp(Vec3F64::new(xi[0], xi[1], xi[2])).matrix();
+        let q = d * (*rot * *p + *t) + Vec3F64::new(xi[3], xi[4], xi[5]);
+        n.dot(q - *v)
+    }
+
     /// `J^T W J` and `J^T W r` must equal the same sums built from central differences of each
     /// row's residual under a left perturbation `exp(xi) T`, weights held fixed.
     ///
@@ -765,24 +808,17 @@ mod tests {
         assert!(eqs.counts.num_associated >= eqs.num_inliers);
         assert!(eqs.counts.num_valid >= eqs.counts.num_associated);
 
-        // (source point, target point, target normal, weight) of each kept row
-        let mut rows: Vec<(Vec3F64, Vec3F64, Vec3F64, f64)> = Vec::new();
+        let rows = gated_rows(s0, t0, &rot, &t, &GATES);
         let mut downweighted = 0;
         for_each_correspondence(s0, t0, &rot, &t, &GATES, |c| {
-            let w = row_weight(c.r, c.sigma, GATES.huber_delta);
             if (c.r / c.sigma).abs() > GATES.huber_delta {
                 downweighted += 1;
             }
-            rows.push((vec3(pixel3(&s0.vertices, c.src_idx)), c.v_t, c.n_t, w));
         });
         assert_eq!(rows.len(), eqs.num_inliers);
         assert!(downweighted > 100, "Huber branch unused: {downweighted}");
 
-        let residual = |xi: &[f64; 6], (p, v, n, _): &(Vec3F64, Vec3F64, Vec3F64, f64)| {
-            let d = SO3F64::exp(Vec3F64::new(xi[0], xi[1], xi[2])).matrix();
-            let q = d * (rot * *p + t) + Vec3F64::new(xi[3], xi[4], xi[5]);
-            n.dot(q - *v)
-        };
+        let residual = |xi: &[f64; 6], row: &Row| perturbed_residual(&rot, &t, xi, row);
         let h = 1e-6;
         let mut a_fd = Mat6F64::zeros();
         let mut b_fd = Vec6F64::zeros();
@@ -1365,6 +1401,71 @@ mod tests {
         assert!(rows > 10_000, "{rows}");
         let eqs = accumulate_level(l0, l0, &rot, &t, &GATES, None);
         assert!(eqs.a.iter().all(|x| x.is_finite()));
+        Ok(())
+    }
+
+    /// The reported information must be the Hessian of the cost the solver minimises.
+    ///
+    /// Fixes the final pass's correspondences and their weights, perturbs the estimate in the
+    /// solver's left tangent and takes central second differences of `0.5 * sum w r^2`. At a
+    /// converged, noise-free solve the residuals are near zero, so the Gauss-Newton `J^T W J`
+    /// and the true Hessian agree; a wrong Jacobian, sign, axis order or weight would not.
+    #[test]
+    fn information_matches_finite_difference_hessian() -> Result<(), Box<dyn std::error::Error>> {
+        let (camera, scene) = (test_camera(), Scene::corner_and_sphere());
+        let w = Vec3F64::new(1.0, 1.0, 1.0) * (1.5f64.to_radians() / 3f64.sqrt());
+        let rot_wc = SO3F64::exp(w).matrix();
+        let t_wc = Vec3F64::new(0.02, -0.01, 0.015);
+        let src = RgbdPyramid::from_depth_m(
+            &depth_m(&scene, &Mat3F64::IDENTITY, &Vec3F64::ZERO)?,
+            &camera,
+            3,
+        )?;
+        let tgt = RgbdPyramid::from_depth_m(&depth_m(&scene, &rot_wc, &t_wc)?, &camera, 3)?;
+        let criteria = IcpPlaneCriteria {
+            depth_noise: TEST_STEREO,
+            ..Default::default()
+        };
+        let res = icp_from_identity(&src, &tgt, &criteria)?;
+        let info = &res.information;
+        assert!((info - info.transpose()).amax() == 0.0);
+
+        let gates = check_criteria(&criteria)?;
+        let (rot, t) = (res.rotation, res.translation);
+        let rows = gated_rows(&src.levels[0], &tgt.levels[0], &rot, &t, &gates);
+        assert_eq!(rows.len(), res.num_inliers);
+        let cost = |xi: &[f64; 6]| -> f64 {
+            rows.iter()
+                .map(|row| {
+                    let e = perturbed_residual(&rot, &t, xi, row);
+                    0.5 * row.3 * e * e
+                })
+                .sum()
+        };
+
+        let h = 1e-4;
+        let mut worst: f64 = 0.0;
+        for j in 0..6 {
+            for k in 0..6 {
+                let at = |sj: f64, sk: f64| {
+                    let mut xi = [0.0; 6];
+                    xi[j] += sj * h;
+                    xi[k] += sk * h;
+                    cost(&xi)
+                };
+                let fd =
+                    (at(1.0, 1.0) - at(1.0, -1.0) - at(-1.0, 1.0) + at(-1.0, -1.0)) / (4.0 * h * h);
+                let norm = (info[(j, j)] * info[(k, k)]).sqrt();
+                worst = worst.max((fd - info[(j, k)]).abs() / norm);
+            }
+        }
+        // nearest-pixel association is piecewise constant, so finite differences that
+        // re-associate at each perturbed pose would only see snapping jumps: none here
+        assert!(
+            worst < 1e-3,
+            "information disagrees with the fixed-target Hessian: {worst:.3e} over {} rows",
+            rows.len()
+        );
         Ok(())
     }
 }
