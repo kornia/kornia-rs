@@ -1,0 +1,1 @@
+Single-channel `pyrdown_f32` and `scharr_spatial_gradient_float` evaluate their interiors 4 lanes at a time on kornia-algebra's `Vec4F32`, bit-identical to the previous scalar loops. On 752x480 EuRoC frames (one thread, process CPU time): `pyrdown_f32` 7.22 → 5.05 ms (1.43x), Scharr dx+dy 13.48 → 6.81 ms (1.98x).
