@@ -27,6 +27,14 @@ name = "bench_fundamental"
 harness = false
 name = "bench_stereo_match"
 
+[[bench]]
+harness = false
+name = "bench_affine_camera"
+
+[[bench]]
+harness = false
+name = "bench_affine_ba"
+
 [dependencies]
 bincode = { workspace = true }
 cudarc = { workspace = true, optional = true }
