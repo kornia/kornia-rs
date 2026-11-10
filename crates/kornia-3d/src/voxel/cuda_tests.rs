@@ -312,3 +312,71 @@ fn device_rejects_bad_buffers() -> TestResult {
     ));
     Ok(())
 }
+
+#[test]
+fn compute_capability_below_7_0_is_rejected_with_a_typed_error() {
+    for (major, minor) in [(5, 3), (6, 2)] {
+        let err = check_compute_capability(major, minor).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                VoxelError::UnsupportedComputeCapability {
+                    major: m,
+                    minor: n,
+                    required_major: 7,
+                    required_minor: 0,
+                } if m == major && n == minor
+            ),
+            "sm_{major}{minor}: {err:?}"
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("7.0"), "{msg}");
+        assert!(msg.contains("VoxelDownsampler"), "{msg}");
+    }
+    for (major, minor) in [(7, 0), (7, 5)] {
+        assert!(
+            check_compute_capability(major, minor).is_ok(),
+            "sm_{major}{minor}"
+        );
+    }
+}
+
+/// A call that fails after an earlier successful one must not leave that
+/// earlier result readable from the output, as if it were this call's.
+#[test]
+fn failed_call_does_not_leave_the_previous_result() -> TestResult {
+    let mut filter = CudaVoxelFilter::new(&stream()?)?;
+    let st = filter.stream().clone();
+    let layout = VoxelLayout::new(1.0, [0.0; 3])?;
+    let p = cloud(100, 6);
+    let dev = st.clone_htod(p.as_flattened())?;
+
+    let mut out = filter.alloc_voxel_cloud(p.len() + 1)?;
+    filter.downsample(&dev, p.len(), &layout, DownsampleMode::First, &mut out)?;
+    assert!(out.len_to_host()? > 0);
+    // One point more than the buffer holds.
+    assert!(matches!(
+        filter.downsample(&dev, p.len() + 1, &layout, DownsampleMode::First, &mut out),
+        Err(VoxelError::PointBufferTooSmall { .. })
+    ));
+    assert_eq!(out.len_to_host()?, 0);
+    assert!(out.to_host()?.is_empty());
+    assert!(out.index_to_host()?.is_empty());
+
+    let mut counts = filter.alloc_neighbour_counts(p.len() + 1)?;
+    filter.neighbour_counts(&dev, p.len(), &layout, VoxelConnectivity::Six, &mut counts)?;
+    assert_eq!(counts.to_host()?.len(), p.len());
+    assert!(matches!(
+        filter.neighbour_counts(
+            &dev,
+            p.len() + 1,
+            &layout,
+            VoxelConnectivity::Six,
+            &mut counts
+        ),
+        Err(VoxelError::PointBufferTooSmall { .. })
+    ));
+    assert!(counts.is_empty());
+    assert!(counts.to_host()?.is_empty());
+    Ok(())
+}

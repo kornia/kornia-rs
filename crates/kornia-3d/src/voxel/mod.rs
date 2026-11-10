@@ -114,6 +114,25 @@ pub enum VoxelError {
     #[error("device buffer was allocated on a different stream than the filter")]
     StreamMismatch,
 
+    /// The CUDA device is older than the device voxel kernels need (feature
+    /// `cuda`): they use warp-match intrinsics of compute capability 7.0
+    /// (sm_70, Volta) and later. Use the host [`VoxelDownsampler`] on such
+    /// a device.
+    #[error(
+        "CUDA device has compute capability {major}.{minor}, the voxel kernels need \
+         {required_major}.{required_minor} or newer; use the host VoxelDownsampler instead"
+    )]
+    UnsupportedComputeCapability {
+        /// Major compute capability of the device.
+        major: i32,
+        /// Minor compute capability of the device.
+        minor: i32,
+        /// Smallest supported major compute capability.
+        required_major: i32,
+        /// Smallest supported minor compute capability.
+        required_minor: i32,
+    },
+
     /// A CUDA driver, compile or launch failure (feature `cuda`).
     #[error("CUDA error: {0}")]
     Cuda(String),

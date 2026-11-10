@@ -543,6 +543,26 @@ fn cuda_err(e: impl std::fmt::Display) -> VoxelError {
     VoxelError::Cuda(e.to_string())
 }
 
+/// Smallest compute capability of the device kernels: `radix_scatter`
+/// ranks equal digits with `__match_any_sync`, which needs sm_70.
+const MIN_COMPUTE_CAPABILITY: (i32, i32) = (7, 0);
+
+/// Whether a device of compute capability `major.minor` can run the
+/// kernels: [`VoxelError::UnsupportedComputeCapability`] below
+/// [`MIN_COMPUTE_CAPABILITY`].
+pub(crate) fn check_compute_capability(major: i32, minor: i32) -> Result<(), VoxelError> {
+    let (required_major, required_minor) = MIN_COMPUTE_CAPABILITY;
+    if (major, minor) < MIN_COMPUTE_CAPABILITY {
+        return Err(VoxelError::UnsupportedComputeCapability {
+            major,
+            minor,
+            required_major,
+            required_minor,
+        });
+    }
+    Ok(())
+}
+
 /// Grows `buf` to at least `n` elements (contents unspecified).
 fn ensure_len<T: DeviceRepr + ValidAsZeroBits>(
     stream: &Arc<CudaStream>,
@@ -827,7 +847,10 @@ impl CudaNeighbourCounts {
 }
 
 /// CUDA voxel downsampling and neighbour counting on one stream: the
-/// kernels are compiled once at construction. The per-point device
+/// kernels are compiled once at construction. Needs a device of compute
+/// capability 7.0 (sm_70) or newer; on older devices
+/// [`new`](Self::new) returns [`VoxelError::UnsupportedComputeCapability`]
+/// and the host [`VoxelDownsampler`] is the fallback. The per-point device
 /// scratch buffers are allocated on first use and reallocated only when a
 /// call has more points than any earlier one, so steady-state calls with the same or
 /// fewer points allocate nothing. Work is enqueued without host syncs;
@@ -883,7 +906,10 @@ impl CudaVoxelFilter {
     ///
     /// # Errors
     ///
-    /// [`VoxelError::Cuda`] on a compile or allocation failure.
+    /// * [`VoxelError::UnsupportedComputeCapability`] on a device below
+    ///   compute capability 7.0 (sm_70): the kernels use `__match_any_sync`.
+    ///   There is no device fallback; use the host [`VoxelDownsampler`].
+    /// * [`VoxelError::Cuda`] on a compile or allocation failure.
     ///
     /// # Example
     ///
@@ -904,6 +930,8 @@ impl CudaVoxelFilter {
     /// # }
     /// ```
     pub fn new(stream: &Arc<CudaStream>) -> Result<Self, VoxelError> {
+        let (major, minor) = stream.context().compute_capability().map_err(cuda_err)?;
+        check_compute_capability(major, minor)?;
         let kernels =
             CudaKernel::compile_many(stream.context(), KERNELS, &NAMES).map_err(cuda_err)?;
         let mut it = kernels.into_iter();
@@ -1033,7 +1061,6 @@ impl CudaVoxelFilter {
         points: &CudaSlice<f64>,
         n: usize,
         capacity: usize,
-        out_stream: &Arc<CudaStream>,
     ) -> Result<(), VoxelError> {
         if n > MAX_CUDA_VOXEL_POINTS {
             return Err(VoxelError::TooManyPoints {
@@ -1054,6 +1081,12 @@ impl CudaVoxelFilter {
                 needed: n,
             });
         }
+        Ok(())
+    }
+
+    /// Fails unless `out_stream` is this filter's stream. Checked before
+    /// anything is written to the output.
+    fn check_stream(&self, out_stream: &Arc<CudaStream>) -> Result<(), VoxelError> {
         if !Arc::ptr_eq(out_stream, &self.stream) {
             return Err(VoxelError::StreamMismatch);
         }
@@ -1062,7 +1095,7 @@ impl CudaVoxelFilter {
 
     /// Steps 1-3 for `n > 0` points: sort words, run starts, the voxel
     /// count in `self.voxels`, and with `for_counts` the run of every
-    /// sorted word and the unique keys.
+    /// sorted word and the unique keys. `err` must be zeroed by the caller.
     fn sort_and_segment(
         &mut self,
         points: &CudaSlice<f64>,
@@ -1093,7 +1126,6 @@ impl CudaVoxelFilter {
         let (radix_tiles32, hist_len32) = (radix_tiles as u32, hist_len as u32);
         let null = 0u64;
 
-        st.memset_zeros(&mut *err).map_err(cuda_err)?;
         st.memset_zeros(&mut self.range.slice_mut(0..RANGE_WORDS))
             .map_err(cuda_err)?;
         self.k_keys
@@ -1213,7 +1245,9 @@ impl CudaVoxelFilter {
     /// # Returns
     ///
     /// `Ok(())` once the work is enqueued; read `out` after syncing. An
-    /// invalid point is reported by `out`'s readback methods.
+    /// invalid point is reported by `out`'s readback methods. After an
+    /// error other than [`VoxelError::StreamMismatch`], `out` reads back
+    /// as empty, never as an earlier call's result.
     ///
     /// # Errors
     ///
@@ -1231,11 +1265,14 @@ impl CudaVoxelFilter {
         mode: DownsampleMode,
         out: &mut CudaVoxelCloud,
     ) -> Result<(), VoxelError> {
-        self.check_call(points, n, out.capacity, &out.stream)?;
+        self.check_stream(&out.stream)?;
         let st = self.stream.clone();
+        // Clear the previous result before anything else can fail, so that
+        // a failed call leaves an empty output, not the last call's.
+        st.memset_zeros(&mut out.count).map_err(cuda_err)?;
+        st.memset_zeros(&mut out.err).map_err(cuda_err)?;
+        self.check_call(points, n, out.capacity)?;
         if n == 0 {
-            st.memset_zeros(&mut out.count).map_err(cuda_err)?;
-            st.memset_zeros(&mut out.err).map_err(cuda_err)?;
             return Ok(());
         }
         let lay = LayoutParams::from(layout);
@@ -1286,7 +1323,9 @@ impl CudaVoxelFilter {
     /// # Returns
     ///
     /// `Ok(())` once the work is enqueued; read `out` after syncing. An
-    /// invalid point is reported by [`CudaNeighbourCounts::to_host`].
+    /// invalid point is reported by [`CudaNeighbourCounts::to_host`]. After
+    /// an error other than [`VoxelError::StreamMismatch`], `out` is empty,
+    /// never an earlier call's counts.
     ///
     /// # Errors
     ///
@@ -1299,11 +1338,15 @@ impl CudaVoxelFilter {
         connectivity: VoxelConnectivity,
         out: &mut CudaNeighbourCounts,
     ) -> Result<(), VoxelError> {
-        self.check_call(points, n, out.capacity, &out.stream)?;
+        self.check_stream(&out.stream)?;
         let st = self.stream.clone();
-        out.len = n;
+        // Clear the previous result before anything else can fail, so that
+        // a failed call leaves an empty output, not the last call's; `len`
+        // is set only once every launch is enqueued.
+        out.len = 0;
+        st.memset_zeros(&mut out.err).map_err(cuda_err)?;
+        self.check_call(points, n, out.capacity)?;
         if n == 0 {
-            st.memset_zeros(&mut out.err).map_err(cuda_err)?;
             return Ok(());
         }
         let lay = LayoutParams::from(layout);
@@ -1330,6 +1373,7 @@ impl CudaVoxelFilter {
             .arg(&mut out.counts)
             .launch_1d(n32)
             .map_err(cuda_err)?;
+        out.len = n;
         Ok(())
     }
 }
