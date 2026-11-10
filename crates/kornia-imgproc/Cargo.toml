@@ -140,6 +140,11 @@ harness = false
 name = "bench_contours"
 required-features = ["opencv_bench"]
 
+[[bench]]
+harness = false
+name = "bench_threshold"
+required-features = ["opencv_bench"]
+
 [dependencies]
 cudarc = { workspace = true, features = ["f16"], optional = true }
 half = { workspace = true, optional = true }
