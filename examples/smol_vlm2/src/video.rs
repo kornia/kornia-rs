@@ -84,7 +84,10 @@ pub fn from_video_path<const N: usize, P: AsRef<std::path::Path>>(
         .start()
         .map_err(|_| VideoError::VideoReaderStart)?;
 
-    let fps = video_reader.get_fps().map(|f| f.round() as u32);
+    let mut fps = video_reader
+        .get_fps()
+        .map(|f| f.round() as u32)
+        .filter(|&f| f > 0);
     let duration = video_reader.get_duration().map(|d| d.as_secs() as u32);
 
     let mut all_frames = Vec::new();
@@ -130,6 +133,14 @@ pub fn from_video_path<const N: usize, P: AsRef<std::path::Path>>(
                 // Use the timestamp of the frame we just grabbed. `get_pos()` reports the
                 // pipeline position, which runs ahead of the consumer when decoding is not paced.
                 let current_pos = pts.map(|pts| pts.nseconds()).unwrap_or_else(|| {
+                    // The rate is only known once negotiation completes. Refresh it now that a
+                    // frame arrived, and treat a variable rate (0) as unknown.
+                    if fps.is_none() {
+                        fps = video_reader
+                            .get_fps()
+                            .map(|f| f.round() as u32)
+                            .filter(|&f| f > 0);
+                    }
                     // Fallback: estimate based on frame index and fps
                     if let Some(fps_val) = fps {
                         (frame_idx as u64 * 1_000_000_000) / fps_val as u64

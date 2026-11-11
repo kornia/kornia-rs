@@ -756,6 +756,42 @@ mod tests {
         Ok(())
     }
 
+    /// The negotiated frame rate is known before any frame is grabbed.
+    #[test]
+    fn get_fps_reports_the_negotiated_rate_before_grabbing(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use gstreamer::prelude::*;
+        use std::time::Duration;
+
+        if !gstreamer::INITIALIZED.load(std::sync::atomic::Ordering::Relaxed) {
+            gstreamer::init()?;
+        }
+
+        let capture = StreamCapture::new(
+            "appsrc name=src caps=video/x-raw,format=RGB,width=4,height=4,framerate=30/1 ! \
+             appsink name=sink sync=false",
+        )?;
+        assert_eq!(capture.get_fps(), None, "rate known before negotiation");
+
+        capture.start()?;
+        capture
+            .pipeline
+            .by_name("src")
+            .ok_or("missing appsrc")?
+            .dynamic_cast::<gstreamer_app::AppSrc>()
+            .map_err(|_| "src is not an appsrc")?
+            .push_buffer(gstreamer::Buffer::from_slice(vec![0u8; 4 * 4 * 3]))?;
+
+        let start = std::time::Instant::now();
+        while capture.get_fps().is_none() && start.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        // No frame was pulled: the rate comes from the negotiated caps.
+        assert_eq!(capture.get_fps(), Some(30.0));
+        capture.close()?;
+        Ok(())
+    }
+
     /// The grab result carries the presentation timestamp of the grabbed frame.
     #[test]
     fn grab_rgb8_reports_the_frame_pts() -> Result<(), Box<dyn std::error::Error>> {

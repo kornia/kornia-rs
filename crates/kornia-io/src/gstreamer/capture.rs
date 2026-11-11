@@ -103,7 +103,6 @@ pub struct StreamCapture {
     /// decoding) or drops stale frames (live capture), and is flushed by GStreamer on a flushing
     /// seek or a state change to null.
     appsink: gstreamer_app::AppSink,
-    fps: gstreamer::Fraction,
     /// End-of-stream and errors seen on the bus, updated by its sync handler.
     status: Arc<Mutex<StreamStatus>>,
 }
@@ -165,7 +164,6 @@ impl StreamCapture {
         // queued frames to be pulled: the terminal state is exposed while frames remain buffered.
         appsink.set_wait_on_eos(false);
 
-        let fps = gstreamer::Fraction::new(1, 1);
         let status = Arc::new(Mutex::new(StreamStatus::default()));
 
         let bus = pipeline.bus().ok_or(StreamCaptureError::BusError)?;
@@ -194,14 +192,21 @@ impl StreamCapture {
             pipeline,
             bus,
             appsink,
-            fps,
             status,
         })
     }
 
     /// Gets the current fps of the stream, or `0.0` if the caps give no fixed framerate.
+    ///
+    /// The negotiated caps are read from the sink pad, so the rate is known as soon as
+    /// negotiation completes, before any frame is grabbed. Returns `None` until then.
     pub fn get_fps(&self) -> Option<f64> {
-        Some(self.fps.numer() as f64 / self.fps.denom() as f64)
+        let caps = self.appsink.static_pad("sink")?.current_caps()?;
+        let fps = caps
+            .structure(0)
+            .and_then(|structure| structure.get::<gstreamer::Fraction>("framerate").ok())
+            .unwrap_or_else(|| gstreamer::Fraction::new(0, 1));
+        Some(fps.numer() as f64 / fps.denom() as f64)
     }
 
     /// Gets the current state of the stream pipeline
@@ -361,12 +366,6 @@ impl StreamCapture {
         }
 
         // A missing framerate means a variable or unknown rate, which GStreamer writes as 0/1.
-        let fps = caps
-            .structure(0)
-            .and_then(|structure| structure.get::<gstreamer::Fraction>("framerate").ok())
-            .unwrap_or_else(|| gstreamer::Fraction::new(0, 1));
-        self.fps = fps;
-
         let buffer = sample
             .buffer_owned()
             .ok_or(StreamCaptureError::GetBufferError)?;
