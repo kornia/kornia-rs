@@ -572,6 +572,77 @@ mod tests {
         Ok(())
     }
 
+    /// Calling `start` again after end-of-stream must not forget it: GStreamer does not restart
+    /// an EOS pipeline without a seek, so reporting `Pending` would loop forever.
+    #[test]
+    fn start_after_eos_keeps_eos() -> Result<(), Box<dyn std::error::Error>> {
+        let mut capture = StreamCapture::new(
+            "videotestsrc num-buffers=1 ! video/x-raw,format=RGB,width=8,height=4 ! \
+             appsink name=sink sync=false",
+        )?;
+        capture.start()?;
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_secs(10) {
+            match capture.try_grab_rgb8()? {
+                Grab::Eos => break,
+                Grab::Frame(_) | Grab::Pending => {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            }
+        }
+        capture.start()?;
+        assert!(capture.is_eos(), "start() forgot the end-of-stream");
+        assert!(matches!(capture.try_grab_rgb8()?, Grab::Eos));
+        capture.close()?;
+        Ok(())
+    }
+
+    /// `is_eos` reports the end as soon as the bus posts it; frames buffered before it are still
+    /// returned afterwards, in order.
+    #[test]
+    fn eos_can_arrive_before_the_last_frames_are_grabbed() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use gstreamer::prelude::*;
+
+        if !gstreamer::INITIALIZED.load(std::sync::atomic::Ordering::Relaxed) {
+            gstreamer::init()?;
+        }
+
+        let mut capture = StreamCapture::new(
+            "appsrc name=src caps=video/x-raw,format=RGB,width=4,height=4 ! \
+             appsink name=sink sync=false",
+        )?;
+        capture.start()?;
+        let appsrc = capture
+            .pipeline
+            .by_name("src")
+            .ok_or("missing appsrc")?
+            .dynamic_cast::<gstreamer_app::AppSrc>()
+            .map_err(|_| "src is not an appsrc")?;
+        for value in 0..3u8 {
+            appsrc.push_buffer(gstreamer::Buffer::from_slice(vec![value; 4 * 4 * 3]))?;
+        }
+        appsrc.end_of_stream()?;
+
+        let start = std::time::Instant::now();
+        while !capture.is_eos() && start.elapsed() < std::time::Duration::from_secs(10) {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(capture.is_eos(), "end-of-stream was not posted");
+
+        let mut values = Vec::new();
+        loop {
+            match capture.try_grab_rgb8()? {
+                Grab::Frame(image) => values.push(image.as_slice()[0]),
+                Grab::Eos => break,
+                Grab::Pending => panic!("every frame must be buffered once EOS is posted"),
+            }
+        }
+        capture.close()?;
+        assert_eq!(values, [0, 1, 2]);
+        Ok(())
+    }
+
     /// `pack_rows` must drop the padding after every row and keep the pixel bytes in order.
     #[test]
     fn pack_rows_skips_row_padding() {

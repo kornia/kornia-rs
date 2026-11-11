@@ -502,6 +502,9 @@ impl VideoReader {
     /// Returns [`VideoReaderError::StreamCaptureError`] wrapping
     /// [`StreamCaptureError::InvalidImageFormat`] if the reader was created with another format,
     /// or any other error of [`StreamCapture::grab_rgb8`].
+    ///
+    /// `None` cannot distinguish "no frame yet" from end-of-stream or a pipeline error; use
+    /// [`Self::try_grab_rgb8`] or [`Self::is_eos`]/[`Self::stream_error`] to tell them apart.
     #[inline]
     pub fn grab_rgb8(&mut self) -> Result<Option<Image<u8, 3>>, VideoReaderError> {
         self.0
@@ -528,6 +531,9 @@ impl VideoReader {
     /// Returns [`VideoReaderError::StreamCaptureError`] wrapping
     /// [`StreamCaptureError::InvalidImageFormat`] if the pipeline produces a different format,
     /// or any other error of [`StreamCapture::grab_gray8`].
+    ///
+    /// `None` cannot distinguish "no frame yet" from end-of-stream or a pipeline error; use
+    /// [`Self::try_grab_gray8`] or [`Self::is_eos`]/[`Self::stream_error`] to tell them apart.
     ///
     /// # Example
     ///

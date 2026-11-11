@@ -153,19 +153,30 @@ impl StreamCapture {
                 .new_sample({
                     let circular_buffer = circular_buffer.clone();
                     let fps = fps.clone();
+                    let status = status.clone();
 
-                    move |sink| {
-                        Self::extract_frame_buffer(sink)
-                            .map_err(|_| gstreamer::FlowError::Eos)
-                            .and_then(|(frame_buffer, fps_fraction)| {
-                                circular_buffer
-                                    .lock()
-                                    .map_err(|_| gstreamer::FlowError::Error)?
-                                    .push_back(frame_buffer);
-                                *fps.lock().map_err(|_| gstreamer::FlowError::Error)? =
-                                    fps_fraction;
-                                Ok(gstreamer::FlowSuccess::Ok)
-                            })
+                    move |sink| match Self::extract_frame_buffer(sink) {
+                        Ok((frame_buffer, fps_fraction)) => {
+                            circular_buffer
+                                .lock()
+                                .map_err(|_| gstreamer::FlowError::Error)?
+                                .push_back(frame_buffer);
+                            *fps.lock().map_err(|_| gstreamer::FlowError::Error)? = fps_fraction;
+                            Ok(gstreamer::FlowSuccess::Ok)
+                        }
+                        // Returning `Eos` here ended the stream silently; report the error to
+                        // the caller and let GStreamer post it on the bus.
+                        Err(err) => {
+                            if let Ok(mut status) = status.lock() {
+                                status.error.get_or_insert_with(|| {
+                                    gstreamer::glib::Error::new(
+                                        gstreamer::CoreError::Failed,
+                                        &err.to_string(),
+                                    )
+                                });
+                            }
+                            Err(gstreamer::FlowError::Error)
+                        }
                     }
                 })
                 .build(),
@@ -270,6 +281,9 @@ impl StreamCapture {
     ///
     /// An Option containing the oldest captured Image, or None if no frame is buffered yet.
     ///
+    /// `None` cannot distinguish "no frame yet" from end-of-stream or a pipeline error; use
+    /// [`Self::try_grab_rgb8`] or [`Self::is_eos`]/[`Self::stream_error`] to tell them apart.
+    ///
     /// # Errors
     ///
     /// Returns [`StreamCaptureError::GetCapsError`] if the sample caps cannot be parsed as video
@@ -295,6 +309,9 @@ impl StreamCapture {
     /// # Returns
     ///
     /// The oldest captured image, or `None` if no frame is buffered yet.
+    ///
+    /// `None` cannot distinguish "no frame yet" from end-of-stream or a pipeline error; use
+    /// [`Self::try_grab_gray8`] or [`Self::is_eos`]/[`Self::stream_error`] to tell them apart.
     ///
     /// # Errors
     ///
