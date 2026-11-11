@@ -74,6 +74,11 @@ pub unsafe fn resize_bilinear_downscale_3c(
     // later channel's loads above an earlier channel's store — three serialised
     // memory-latency round trips instead of one. Load hoisting restores parity
     // with the CUDA twin, which gets the batching for free from `__restrict__`.
+    // SAFETY: src and dst are valid pointers to device memory with at least the
+    // required sizes (validated by launcher). Indices (b00, b10, etc. and out) are
+    // in bounds: dst coordinates are checked at function entry, source coordinates
+    // are clamped to [0, src_w-1] and [0, src_h-1], and the 3-channel stride keeps
+    // all accesses within the allocated buffer.
     unsafe {
         let s00 = *src.add(b00);
         let s10 = *src.add(b10);
@@ -138,6 +143,10 @@ pub unsafe fn resize_nearest_downscale_3c(
     let src_idx = ((y * src_w + x) * 3) as usize;
     let dst_idx = ((dst_y * dst_w + dst_x) * 3) as usize;
 
+    // SAFETY: src and dst are valid pointers to device memory with at least the
+    // required sizes (validated by launcher). Indices are in bounds: dst coordinates
+    // are checked at function entry, source coordinates are clamped to [0, src_w-1]
+    // and [0, src_h-1], and the 3-channel stride keeps all accesses within bounds.
     unsafe {
         *dst.add(dst_idx) = *src.add(src_idx);
         *dst.add(dst_idx + 1) = *src.add(src_idx + 1);
