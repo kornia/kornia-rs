@@ -1109,13 +1109,13 @@ fn clamp_taps(center: f32, len: usize) -> [ClampTap; 24] {
 }
 
 /// Samples the 21x21 window centred at `(cx, cy)` in `BorderMode::Clamp`
-/// into `out` (row-major), matching `sample_at` per pixel.
+/// into `out` (row-major), bit-identical to `sample_at` per pixel.
 ///
 /// The clamp/trunc/fract work depends on one axis only, so it is tabulated
 /// once per window; the bilinear sum keeps `bilinear_interpolation`'s term
-/// order, evaluated 4 lanes at a time on [`F32x4`]. Its three `mul_add`s are
-/// fused where the target has FMA (aarch64), so there a sample differs from
-/// `sample_at` by at most a few ulp; elsewhere it is bit-identical.
+/// order, evaluated 4 lanes at a time on [`F32x4`]. Separate `*` and `+`,
+/// never `mul_add`: a fused add would round differently from `sample_at` on
+/// aarch64 and on x86 builds with the `fma` target feature.
 fn sample_window_clamp(img: &Image<f32, 1>, cx: f32, cy: f32, out: &mut [f32; 441]) {
     let cols = img.cols();
     let data = img.as_slice();
@@ -1156,11 +1156,11 @@ fn sample_window_clamp(img: &Image<f32, 1>, cx: f32, cy: f32, out: &mut [f32; 44
             let w10 = fvv * fu;
             let w01 = fv * fuu;
             let w11 = fv * fu;
-            let v = w00 * F32x4::from_array(v00);
-            let v = w10.mul_add(F32x4::from_array(v01), v);
-            let v = w01.mul_add(F32x4::from_array(v10), v);
-            let v = w11.mul_add(F32x4::from_array(v11), v);
-            let v = v.to_array();
+            let v = (w00 * F32x4::from_array(v00)
+                + w10 * F32x4::from_array(v01)
+                + w01 * F32x4::from_array(v10)
+                + w11 * F32x4::from_array(v11))
+            .to_array();
             let n = (21 - chunk * 4).min(4);
             out[wy * 21 + chunk * 4..wy * 21 + chunk * 4 + n].copy_from_slice(&v[..n]);
         }
@@ -1171,9 +1171,8 @@ fn sample_window_clamp(img: &Image<f32, 1>, cx: f32, cy: f32, out: &mut [f32; 44
 /// `sample_at` per pixel.
 #[inline]
 fn tabulated_clamp(mode: BorderMode) -> bool {
-    // Tests force the per-pixel path to compare whole tracks; the paths differ
-    // by a few ulp per sample at most, far inside every other test's
-    // tolerance, so tests running meanwhile are unaffected.
+    // Tests force the per-pixel path to compare whole tracks; both paths give
+    // the same bits, so tests running meanwhile are unaffected.
     #[cfg(test)]
     if tests::FORCE_SAMPLE_AT.load(std::sync::atomic::Ordering::Relaxed) {
         return false;
@@ -1592,32 +1591,12 @@ pub fn calc_optical_flow_pyr_lk_with_precomputed(
 mod tests {
     use super::*;
 
-    /// Tracks may differ from the `sample_at` oracle by this much (px). Per
-    /// sample the paths differ only by FMA contraction (a few ulp, see
-    /// [`window_tol`]); the 441-term sums and up to 30 Gauss-Newton steps per
-    /// level amplify that by the window's conditioning; 1e-3 px is ten times
-    /// below LK's own stopping `epsilon` of 1e-2 px.
-    const TRACK_TOL_PX: f32 = 1e-3;
-    /// Relative tolerance on the per-point mean absolute error, for the same
-    /// reason as [`TRACK_TOL_PX`].
-    const TRACK_ERR_RTOL: f32 = 1e-3;
-
-    /// Largest allowed `|sample_window_clamp - sample_at|` for an image whose
-    /// largest magnitude is `max_abs`. The bilinear sum has four terms, each a
-    /// convex weight times a pixel, so every product and partial sum is at
-    /// most `max_abs`. Each of the three fused products skips one rounding of
-    /// at most half an ulp, and each later add may then round one ulp the
-    /// other way: 4 `EPSILON * max_abs` covers both.
-    fn window_tol(max_abs: f32) -> f32 {
-        4.0 * f32::EPSILON * max_abs
-    }
-
     pub(super) static FORCE_SAMPLE_AT: std::sync::atomic::AtomicBool =
         std::sync::atomic::AtomicBool::new(false);
 
-    /// Points on and near every border give the same status, and flow and
-    /// error within [`TRACK_TOL_PX`] and [`TRACK_ERR_RTOL`], with the
-    /// tabulated window and with `sample_at` per pixel (the oracle).
+    /// Points on and near every border give the same status, flow and error,
+    /// bit for bit, with the tabulated window and with `sample_at` per pixel
+    /// (the oracle).
     #[test]
     fn border_tracks_match_sample_at_path() -> Result<(), PyrLKError> {
         let (w, h) = (96usize, 72usize);
@@ -1652,22 +1631,18 @@ mod tests {
         let per_pixel = per_pixel?;
         assert!(table.status.contains(&1));
         assert_eq!(table.status, per_pixel.status);
-        for (i, (a, b)) in table.next_pts.iter().zip(&per_pixel.next_pts).enumerate() {
-            let d = (a[0] - b[0]).abs().max((a[1] - b[1]).abs());
-            assert!(d <= TRACK_TOL_PX, "point {i}: {a:?} vs {b:?}");
-        }
-        for (i, (a, b)) in table.error.iter().zip(&per_pixel.error).enumerate() {
-            let d = (a - b).abs();
-            assert!(
-                d <= TRACK_ERR_RTOL * b.abs().max(1.0),
-                "point {i}: {a} vs {b}"
-            );
-        }
+        let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        let flat = |p: &[[f32; 2]]| p.iter().flatten().copied().collect::<Vec<_>>();
+        assert_eq!(
+            bits(&flat(&table.next_pts)),
+            bits(&flat(&per_pixel.next_pts))
+        );
+        assert_eq!(bits(&table.error), bits(&per_pixel.error));
         Ok(())
     }
 
-    /// The tabulated Clamp window matches `sample_at` per pixel within
-    /// [`window_tol`], for centres inside, on and past every border.
+    /// The tabulated Clamp window matches `sample_at` per pixel bit for bit,
+    /// for centres inside, on and past every border.
     #[test]
     fn clamp_window_matches_sample_at() -> Result<(), PyrLKError> {
         let (w, h) = (47usize, 30usize);
@@ -1681,7 +1656,6 @@ mod tests {
             },
             data,
         )?;
-        let tol = window_tol(img.as_slice().iter().fold(0.0f32, |m, v| m.max(v.abs())));
         let mut out = [0.0f32; 441];
         let centres = [
             -12.3f32, -0.5, 0.0, 3.75, 9.99, 10.0, 23.5, 35.2, 36.0, 46.0, 46.9, 58.1,
@@ -1694,8 +1668,12 @@ mod tests {
                     for wx in -10i32..=10 {
                         let want =
                             sample_at(&img, cx + wx as f32, cy + wy as f32, BorderMode::Clamp);
-                        let d = (out[idx] - want).abs();
-                        assert!(d <= tol, "({cx},{cy}) {wx},{wy}: {} vs {want}", out[idx]);
+                        assert_eq!(
+                            out[idx].to_bits(),
+                            want.to_bits(),
+                            "({cx},{cy}) {wx},{wy}: {} vs {want}",
+                            out[idx]
+                        );
                         idx += 1;
                     }
                 }
