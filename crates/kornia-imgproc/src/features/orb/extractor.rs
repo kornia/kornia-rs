@@ -703,14 +703,13 @@ impl OrbDetector {
     /// descriptors)` triple — ready to concatenate across octaves. Fusing
     /// the two phases here lets the pipeline overlap extract with the reduce
     /// chain and with detect on neighboring octaves.
-    #[allow(clippy::type_complexity)]
     fn process_octave_u8(
         &self,
         octave: usize,
         octave_image: &Image<u8, 1>,
         features_per_level: &[usize],
         trace: bool,
-    ) -> Result<(Vec<[f32; 2]>, Vec<f32>, Vec<[u8; 32]>, Vec<u8>), ImageError> {
+    ) -> Result<ProcessedOctaveU8, ImageError> {
         let (kps_full, _scales, oris, _resps) =
             self.detect_octave_u8(octave, octave_image, features_per_level, trace)?;
         if kps_full.is_empty() {
@@ -773,63 +772,135 @@ impl OrbDetector {
         Ok(features)
     }
 
-    /// Builds the u8 image pyramid that [`Self::detect_and_extract_u8`] uses.
+    /// Builds levels `1..` of the u8 image pyramid that
+    /// [`Self::detect_and_extract_u8`] uses, reusing the buffers in `pyramid`.
+    ///
+    /// Level 0 is `src` itself and is not copied: on return `pyramid[i]`
+    /// holds level `i + 1`, so the full pyramid for
+    /// [`Self::detect_and_extract_u8_from_pyramid`] is
+    /// `[src, &pyramid[0], &pyramid[1], ..]`. A buffer whose size already
+    /// matches its level is overwritten in place, so calling this every frame
+    /// on same-sized frames allocates nothing after the first call.
     ///
     /// Level `o` is level `o - 1` resized (bilinear) to
     /// `round_ties_even(L0 * downscale^-o)`, as in ORB-SLAM3's
     /// `ComputePyramid`. The pyramid stops early when a level would not
-    /// shrink or would be empty, so it can hold fewer than `n_scales` levels.
+    /// shrink or would be empty, so `pyramid` can end up shorter than
+    /// `n_scales - 1`; it is truncated to the levels built.
     ///
     /// # Arguments
     ///
     /// * `src` - Grayscale u8 input image (level 0).
+    /// * `pyramid` - Level buffers, reused when their size matches; resized
+    ///   to the number of levels built.
     ///
     /// # Returns
     ///
-    /// The pyramid, level 0 first.
+    /// `Ok(())` once `pyramid` holds levels `1..` of the pyramid.
     ///
     /// # Errors
     ///
     /// Returns an [`ImageError`] if a level cannot be allocated or resized.
-    pub fn build_pyramid_u8(&self, src: &Image<u8, 1>) -> Result<Vec<Image<u8, 1>>, ImageError> {
-        let mut pyramid = Vec::with_capacity(self.n_scales);
-        pyramid.push(Image::from_size_slice(src.size(), src.as_slice())?);
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_image::{Image, ImageSize};
+    /// use kornia_imgproc::features::OrbDetector;
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let size = ImageSize { width: 160, height: 120 };
+    /// let data = (0..size.width * size.height)
+    ///     .map(|i| (((i % size.width) / 8 + (i / size.width) / 8) % 2 * 200) as u8)
+    ///     .collect();
+    /// let img = Image::<u8, 1>::new(size, data)?;
+    /// let orb = OrbDetector::default();
+    ///
+    /// let mut levels = Vec::new();
+    /// orb.build_pyramid_u8_into(&img, &mut levels)?;
+    /// assert_eq!(levels[0].width(), 133); // round(160 / 1.2)
+    ///
+    /// let pyramid: Vec<&Image<u8, 1>> = std::iter::once(&img).chain(levels.iter()).collect();
+    /// let shared = orb.detect_and_extract_u8_from_pyramid(&pyramid)?;
+    /// let fused = orb.detect_and_extract_u8(&img)?;
+    /// assert_eq!(shared.keypoints_xy, fused.keypoints_xy);
+    /// assert_eq!(shared.descriptors, fused.descriptors);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn build_pyramid_u8_into(
+        &self,
+        src: &Image<u8, 1>,
+        pyramid: &mut Vec<Image<u8, 1>>,
+    ) -> Result<(), ImageError> {
         let base = src.size();
+        let mut built = 0;
         for octave in 1..self.n_scales {
-            match self.next_level_u8(base, &pyramid[octave - 1], octave)? {
-                Some(next) => pyramid.push(next),
-                None => break,
+            let prev_size = if octave == 1 {
+                base
+            } else {
+                pyramid[octave - 2].size()
+            };
+            let Some(target) = self.level_size_u8(base, prev_size, octave) else {
+                break;
+            };
+            let slot = octave - 1;
+            if slot == pyramid.len() {
+                pyramid.push(Image::from_size_val(target, 0u8)?);
+            } else if pyramid[slot].size() != target {
+                pyramid[slot] = Image::from_size_val(target, 0u8)?;
             }
+            if octave == 1 {
+                resize_fast_u8(src, &mut pyramid[0], InterpolationMode::Bilinear)?;
+            } else {
+                let (done, rest) = pyramid.split_at_mut(slot);
+                resize_fast_u8(&done[slot - 1], &mut rest[0], InterpolationMode::Bilinear)?;
+            }
+            built = octave;
         }
-        Ok(pyramid)
+        pyramid.truncate(built);
+        Ok(())
+    }
+
+    /// Size of level `octave` of the u8 pyramid given the size of level
+    /// `octave - 1`, or `None` where the pyramid stops (the level would not
+    /// shrink or would be empty).
+    fn level_size_u8(&self, base: ImageSize, prev: ImageSize, octave: usize) -> Option<ImageSize> {
+        let target = pyramid_size_at_level(base, self.downscale, octave);
+        (target != prev && target.width != 0 && target.height != 0).then_some(target)
     }
 
     /// Level `octave` of the u8 pyramid from level `octave - 1`, or `None`
-    /// where the pyramid stops (the level would not shrink or would be empty).
+    /// where the pyramid stops.
     fn next_level_u8(
         &self,
         base: ImageSize,
         prev: &Image<u8, 1>,
         octave: usize,
     ) -> Result<Option<Image<u8, 1>>, ImageError> {
-        let target = pyramid_size_at_level(base, self.downscale, octave);
-        if target == prev.size() || target.width == 0 || target.height == 0 {
-            return Ok(None);
+        match self.level_size_u8(base, prev.size(), octave) {
+            Some(target) => pyramid_reduce_u8(prev, target).map(Some),
+            None => Ok(None),
         }
-        pyramid_reduce_u8(prev, target).map(Some)
     }
 
     /// Like [`Self::detect_and_extract_u8`], on a pyramid the caller already
-    /// built with [`Self::build_pyramid_u8`], so other consumers (stereo
-    /// matching, tracking) can share it.
+    /// holds, so other consumers (stereo matching, tracking) can share it.
     ///
-    /// For the same image the output equals [`Self::detect_and_extract_u8`]
-    /// exactly. Levels past `n_scales` are ignored.
+    /// Build levels `1..` with [`Self::build_pyramid_u8_into`] and pass
+    /// `[src, &levels[0], &levels[1], ..]`. For the same image the output
+    /// equals [`Self::detect_and_extract_u8`] exactly.
+    ///
+    /// The keypoint budget `n_keypoints` is split across `n_scales` levels
+    /// up front. A pyramid with fewer than `n_scales` levels does not
+    /// redistribute the budget of the missing levels, so it returns fewer
+    /// keypoints; [`Self::detect_and_extract_u8`] behaves the same when its
+    /// pyramid stops early. Levels past `n_scales` are ignored.
     ///
     /// # Arguments
     ///
     /// * `pyramid` - Pyramid levels, level 0 first. Level `o` must have the
-    ///   size [`Self::build_pyramid_u8`] gives it, because keypoints are
+    ///   size [`Self::build_pyramid_u8_into`] gives it, because keypoints are
     ///   scaled back to level 0 by `downscale^o`.
     ///
     /// # Returns
@@ -838,18 +909,48 @@ impl OrbDetector {
     ///
     /// # Errors
     ///
-    /// Returns [`ImageError::InvalidImageSize`] if a level does not have the
-    /// size of that level of [`Self::build_pyramid_u8`], or an [`ImageError`]
-    /// if an octave fails to process.
+    /// Returns [`ImageError::InvalidImageSize`] (got width and height, then
+    /// the expected ones) for the first level whose shape differs from that
+    /// level of [`Self::build_pyramid_u8_into`], or an [`ImageError`] if an
+    /// octave fails to process.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_image::{Image, ImageSize};
+    /// use kornia_imgproc::features::OrbDetector;
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let size = ImageSize { width: 160, height: 120 };
+    /// let data = (0..size.width * size.height)
+    ///     .map(|i| (((i % size.width) / 8 + (i / size.width) / 8) % 2 * 200) as u8)
+    ///     .collect();
+    /// let img = Image::<u8, 1>::new(size, data)?;
+    /// let orb = OrbDetector::default();
+    ///
+    /// // Reuse `levels` across frames: no per-frame level allocation.
+    /// let mut levels = Vec::new();
+    /// orb.build_pyramid_u8_into(&img, &mut levels)?;
+    /// let pyramid: Vec<&Image<u8, 1>> = std::iter::once(&img).chain(levels.iter()).collect();
+    ///
+    /// let shared = orb.detect_and_extract_u8_from_pyramid(&pyramid)?;
+    /// let fused = orb.detect_and_extract_u8(&img)?;
+    /// assert_eq!(shared.keypoints_xy, fused.keypoints_xy);
+    /// assert_eq!(shared.orientations, fused.orientations);
+    /// assert_eq!(shared.descriptors, fused.descriptors);
+    /// assert_eq!(shared.octaves, fused.octaves);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn detect_and_extract_u8_from_pyramid(
         &self,
-        pyramid: &[Image<u8, 1>],
+        pyramid: &[&Image<u8, 1>],
     ) -> Result<OrbFeatures, ImageError> {
         let trace = std::env::var("KORNIA_ORB_TRACE").is_ok();
         let features_per_level = self.features_per_level();
-        let levels = pyramid.len().min(self.n_scales);
-        if let Some(base) = pyramid.first().map(|l| l.size()) {
-            for (octave, level) in pyramid[..levels].iter().enumerate().skip(1) {
+        let levels = &pyramid[..pyramid.len().min(self.n_scales)];
+        if let Some(base) = levels.first().map(|l| l.size()) {
+            for (octave, level) in levels.iter().enumerate().skip(1) {
                 let want = pyramid_size_at_level(base, self.downscale, octave);
                 if level.size() != want {
                     return Err(ImageError::InvalidImageSize(
@@ -861,7 +962,7 @@ impl OrbDetector {
                 }
             }
         }
-        let per_octave = pyramid[..levels]
+        let per_octave = levels
             .par_iter()
             .enumerate()
             .map(|(octave, image)| {
@@ -1792,11 +1893,9 @@ mod tests {
     use super::*;
     use kornia_image::Image;
 
-    /// A caller-built pyramid must give exactly the features of the fused
-    /// build-and-detect path.
-    #[test]
-    fn test_detect_from_pyramid_matches_fused_path() -> Result<(), ImageError> {
-        let (w, h) = (320usize, 240usize);
+    /// Checkerboard of 16 px blocks plus xorshift noise: corners at every
+    /// scale, so several octaves keep keypoints.
+    fn make_textured_u8(w: usize, h: usize) -> Result<Image<u8, 1>, ImageError> {
         let mut state = 0x1234_5678_u32;
         let data: Vec<u8> = (0..w * h)
             .map(|i| {
@@ -1812,27 +1911,90 @@ mod tests {
                 block + (state % 24) as u8
             })
             .collect();
-        let img = Image::<u8, 1>::new([w, h].into(), data)?;
+        Image::<u8, 1>::new([w, h].into(), data)
+    }
+
+    fn assert_same_features(a: &OrbFeatures, b: &OrbFeatures) {
+        assert_eq!(a.keypoints_xy, b.keypoints_xy);
+        assert_eq!(a.orientations, b.orientations);
+        assert_eq!(a.descriptors, b.descriptors);
+        assert_eq!(a.octaves, b.octaves);
+    }
+
+    /// A caller-built pyramid must give exactly the features of the fused
+    /// build-and-detect path, also when the level buffers are reused.
+    #[test]
+    fn test_detect_from_pyramid_matches_fused_path() -> Result<(), ImageError> {
+        let img = make_textured_u8(320, 240)?;
         let detector = OrbDetector {
             n_keypoints: 300,
             ..OrbDetector::default()
         };
         let fused = detector.detect_and_extract_u8(&img)?;
-        let pyramid = detector.build_pyramid_u8(&img)?;
-        let shared = detector.detect_and_extract_u8_from_pyramid(&pyramid)?;
-        assert!(!fused.keypoints_xy.is_empty());
-        assert_eq!(fused.keypoints_xy, shared.keypoints_xy);
-        assert_eq!(fused.orientations, shared.orientations);
-        assert_eq!(fused.descriptors, shared.descriptors);
-        assert_eq!(fused.octaves, shared.octaves);
 
-        // A level of the wrong size would scale its keypoints wrongly.
-        let mut bad = pyramid;
-        bad[1] = Image::from_size_val([bad[1].width() + 1, bad[1].height()].into(), 0)?;
+        let mut levels = Vec::new();
+        detector.build_pyramid_u8_into(&img, &mut levels)?;
+        assert_eq!(levels.len(), detector.n_scales - 1);
+        let pyramid: Vec<&Image<u8, 1>> = std::iter::once(&img).chain(levels.iter()).collect();
+        let shared = detector.detect_and_extract_u8_from_pyramid(&pyramid)?;
+
+        assert!(!fused.keypoints_xy.is_empty());
+        let mut distinct = fused.octaves.clone();
+        distinct.dedup();
+        assert!(distinct.len() >= 2, "octaves {distinct:?}");
+        assert_same_features(&fused, &shared);
+
+        // Reused buffers: a second frame through the same `levels`, after a
+        // frame of another size has resized every buffer.
+        let other = make_textured_u8(200, 150)?;
+        detector.build_pyramid_u8_into(&other, &mut levels)?;
+        detector.build_pyramid_u8_into(&img, &mut levels)?;
+        let pyramid: Vec<&Image<u8, 1>> = std::iter::once(&img).chain(levels.iter()).collect();
+        assert_same_features(
+            &fused,
+            &detector.detect_and_extract_u8_from_pyramid(&pyramid)?,
+        );
+        Ok(())
+    }
+
+    /// A level with the right pixel count but the wrong shape would scale
+    /// its keypoints wrongly, so it must be rejected.
+    #[test]
+    fn test_detect_from_pyramid_rejects_wrong_shape() -> Result<(), ImageError> {
+        let img = make_textured_u8(320, 240)?;
+        let detector = OrbDetector::default();
+        let mut levels = Vec::new();
+        detector.build_pyramid_u8_into(&img, &mut levels)?;
+        let level1 = &levels[0];
+        let transposed = Image::from_size_val([level1.height(), level1.width()].into(), 0u8)?;
+        assert_ne!(transposed.size(), level1.size());
+
+        let mut pyramid: Vec<&Image<u8, 1>> = std::iter::once(&img).chain(levels.iter()).collect();
+        pyramid[1] = &transposed;
         assert!(matches!(
-            detector.detect_and_extract_u8_from_pyramid(&bad),
-            Err(ImageError::InvalidImageSize(..))
+            detector.detect_and_extract_u8_from_pyramid(&pyramid),
+            Err(ImageError::InvalidImageSize(w, h, ew, eh))
+                if (w, h, ew, eh) == (level1.height(), level1.width(), level1.width(), level1.height())
         ));
+        Ok(())
+    }
+
+    /// On a tiny image the pyramid stops before `n_scales` levels; the shared
+    /// path must stop at the same level as the fused one.
+    #[test]
+    fn test_detect_from_pyramid_tiny_image_stops_early() -> Result<(), ImageError> {
+        let img = make_textured_u8(40, 30)?;
+        let detector = OrbDetector {
+            n_scales: 20,
+            ..OrbDetector::default()
+        };
+        let mut levels = Vec::new();
+        detector.build_pyramid_u8_into(&img, &mut levels)?;
+        // 40x30 at 1.2x: level 12 is 4x3 and level 13 would be 4x3 again.
+        assert_eq!(levels.len(), 12);
+        let pyramid: Vec<&Image<u8, 1>> = std::iter::once(&img).chain(levels.iter()).collect();
+        let shared = detector.detect_and_extract_u8_from_pyramid(&pyramid)?;
+        assert_same_features(&detector.detect_and_extract_u8(&img)?, &shared);
         Ok(())
     }
 
