@@ -308,6 +308,11 @@ pub type DVecF32 = nalgebra::DVector<f32>;
 /// Dynamic-sized vector with f64 elements.
 pub type DVecF64 = nalgebra::DVector<f64>;
 
+/// 6-vector with f64 elements, e.g. a pose tangent `[w, v]` or a 6-DoF Jacobian row.
+///
+/// A stack value (no allocation); pairs with [`crate::Mat6F64`].
+pub type Vec6F64 = nalgebra::Vector6<f64>;
+
 #[cfg(test)]
 mod tests {
     use super::*;
