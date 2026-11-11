@@ -1,1 +1,0 @@
-kornia-algebra vector types (`Vec2F32` to `Vec4F64`) gain `splat` and a component-wise `*` / `*=` between two vectors. Each component is one IEEE multiply, so kernels written with them match their scalar loops bit for bit.
