@@ -157,6 +157,9 @@ mod vec;
 // Linear algebra operations
 pub mod linalg;
 
+// Lane-batched f32 types for SoA kernels
+pub mod simd;
+
 //param module
 pub mod param;
 pub use param::{Param, ParamError};
