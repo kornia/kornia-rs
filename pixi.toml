@@ -145,6 +145,12 @@ py-test-threaded = { cmd = "python -m pytest --parallel-threads=8 --iterations=5
   "py-build",
 ], description = "Test kornia-py with Python 3.14t free-threaded" }
 
+[feature.py315.dependencies]
+python = "3.15.*"
+
+[feature.py315t.dependencies]
+python = "3.15.*"
+
 # ------------------------------------------------------------------------------
 # Feature: C++
 # ------------------------------------------------------------------------------
