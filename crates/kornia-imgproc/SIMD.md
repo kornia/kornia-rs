@@ -333,6 +333,16 @@ Because AVX2+FMA+BMI2 are in the v3 baseline, the runtime feature check may fold
 
 To exercise the scalar fallback under qemu, build with `-Ctarget-cpu=x86-64` (plain baseline).
 
+### Changing a kernel's instructions breaks the wheel check
+
+`kornia-py/scripts/verify_simd_kernels.sh` pins each kernel to a symbol path and instruction pattern, and only the wheel jobs run it. A path that no longer exists only warns; a path that still matches with stale instructions fails those jobs. Update its manifest in the same PR.
+
+### Matcher timings on Apple silicon
+
+On an M1, Hamming `mutual` and `mutual_ratio` at 4,096 rows land in a fast or slow mode per process, even with one binary: 25-44 ms for `mutual` on `main`, while `forward` stays within a few percent. Compare those cells across several processes, not across one bench run per build. Also alternate the order of the builds: at 4 threads under background load, whichever ran first in a round tended to be fastest. `taskpolicy -c background` reaches the E-cores but throttles them too much to compare tile sizes (spreads up to 50%).
+
+LLVM already hoists the query loads of fixed-width float kernels, so interleaving four candidates saved no loads: on an M1 it gained 3% on L2 and lost 15% on dot, and the per-pair kernels stayed.
+
 ### Criterion under qemu
 
 `criterion` pulls in `alloca` which invokes `cc-rs` which wants `x86_64-linux-gnu-gcc` at build time. That's installed on the Jetson, but if tests start failing at link time with `-m64` errors, the aarch64 gcc got picked as the linker — check `.cargo/config.toml`'s `linker = "x86_64-linux-gnu-gcc"`.

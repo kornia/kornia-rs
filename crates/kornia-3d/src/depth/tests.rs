@@ -582,6 +582,86 @@ fn unproject_empty_and_all_invalid() -> TestResult {
     Ok(())
 }
 
+/// An `f32` sample whose value in metres underflows to `0` or overflows to
+/// infinity (only possible when `meter != 1`) is skipped, as the module docs
+/// state; a `u16` sample can never do either at an accepted `meter`.
+#[test]
+fn unproject_f32_skips_unrepresentable_metres() -> TestResult {
+    let camera = pinhole(1.0, 1.0, 0.0, 0.0);
+
+    // meter = 1000 -> scale = 0.001: a small subnormal depth underflows to 0.
+    let depth = depth_image(
+        5,
+        1,
+        vec![
+            f32::from_bits(2), // 2.8e-45, subnormal -> 0 -> skip
+            1.0,               // 0.001 m -> keep
+            f32::MAX,          // 3.4e38 * 0.001 = 3.4e35 -> keep
+            0.0,               // invalid -> skip
+            f32::INFINITY,     // invalid -> skip
+        ],
+        MM,
+    )?;
+    let (mut points, mut index) = (Vec::new(), Vec::new());
+    depth.to_pointcloud_into(&camera, None, &mut points, Some(&mut index))?;
+    assert_eq!(index, vec![1, 2]);
+    assert!(points.iter().all(|p| p[2].is_finite() && p[2] > 0.0));
+
+    // The smallest accepted `meter` has scale ~= f32::MAX: f32::MAX overflows.
+    let depth = depth_image(3, 1, vec![1.0, f32::MAX, 0.5], smallest_meter::<f32>())?;
+    let mut points = Vec::new();
+    depth.to_pointcloud_into(&camera, None, &mut points, None)?;
+    assert_eq!(points.len(), 2, "f32::MAX · (1 / meter) must overflow");
+    Ok(())
+}
+
+/// Unprojects on a rayon pool of exactly `threads` threads.
+fn unproject_on<T: DepthSample>(
+    threads: usize,
+    depth: &DepthImage<T>,
+    camera: &PinholeCamera,
+    mask: Option<&Image<u8, 1>>,
+) -> (Vec<[f64; 3]>, Vec<u32>) {
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build()
+        .unwrap();
+    pool.install(|| {
+        let (mut p, mut ix) = (Vec::new(), Vec::new());
+        depth
+            .to_pointcloud_into(camera, mask, &mut p, Some(&mut ix))
+            .unwrap();
+        (p, ix)
+    })
+}
+
+/// The parallel writer's `set_len` is sound only because every band writes
+/// into its own disjoint output range, so the output must not depend on the
+/// thread count. Pin that on a masked `u16` and a metric `f32` image, bit for
+/// bit, in a 1-thread and a many-thread pool.
+#[test]
+fn unproject_does_not_depend_on_the_thread_count() -> TestResult {
+    let (w, h) = (139, 97);
+    let mask: Vec<u8> = (0..w * h).map(|i| u8::from(i % 3 != 0)).collect();
+    let mask = Image::<u8, 1>::new(sz(w, h), mask)?;
+    let cam = pinhole(121.5, 119.25, 70.1, 48.9);
+
+    let u16d = depth_image(w, h, random_depth_u16(w, h, 77), MM)?;
+    assert_eq!(
+        unproject_on(1, &u16d, &cam, Some(&mask)),
+        unproject_on(12, &u16d, &cam, Some(&mask)),
+        "u16 + mask"
+    );
+
+    let f32d = depth_image(w, h, random_depth_f32(w, h, 78), 0.7)?;
+    assert_eq!(
+        unproject_on(1, &f32d, &cam, None),
+        unproject_on(12, &f32d, &cam, None),
+        "f32, meter != 1"
+    );
+    Ok(())
+}
+
 #[test]
 fn unproject_rejects_bad_arguments() -> TestResult {
     let camera = pinhole(1.0, 1.0, 0.0, 0.0);
