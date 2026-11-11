@@ -28,6 +28,11 @@
 //! ([`IcpPlaneCriteria::degeneracy_rtol`]) get a zero update and zero information, and the rest
 //! is solved by eigen pseudo-inverse. The `J^T W J` of a final pass at the returned pose is
 //! reported as [`IcpPlaneResult::information`].
+//!
+//! An optional [`IcpPlaneCriteria::rotation_prior`] adds three weighted rows to each step, after
+//! the unobserved directions are removed from the data, so it can carry a rotation the geometry
+//! does not observe. It shapes the solve only: the conditioning, the degenerate directions and
+//! the information describe the data alone.
 
 use super::rgbd::{is_valid_normal, is_valid_vertex, RgbdIcpError, RgbdLevel, RgbdPyramid};
 use crate::ransac::{HuberKernel, RobustKernel};
@@ -65,6 +70,10 @@ pub const DEFAULT_DEGENERACY_RTOL: f64 = 1e-8;
 /// Fewest inliers that can constrain the six pose parameters.
 const MIN_INLIERS: usize = 6;
 
+/// Largest entry of `|R^T R - I|` and of `|det R - 1|` for a prior rotation to count as one.
+/// Loose enough for a rotation rounded through `f32`.
+const ROTATION_TOL: f64 = 1e-6;
+
 /// Parameters of [`icp_projective_plane`].
 ///
 /// Build it with [`Default`] and set the fields to change.
@@ -93,6 +102,15 @@ pub struct IcpPlaneCriteria {
     /// Set it between rounding noise on an exact null space and the weakest geometry still to
     /// be solved; see [`DEFAULT_DEGENERACY_RTOL`].
     pub degeneracy_rtol: f64,
+    /// Optional external estimate of the rotation, e.g. integrated gyro rates; `None` by default.
+    ///
+    /// A scene invariant under some rotation, such as a sphere in front of a wall under roll,
+    /// leaves that rotation unobserved while the residual stays perfect. The prior enters each
+    /// step as three rows weighted `1 / sigma_rad^2`, added after the unobserved directions are
+    /// removed from the data: ample geometry outvotes it, weak geometry defers to it, and it
+    /// carries the update along directions the data do not observe. It never enters
+    /// [`IcpPlaneResult::information`], the conditioning or the degenerate directions.
+    pub rotation_prior: Option<RotationPrior>,
 }
 
 impl Default for IcpPlaneCriteria {
@@ -106,8 +124,24 @@ impl Default for IcpPlaneCriteria {
             huber_delta: 2.0,
             depth_noise: DepthNoise::Constant { sigma_m: 0.01 },
             degeneracy_rtol: DEFAULT_DEGENERACY_RTOL,
+            rotation_prior: None,
         }
     }
+}
+
+/// An external rotation estimate for [`IcpPlaneCriteria::rotation_prior`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RotationPrior {
+    /// Prior on the rotation of `T_target_source`, the convention of
+    /// [`IcpPlaneResult::rotation`]. Must be a rotation matrix.
+    pub rotation: Mat3F64,
+    /// One-sigma error of [`Self::rotation`] per axis, in radians, over the interval it spans.
+    ///
+    /// Must be finite and positive. Scale it with the elapsed time rather than passing a
+    /// per-frame constant: a prior integrated over a longer interval has drifted further. Size it
+    /// against the sensor's total error, systematic terms such as a camera-to-gyro misalignment
+    /// included: a tight sigma on a biased rotation pulls the solve toward the bias.
+    pub sigma_rad: f64,
 }
 
 /// Depth noise model for the row weights of [`icp_projective_plane`].
@@ -273,8 +307,10 @@ pub struct IcpPlaneResult {
 /// * [`RgbdIcpError::IterationsLevelsMismatch`] if `criteria.iters_per_level` does not have one
 ///   entry per level.
 /// * [`RgbdIcpError::InvalidCriteria`] if a threshold of `criteria` (`degeneracy_rtol`
-///   included) or a parameter of its `depth_noise` is not finite and positive, or
-///   `max_normal_angle_rad` exceeds pi.
+///   included) or a parameter of its `depth_noise` is not finite and positive, if
+///   `max_normal_angle_rad` exceeds pi, or if its `rotation_prior` has a `sigma_rad` that is not
+///   finite and positive (or so small that its weight overflows) or a `rotation` that is not a
+///   finite rotation matrix.
 /// * [`RgbdIcpError::TooFewCorrespondences`] if fewer than 6 correspondences pass the gates in
 ///   any pass, the final one included (low overlap or a bad initial guess).
 /// * [`RgbdIcpError::SingularNormalEquations`] if the normal equations or their solve are not
@@ -353,12 +389,40 @@ fn check_criteria(criteria: &IcpPlaneCriteria) -> Result<PassGates, RgbdIcpError
             return Err(RgbdIcpError::InvalidCriteria { field, value });
         }
     }
+    if let Some(prior) = &criteria.rotation_prior {
+        check_rotation_prior(prior)?;
+    }
     Ok(PassGates {
         max_dist_m: criteria.max_dist_m,
         cos_max_normal_angle: criteria.max_normal_angle_rad.cos(),
         huber_delta: criteria.huber_delta,
         depth_noise: criteria.depth_noise,
     })
+}
+
+/// `Ok` if `prior` has a finite positive sigma with a finite weight and a finite rotation matrix.
+fn check_rotation_prior(prior: &RotationPrior) -> Result<(), RgbdIcpError> {
+    let sigma = prior.sigma_rad;
+    // written so that NaN fails; a sigma below ~1e-154 would make the weight infinite
+    if !(sigma > 0.0 && sigma.is_finite() && (1.0 / (sigma * sigma)).is_finite()) {
+        return Err(RgbdIcpError::InvalidCriteria {
+            field: "rotation_prior.sigma_rad",
+            value: sigma,
+        });
+    }
+    let r = prior.rotation;
+    let orth = (r.transpose() * r - Mat3F64::IDENTITY).to_cols_array();
+    // `f64::max` drops NaN, hence the separate finiteness check
+    let deviation = orth
+        .iter()
+        .fold((r.determinant() - 1.0).abs(), |m, x| m.max(x.abs()));
+    if !(r.is_finite() && deviation <= ROTATION_TOL) {
+        return Err(RgbdIcpError::InvalidCriteria {
+            field: "rotation_prior.rotation",
+            value: deviation,
+        });
+    }
+    Ok(())
 }
 
 /// Gates and weighting of one association pass.
@@ -646,25 +710,90 @@ fn cholesky_step(a: &Mat6F64, b: &Vec6F64) -> Option<Vec6F64> {
     (block_ok(0..3) && block_ok(3..6)).then(|| chol.solve(&(-b)))
 }
 
-/// One Gauss-Newton step `x = [w, v]` from `A = J^T W J` and `b = J^T W r`.
+/// Prior rows in information form, at the estimate `(R, t)` of `T_target_source`.
 ///
-/// Full-rank data take the Cholesky path. Otherwise the unobserved directions of `split` are
-/// removed from both `A` and `b`, so that a rounding-noise gradient cannot push along them, and
-/// the rest is solved by eigen pseudo-inverse in the depth-scaled tangent: an unobserved
-/// direction gets a zero update.
+/// The error is `e = [log(R R_p^T), t - R R_p^T t_p]`, weighted by `info`. Under the solver's
+/// left update `R <- exp(w) R`, `t <- exp(w) t + v` it becomes
+/// `[log(exp(w) exp(e_r)), exp(w) e_t + v]`, so its Jacobian at `w = v = 0` is
+/// `[[Jl(e_r)^-1, 0], [-[e_t]x, I]]`, with `Jl` the left Jacobian of SO(3). A rotation prior is
+/// the case `t_p = 0` with zero translation information.
+struct PriorRows {
+    rotation: Mat3F64,
+    translation: Vec3F64,
+    info: Mat6F64,
+}
+
+impl PriorRows {
+    /// Rows of a rotation prior already checked by [`check_rotation_prior`].
+    fn from_rotation(p: RotationPrior) -> Self {
+        let w = 1.0 / (p.sigma_rad * p.sigma_rad);
+        Self {
+            rotation: p.rotation,
+            translation: Vec3F64::ZERO,
+            info: Mat6F64::from_diagonal(&Vec6F64::new(w, w, w, 0.0, 0.0, 0.0)),
+        }
+    }
+
+    /// The error `e` and its Jacobian at `(rotation, translation)`.
+    fn error_and_jacobian(&self, rotation: &Mat3F64, translation: &Vec3F64) -> (Vec6F64, Mat6F64) {
+        let rr = *rotation * self.rotation.transpose();
+        // SO3F64's log keeps the sign right up to pi
+        let e_r = SO3F64::from_matrix(&rr).log();
+        let e_t = *translation - rr * self.translation;
+        let jl_inv = SO3F64::left_jacobian(e_r).inverse();
+        let skew = SO3F64::hat(e_t);
+        let mut jac = Mat6F64::identity();
+        for i in 0..3 {
+            for k in 0..3 {
+                jac[(i, k)] = jl_inv.col(k)[i];
+                jac[(3 + i, k)] = -skew.col(k)[i];
+            }
+        }
+        let e = Vec6F64::new(e_r.x, e_r.y, e_r.z, e_t.x, e_t.y, e_t.z);
+        (e, jac)
+    }
+
+    /// Adds `J^T info J` to `a` and `J^T info e` to `b` at `(rotation, translation)`.
+    fn add_to(&self, rotation: &Mat3F64, translation: &Vec3F64, a: &mut Mat6F64, b: &mut Vec6F64) {
+        let (e, jac) = self.error_and_jacobian(rotation, translation);
+        let jt_info = jac.transpose() * self.info;
+        *a += jt_info * jac;
+        *b += jt_info * e;
+    }
+}
+
+/// One Gauss-Newton step `x = [w, v]` from `A = J^T W J`, `b = J^T W r` and the priors at the
+/// estimate `(rotation, translation)`.
+///
+/// Full-rank data take the Cholesky path on `A` plus the priors. Otherwise the unobserved
+/// directions of `split` are removed from both `A` and `b`, so that a rounding-noise gradient
+/// cannot push along them, the priors are added, and the sum is solved by eigen pseudo-inverse
+/// in the depth-scaled tangent: a direction neither the data nor a prior observes gets a zero
+/// update.
 fn solve_step(
     a: &Mat6F64,
     b: &Vec6F64,
     split: &DegenerateSplit,
+    priors: &[PriorRows],
+    rotation: &Mat3F64,
+    translation: &Vec3F64,
     rtol: f64,
 ) -> Result<Vec6F64, RgbdIcpError> {
-    let x = if split.num_degenerate == 0 {
-        // a weak pivot the eigen test still counts as observed falls back to the eigen solve
-        cholesky_step(a, b).unwrap_or_else(|| pseudo_solve(a, &(-b), split.scale, rtol))
+    let (mut a, mut b) = if split.num_degenerate == 0 {
+        (*a, *b)
     } else {
         let s = tangent_scale(split.scale);
         let b_observed = (split.projector * b.component_div(&s)).component_mul(&s);
-        pseudo_solve(&split.a_observed, &(-b_observed), split.scale, rtol)
+        (split.a_observed, b_observed)
+    };
+    for p in priors {
+        p.add_to(rotation, translation, &mut a, &mut b);
+    }
+    let x = if split.num_degenerate == 0 {
+        // a weak pivot the eigen test still counts as observed falls back to the eigen solve
+        cholesky_step(&a, &b).unwrap_or_else(|| pseudo_solve(&a, &(-b), split.scale, rtol))
+    } else {
+        pseudo_solve(&a, &(-b), split.scale, rtol)
     };
     if !x.iter().all(|v| v.is_finite()) {
         return Err(RgbdIcpError::SingularNormalEquations);
@@ -804,6 +933,7 @@ fn run_icp(
 ) -> Result<IcpPlaneResult, RgbdIcpError> {
     let (mut rotation, mut translation) = (*init_rotation, *init_translation);
     let mut iterations = 0;
+    let priors = criteria.rotation_prior.map(PriorRows::from_rotation);
 
     // iters_per_level is coarsest first; levels[0] is the finest
     let levels = (0..src.levels.len()).rev();
@@ -815,8 +945,17 @@ fn run_icp(
             // the mean, not the median: a select per iteration costs more than the scale needs
             let mean_depth = eqs.sum_depth_m / eqs.num_inliers as f64;
             let rtol = criteria.degeneracy_rtol;
+            // unobserved directions are decided on the data alone, before any prior is added
             let split = split_degenerate(&eqs.a, mean_depth, rtol)?;
-            let x = solve_step(&eqs.a, &eqs.b, &split, rtol)?;
+            let x = solve_step(
+                &eqs.a,
+                &eqs.b,
+                &split,
+                priors.as_slice(),
+                &rotation,
+                &translation,
+                rtol,
+            )?;
             let (w, v) = (
                 Vec3F64::new(x[0], x[1], x[2]),
                 Vec3F64::new(x[3], x[4], x[5]),
@@ -834,8 +973,9 @@ fn run_icp(
         }
     }
 
-    // the reported figures come from the returned pose, not the last pre-update pass; the one
-    // allocation of a call, sized by the image so that it never regrows
+    // the reported figures come from the returned pose, not the last pre-update pass, and from
+    // the data alone: a prior must not make weak geometry look observed; the one allocation of
+    // a call, sized by the image so that it never regrows
     let finest = &src.levels[0];
     let mut depths = Vec::with_capacity(finest.size().width * finest.size().height);
     let eqs = accumulate_level(
@@ -1316,7 +1456,16 @@ mod tests {
         let rtol = DEFAULT_DEGENERACY_RTOL;
         let b = Vec6F64::from_element(1.0);
         let full = Mat6F64::identity();
-        let x = solve_step(&full, &b, &split_degenerate(&full, 1.0, rtol)?, rtol)?;
+        let id = (Mat3F64::IDENTITY, Vec3F64::ZERO);
+        let x = solve_step(
+            &full,
+            &b,
+            &split_degenerate(&full, 1.0, rtol)?,
+            &[],
+            &id.0,
+            &id.1,
+            rtol,
+        )?;
         assert_eq!(x, -b);
         let mut nan = Mat6F64::identity();
         nan[(4, 4)] = f64::NAN;
@@ -1327,7 +1476,7 @@ mod tests {
         let split = split_degenerate(&weak, 1.0, rtol)?;
         assert_eq!(split.num_degenerate, 1);
         assert_eq!(split.directions[0][5].abs(), 1.0);
-        let x = solve_step(&weak, &b, &split, rtol)?;
+        let x = solve_step(&weak, &b, &split, &[], &id.0, &id.1, rtol)?;
         assert!((x - Vec6F64::new(-1.0, -1.0, -1.0, -1.0, -1.0, 0.0)).amax() < 1e-12);
         Ok(())
     }
@@ -1810,6 +1959,216 @@ mod tests {
                 );
             }
         }
+        Ok(())
+    }
+
+    /// `PriorRows` must add `J^T info J` and `J^T info e` with `J` the derivative of its error
+    /// under the solver's left perturbation `exp(xi) T`, also far from the prior and near pi,
+    /// where a first-order identity Jacobian or a sign-flipped log would break the match.
+    #[test]
+    fn prior_rows_match_finite_differences() {
+        // symmetric positive definite, coupling rotation and translation
+        let l = Mat6F64::from_fn(|i, k| match i.cmp(&k) {
+            std::cmp::Ordering::Equal => 2.0 + i as f64,
+            std::cmp::Ordering::Greater => 0.3 * (i + 2 * k) as f64 / 7.0,
+            std::cmp::Ordering::Less => 0.0,
+        });
+        let axis = Vec3F64::new(0.2, -0.5, 0.84).normalize();
+        for angle in [1e-3, 1.0, 3.1] {
+            let prior = PriorRows {
+                rotation: SO3F64::exp(Vec3F64::new(0.1, 0.4, -0.2)).matrix(),
+                translation: Vec3F64::new(0.3, -0.1, 0.2),
+                info: l * l.transpose(),
+            };
+            let rot = SO3F64::exp(axis * angle).matrix() * prior.rotation;
+            let t = Vec3F64::new(-0.2, 0.05, 0.4);
+            let (e, _) = prior.error_and_jacobian(&rot, &t);
+            // the error is the left difference itself, sign included
+            let e_r = Vec3F64::new(e[0], e[1], e[2]);
+            assert!((e_r - axis * angle).length() < 1e-9, "{angle}: {e_r:?}");
+
+            let (mut a, mut b) = (Mat6F64::zeros(), Vec6F64::zeros());
+            prior.add_to(&rot, &t, &mut a, &mut b);
+            let error_at = |xi: &Vec6F64| {
+                let d = SO3F64::exp(Vec3F64::new(xi[0], xi[1], xi[2])).matrix();
+                let dt = Vec3F64::new(xi[3], xi[4], xi[5]);
+                prior.error_and_jacobian(&(d * rot), &(d * t + dt)).0
+            };
+            let h = 1e-6;
+            let mut jac = Mat6F64::zeros();
+            for k in 0..6 {
+                let mut xi = Vec6F64::zeros();
+                xi[k] = h;
+                let plus = error_at(&xi);
+                xi[k] = -h;
+                jac.set_column(k, &((plus - error_at(&xi)) / (2.0 * h)));
+            }
+            let a_fd = jac.transpose() * prior.info * jac;
+            let b_fd = jac.transpose() * prior.info * e;
+            assert!((a - a_fd).amax() < 1e-6 * a.amax(), "{angle}: A off");
+            assert!((b - b_fd).amax() < 1e-6 * b.amax(), "{angle}: b off");
+        }
+    }
+
+    /// Bad sigmas and non-rotations in a rotation prior are errors, not weights.
+    #[test]
+    fn invalid_rotation_prior_is_an_error() -> Result<(), Box<dyn std::error::Error>> {
+        let pyr = pyramid(
+            &Scene::corner_and_sphere(),
+            &Mat3F64::IDENTITY,
+            &Vec3F64::ZERO,
+        )?;
+        let with = |rotation: Mat3F64, sigma_rad: f64| IcpPlaneCriteria {
+            rotation_prior: Some(RotationPrior {
+                rotation,
+                sigma_rad,
+            }),
+            ..Default::default()
+        };
+        let id = Mat3F64::IDENTITY;
+        let mut nan = id;
+        nan.x_axis.y = f64::NAN;
+        let reflection = Mat3F64::from_diagonal(Vec3F64::new(1.0, 1.0, -1.0));
+        let cases = [
+            (with(id, 0.0), "rotation_prior.sigma_rad"),
+            (with(id, -1e-3), "rotation_prior.sigma_rad"),
+            (with(id, f64::NAN), "rotation_prior.sigma_rad"),
+            (with(id, f64::INFINITY), "rotation_prior.sigma_rad"),
+            // positive, but 1 / sigma^2 overflows
+            (with(id, 1e-200), "rotation_prior.sigma_rad"),
+            (with(nan, 1e-3), "rotation_prior.rotation"),
+            (
+                with(Mat3F64::from_diagonal(Vec3F64::new(2.0, 2.0, 2.0)), 1e-3),
+                "rotation_prior.rotation",
+            ),
+            (with(reflection, 1e-3), "rotation_prior.rotation"),
+        ];
+        for (c, expected) in &cases {
+            let result = icp_from_identity(&pyr, &pyr, c);
+            assert!(
+                matches!(result, Err(RgbdIcpError::InvalidCriteria { field, .. }) if field == *expected),
+                "{c:?}: {result:?}"
+            );
+        }
+        // a rotation rounded through f32 is still a rotation
+        let rounded = SO3F64::exp(Vec3F64::new(0.3, -0.2, 0.1))
+            .matrix()
+            .as_mat3()
+            .as_dmat3();
+        icp_from_identity(&pyr, &pyr, &with(rounded.into(), 1e-3))?;
+        Ok(())
+    }
+
+    /// A wall with a sphere centred on the optical axis in front of it: both are invariant
+    /// under roll, so rotation about the viewing axis is unobserved, while the sphere's normals
+    /// pin all three translations.
+    fn roll_blind_scene() -> Scene {
+        Scene {
+            planes: vec![Plane {
+                normal: Vec3F64::new(0.0, 0.0, 1.0),
+                d: 2.5,
+            }],
+            spheres: vec![Sphere {
+                center: Vec3F64::new(0.0, 0.0, 1.8),
+                radius: 0.55,
+            }],
+        }
+    }
+
+    /// A rotation prior must not flatter the figures it is reported alongside.
+    ///
+    /// The prior carries the roll the geometry cannot see, but the conditioning, the
+    /// observability, the degenerate directions and the information must still describe the
+    /// data alone: the same as a prior-free final pass at the returned pose. Blocks coupled
+    /// through elimination would otherwise let a rotation prior lift the translation pivots too,
+    /// and silently disarm a gate on unobservable geometry.
+    #[test]
+    fn rotation_prior_does_not_inflate_reported_conditioning(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let scene = roll_blind_scene();
+        let roll = SO3F64::exp(Vec3F64::new(0.0, 0.0, 3f64.to_radians())).matrix();
+        let t_wc = Vec3F64::new(0.01, 0.0, 0.0);
+        let src = pyramid(&scene, &Mat3F64::IDENTITY, &Vec3F64::ZERO)?;
+        let tgt = pyramid(&scene, &roll, &t_wc)?;
+        let rot_gt = roll.transpose();
+        let criteria = IcpPlaneCriteria {
+            rotation_prior: Some(RotationPrior {
+                rotation: rot_gt,
+                sigma_rad: 0.1f64.to_radians(),
+            }),
+            ..Default::default()
+        };
+        let with = icp_from_identity(&src, &tgt, &criteria)?;
+        // the prior did carry the roll
+        assert!(rotation_error_deg(&with.rotation, &rot_gt) < 0.1);
+        assert!(
+            with.rotation_conditioning < 1e-3 && with.observability < 1e-3,
+            "prior inflated the reported conditioning: {with:?}"
+        );
+
+        // the figures equal a prior-free pass at the returned pose
+        let gates = check_criteria(&criteria)?;
+        let (s0, t0) = (&src.levels[0], &tgt.levels[0]);
+        let eqs = accumulate_level(s0, t0, &with.rotation, &with.translation, &gates, None);
+        let split = split_degenerate(&eqs.a, with.median_depth_m, criteria.degeneracy_rtol)?;
+        assert_eq!(split.num_degenerate, with.num_degenerate);
+        let data_only = if split.num_degenerate == 0 {
+            eqs.a
+        } else {
+            split.a_observed
+        };
+        assert_eq!(with.information, data_only);
+        let (rot_cond, trans_cond) = block_conditioning(&eqs.a);
+        assert_eq!(
+            (with.rotation_conditioning, with.translation_conditioning),
+            (rot_cond, trans_cond)
+        );
+        Ok(())
+    }
+
+    /// The rotation prior must rescue weak geometry without harming good geometry, from a prior
+    /// that is itself wrong: a real gyro carries bias, noise and a camera misalignment, and a
+    /// prior fed the exact answer would prove nothing.
+    #[test]
+    fn rotation_prior_rescues_weak_geometry_without_harming_good(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let roll = SO3F64::exp(Vec3F64::new(0.0, 0.0, 3f64.to_radians())).matrix();
+        let t_wc = Vec3F64::new(0.01, 0.0, 0.0);
+        // 0.15 deg off about an oblique axis, well beyond a MEMS gyro over one frame
+        let prior_err = 0.15f64.to_radians();
+        let tilt = Vec3F64::new(0.3, 0.6, 0.74).normalize() * prior_err;
+        let prior_rot = (SO3F64::exp(tilt).matrix() * roll).transpose();
+        let rot_gt = roll.transpose();
+        let mut errors = Vec::new();
+        for scene in [roll_blind_scene(), Scene::corner_and_sphere()] {
+            let src = pyramid(&scene, &Mat3F64::IDENTITY, &Vec3F64::ZERO)?;
+            let tgt = pyramid(&scene, &roll, &t_wc)?;
+            let solve = |rotation_prior| -> Result<f64, RgbdIcpError> {
+                let c = IcpPlaneCriteria {
+                    rotation_prior,
+                    ..Default::default()
+                };
+                let r = icp_from_identity(&src, &tgt, &c)?;
+                Ok(rotation_error_deg(&r.rotation, &rot_gt))
+            };
+            let prior = RotationPrior {
+                rotation: prior_rot,
+                sigma_rad: prior_err,
+            };
+            errors.push((solve(None)?, solve(Some(prior))?));
+        }
+        let ((weak_without, weak_with), (rich_without, rich_with)) = (errors[0], errors[1]);
+        // weak: without the prior the roll gets no update and stays 3 deg off; with it, the
+        // answer lands near the prior's own accuracy
+        assert!(
+            weak_without > 2.5 && weak_with < 0.3,
+            "weak: {weak_without:.3} deg without, {weak_with:.3} with"
+        );
+        // rich: the data outvote the wrong prior
+        assert!(
+            rich_with < rich_without.max(0.05) * 3.0,
+            "rich: {rich_without:.4} deg without, {rich_with:.4} with"
+        );
         Ok(())
     }
 }

@@ -9,7 +9,7 @@ mod rgbd;
 pub use rgbd::*;
 
 mod icp;
-pub use icp::{icp_projective_plane, DepthNoise, IcpPlaneCriteria, IcpPlaneResult};
+pub use icp::{icp_projective_plane, DepthNoise, IcpPlaneCriteria, IcpPlaneResult, RotationPrior};
 
 #[cfg(test)]
 mod synth;
