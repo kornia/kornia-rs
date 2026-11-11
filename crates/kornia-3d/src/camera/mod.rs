@@ -1,7 +1,7 @@
 //! Camera models for projection and unprojection.
 //!
 //! This module provides:
-//! - [`CameraModel`] — the projection interface shared by all models.
+//! - [`CameraModel`] — the projection interface shared by the central models (pinhole, fisheye).
 //! - [`AffineCamera`] — float64 affine world-to-image projection and Jacobians.
 //! - [`PinholeCamera`] — pinhole model with Brown-Conrady distortion.
 //! - [`FisheyeCamera`] — Kannala-Brandt equidistant fisheye model.
