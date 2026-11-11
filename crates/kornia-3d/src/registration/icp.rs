@@ -429,6 +429,86 @@ pub fn icp_projective_plane(
     init_translation: &Vec3F64,
     criteria: &IcpPlaneCriteria,
 ) -> Result<IcpPlaneResult, RgbdIcpError> {
+    icp_projective_plane_with(
+        &mut IcpWorkspace::default(),
+        src,
+        tgt,
+        init_rotation,
+        init_translation,
+        criteria,
+    )
+}
+
+/// Reusable buffers for [`icp_projective_plane_with`].
+///
+/// Each buffer is reserved by the image size, not by the number of valid pixels or inliers, so
+/// after one call at a given source size a call allocates nothing, however full or sparse the
+/// frames that follow are.
+#[derive(Debug, Default, Clone)]
+pub struct IcpWorkspace {
+    /// Target depths of the final pass's inliers, for their median.
+    depths: Vec<f32>,
+}
+
+/// [`icp_projective_plane`] with reused buffers, for a loop over frames.
+///
+/// The same result as [`icp_projective_plane`], bit for bit; the workspace holds no state that
+/// carries from one call to the next.
+///
+/// # Arguments
+///
+/// * `workspace` - Buffers reused across calls; grows on the first call at a larger source size.
+/// * `src` - Source frame pyramid.
+/// * `tgt` - Target frame pyramid, with as many levels as `src`.
+/// * `init_rotation` - Initial rotation of `T_target_source`.
+/// * `init_translation` - Initial translation of `T_target_source`, in metres.
+/// * `criteria` - Gates, weighting and iteration budget.
+///
+/// # Returns
+///
+/// As [`icp_projective_plane`].
+///
+/// # Errors
+///
+/// As [`icp_projective_plane`].
+///
+/// # Example
+///
+/// ```
+/// use kornia_3d::camera::PinholeCamera;
+/// use kornia_3d::registration::{
+///     icp_projective_plane_with, IcpPlaneCriteria, IcpWorkspace, RgbdPyramid,
+/// };
+/// use kornia_algebra::{Mat3F64, Vec3F64};
+/// use kornia_image::{Image, ImageSize};
+///
+/// let size = ImageSize { width: 64, height: 48 };
+/// let mut depth = Image::<u16, 1>::from_size_val(size, 0)?;
+/// for (idx, d) in depth.as_slice_mut().iter_mut().enumerate() {
+///     let (u, v) = ((idx % 64) as f64, (idx / 64) as f64);
+///     *d = (1200.0 + 100.0 * (u / 6.0).sin() + 80.0 * (v / 5.0).cos()) as u16;
+/// }
+/// let camera = PinholeCamera { fx: 50.0, fy: 50.0, cx: 31.5, cy: 23.5, ..PinholeCamera::IDENTITY };
+/// let pyramid = RgbdPyramid::from_depth_mm(&depth, &camera, 2)?;
+///
+/// let mut criteria = IcpPlaneCriteria::default();
+/// criteria.iters_per_level = vec![5, 5];
+/// let mut workspace = IcpWorkspace::default();
+/// for _ in 0..2 {
+///     let (r, t) = (Mat3F64::IDENTITY, Vec3F64::ZERO);
+///     let result = icp_projective_plane_with(&mut workspace, &pyramid, &pyramid, &r, &t, &criteria)?;
+///     assert!(result.translation.length() < 1e-6);
+/// }
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+pub fn icp_projective_plane_with(
+    workspace: &mut IcpWorkspace,
+    src: &RgbdPyramid,
+    tgt: &RgbdPyramid,
+    init_rotation: &Mat3F64,
+    init_translation: &Vec3F64,
+    criteria: &IcpPlaneCriteria,
+) -> Result<IcpPlaneResult, RgbdIcpError> {
     let num_levels = src.levels.len();
     if tgt.levels.len() != num_levels {
         return Err(RgbdIcpError::PyramidLevelsMismatch {
@@ -442,15 +522,13 @@ pub fn icp_projective_plane(
             levels: num_levels,
         });
     }
-    let (gates, priors) = check_criteria(criteria)?;
     run_icp(
+        workspace,
         src,
         tgt,
         init_rotation,
         init_translation,
         criteria,
-        &gates,
-        &priors,
     )
 }
 
@@ -1143,20 +1221,19 @@ fn median_depth_m(depths: &mut [f32]) -> f64 {
     *m as f64
 }
 
-/// Coarse-to-fine Gauss-Newton from the initial pose; inputs already checked.
+/// Coarse-to-fine Gauss-Newton from the initial pose; level counts already checked.
 fn run_icp(
+    workspace: &mut IcpWorkspace,
     src: &RgbdPyramid,
     tgt: &RgbdPyramid,
     init_rotation: &Mat3F64,
     init_translation: &Vec3F64,
     criteria: &IcpPlaneCriteria,
-    gates: &PassGates,
-    priors: &[Option<PriorRows>],
 ) -> Result<IcpPlaneResult, RgbdIcpError> {
+    // Hybrid starts on nearest and switches once, on the finest level
+    let (mut gates, priors) = check_criteria(criteria)?;
     let (mut rotation, mut translation) = (*init_rotation, *init_translation);
     let mut iterations = 0;
-    // Hybrid starts on nearest and switches once, on the finest level
-    let mut gates = *gates;
     let hybrid = criteria.association == Association::Hybrid;
 
     // iters_per_level is coarsest first; levels[0] is the finest
@@ -1178,7 +1255,7 @@ fn run_icp(
                 &eqs.a,
                 &eqs.b,
                 &split,
-                priors,
+                &priors,
                 &rotation,
                 &translation,
                 rtol,
@@ -1206,21 +1283,23 @@ fn run_icp(
     }
 
     // the reported figures come from the returned pose, not the last pre-update pass, and from
-    // the data alone: a prior must not make weak geometry look observed; the one allocation of
-    // a call, sized by the image so that it never regrows
+    // the data alone: a prior must not make weak geometry look observed
     let finest = &src.levels[0];
-    let mut depths = Vec::with_capacity(finest.size().width * finest.size().height);
+    let depths = &mut workspace.depths;
+    depths.clear();
+    // by the image, not the inlier count, so a fuller frame after a sparse one never regrows it
+    depths.reserve(finest.size().width * finest.size().height);
     let eqs = accumulate_level(
         finest,
         &tgt.levels[0],
         &rotation,
         &translation,
         &gates,
-        Some(&mut depths),
+        Some(&mut *depths),
     );
     check_inliers(&eqs)?;
     let (rotation_conditioning, translation_conditioning) = block_conditioning(&eqs.a);
-    let median_depth_m = median_depth_m(&mut depths);
+    let median_depth_m = median_depth_m(depths);
     let split = split_degenerate(&eqs.a, median_depth_m, criteria.degeneracy_rtol)?;
     let information = if split.num_degenerate == 0 {
         eqs.a
@@ -2772,6 +2851,63 @@ mod tests {
         });
         let r = icp_from_identity(&pyr, &pyr, &both)?;
         assert!(rotation_error_deg(&r.rotation, &id) < 1e-6 && r.translation.length() < 1e-9);
+        Ok(())
+    }
+
+    /// Every field of two results, compared bit for bit.
+    fn assert_bit_identical(a: &IcpPlaneResult, b: &IcpPlaneResult) {
+        let bits = |r: &IcpPlaneResult| {
+            let mut v: Vec<u64> = r.rotation.to_cols_array().map(f64::to_bits).to_vec();
+            v.extend(r.translation.to_array().map(f64::to_bits));
+            v.extend(r.information.iter().map(|x| x.to_bits()));
+            v.extend(
+                r.degenerate_directions
+                    .iter()
+                    .flatten()
+                    .map(|x| x.to_bits()),
+            );
+            let scalars = [
+                r.rmse,
+                r.inlier_fraction,
+                r.overlap_fraction,
+                r.rotation_conditioning,
+                r.translation_conditioning,
+                r.observability,
+                r.median_depth_m,
+            ];
+            v.extend(scalars.map(f64::to_bits));
+            let counts = [
+                r.iterations,
+                r.num_inliers,
+                r.num_associated,
+                r.num_degenerate,
+            ];
+            v.extend(counts.map(|c| c as u64));
+            v
+        };
+        assert_eq!(bits(a), bits(b));
+    }
+
+    /// A reused workspace carries nothing from one call to the next: each call equals a fresh
+    /// one, whichever frame came before it.
+    #[test]
+    fn workspace_matches_fresh_call() -> Result<(), Box<dyn std::error::Error>> {
+        let scene = Scene::corner_and_sphere();
+        let src = pyramid(&scene, &Mat3F64::IDENTITY, &Vec3F64::ZERO)?;
+        let rot_wc = SO3F64::exp(Vec3F64::new(0.015, -0.01, 0.02)).matrix();
+        let moved = pyramid(&scene, &rot_wc, &Vec3F64::new(0.02, -0.01, 0.015))?;
+        let mut workspace = IcpWorkspace::default();
+        // Hybrid runs both samplers
+        let criteria = IcpPlaneCriteria {
+            association: Association::Hybrid,
+            ..Default::default()
+        };
+        for tgt in [&moved, &src, &moved] {
+            let fresh = icp_from_identity(&src, tgt, &criteria)?;
+            let (r, t) = (Mat3F64::IDENTITY, Vec3F64::ZERO);
+            let reused = icp_projective_plane_with(&mut workspace, &src, tgt, &r, &t, &criteria)?;
+            assert_bit_identical(&fresh, &reused);
+        }
         Ok(())
     }
 }
