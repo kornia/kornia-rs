@@ -10,8 +10,8 @@ pub use rgbd::*;
 
 mod icp;
 pub use icp::{
-    icp_projective_plane, DepthNoise, IcpPlaneCriteria, IcpPlaneResult, PosePrior, RotationPrior,
-    DEFAULT_DEGENERACY_RTOL,
+    icp_projective_plane, Association, DepthNoise, IcpPlaneCriteria, IcpPlaneResult, PosePrior,
+    RotationPrior, DEFAULT_DEGENERACY_RTOL, HYBRID_SWITCH_NORM, MAX_BILINEAR_DEPTH_JUMP,
 };
 
 #[cfg(test)]
