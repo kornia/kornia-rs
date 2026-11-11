@@ -81,6 +81,7 @@
 use std::sync::{Arc, OnceLock};
 
 use cudarc::driver::{CudaContext, CudaSlice, CudaStream};
+use kornia_oxide_kernels as oxide;
 use kornia_tensor::CudaKernel;
 
 use super::{make_config, try_compile_with_l1};
@@ -410,6 +411,40 @@ static BICUBIC_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 static LANCZOS_H_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 static LANCZOS_V_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 
+// ── Kernel selection: oxide with NVRTC fallback ───────────────────────────────
+
+/// Try oxide kernel first; on any error (old GPU, stub PTX, failed load),
+/// compile and cache the NVRTC fallback. The loader retries a failed load
+/// on the next call, so transient errors don't stick.
+fn bilinear_kernel(
+    ctx: &Arc<CudaContext>,
+    stream: &Arc<CudaStream>,
+) -> Result<&'static CudaKernel, String> {
+    // Any oxide error (old GPU, stub PTX, failed load) means NVRTC; the
+    // loader retries a failed load on the next call.
+    if let Ok(k) = oxide::__private::kernel(stream, oxide::entry::RESIZE_BILINEAR_DOWNSCALE_3C) {
+        return Ok(k);
+    }
+    BILINEAR_KERNEL
+        .get_or_init(|| try_compile_with_l1(ctx, BILINEAR_SRC, "resize_bilinear_downscale_3c"))
+        .as_ref()
+        .map_err(|e| e.clone())
+}
+
+/// Try oxide kernel first; on any error, compile and cache the NVRTC fallback.
+fn nearest_kernel(
+    ctx: &Arc<CudaContext>,
+    stream: &Arc<CudaStream>,
+) -> Result<&'static CudaKernel, String> {
+    if let Ok(k) = oxide::__private::kernel(stream, oxide::entry::RESIZE_NEAREST_DOWNSCALE_3C) {
+        return Ok(k);
+    }
+    NEAREST_KERNEL
+        .get_or_init(|| try_compile_with_l1(ctx, NEAREST_SRC, "resize_nearest_downscale_3c"))
+        .as_ref()
+        .map_err(|e| e.clone())
+}
+
 // ── Error type ────────────────────────────────────────────────────────────────
 
 /// Error type returned by the CUDA downscale launchers.
@@ -525,10 +560,7 @@ pub fn launch_resize_bilinear_downscale_cuda(
         });
     }
 
-    let kernel = BILINEAR_KERNEL
-        .get_or_init(|| try_compile_with_l1(ctx, BILINEAR_SRC, "resize_bilinear_downscale_3c"))
-        .as_ref()
-        .map_err(|e| CudaResizeError::Cuda(e.clone()))?;
+    let kernel = bilinear_kernel(ctx, stream).map_err(|e| CudaResizeError::Cuda(e))?;
 
     let (ax, bx) = mapping.coeffs(src_width, dst_width);
     let (ay, by) = mapping.coeffs(src_height, dst_height);
@@ -687,10 +719,7 @@ pub fn launch_resize_nearest_downscale_cuda(
         });
     }
 
-    let kernel = NEAREST_KERNEL
-        .get_or_init(|| try_compile_with_l1(ctx, NEAREST_SRC, "resize_nearest_downscale_3c"))
-        .as_ref()
-        .map_err(|e| CudaResizeError::Cuda(e.clone()))?;
+    let kernel = nearest_kernel(ctx, stream).map_err(|e| CudaResizeError::Cuda(e))?;
 
     let (ax, bx) = mapping.coeffs(src_width, dst_width);
     let (ay, by) = mapping.coeffs(src_height, dst_height);
