@@ -46,7 +46,7 @@ pixi run rust-fmt                     # Format with rustfmt
 pixi run rust-check                   # Check compilation
 
 # Without pixi (direct cargo)
-cargo test --features ci
+cargo test --features ci,kornia-algebra/approx
 cargo test -p kornia-imgproc
 cargo clippy --workspace --no-deps --all-targets --features ci -- -D warnings
 ```
@@ -93,6 +93,7 @@ kornia-cpp/         ← C++ bindings
 | `kornia-apriltag` | (standalone) | AprilTag detection |
 | `kornia-calib` | (standalone) | Multi-camera extrinsic calibration (AprilTag BA) |
 | `kornia-bow` | (standalone) | Bag of words |
+| `kornia-oxide-kernels` | (not re-exported; dependency of `kornia-imgproc` `cuda`) | CUDA kernels written in Rust (cuda-oxide), shipped as PTX, with its loader behind `cuda` |
 
 ### Feature Flags
 
@@ -101,7 +102,7 @@ kornia-cpp/         ← C++ bindings
 | `turbojpeg` | libjpeg-turbo I/O | Requires `nasm` |
 | `gstreamer` | GStreamer video | — |
 | `v4l` | Video4Linux camera | Requires `clang` |
-| `cuda` | CUDA for VLM + kornia-3d (stereo rectifier, via imgproc remap) | — |
+| `cuda` | CUDA for VLM + kornia-3d (stereo rectifier, via imgproc remap) | In a checkout, `cargo run -p kornia-oxide-kernels --example build_ptx` builds the cuda-oxide PTX; without it the build warns and those kernels run their NVRTC fallback (`docs/cuda-oxide.md`) |
 | `ci` | All CI-compatible features | Excludes `cuda` |
 | `serde`, `bincode`, `arrow` | Serialization formats | — |
 
@@ -205,7 +206,7 @@ Err(KorniaError::SizeMismatch {
 })
 ```
 
-- Keep public **error enums exhaustively matchable** — do **not** mark them `#[non_exhaustive]`. When a new failure mode appears, add a variant to the existing error enum and document the (pre-1.0) breaking change in the `CHANGELOG`. Reserve `#[non_exhaustive]` for public data structs where future field additions are expected.
+- Public **error enums** should be `#[non_exhaustive]`. A new failure mode then becomes a new variant of the existing enum without a breaking change; downstream `match`es on the enum need a `_` arm. Adding `#[non_exhaustive]` to an enum that is already published is itself a breaking change: record it in a `changelog.d/<PR>.breaking.md` fragment. Public data structs where future field additions are expected can use `#[non_exhaustive]` too.
 
 ### Performance
 
