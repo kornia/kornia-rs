@@ -64,6 +64,38 @@ pub enum RgbdIcpError {
     /// An image operation failed.
     #[error(transparent)]
     Image(#[from] ImageError),
+    /// The source and target pyramids have different numbers of levels.
+    #[error("source pyramid has {src_levels} levels, target has {tgt_levels}")]
+    PyramidLevelsMismatch {
+        /// Levels of the source pyramid.
+        src_levels: usize,
+        /// Levels of the target pyramid.
+        tgt_levels: usize,
+    },
+    /// The ICP iteration budget does not have one entry per pyramid level.
+    #[error("iters_per_level has {iters} entries for {levels} pyramid levels")]
+    IterationsLevelsMismatch {
+        /// Entries of `iters_per_level`.
+        iters: usize,
+        /// Levels of the pyramids.
+        levels: usize,
+    },
+    /// An ICP threshold is out of its range.
+    #[error("invalid ICP criteria: {field} = {value}")]
+    InvalidCriteria {
+        /// Name of the offending field.
+        field: &'static str,
+        /// Its value.
+        value: f64,
+    },
+    /// Too few correspondences passed the gates to constrain a pose: low overlap or a bad
+    /// initial guess.
+    #[error("only {0} correspondences passed the gates; need at least 6")]
+    TooFewCorrespondences(usize),
+    /// The point-to-plane normal equations do not constrain all six degrees of freedom
+    /// (degenerate geometry such as a single plane), or their solve is not finite.
+    #[error("point-to-plane normal equations are singular or ill-conditioned")]
+    SingularNormalEquations,
 }
 
 /// Returns `Ok` if `camera` has finite positive focal lengths, a finite principal point and no
