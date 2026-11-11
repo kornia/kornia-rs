@@ -47,7 +47,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ${{ fromJSON(inputs.subset == 'minimal' && '["3.12"]' || '["3.9", "3.10", "3.11", "3.12", "3.13", "3.14", "3.14t"]') }}
+        python-version: ${{ fromJSON(inputs.subset == 'minimal' && '["3.12"]' || '["3.9", "3.10", "3.11", "3.12", "3.13", "3.14", "3.14t", "3.15", "3.15t"]') }}
         target: [x86_64, aarch64]
     # Neutralize the in-repo `.cargo/config.toml` (which targets the local
     # Jetson cross-test setup: `x86_64-linux-gnu-gcc` cross-linker plus
@@ -122,7 +122,7 @@ jobs:
     runs-on: macos-15
     strategy:
       matrix:
-        python-version: ${{ fromJSON(inputs.subset == 'minimal' && '["3.12"]' || '["3.9", "3.10", "3.11", "3.12", "3.13", "3.14", "3.14t"]') }}
+        python-version: ${{ fromJSON(inputs.subset == 'minimal' && '["3.12"]' || '["3.9", "3.10", "3.11", "3.12", "3.13", "3.14", "3.14t", "3.15", "3.15t"]') }}
         target: ${{ fromJSON(inputs.subset == 'minimal' && '["aarch64"]' || '["x86_64", "aarch64"]') }}
     steps:
       - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
@@ -151,7 +151,7 @@ jobs:
     runs-on: windows-latest
     strategy:
       matrix:
-        python-version: ${{ fromJSON(inputs.subset == 'minimal' && '["3.12"]' || '["3.9", "3.10", "3.11", "3.12", "3.13", "3.14", "3.14t"]') }}
+        python-version: ${{ fromJSON(inputs.subset == 'minimal' && '["3.12"]' || '["3.9", "3.10", "3.11", "3.12", "3.13", "3.14", "3.14t", "3.15", "3.15t"]') }}
         # x64 only: the old x86 rows never selected an x86 interpreter or a
         # win32 target, so they rebuilt the win_amd64 wheel (PyPI has no win32).
         target: [x64]
@@ -188,7 +188,7 @@ jobs:
       fail-fast: false
       matrix:
         # CPython first published native Windows ARM64 installers in 3.11.
-        python-version: ${{ fromJSON(inputs.subset == 'minimal' && '["3.12"]' || '["3.11", "3.12", "3.13", "3.14"]') }}
+        python-version: ${{ fromJSON(inputs.subset == 'minimal' && '["3.12"]' || '["3.11", "3.12", "3.13", "3.14", "3.15"]') }}
     env:
       CMAKE_GENERATOR: Ninja
     steps:

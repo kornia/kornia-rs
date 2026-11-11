@@ -63,7 +63,7 @@ Goodbyte!
 - 🔌 Zero-copy ML interop: DLPack and `__cuda_array_interface__` to and from PyTorch, plus numpy views.
 - 🎥 Real-time ready: V4L2 camera capture and a fused NV12/YUYV → normalized CHW CUDA kernel for inference.
 - 🐍 Python bindings via [PyO3/Maturin](https://github.com/PyO3/maturin), packaged for Linux (amd64/arm64, incl. Jetson), macOS and Windows; the same wheel is CPU-only or activates CUDA when an NVIDIA GPU is present.
-- Supported Python versions are 3.9 through 3.14, including the free-threaded (3.14t) build.
+- Supported Python versions are 3.9 through 3.15, including the free-threaded (3.14t/3.15t) build.
 
 ### Supported image formats
 
