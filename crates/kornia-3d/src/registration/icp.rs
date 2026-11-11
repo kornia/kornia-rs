@@ -1114,6 +1114,18 @@ struct DegenerateSplit {
     num_degenerate: usize,
 }
 
+impl DegenerateSplit {
+    /// `a`, the matrix this split came from, with its unobserved directions removed: `a`
+    /// itself when there are none, so full-rank data keep their exact entries.
+    fn observed(&self, a: &Mat6F64) -> Mat6F64 {
+        if self.num_degenerate == 0 {
+            *a
+        } else {
+            self.a_observed
+        }
+    }
+}
+
 /// Rotation scale of the degeneracy test: `depth_m` when finite and positive, else 1 m.
 #[inline]
 fn depth_scale(depth_m: f64) -> f64 {
@@ -1301,11 +1313,7 @@ fn run_icp(
     let (rotation_conditioning, translation_conditioning) = block_conditioning(&eqs.a);
     let median_depth_m = median_depth_m(depths);
     let split = split_degenerate(&eqs.a, median_depth_m, criteria.degeneracy_rtol)?;
-    let information = if split.num_degenerate == 0 {
-        eqs.a
-    } else {
-        split.a_observed
-    };
+    let information = split.observed(&eqs.a);
     // num_valid >= num_associated >= num_inliers >= MIN_INLIERS, so no ratio divides by zero
     let PassCounts {
         num_valid,
@@ -2612,12 +2620,7 @@ mod tests {
         let eqs = accumulate_level(s0, t0, &with.rotation, &with.translation, &gates, None);
         let split = split_degenerate(&eqs.a, with.median_depth_m, criteria.degeneracy_rtol)?;
         assert_eq!(split.num_degenerate, with.num_degenerate);
-        let data_only = if split.num_degenerate == 0 {
-            eqs.a
-        } else {
-            split.a_observed
-        };
-        assert_eq!(with.information, data_only);
+        assert_eq!(with.information, split.observed(&eqs.a));
         let (rot_cond, trans_cond) = block_conditioning(&eqs.a);
         assert_eq!(
             (with.rotation_conditioning, with.translation_conditioning),
