@@ -11,6 +11,7 @@ pub use rgbd::*;
 mod icp;
 pub use icp::{
     icp_projective_plane, DepthNoise, IcpPlaneCriteria, IcpPlaneResult, PosePrior, RotationPrior,
+    DEFAULT_DEGENERACY_RTOL,
 };
 
 #[cfg(test)]
