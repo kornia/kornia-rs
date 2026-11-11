@@ -112,17 +112,6 @@ pub(crate) unsafe fn hsum_avx_ps(v: std::arch::x86_64::__m256) -> f32 {
     }
 }
 
-/// Loads `s[i..i + 4]` into a [`kornia_algebra::Vec4F32`].
-///
-/// Panics if fewer than 4 elements remain after `i`; callers bound `i` by
-/// their loop condition.
-#[inline(always)]
-pub(crate) fn load_vec4f32(s: &[f32], i: usize) -> kornia_algebra::Vec4F32 {
-    let mut a = [0.0f32; 4];
-    a.copy_from_slice(&s[i..i + 4]);
-    kornia_algebra::Vec4F32::from_array(a)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
