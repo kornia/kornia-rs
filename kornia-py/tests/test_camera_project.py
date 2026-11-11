@@ -152,3 +152,128 @@ def test_pinhole_project_unproject_corner_roundtrip():
     pixels_back = cam.project(rays)
 
     np.testing.assert_allclose(pixels_back, corners, atol=1e-6)
+
+
+def test_fisheye_project_shape_and_dtype():
+    cam = K.k3d.FisheyeCamera(fx=461.64, fy=459.72, cx=732.95, cy=720.54)
+    points = np.array(
+        [
+            [0.1, -0.2, 1.0],
+            [0.5, 0.3, -0.2],
+        ],
+        dtype=np.float64,
+    )
+
+    pixels = cam.project(points)
+
+    assert pixels.shape == (2, 2)
+    assert pixels.dtype == np.float64
+
+
+def test_fisheye_project_optical_center_behind_maps_to_nan():
+    cam = K.k3d.FisheyeCamera(fx=461.64, fy=459.72, cx=732.95, cy=720.54)
+    points = np.array(
+        [
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, -1.0],
+        ],
+        dtype=np.float64,
+    )
+
+    pixels = cam.project(points)
+
+    assert np.isfinite(pixels[0]).all()
+    assert np.isnan(pixels[1]).all()
+
+
+def test_fisheye_unproject_shape_and_dtype():
+    cam = K.k3d.FisheyeCamera(fx=461.64, fy=459.72, cx=732.95, cy=720.54)
+    pixels = np.array(
+        [
+            [732.95, 720.54],
+            [900.0, 650.0],
+        ],
+        dtype=np.float64,
+    )
+
+    rays = cam.unproject(pixels)
+
+    assert rays.shape == (2, 3)
+    assert rays.dtype == np.float64
+
+
+def test_fisheye_unproject_returns_unit_bearings():
+    cam = K.k3d.FisheyeCamera(fx=461.64, fy=459.72, cx=732.95, cy=720.54)
+    pixels = np.array(
+        [
+            [732.95, 720.54],
+            [900.0, 650.0],
+            [650.0, 810.0],
+        ],
+        dtype=np.float64,
+    )
+
+    rays = cam.unproject(pixels)
+    norms = np.linalg.norm(rays, axis=1)
+
+    np.testing.assert_allclose(norms, np.ones_like(norms), atol=1e-12)
+
+
+def test_fisheye_unproject_rejects_wrong_column_count():
+    cam = K.k3d.FisheyeCamera(fx=461.64, fy=459.72, cx=732.95, cy=720.54)
+    pixels = np.array([[0.0, 1.0, 2.0]], dtype=np.float64)
+
+    with np.testing.assert_raises(ValueError):
+        cam.unproject(pixels)
+
+
+def test_fisheye_unproject_invalid_pixel_maps_to_nan():
+    cam = K.k3d.FisheyeCamera(
+        fx=461.64,
+        fy=459.72,
+        cx=732.95,
+        cy=720.54,
+        k1=0.0344,
+        k2=-0.0216,
+        k3=0.0031,
+        k4=-0.0005,
+    )
+    pixels = np.array(
+        [
+            [732.95, 720.54],
+            [732.95 + 10.0 * 461.64, 720.54],
+        ],
+        dtype=np.float64,
+    )
+
+    rays = cam.unproject(pixels)
+
+    assert np.isfinite(rays[0]).all()
+    assert np.isnan(rays[1]).all()
+
+
+def test_fisheye_project_unproject_roundtrip_bearing():
+    cam = K.k3d.FisheyeCamera(
+        fx=461.64,
+        fy=459.72,
+        cx=732.95,
+        cy=720.54,
+        k1=0.0344,
+        k2=-0.0216,
+        k3=0.0031,
+        k4=-0.0005,
+    )
+    points = np.array(
+        [
+            [0.4, -0.3, 1.5],
+            [3.0, 1.0, 0.5],
+            [1.0, 0.5, -0.2],
+        ],
+        dtype=np.float64,
+    )
+
+    pixels = cam.project(points)
+    rays = cam.unproject(pixels)
+    target = points / np.linalg.norm(points, axis=1, keepdims=True)
+
+    np.testing.assert_allclose(rays, target, atol=1e-9)

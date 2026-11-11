@@ -26,4 +26,22 @@ class PinholeCamera:
     def unproject(self, pixels: np.ndarray) -> np.ndarray: ...
 
 
+class FisheyeCamera:
+    def __init__(
+        self,
+        fx: float,
+        fy: float,
+        cx: float,
+        cy: float,
+        k1: float = ...,
+        k2: float = ...,
+        k3: float = ...,
+        k4: float = ...,
+    ) -> None: ...
+
+    def project(self, points_cam: np.ndarray) -> np.ndarray: ...
+
+    def unproject(self, pixels: np.ndarray) -> np.ndarray: ...
+
+
 def __getattr__(name: str) -> Any: ...

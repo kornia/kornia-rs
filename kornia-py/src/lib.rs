@@ -572,6 +572,7 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     k3d_mod.add_function(wrap_pyfunction!(icp::icp_vanilla, &k3d_mod)?)?;
     k3d_mod.add_class::<pnp::PnPSolverMethod>()?;
     k3d_mod.add_class::<camera::PyPinholeCamera>()?;
+    k3d_mod.add_class::<camera::PyFisheyeCamera>()?;
     k3d_mod.add_class::<PyICPConvergenceCriteria>()?;
     k3d_mod.add_class::<PyICPResult>()?;
     k3d_mod.add_class::<twoview::PyTwoViewPose>()?;
