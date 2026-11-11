@@ -5,8 +5,9 @@
 //! point-to-plane error of Chen and Medioni ("Object modelling by registration of multiple range
 //! images", 1992). Each valid source pixel `p_s` is moved by the current estimate
 //! `T_target_source = (R, t)`, `p = R p_s + t`, projected into the target image and matched to
-//! the target vertex `v_t` and normal `n_t` of the pixel it lands on (no kd-tree). The residual
-//! is `r = n_t . (p - v_t)` in metres.
+//! the target vertex `v_t` and normal `n_t` read at that projection (no kd-tree): the nearest
+//! pixel by default, or a bilinear blend, as [`IcpPlaneCriteria::association`] selects. The
+//! residual is `r = n_t . (p - v_t)` in metres.
 //!
 //! Pose updates are left-multiplied, `T <- exp(xi) T` with tangent `xi = [w, v]` (rotation first),
 //! so the Jacobian row of a correspondence is `[(p x n_t)^T, n_t^T]` with the target held fixed.
@@ -92,6 +93,9 @@ pub struct IcpPlaneCriteria {
     pub max_normal_angle_rad: f64,
     /// Huber threshold on the normalised residual `r / sigma`.
     pub huber_delta: f64,
+    /// How a projected source point reads its target vertex and normal; default
+    /// [`Association::Nearest`].
+    pub association: Association,
     /// Depth noise model that sets each row's `sigma`. A frame's per-pixel sigma map
     /// ([`RgbdLevel::depth_sigmas`]) takes precedence over it point by point.
     pub depth_noise: DepthNoise,
@@ -136,6 +140,7 @@ impl Default for IcpPlaneCriteria {
             max_dist_m: 0.1,
             max_normal_angle_rad: 30.0_f64.to_radians(),
             huber_delta: 2.0,
+            association: Association::Nearest,
             depth_noise: DepthNoise::Constant { sigma_m: 0.01 },
             degeneracy_rtol: DEFAULT_DEGENERACY_RTOL,
             rotation_prior: None,
@@ -143,6 +148,48 @@ impl Default for IcpPlaneCriteria {
         }
     }
 }
+
+/// How [`icp_projective_plane`] reads the target vertex and normal at a source point's
+/// projection, for [`IcpPlaneCriteria::association`].
+///
+/// Bilinear sampling removes the snapping bias of the nearest pixel but smooths the target,
+/// which far from the solution biases the coarse alignment; at the converged finest level it
+/// only removes the snapping. [`Self::Hybrid`] uses each where it helps. Noise-free error of
+/// the solve on the moving corner + sphere pair of the NEES test: nearest 1.75e-4 rad and
+/// 0.30 mm, bilinear and hybrid 2.1e-5 rad and 0.07 mm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum Association {
+    /// The pixel the projection rounds to: biased by up to half a pixel of snapping, with the
+    /// widest convergence range.
+    #[default]
+    Nearest,
+    /// Bilinear blend of the four pixels around the projection, normal renormalised. A pixel
+    /// with zero weight is not read; the sample is dropped when a weighted pixel is invalid,
+    /// when they straddle a depth discontinuity ([`MAX_BILINEAR_DEPTH_JUMP`]) or when their
+    /// normals nearly cancel.
+    Bilinear,
+    /// Nearest on the coarse levels and on the finest until an update falls below
+    /// [`HYBRID_SWITCH_NORM`], then bilinear on the finest for up to as many iterations again.
+    Hybrid,
+}
+
+/// Update size under which [`Association::Hybrid`] switches the finest level to bilinear, in
+/// the units of [`IcpPlaneCriteria::update_tolerance`]: rotation in radians and translation
+/// over the mean inlier depth.
+///
+/// 1e-3 is 0.06 deg and 2 mm at 2 m: well inside the half-pixel snapping it is there to remove
+/// (~5 mm at 2 m and fx = 200) and well above the default 1e-6 tolerance, so the switch comes
+/// before a level is declared converged. Not tuned.
+pub const HYBRID_SWITCH_NORM: f64 = 1e-3;
+
+/// Largest relative depth spread `(z_max - z_min) / z_min` across the weighted pixels of a
+/// bilinear sample; beyond it they straddle a depth discontinuity and the sample is dropped.
+///
+/// A surface 80 deg from fronto-parallel spreads ~3% across one pixel at fx = 200, so 5% keeps
+/// steep surfaces and still drops a foreground/background pair (a 10 cm step at 2 m). Chosen on
+/// that geometry, not tuned on data.
+pub const MAX_BILINEAR_DEPTH_JUMP: f64 = 0.05;
 
 /// An external rotation estimate for [`IcpPlaneCriteria::rotation_prior`].
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -445,6 +492,8 @@ fn check_criteria(
             .transpose()?,
     ];
     let gates = PassGates {
+        // Hybrid starts on nearest; `run_icp` switches it
+        bilinear: criteria.association == Association::Bilinear,
         max_dist_m: criteria.max_dist_m,
         cos_max_normal_angle: criteria.max_normal_angle_rad.cos(),
         huber_delta: criteria.huber_delta,
@@ -485,6 +534,8 @@ fn check_rotation(r: &Mat3F64, field: &'static str) -> Result<(), RgbdIcpError> 
 /// Gates and weighting of one association pass.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PassGates {
+    /// Bilinear target sampling ([`sample_target`]) instead of the nearest pixel.
+    pub bilinear: bool,
     /// Largest `|p - v_t|` of a kept correspondence, in metres.
     pub max_dist_m: f64,
     /// Smallest `(R n_s) . n_t` of a kept correspondence (cosine of the largest normal angle).
@@ -615,6 +666,65 @@ fn sample_nearest(tgt: &RgbdLevel, u: f64, v: f64) -> Option<TargetSample> {
     })
 }
 
+/// Bilinear sample of the target vertex and normal maps (and sigma map) at continuous pixel
+/// `(u, v)`.
+///
+/// Nearest-pixel snapping leaves the matched vertex up to half a pixel off the ray, a residual
+/// that on a curved or slanted surface does not average out; interpolating removes it to first
+/// order. A tap with zero weight (integer `u` or `v`, the last row or column) is neither read
+/// nor tested, so it cannot drop the sample. The right and lower neighbours are clamped into
+/// the map, which keeps a 1-pixel-wide or -high level in bounds: there the clamped tap has zero
+/// weight. `None` off the map (NaN and infinite coordinates included), when a weighted pixel is
+/// invalid, when the weighted pixels straddle a depth discontinuity
+/// ([`MAX_BILINEAR_DEPTH_JUMP`]) or when their normals nearly cancel. The sigma is interpolated
+/// only when every weighted pixel has a map value.
+fn sample_target(tgt: &RgbdLevel, u: f64, v: f64) -> Option<TargetSample> {
+    let size = tgt.size();
+    let (tw, th) = (size.width, size.height);
+    // written so that NaN and infinity fail; a 0-pixel map fails too
+    if !(u >= 0.0 && v >= 0.0 && u <= tw as f64 - 1.0 && v <= th as f64 - 1.0) {
+        return None;
+    }
+    // u, v >= 0 here, so truncation is floor (and no libm call)
+    let (u0, v0) = (u as usize, v as usize);
+    let (fu, fv) = (u - u0 as f64, v - v0 as f64);
+    let (u1, v1) = ((u0 + 1).min(tw - 1), (v0 + 1).min(th - 1));
+    let taps = [
+        (v0 * tw + u0, (1.0 - fu) * (1.0 - fv)),
+        (v0 * tw + u1, fu * (1.0 - fv)),
+        (v1 * tw + u0, (1.0 - fu) * fv),
+        (v1 * tw + u1, fu * fv),
+    ];
+    let (mut z_min, mut z_max) = (f64::INFINITY, 0.0f64);
+    let (mut vertex, mut normal) = (Vec3F64::ZERO, Vec3F64::ZERO);
+    let mut sigma = tgt.depth_sigmas.as_ref().map(|_| 0.0);
+    for (idx, w) in taps {
+        if w == 0.0 {
+            continue;
+        }
+        let (vt, nt) = (pixel3(&tgt.vertices, idx), pixel3(&tgt.normals, idx));
+        if !is_valid_vertex(&vt) || !is_valid_normal(&nt) {
+            return None;
+        }
+        let (vt, nt) = (vec3(vt), vec3(nt));
+        z_min = z_min.min(vt.z);
+        z_max = z_max.max(vt.z);
+        vertex += vt * w;
+        normal += nt * w;
+        sigma = sigma.zip(map_sigma(tgt, idx)).map(|(acc, s)| acc + w * s);
+    }
+    let n = normal.length();
+    // written so that NaN fails
+    if !(z_max - z_min <= MAX_BILINEAR_DEPTH_JUMP * z_min && n >= 0.5) {
+        return None;
+    }
+    Some(TargetSample {
+        vertex,
+        normal: normal / n,
+        depth_sigma: sigma,
+    })
+}
+
 /// One projective-association pass: gate each source pixel and hand every surviving
 /// correspondence to `visit`.
 ///
@@ -657,11 +767,16 @@ pub(crate) fn for_each_correspondence(
         let Some(uv) = tgt.camera.project_to_pixel(&p, 0.0) else {
             continue;
         };
+        let sample = if gates.bilinear {
+            sample_target(tgt, uv.x, uv.y)
+        } else {
+            sample_nearest(tgt, uv.x, uv.y)
+        };
         let Some(TargetSample {
             vertex: v_t,
             normal: n_t,
             depth_sigma: tgt_sigma,
-        }) = sample_nearest(tgt, uv.x, uv.y)
+        }) = sample
         else {
             continue;
         };
@@ -687,6 +802,8 @@ pub(crate) fn for_each_correspondence(
             // the one floor for every source of sigma, sigma maps included
             var.sqrt().max(MIN_SIGMA_M)
         });
+        // the interpolated target is held fixed within an iteration, as the nearest one is;
+        // see the re-associating half of `information_matches_finite_difference_hessian`
         let pxn = p.cross(n_t);
         visit(&Correspondence {
             src_idx,
@@ -1038,13 +1155,19 @@ fn run_icp(
 ) -> Result<IcpPlaneResult, RgbdIcpError> {
     let (mut rotation, mut translation) = (*init_rotation, *init_translation);
     let mut iterations = 0;
+    // Hybrid starts on nearest and switches once, on the finest level
+    let mut gates = *gates;
+    let hybrid = criteria.association == Association::Hybrid;
 
     // iters_per_level is coarsest first; levels[0] is the finest
     let levels = (0..src.levels.len()).rev();
     for (&iters, level) in criteria.iters_per_level.iter().zip(levels) {
         let (s, t) = (&src.levels[level], &tgt.levels[level]);
-        for _ in 0..iters {
-            let eqs = accumulate_level(s, t, &rotation, &translation, gates, None);
+        // the switch to bilinear brings its own budget of `iters` more iterations
+        let (mut it, mut budget) = (0, iters);
+        while it < budget {
+            it += 1;
+            let eqs = accumulate_level(s, t, &rotation, &translation, &gates, None);
             check_inliers(&eqs)?;
             // the mean, not the median: a select per iteration costs more than the scale needs
             let mean_depth = eqs.sum_depth_m / eqs.num_inliers as f64;
@@ -1070,8 +1193,13 @@ fn run_icp(
             iterations += 1;
 
             // relative to the scene depth so that one tolerance fits any scale
-            let tol = criteria.update_tolerance;
-            if w.length() < tol && v.length() < tol * mean_depth {
+            let below = |tol: f64| w.length() < tol && v.length() < tol * mean_depth;
+            if hybrid && level == 0 && !gates.bilinear && below(HYBRID_SWITCH_NORM) {
+                gates.bilinear = true;
+                budget = it + iters;
+                continue;
+            }
+            if below(criteria.update_tolerance) {
                 break;
             }
         }
@@ -1087,7 +1215,7 @@ fn run_icp(
         &tgt.levels[0],
         &rotation,
         &translation,
-        gates,
+        &gates,
         Some(&mut depths),
     );
     check_inliers(&eqs)?;
@@ -1135,6 +1263,7 @@ mod tests {
     use kornia_image::ImageSize;
 
     const GATES: PassGates = PassGates {
+        bilinear: false,
         max_dist_m: 0.1,
         cos_max_normal_angle: 0.866, // 30 deg
         huber_delta: 1.345,
@@ -1900,6 +2029,100 @@ mod tests {
         Ok(())
     }
 
+    /// A `width` x `height` target level for the samplers: vertex `(u, v, z(u, v))` with a
+    /// normal facing the camera, invalid where `z` is 0, and a sigma map of `0.01 * z`.
+    fn sample_level(
+        width: usize,
+        height: usize,
+        z: impl Fn(usize, usize) -> f32,
+    ) -> Result<RgbdLevel, Box<dyn std::error::Error>> {
+        let size = ImageSize { width, height };
+        let (mut vs, mut ns, mut ss) = (Vec::new(), Vec::new(), Vec::new());
+        for v in 0..height {
+            for u in 0..width {
+                let d = z(u, v);
+                let ok = if d > 0.0 { 1.0 } else { 0.0 };
+                vs.extend([u as f32 * ok, v as f32 * ok, d]);
+                ns.extend([0.0, 0.0, -ok]);
+                ss.push(0.01 * d);
+            }
+        }
+        Ok(RgbdLevel {
+            camera: test_camera(),
+            vertices: Image::new(size, vs)?,
+            normals: Image::new(size, ns)?,
+            depth_sigmas: Some(Image::new(size, ss)?),
+        })
+    }
+
+    /// A bilinear sample needs only the pixels it weights: at integer `u` or on the last row
+    /// and column, an invalid or far neighbour with zero weight must not drop it.
+    #[test]
+    fn bilinear_ignores_zero_weight_taps() -> Result<(), Box<dyn std::error::Error>> {
+        // column 2 is a hole
+        let holed = sample_level(
+            4,
+            3,
+            |u, _| if u == 2 { 0.0 } else { 1.0 + 0.01 * u as f32 },
+        )?;
+        let s = sample_target(&holed, 1.0, 0.5).ok_or("integer u next to a hole dropped")?;
+        assert!((s.vertex - Vec3F64::new(1.0, 0.5, 1.01)).length() < 1e-6);
+        assert_eq!(s.normal, Vec3F64::new(0.0, 0.0, -1.0));
+        assert!((s.depth_sigma.ok_or("no sigma")? - 0.0101).abs() < 1e-8);
+        assert!(
+            sample_target(&holed, 1.5, 0.5).is_none(),
+            "weighted hole kept"
+        );
+        assert!(
+            sample_target(&holed, 3.0, 2.0).is_some(),
+            "last pixel dropped"
+        );
+        // a 2x depth step from column 2 on
+        let step = sample_level(4, 3, |u, _| if u >= 2 { 2.0 } else { 1.0 })?;
+        assert!(
+            sample_target(&step, 1.0, 1.0).is_some(),
+            "zero-weight jump dropped"
+        );
+        assert!(
+            sample_target(&step, 1.5, 1.0).is_none(),
+            "weighted jump kept"
+        );
+        Ok(())
+    }
+
+    /// Pyramid levels are at least 3x3, so this is defence in depth, on the sampler itself: a
+    /// 1-pixel-wide or -high map must read only its own pixels, and non-finite coordinates
+    /// give no sample.
+    #[test]
+    fn bilinear_handles_one_pixel_maps_and_non_finite_coordinates(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let column = sample_level(1, 3, |_, v| 1.0 + 0.01 * v as f32)?;
+        let s = sample_target(&column, 0.0, 1.5).ok_or("1-wide map dropped")?;
+        assert!((s.vertex - Vec3F64::new(0.0, 1.5, 1.015)).length() < 1e-6);
+        assert!(sample_target(&column, 0.5, 1.0).is_none());
+        let row = sample_level(3, 1, |u, _| 1.0 + 0.01 * u as f32)?;
+        let s = sample_target(&row, 1.5, 0.0).ok_or("1-high map dropped")?;
+        assert!((s.vertex - Vec3F64::new(1.5, 0.0, 1.015)).length() < 1e-6);
+        assert!(sample_target(&row, 1.0, 0.5).is_none());
+        let single = sample_level(1, 1, |_, _| 1.0)?;
+        assert!(sample_target(&single, 0.0, 0.0).is_some());
+
+        let lvl = sample_level(4, 3, |_, _| 1.0)?;
+        let (nan, inf) = (f64::NAN, f64::INFINITY);
+        for (u, v) in [
+            (nan, 1.0),
+            (1.0, nan),
+            (inf, 1.0),
+            (-inf, 1.0),
+            (1.0, inf),
+            (1.0, -inf),
+        ] {
+            assert!(sample_target(&lvl, u, v).is_none(), "({u}, {v}) sampled");
+            assert!(sample_nearest(&lvl, u, v).is_none(), "({u}, {v}) snapped");
+        }
+        Ok(())
+    }
+
     /// The reported information must be the Hessian of the cost the solver minimises.
     ///
     /// Fixes the final pass's correspondences and their weights, perturbs the estimate in the
@@ -1907,7 +2130,23 @@ mod tests {
     /// converged, noise-free solve the residuals are near zero, so the Gauss-Newton `J^T W J`
     /// and the true Hessian agree; a wrong Jacobian, sign, axis order or weight would not.
     #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "about 4.5 min in a debug build; runs in the release test job"
+    )]
     fn information_matches_finite_difference_hessian() -> Result<(), Box<dyn std::error::Error>> {
+        for association in [
+            Association::Nearest,
+            Association::Bilinear,
+            Association::Hybrid,
+        ] {
+            fd_check(association)?;
+        }
+        Ok(())
+    }
+
+    /// One association of [`information_matches_finite_difference_hessian`].
+    fn fd_check(association: Association) -> Result<(), Box<dyn std::error::Error>> {
         let (camera, scene) = (test_camera(), Scene::corner_and_sphere());
         let w = Vec3F64::new(1.0, 1.0, 1.0) * (1.5f64.to_radians() / 3f64.sqrt());
         let rot_wc = SO3F64::exp(w).matrix();
@@ -1920,15 +2159,19 @@ mod tests {
         let tgt = RgbdPyramid::from_depth_m(&depth_m(&scene, &rot_wc, &t_wc)?, &camera, 3)?;
         let criteria = IcpPlaneCriteria {
             depth_noise: TEST_STEREO,
+            association,
             ..Default::default()
         };
         let res = icp_from_identity(&src, &tgt, &criteria)?;
         let info = &res.information;
         assert!((info - info.transpose()).amax() == 0.0);
 
-        let (gates, _) = check_criteria(&criteria)?;
+        let (mut gates, _) = check_criteria(&criteria)?;
+        // the final pass of Hybrid is bilinear once it has switched, which it does here
+        gates.bilinear = association != Association::Nearest;
         let (rot, t) = (res.rotation, res.translation);
-        let rows = gated_rows(&src.levels[0], &tgt.levels[0], &rot, &t, &gates);
+        let (s0, t0) = (&src.levels[0], &tgt.levels[0]);
+        let rows = gated_rows(s0, t0, &rot, &t, &gates);
         assert_eq!(rows.len(), res.num_inliers);
         let cost = |xi: &[f64; 6]| -> f64 {
             rows.iter()
@@ -1955,12 +2198,67 @@ mod tests {
                 worst = worst.max((fd - info[(j, k)]).abs() / norm);
             }
         }
-        // nearest-pixel association is piecewise constant, so finite differences that
-        // re-associate at each perturbed pose would only see snapping jumps: none here
         assert!(
             worst < 1e-3,
-            "information disagrees with the fixed-target Hessian: {worst:.3e} over {} rows",
+            "{association:?}: information disagrees with the fixed-target Hessian: {worst:.3e} \
+             over {} rows",
             rows.len()
+        );
+        if !gates.bilinear {
+            // nearest-pixel association is piecewise constant: finite differences that
+            // re-associate at each perturbed pose only see snapping jumps
+            return Ok(());
+        }
+
+        // Re-associating at every perturbed pose, weights frozen as Gauss-Newton holds them,
+        // so the interpolated target moves with the estimate: this measures what holding the
+        // target fixed in the Jacobian costs: worst entry (t_y, t_y) 7.4%, from 8.9% at
+        // h = 1e-3 to 7.4% at 3e-5, so not step noise. Modelling the target's motion needs
+        // derivatives of the noisy maps; it is left out, so the gap is bounded here, not closed.
+        let mut w_fixed = vec![f64::NAN; s0.size().width * s0.size().height];
+        for_each_correspondence(s0, t0, &rot, &t, &gates, |c| {
+            w_fixed[c.src_idx] = row_weight(c.r, c.sigma, gates.huber_delta);
+        });
+        let reassoc = |xi: &[f64; 6]| -> f64 {
+            let d = SO3F64::exp(Vec3F64::new(xi[0], xi[1], xi[2])).matrix();
+            let (rp, tp) = (d * rot, d * t + Vec3F64::new(xi[3], xi[4], xi[5]));
+            let mut e = 0.0;
+            for_each_correspondence(s0, t0, &rp, &tp, &gates, |c| {
+                let w = w_fixed[c.src_idx];
+                if w.is_finite() {
+                    e += 0.5 * w * c.r * c.r;
+                }
+            });
+            e
+        };
+        let mut worst_re = 0.0;
+        for hh in [1e-3, 3e-4, 1e-4, 3e-5] {
+            let (mut worst_h, mut worst_at): (f64, _) = (0.0, (0, 0));
+            for j in 0..6 {
+                for k in 0..6 {
+                    let at = |sj: f64, sk: f64| {
+                        let mut xi = [0.0; 6];
+                        xi[j] += sj * hh;
+                        xi[k] += sk * hh;
+                        reassoc(&xi)
+                    };
+                    let fd = (at(1.0, 1.0) - at(1.0, -1.0) - at(-1.0, 1.0) + at(-1.0, -1.0))
+                        / (4.0 * hh * hh);
+                    let err = (fd - info[(j, k)]).abs() / (info[(j, j)] * info[(k, k)]).sqrt();
+                    if err > worst_h {
+                        (worst_h, worst_at) = (err, (j, k));
+                    }
+                }
+            }
+            eprintln!("{association:?} re-associating FD, h={hh:.0e}: worst {worst_h:.3e} at {worst_at:?}");
+            if hh == 1e-4 {
+                worst_re = worst_h;
+            }
+        }
+        assert!(
+            worst_re < 0.1,
+            "{association:?}: fixed-target information is off the re-associated cost by \
+             {worst_re:.3e}"
         );
         Ok(())
     }
@@ -1996,20 +2294,33 @@ mod tests {
     /// The information is a covariance to trust: the NEES of the estimate over independent
     /// noisy frames must average the 6 of a chi-square with 6 degrees of freedom.
     ///
-    /// Against the truth on a moving pair, most of the NEES is there with no noise at all:
-    /// nearest-pixel snapping biases the noise-free solve by tens of microns, many sigmas of a
-    /// 57k-row solve. The information describes the depth noise, not that bias, so the noise is
+    /// Against the truth on a moving pair, most of the NEES is there with no noise at all: the
+    /// noise-free solve is off by 0.30 mm with nearest-pixel snapping and 0.07 mm with bilinear
+    /// sampling, many sigmas of a 57k-row solve. The information describes the depth noise, not that bias, so the noise is
     /// judged against the truth where the bias is zero (identical poses), and against the
     /// noise-free solve where it is not.
     #[test]
     #[cfg_attr(
         debug_assertions,
-        ignore = "about 4 min in a debug build; runs in the release test job"
+        ignore = "several minutes in a debug build; runs in the release test job"
     )]
     fn nees_is_six_on_noisy_stereo_depth() -> Result<(), Box<dyn std::error::Error>> {
+        for association in [
+            Association::Nearest,
+            Association::Bilinear,
+            Association::Hybrid,
+        ] {
+            nees_for(association)?;
+        }
+        Ok(())
+    }
+
+    /// One association of [`nees_is_six_on_noisy_stereo_depth`]; the same noise seed for each.
+    fn nees_for(association: Association) -> Result<(), Box<dyn std::error::Error>> {
         let (camera, scene) = (test_camera(), Scene::corner_and_sphere());
         let criteria = IcpPlaneCriteria {
             depth_noise: TEST_STEREO,
+            association,
             ..Default::default()
         };
         let mut g = Gauss(7);
@@ -2051,15 +2362,21 @@ mod tests {
                 vs_truth += e.dot(&(r.information * e)) / trials as f64;
                 vs_clean += d.dot(&(r.information * d)) / trials as f64;
             }
+            let (w0, v0) = (e0.fixed_rows::<3>(0).norm(), e0.fixed_rows::<3>(3).norm());
+            eprintln!(
+                "NEES {association:?} {name}: vs truth {vs_truth:.2}, vs noise-free solve \
+                 {vs_clean:.2}; noise-free bias {w0:.2e} rad / {:.3} mm",
+                v0 * 1e3
+            );
             // chi2(6): mean 6, sd of a 40-trial mean ~0.55
             assert!(
                 (4.0..9.0).contains(&vs_clean),
-                "{name}: NEES {vs_clean:.2} about the noise-free solve is not consistent with 6"
+                "{association:?} {name}: NEES {vs_clean:.2} about the noise-free solve is not consistent with 6"
             );
             if name == "static" {
                 assert!(
                     (4.0..9.0).contains(&vs_truth),
-                    "static: NEES {vs_truth:.2} against the truth is not consistent with 6"
+                    "{association:?} static: NEES {vs_truth:.2} against the truth is not consistent with 6"
                 );
             }
         }
