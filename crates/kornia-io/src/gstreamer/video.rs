@@ -1090,6 +1090,164 @@ mod tests {
         Ok(())
     }
 
+    /// A seek while decoded frames are still queued must discard them: the next reads have to
+    /// come from the new position, not from the old one.
+    #[test]
+    fn video_reader_seek_discards_frames_buffered_before_the_seek(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp_dir = tempfile::tempdir()?;
+        let file_path = tmp_dir.path().join("seek-discard.mov");
+        let mut writer = VideoWriter::from_pipeline_description(
+            RAW_MOV,
+            &file_path,
+            ImageFormat::Rgb8,
+            30,
+            SIZE,
+        )?;
+        writer.start()?;
+        write_and_close(writer, &[0, 40, 80, 120, 160])?;
+
+        let mut reader = VideoReader::new(&file_path, ImageFormat::Rgb8)?;
+        reader.start()?;
+        // Grab one frame and let the decoder queue the rest, so the queue is not empty.
+        let mut first = None;
+        let start = std::time::Instant::now();
+        while first.is_none() && start.elapsed() < Duration::from_secs(10) {
+            match reader.try_grab_rgb8()? {
+                Grab::Frame { image, .. } => first = Some(image.as_slice()[0]),
+                Grab::Pending => std::thread::sleep(Duration::from_millis(1)),
+                Grab::Eos => panic!("ended before the first frame"),
+            }
+        }
+        assert_eq!(first, Some(0));
+        std::thread::sleep(Duration::from_millis(100));
+
+        // Replay from the start: the queued 40, 80, ... must not be returned first.
+        reader.reset()?;
+        assert_eq!(read_frame_values(&mut reader)?, [0, 40, 80, 120, 160]);
+        reader.close()?;
+        Ok(())
+    }
+
+    /// A flushing seek must complete even when the decoder is blocked on a full queue. An
+    /// application-owned wait that GStreamer cannot wake deadlocks here.
+    #[test]
+    fn video_reader_seek_completes_while_the_decode_queue_is_full(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp_dir = tempfile::tempdir()?;
+        let file_path = tmp_dir.path().join("seek-full.mov");
+        let mut writer = VideoWriter::from_pipeline_description(
+            RAW_MOV,
+            &file_path,
+            ImageFormat::Rgb8,
+            30,
+            SIZE,
+        )?;
+        writer.start()?;
+        let values: Vec<u8> = (0..40).collect();
+        write_and_close(writer, &values)?;
+
+        let mut reader = VideoReader::new(&file_path, ImageFormat::Rgb8)?;
+        reader.start()?;
+        // Grab one frame, then give the decoder time to fill the queue and block on it.
+        let mut first = None;
+        let start = std::time::Instant::now();
+        while first.is_none() && start.elapsed() < Duration::from_secs(10) {
+            match reader.try_grab_rgb8()? {
+                Grab::Frame { image, .. } => first = Some(image.as_slice()[0]),
+                Grab::Pending => std::thread::sleep(Duration::from_millis(1)),
+                Grab::Eos => panic!("ended before the first frame"),
+            }
+        }
+        assert_eq!(first, Some(0));
+        std::thread::sleep(Duration::from_millis(200));
+
+        let seek_start = std::time::Instant::now();
+        reader.reset()?;
+        assert!(
+            seek_start.elapsed() < Duration::from_secs(5),
+            "reset blocked on a full decode queue"
+        );
+        assert_eq!(read_frame_values(&mut reader)?, values);
+        reader.close()?;
+        Ok(())
+    }
+
+    /// Resuming a paused reader must keep the frames that are already queued.
+    #[test]
+    fn video_reader_resume_keeps_buffered_frames() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp_dir = tempfile::tempdir()?;
+        let file_path = tmp_dir.path().join("resume.mov");
+        let mut writer = VideoWriter::from_pipeline_description(
+            RAW_MOV,
+            &file_path,
+            ImageFormat::Rgb8,
+            30,
+            SIZE,
+        )?;
+        writer.start()?;
+        write_and_close(writer, &[0, 40, 80, 120])?;
+
+        let mut reader = VideoReader::new(&file_path, ImageFormat::Rgb8)?;
+        reader.start()?;
+        let mut first = None;
+        let start = std::time::Instant::now();
+        while first.is_none() && start.elapsed() < Duration::from_secs(10) {
+            match reader.try_grab_rgb8()? {
+                Grab::Frame { image, .. } => first = Some(image.as_slice()[0]),
+                Grab::Pending => std::thread::sleep(Duration::from_millis(1)),
+                Grab::Eos => panic!("ended before the first frame"),
+            }
+        }
+        assert_eq!(first, Some(0));
+        // Let the rest queue up, then pause and resume.
+        std::thread::sleep(Duration::from_millis(100));
+        reader.pause()?;
+        reader.start()?;
+        assert_eq!(read_frame_values(&mut reader)?, [40, 80, 120]);
+        reader.close()?;
+        Ok(())
+    }
+
+    /// `close` must not deadlock while the decoder is blocked on a full queue: the `Null`
+    /// transition flushes the queue and wakes the streaming thread.
+    #[test]
+    fn video_reader_close_completes_with_a_full_queue() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp_dir = tempfile::tempdir()?;
+        let file_path = tmp_dir.path().join("close-full.mov");
+        let mut writer = VideoWriter::from_pipeline_description(
+            RAW_MOV,
+            &file_path,
+            ImageFormat::Rgb8,
+            30,
+            SIZE,
+        )?;
+        writer.start()?;
+        let values: Vec<u8> = (0..40).collect();
+        write_and_close(writer, &values)?;
+
+        let mut reader = VideoReader::new(&file_path, ImageFormat::Rgb8)?;
+        reader.start()?;
+        let mut first = None;
+        let start = std::time::Instant::now();
+        while first.is_none() && start.elapsed() < Duration::from_secs(10) {
+            match reader.try_grab_rgb8()? {
+                Grab::Frame { image, .. } => first = Some(image.as_slice()[0]),
+                Grab::Pending => std::thread::sleep(Duration::from_millis(1)),
+                Grab::Eos => panic!("ended before the first frame"),
+            }
+        }
+        assert_eq!(first, Some(0));
+        // Let the decoder fill the queue and block on it before closing.
+        std::thread::sleep(Duration::from_millis(200));
+
+        let closed = finishes_within(Duration::from_secs(5), move || {
+            reader.close().map_err(|e| e.to_string())
+        });
+        assert_eq!(closed, Some(Ok(())), "close blocked on a full queue");
+        Ok(())
+    }
+
     /// A failed seek must keep the previous end-of-stream state instead of erasing it.
     #[test]
     fn video_reader_failed_seek_keeps_eos() -> Result<(), Box<dyn std::error::Error>> {
