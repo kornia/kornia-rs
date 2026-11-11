@@ -105,6 +105,9 @@ fn render_navbar(app: &mut MyApp, ui: &mut eframe::egui::Ui) {
                 log::info!("Loading the video, Path: {}", app.file_path);
                 let file_path = PathBuf::from(&app.file_path);
                 let mut video_reader = VideoReader::new(&file_path, ImageFormat::Rgb8).unwrap();
+                // This example plays the video at its frame rate, so the pipeline must release
+                // frames at their PTS instead of decoding the whole file up front.
+                video_reader.set_realtime(true).unwrap();
                 video_reader.start().unwrap();
 
                 app.app_state = AppState::Playing(video_reader, Instant::now(), None);
@@ -126,16 +129,13 @@ fn render_play_controls(app: &mut MyApp, ctx: &eframe::egui::Context) {
     if let AppState::Playing(video_reader, ..) = &app.app_state {
         is_playing = true;
 
-        if let Some(duration) = video_reader.get_duration() {
-            if let Some(current_pos) = video_reader.get_pos() {
-                app.slider_pos = current_pos.as_secs();
-
-                // Video is now finished
-                if current_pos == duration {
-                    is_finished = true;
-                }
-            }
+        if let Some(current_pos) = video_reader.get_pos() {
+            app.slider_pos = current_pos.as_secs();
         }
+
+        // The reader reports end-of-stream explicitly; the position never reaches the duration
+        // (the last frame's PTS is always before it).
+        is_finished = video_reader.is_eos();
     }
 
     if is_finished {

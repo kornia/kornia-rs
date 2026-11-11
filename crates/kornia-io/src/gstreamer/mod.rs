@@ -25,7 +25,7 @@ pub mod v4l2;
 pub mod video;
 
 pub use crate::stream::camera::{CameraCapture, CameraCaptureConfig};
-pub use crate::stream::capture::StreamCapture;
+pub use crate::stream::capture::{Grab, StreamCapture};
 pub use crate::stream::error::StreamCaptureError;
 pub use crate::stream::rtsp::RTSPCameraConfig;
 pub use crate::stream::v4l2::V4L2CameraConfig;
@@ -427,7 +427,7 @@ fn pack_rows(plane: &[u8], stride: usize, row_bytes: usize, height: usize) -> Ve
 
 #[cfg(test)]
 mod tests {
-    use crate::stream::{StreamCapture, StreamCaptureError};
+    use crate::stream::{Grab, StreamCapture, StreamCaptureError};
     use gstreamer_video::{VideoFormat, VideoFrameFlags, VideoInfo, VideoMeta};
     use kornia_image::Image;
 
@@ -490,8 +490,9 @@ mod tests {
 
     /// Verifies that capturing N frames with `videotestsrc` succeeds, that the pixel
     /// data is readable through the Image slice (proving the GstResource keepalive is
-    /// active), and that dropping each Image releases the buffer exactly once (no
-    /// crash / no double-unmap — validated by the clean exit without sanitizer errors).
+    /// active), that dropping each Image releases the buffer exactly once (no
+    /// crash / no double-unmap — validated by the clean exit without sanitizer errors), and
+    /// that the pipeline reports end-of-stream explicitly once the source is done.
     ///
     /// Uses `videotestsrc` (no camera or display required).
     #[test]
@@ -517,38 +518,40 @@ mod tests {
         capture.start()?;
 
         let mut frames_received = 0usize;
-        // Poll until we have all N frames (videotestsrc with num-buffers is bounded).
-        // We attempt up to 5×N polls to avoid an infinite loop.
-        let max_polls = N_FRAMES * 5;
-        for _ in 0..max_polls {
-            if let Some(image) = capture.grab_rgb8()? {
-                // 1. Verify dimensions.
-                assert_eq!(image.width(), WIDTH, "frame width mismatch");
-                assert_eq!(image.height(), HEIGHT, "frame height mismatch");
-                assert_eq!(image.num_channels(), 3, "frame channels mismatch");
+        // The deadline only guards the test against a hang; end-of-stream itself is asserted
+        // below, not inferred from a timeout.
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_secs(10) {
+            match capture.try_grab_rgb8()? {
+                Grab::Frame(image) => {
+                    // 1. Verify dimensions.
+                    assert_eq!(image.width(), WIDTH, "frame width mismatch");
+                    assert_eq!(image.height(), HEIGHT, "frame height mismatch");
+                    assert_eq!(image.num_channels(), 3, "frame channels mismatch");
 
-                // 2. Read pixel data — proves the GstResource keepalive is active and
-                //    the underlying mapped buffer is still valid.
-                let slice = image.as_slice();
-                assert_eq!(
-                    slice.len(),
-                    WIDTH * HEIGHT * 3,
-                    "frame pixel count mismatch"
-                );
-                // Access first and last byte to ensure the mapping is live.
-                let _ = slice[0];
-                let _ = slice[slice.len() - 1];
+                    // 2. Read pixel data — proves the GstResource keepalive is active and
+                    //    the underlying mapped buffer is still valid.
+                    let slice = image.as_slice();
+                    assert_eq!(
+                        slice.len(),
+                        WIDTH * HEIGHT * 3,
+                        "frame pixel count mismatch"
+                    );
+                    // Access first and last byte to ensure the mapping is live.
+                    let _ = slice[0];
+                    let _ = slice[slice.len() - 1];
 
-                frames_received += 1;
+                    frames_received += 1;
 
-                // 3. `image` drops here — GstResource::Drop unmaps and releases the
-                //    GStreamer buffer ref exactly once.  A double-free or use-after-free
-                //    would crash here (or be caught by valgrind/asan in CI).
+                    // 3. `image` drops here — GstResource::Drop unmaps and releases the
+                    //    GStreamer buffer ref exactly once.  A double-free or use-after-free
+                    //    would crash here (or be caught by valgrind/asan in CI).
+                }
+                Grab::Eos => break,
+                Grab::Pending => {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
             }
-            if frames_received >= N_FRAMES {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
         }
 
         // Close pipeline before asserting so Close errors don't shadow the count.
@@ -558,7 +561,92 @@ mod tests {
             frames_received, N_FRAMES,
             "expected {N_FRAMES} frames but received {frames_received}"
         );
+        assert!(
+            capture.is_eos(),
+            "videotestsrc num-buffers={N_FRAMES} did not report end-of-stream"
+        );
 
+        Ok(())
+    }
+
+    /// A tightly packed frame must still be returned as a view of the GStreamer buffer, not a
+    /// copy: the terminal-state handling must not cost the zero-copy path.
+    #[test]
+    fn grab_rgb8_borrows_tight_frames_without_copy() -> Result<(), Box<dyn std::error::Error>> {
+        use gstreamer::prelude::*;
+
+        if !gstreamer::INITIALIZED.load(std::sync::atomic::Ordering::Relaxed) {
+            gstreamer::init()?;
+        }
+
+        const WIDTH: usize = 4; // 4 * 3 = 12 bytes per row, already 4-byte aligned
+        const HEIGHT: usize = 4;
+        let buffer = gstreamer::Buffer::from_slice(vec![7u8; WIDTH * HEIGHT * 3]);
+        // Address of the memory the pipeline hands to the appsink; both maps alias one buffer.
+        let source_addr = {
+            let memory = buffer.peek_memory(0);
+            let map = memory.map_readable()?;
+            map.as_slice().as_ptr()
+        };
+
+        let mut capture = StreamCapture::new(
+            "appsrc name=src caps=video/x-raw,format=RGB,width=4,height=4 ! \
+             appsink name=sink sync=false",
+        )?;
+        capture.start()?;
+        capture
+            .pipeline
+            .by_name("src")
+            .ok_or("missing appsrc")?
+            .dynamic_cast::<gstreamer_app::AppSrc>()
+            .map_err(|_| "src is not an appsrc")?
+            .push_buffer(buffer)?;
+
+        let mut image = None;
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_secs(10) {
+            match capture.try_grab_rgb8()? {
+                Grab::Frame(frame) => {
+                    image = Some(frame);
+                    break;
+                }
+                Grab::Pending => std::thread::sleep(std::time::Duration::from_millis(1)),
+                Grab::Eos => break,
+            }
+        }
+        capture.close()?;
+
+        let image = image.ok_or("no frame delivered")?;
+        assert_eq!(
+            image.as_slice().as_ptr(),
+            source_addr,
+            "a tightly packed frame was copied"
+        );
+        Ok(())
+    }
+
+    /// Calling `start` again after end-of-stream must not forget it: GStreamer does not restart
+    /// an EOS pipeline without a seek, so reporting `Pending` would loop forever.
+    #[test]
+    fn start_after_eos_keeps_eos() -> Result<(), Box<dyn std::error::Error>> {
+        let mut capture = StreamCapture::new(
+            "videotestsrc num-buffers=1 ! video/x-raw,format=RGB,width=8,height=4 ! \
+             appsink name=sink sync=false",
+        )?;
+        capture.start()?;
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_secs(10) {
+            match capture.try_grab_rgb8()? {
+                Grab::Eos => break,
+                Grab::Frame(_) | Grab::Pending => {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            }
+        }
+        capture.start()?;
+        assert!(capture.is_eos(), "start() forgot the end-of-stream");
+        assert!(matches!(capture.try_grab_rgb8()?, Grab::Eos));
+        capture.close()?;
         Ok(())
     }
 

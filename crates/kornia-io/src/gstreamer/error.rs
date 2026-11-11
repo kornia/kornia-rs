@@ -1,5 +1,6 @@
 /// An error type for the stream module.
 #[derive(thiserror::Error, Debug)]
+#[non_exhaustive]
 pub enum StreamCaptureError {
     /// A GStreamer error: initialization, building the pipeline, or an error posted by a
     /// pipeline element while it runs (with the element and debug details in the message).
@@ -88,6 +89,11 @@ pub enum StreamCaptureError {
     /// An error occurred when joining a thread.
     #[error("Failed to join thread")]
     JoinThreadError,
+
+    /// The capture pipeline posted an error on its bus (e.g. a file that cannot be decoded or a
+    /// missing decoder). The error carries GStreamer's domain, code, element and debug details.
+    #[error("stream error: {0}")]
+    StreamError(#[source] gstreamer::glib::Error),
 }
 
 /// Error type for video reader
