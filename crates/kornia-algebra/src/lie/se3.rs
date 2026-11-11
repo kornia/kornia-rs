@@ -7,11 +7,6 @@ use rand::RngExt;
 
 const SMALL_ANGLE_EPSILON: f32 = 1.0e-8;
 
-/// θ² below which [`SE3F32::left_jacobian`] uses the Taylor series of the
-/// `Q` coefficients: their closed forms cancel catastrophically in f32 below
-/// ~0.1 rad.
-const Q_SERIES_THETA2: f32 = 1.0e-2;
-
 /// Note regarding `PartialEq`:
 /// This struct derives `PartialEq` which performs an exact element-wise comparison.
 /// Because quaternions form a double cover for SO3 (`q` and `-q` represent the same rotation),
@@ -245,6 +240,10 @@ impl SE3F32 {
     /// ```
     /// ref: https://arxiv.org/pdf/1812.01537 (eq 180)
     pub fn left_jacobian(rho: Vec3AF32, omega: Vec3AF32) -> [[f32; 6]; 6] {
+        // θ² below which the closed forms of the Q coefficients cancel
+        // catastrophically in f32 (~0.1 rad), so their Taylor series is used.
+        const Q_SERIES_THETA2: f32 = 1.0e-2;
+
         let theta2 = omega.dot(omega);
 
         let jl_so3 = SO3F32::left_jacobian(omega);
