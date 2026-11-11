@@ -1,6 +1,6 @@
-//! `F32x4` against `wide::f32x8` on a point-to-plane ICP association pass.
+//! `F32x4` and `F32x8` against `wide::f32x8` on a point-to-plane ICP association pass.
 //!
-//! One generic kernel, monomorphised per lane type, so both run the same math: transform by
+//! One generic kernel, monomorphised per lane type, so all three run the same math: transform by
 //! `R, t`, pinhole projection, image-bounds, distance and normal-angle gates as masks, the
 //! point-to-plane residual, a ray-model sigma, the Huber weight, and the 21 upper-triangle
 //! `J^T W J` and 6 `J^T W r` sums. Lanes sum in `f32` over a block of [`BLOCK_POINTS`] points,
@@ -8,7 +8,7 @@
 //! comes with its already-gathered target vertex, normal and variance.
 
 use criterion::{criterion_group, criterion_main, Criterion};
-use kornia_algebra::simd::{F32x4, Mask32x4};
+use kornia_algebra::simd::{F32x4, F32x8, Mask32x4, Mask32x8};
 use std::hint::black_box;
 use std::ops::{Add, AddAssign, BitAnd, Div, Mul, Sub};
 use wide::f32x8;
@@ -88,6 +88,59 @@ impl Lanes for F32x4 {
     }
     #[inline(always)]
     fn bitmask(mask: Mask32x4) -> u32 {
+        mask.bitmask()
+    }
+    #[inline(always)]
+    fn sum_f64(self) -> f64 {
+        self.to_array().iter().map(|&x| x as f64).sum()
+    }
+}
+
+impl Lanes for F32x8 {
+    type Mask = Mask32x8;
+    const N: usize = 8;
+    #[inline(always)]
+    fn splat(v: f32) -> Self {
+        F32x8::splat(v)
+    }
+    #[inline(always)]
+    fn load(src: &[f32]) -> Self {
+        F32x8::from_slice(src).unwrap_or_default()
+    }
+    #[inline(always)]
+    fn sqrt(self) -> Self {
+        F32x8::sqrt(self)
+    }
+    #[inline(always)]
+    fn abs(self) -> Self {
+        F32x8::abs(self)
+    }
+    #[inline(always)]
+    fn max(self, rhs: Self) -> Self {
+        F32x8::max(self, rhs)
+    }
+    #[inline(always)]
+    fn lt(self, rhs: Self) -> Mask32x8 {
+        self.cmplt(rhs)
+    }
+    #[inline(always)]
+    fn le(self, rhs: Self) -> Mask32x8 {
+        self.cmple(rhs)
+    }
+    #[inline(always)]
+    fn gt(self, rhs: Self) -> Mask32x8 {
+        self.cmpgt(rhs)
+    }
+    #[inline(always)]
+    fn ge(self, rhs: Self) -> Mask32x8 {
+        self.cmpge(rhs)
+    }
+    #[inline(always)]
+    fn select(mask: Mask32x8, if_true: Self, if_false: Self) -> Self {
+        F32x8::select(mask, if_true, if_false)
+    }
+    #[inline(always)]
+    fn bitmask(mask: Mask32x8) -> u32 {
         mask.bitmask()
     }
     #[inline(always)]
@@ -297,11 +350,13 @@ fn bench_simd_lanes(c: &mut Criterion) {
 
     let (s8, n8) = accumulate::<f32x8>(&soa, r, t);
     let (s4, n4) = accumulate::<F32x4>(&soa, r, t);
+    let (k8, m8) = accumulate::<F32x8>(&soa, r, t);
     assert_eq!(n8, n4, "inlier counts differ");
+    assert_eq!(n8, m8, "inlier counts differ");
     assert!(n4 > 0, "no inliers");
-    let max_rel = s8
+    let max_rel = [s4, k8]
         .iter()
-        .zip(&s4)
+        .flat_map(|s| s8.iter().zip(s))
         .map(|(a, b)| (a - b).abs() / a.abs().max(1e-12))
         .fold(0.0f64, f64::max);
     assert!(
@@ -316,6 +371,9 @@ fn bench_simd_lanes(c: &mut Criterion) {
     });
     group.bench_function("kornia_f32x4", |b| {
         b.iter(|| accumulate::<F32x4>(black_box(&soa), black_box(r), black_box(t)))
+    });
+    group.bench_function("kornia_f32x8", |b| {
+        b.iter(|| accumulate::<F32x8>(black_box(&soa), black_box(r), black_box(t)))
     });
     group.finish();
 }

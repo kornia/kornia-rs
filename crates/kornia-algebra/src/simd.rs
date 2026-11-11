@@ -5,6 +5,11 @@
 //! here and no extra dependency. Each is a `#[repr(transparent)]` newtype that stores the glam
 //! register itself, so operators act on it directly with no per-op conversion.
 //!
+//! [`F32x8`] and [`Mask32x8`] are eight lanes held as two four-lane halves, lanes 0-3 then
+//! 4-7, with the same API and NaN rules. Two 128-bit ops per op cost less per point than one
+//! [`F32x4`] op does, because a kernel's per-chunk fixed costs (loop, bitmask branch, splats)
+//! are paid once per eight lanes.
+//!
 //! # NaN
 //!
 //! The comparisons are ordered: a lane is `false` when either operand is NaN, `cmpeq`
@@ -305,6 +310,284 @@ impl Not for Mask32x4 {
     }
 }
 
+/// Eight `f32` lanes as two [`F32x4`] halves; lane `i` is element `i` of its source.
+///
+/// Every op runs on both halves, with the semantics of the [`F32x4`] op of the same name.
+#[derive(Debug, Clone, Copy, Default)]
+#[repr(transparent)]
+pub struct F32x8([F32x4; 2]);
+
+/// Eight boolean lanes, the result of an [`F32x8`] comparison.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[repr(transparent)]
+pub struct Mask32x8([Mask32x4; 2]);
+
+impl F32x8 {
+    /// All lanes `0.0`.
+    pub const ZERO: Self = Self::splat(0.0);
+    /// All lanes `1.0`.
+    pub const ONE: Self = Self::splat(1.0);
+    /// Number of lanes.
+    pub const LANES: usize = 8;
+
+    /// Creates a value from its eight lanes.
+    #[allow(clippy::too_many_arguments)]
+    #[inline]
+    pub const fn new(
+        l0: f32,
+        l1: f32,
+        l2: f32,
+        l3: f32,
+        l4: f32,
+        l5: f32,
+        l6: f32,
+        l7: f32,
+    ) -> Self {
+        Self([F32x4::new(l0, l1, l2, l3), F32x4::new(l4, l5, l6, l7)])
+    }
+
+    /// Sets every lane to `v`.
+    #[inline]
+    pub const fn splat(v: f32) -> Self {
+        Self([F32x4::splat(v); 2])
+    }
+
+    /// Loads eight lanes from an array; lane `i` is `src[i]`.
+    #[inline]
+    pub const fn from_array(s: [f32; 8]) -> Self {
+        Self::new(s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7])
+    }
+
+    /// Returns the lanes as an array; element `i` is lane `i`.
+    #[inline]
+    pub const fn to_array(self) -> [f32; 8] {
+        let (a, b) = (self.0[0].to_array(), self.0[1].to_array());
+        [a[0], a[1], a[2], a[3], b[0], b[1], b[2], b[3]]
+    }
+
+    /// Loads the first eight elements of `src`.
+    ///
+    /// # Returns
+    ///
+    /// `None` if `src` holds fewer than eight elements.
+    #[inline]
+    pub fn from_slice(src: &[f32]) -> Option<Self> {
+        src.first_chunk::<8>().map(|a| Self::from_array(*a))
+    }
+
+    /// Stores the lanes into the first eight elements of `dst`.
+    ///
+    /// # Returns
+    ///
+    /// `None`, with `dst` untouched, if `dst` holds fewer than eight elements.
+    #[inline]
+    pub fn write_to_slice(self, dst: &mut [f32]) -> Option<()> {
+        *dst.first_chunk_mut::<8>()? = self.to_array();
+        Some(())
+    }
+
+    #[inline(always)]
+    fn map(self, f: impl Fn(F32x4) -> F32x4) -> Self {
+        Self([f(self.0[0]), f(self.0[1])])
+    }
+
+    #[inline(always)]
+    fn zip(self, rhs: Self, f: impl Fn(F32x4, F32x4) -> F32x4) -> Self {
+        Self([f(self.0[0], rhs.0[0]), f(self.0[1], rhs.0[1])])
+    }
+
+    #[inline(always)]
+    fn cmp(self, rhs: Self, f: impl Fn(F32x4, F32x4) -> Mask32x4) -> Mask32x8 {
+        Mask32x8([f(self.0[0], rhs.0[0]), f(self.0[1], rhs.0[1])])
+    }
+
+    /// `self * a + b`, fused where [`F32x4::mul_add`] is.
+    #[inline]
+    pub fn mul_add(self, a: Self, b: Self) -> Self {
+        Self([
+            self.0[0].mul_add(a.0[0], b.0[0]),
+            self.0[1].mul_add(a.0[1], b.0[1]),
+        ])
+    }
+
+    /// Lane-wise square root; negative lanes give NaN.
+    #[inline]
+    pub fn sqrt(self) -> Self {
+        self.map(F32x4::sqrt)
+    }
+
+    /// Lane-wise absolute value; NaN stays NaN.
+    #[inline]
+    pub fn abs(self) -> Self {
+        self.map(F32x4::abs)
+    }
+
+    /// Lane-wise minimum; NaN in either lane gives `rhs`, as for [`F32x4::min`].
+    #[inline]
+    pub fn min(self, rhs: Self) -> Self {
+        self.zip(rhs, F32x4::min)
+    }
+
+    /// Lane-wise maximum; NaN in either lane gives `rhs`, as for [`F32x4::max`].
+    #[inline]
+    pub fn max(self, rhs: Self) -> Self {
+        self.zip(rhs, F32x4::max)
+    }
+
+    /// Sum of the eight lanes: the halves are added lane-wise, then that four-lane sum is
+    /// reduced as [`F32x4::element_sum`].
+    #[inline]
+    pub fn element_sum(self) -> f32 {
+        (self.0[0] + self.0[1]).element_sum()
+    }
+
+    /// Lane-wise `self < rhs`; `false` where either lane is NaN.
+    #[inline]
+    pub fn cmplt(self, rhs: Self) -> Mask32x8 {
+        self.cmp(rhs, F32x4::cmplt)
+    }
+
+    /// Lane-wise `self <= rhs`; `false` where either lane is NaN.
+    #[inline]
+    pub fn cmple(self, rhs: Self) -> Mask32x8 {
+        self.cmp(rhs, F32x4::cmple)
+    }
+
+    /// Lane-wise `self > rhs`; `false` where either lane is NaN.
+    #[inline]
+    pub fn cmpgt(self, rhs: Self) -> Mask32x8 {
+        self.cmp(rhs, F32x4::cmpgt)
+    }
+
+    /// Lane-wise `self >= rhs`; `false` where either lane is NaN.
+    #[inline]
+    pub fn cmpge(self, rhs: Self) -> Mask32x8 {
+        self.cmp(rhs, F32x4::cmpge)
+    }
+
+    /// Lane-wise `self == rhs`; `false` where either lane is NaN, `true` for `-0.0 == 0.0`.
+    #[inline]
+    pub fn cmpeq(self, rhs: Self) -> Mask32x8 {
+        self.cmp(rhs, F32x4::cmpeq)
+    }
+
+    /// Takes each lane from `if_true` where `mask` is set, else from `if_false`.
+    #[inline]
+    pub fn select(mask: Mask32x8, if_true: Self, if_false: Self) -> Self {
+        Self([
+            F32x4::select(mask.0[0], if_true.0[0], if_false.0[0]),
+            F32x4::select(mask.0[1], if_true.0[1], if_false.0[1]),
+        ])
+    }
+}
+
+impl Mask32x8 {
+    /// Sets every lane to `v`.
+    #[inline]
+    pub const fn splat(v: bool) -> Self {
+        Self([Mask32x4::splat(v); 2])
+    }
+
+    /// Builds a mask from its lanes; lane `i` is `lanes[i]`.
+    #[inline]
+    pub const fn from_array(l: [bool; 8]) -> Self {
+        Self([
+            Mask32x4::from_array([l[0], l[1], l[2], l[3]]),
+            Mask32x4::from_array([l[4], l[5], l[6], l[7]]),
+        ])
+    }
+
+    /// Bit `i` is lane `i`; the upper 24 bits are zero.
+    #[inline]
+    pub fn bitmask(self) -> u32 {
+        self.0[0].bitmask() | (self.0[1].bitmask() << 4)
+    }
+
+    /// `true` if any lane is set.
+    #[inline]
+    pub fn any(self) -> bool {
+        (self.0[0] | self.0[1]).any()
+    }
+
+    /// `true` if every lane is set.
+    #[inline]
+    pub fn all(self) -> bool {
+        (self.0[0] & self.0[1]).all()
+    }
+}
+
+macro_rules! impl_binop_x8 {
+    ($op:ident, $f:ident, $op_assign:ident, $f_assign:ident) => {
+        impl $op for F32x8 {
+            type Output = Self;
+            #[inline]
+            fn $f(self, rhs: Self) -> Self {
+                self.zip(rhs, F32x4::$f)
+            }
+        }
+        impl $op_assign for F32x8 {
+            #[inline]
+            fn $f_assign(&mut self, rhs: Self) {
+                self.0[0].$f_assign(rhs.0[0]);
+                self.0[1].$f_assign(rhs.0[1]);
+            }
+        }
+    };
+}
+
+impl_binop_x8!(Add, add, AddAssign, add_assign);
+impl_binop_x8!(Sub, sub, SubAssign, sub_assign);
+impl_binop_x8!(Mul, mul, MulAssign, mul_assign);
+
+impl Div for F32x8 {
+    type Output = Self;
+    #[inline]
+    fn div(self, rhs: Self) -> Self {
+        self.zip(rhs, F32x4::div)
+    }
+}
+
+/// Multiplies every lane by a scalar, each half as `F32x4 * f32`.
+impl Mul<f32> for F32x8 {
+    type Output = Self;
+    #[inline]
+    fn mul(self, rhs: f32) -> Self {
+        self.map(|h| h * rhs)
+    }
+}
+
+impl Neg for F32x8 {
+    type Output = Self;
+    #[inline]
+    fn neg(self) -> Self {
+        self.map(F32x4::neg)
+    }
+}
+
+impl BitAnd for Mask32x8 {
+    type Output = Self;
+    #[inline]
+    fn bitand(self, rhs: Self) -> Self {
+        Self([self.0[0] & rhs.0[0], self.0[1] & rhs.0[1]])
+    }
+}
+
+impl BitOr for Mask32x8 {
+    type Output = Self;
+    #[inline]
+    fn bitor(self, rhs: Self) -> Self {
+        Self([self.0[0] | rhs.0[0], self.0[1] | rhs.0[1]])
+    }
+}
+
+impl Not for Mask32x8 {
+    type Output = Self;
+    #[inline]
+    fn not(self) -> Self {
+        Self([!self.0[0], !self.0[1]])
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -419,5 +702,86 @@ mod tests {
         assert_eq!(F32x4::new(1.0, 2.0, 4.0, 8.0).element_sum(), 15.0);
         assert!(F32x4::from_array(A).element_sum().is_nan());
         assert_eq!(F32x4::new(INF, 1.0, 0.0, 0.0).element_sum(), INF);
+    }
+
+    // lanes 4-7 differ from 0-3, so a swapped or duplicated half shows
+    const A8: [f32; 8] = [1.5, -2.0, INF, f32::NAN, -0.0, 4.0, f32::NAN, 9.0];
+    const B8: [f32; 8] = [0.5, 3.0, -INF, 1.0, 0.0, f32::NAN, 2.0, -9.0];
+
+    fn assert_lanes8(got: F32x8, f: impl Fn(f32, f32) -> f32) {
+        for (i, g) in got.to_array().into_iter().enumerate() {
+            let want = f(A8[i], B8[i]);
+            assert!(
+                g.to_bits() == want.to_bits() || (g.is_nan() && want.is_nan()),
+                "lane {i}: {g} vs {want}"
+            );
+        }
+    }
+
+    fn mask_bits8(f: impl Fn(f32, f32) -> bool) -> u32 {
+        (0..8).map(|i| (f(A8[i], B8[i]) as u32) << i).sum()
+    }
+
+    #[test]
+    fn x8_ops_match_scalar() {
+        let (a, b) = (F32x8::from_array(A8), F32x8::from_array(B8));
+        assert_lanes8(a + b, |x, y| x + y);
+        assert_lanes8(a - b, |x, y| x - y);
+        assert_lanes8(a * b, |x, y| x * y);
+        assert_lanes8(a / b, |x, y| x / y);
+        assert_lanes8(-a, |x, _| -x);
+        assert_lanes8(a * 0.5, |x, _| x * 0.5);
+        assert_lanes8(a.abs(), |x, _| x.abs());
+        assert_lanes8(a.sqrt(), |x, _| x.sqrt());
+        assert_lanes8(a.mul_add(b, b), |x, y| x * y + y);
+        // NaN in either lane gives rhs; min(-0.0, 0.0) is 0.0 (lane 4)
+        assert_lanes8(a.min(b), |x, y| if x < y { x } else { y });
+        assert_lanes8(a.max(b), |x, y| if x > y { x } else { y });
+        let mut c = a;
+        c += b;
+        c -= b;
+        c *= F32x8::ONE;
+        assert_lanes8(c, |x, y| (x + y - y) * 1.0);
+        assert_eq!(a.cmplt(b).bitmask(), mask_bits8(|x, y| x < y));
+        assert_eq!(a.cmple(b).bitmask(), mask_bits8(|x, y| x <= y));
+        assert_eq!(a.cmpgt(b).bitmask(), mask_bits8(|x, y| x > y));
+        assert_eq!(a.cmpge(b).bitmask(), mask_bits8(|x, y| x >= y));
+        assert_eq!(a.cmpeq(b).bitmask(), mask_bits8(|x, y| x == y));
+        let nan = F32x8::splat(f32::NAN);
+        assert_eq!(nan.cmpeq(nan).bitmask(), 0);
+        assert!((!nan.cmple(nan)).all());
+    }
+
+    #[test]
+    fn x8_lane_order_across_halves() {
+        let src: [f32; 9] = std::array::from_fn(|i| i as f32);
+        let v = F32x8::from_slice(&src).unwrap_or_default();
+        assert_eq!(v.to_array(), [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]);
+        assert_eq!(
+            F32x8::new(0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0).to_array(),
+            v.to_array()
+        );
+        assert!(F32x8::from_slice(&src[..7]).is_none());
+        let mut dst = [-1.0; 9];
+        assert_eq!(v.write_to_slice(&mut dst), Some(()));
+        assert_eq!(dst[..8], src[..8]);
+        assert_eq!(dst[8], -1.0);
+        assert!(v.write_to_slice(&mut dst[..7]).is_none());
+        // bit i is lane i, both halves
+        assert_eq!(v.cmpgt(F32x8::splat(2.5)).bitmask(), 0b1111_1000);
+        assert_eq!(v.cmplt(F32x8::splat(5.5)).bitmask(), 0b0011_1111);
+        let m = Mask32x8::from_array([true, false, false, false, false, true, false, true]);
+        assert_eq!(m.bitmask(), 0b1010_0001);
+        let lo = Mask32x8::from_array([true, false, false, false, false, false, false, false]);
+        let hi = Mask32x8::from_array([false, false, false, false, false, false, false, true]);
+        assert_eq!((lo | hi).bitmask(), 0b1000_0001);
+        assert_eq!((m & hi).bitmask(), 0b1000_0000);
+        assert_eq!((!m).bitmask(), 0b0101_1110);
+        assert!(lo.any() && hi.any() && !Mask32x8::splat(false).any());
+        assert!(!(lo | hi).all() && Mask32x8::splat(true).all());
+        let s = F32x8::select(m, v, -v).to_array();
+        assert_eq!(s, [0.0, -1.0, -2.0, -3.0, -4.0, 5.0, -6.0, 7.0]);
+        assert_eq!(v.element_sum(), 28.0);
+        assert!(F32x8::from_array(A8).element_sum().is_nan());
     }
 }
