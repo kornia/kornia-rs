@@ -67,7 +67,7 @@ impl CameraCapture {
             ));
         };
 
-        Ok(Self(StreamCapture::new_dropping(&pipeline)?))
+        Ok(Self(StreamCapture::new(&pipeline)?))
     }
 }
 

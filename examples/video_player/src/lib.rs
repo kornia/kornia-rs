@@ -109,9 +109,6 @@ fn render_navbar(app: &mut MyApp, ui: &mut eframe::egui::Ui) {
                 log::info!("Loading the video, Path: {}", app.file_path);
                 let file_path = PathBuf::from(&app.file_path);
                 let mut video_reader = VideoReader::new(&file_path, ImageFormat::Rgb8).unwrap();
-                // This example plays the video at its frame rate, so the pipeline must release
-                // frames at their PTS instead of decoding the whole file up front.
-                video_reader.set_realtime(true).unwrap();
                 video_reader.start().unwrap();
                 app.finished = false;
 
@@ -274,7 +271,7 @@ fn render_image(app: &mut MyApp, ui: &mut eframe::egui::Ui) {
             {
                 // Don't grab the new image, load the previous one instead
             } else if let Some(image_frame) = match video_reader.try_grab_rgb8() {
-                Ok(Grab::Frame { image, .. }) => Some(image),
+                Ok(Grab::Frame(image)) => Some(image),
                 // Finish only after every buffered frame has been drawn.
                 Ok(Grab::Eos) => {
                     app.finished = true;

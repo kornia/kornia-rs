@@ -442,68 +442,19 @@ impl VideoReader {
         };
 
         // The input path is set as a property after parsing (see `set_location_property`);
-        // the pipeline only starts reading once `start` sets it to PLAYING. `sync=false` decodes
-        // a file as fast as possible instead of releasing frames at their PTS, so end-of-stream
-        // arrives promptly and inter-frame gaps cannot truncate a read.
+        // the pipeline only starts reading once `start` sets it to PLAYING.
         let pipeline = format!(
             "filesrc name=filesrc ! \
             decodebin ! \
             videoconvert ! \
             video/x-raw,format={video_format} ! \
-            appsink name=sink sync=false"
+            appsink name=sink sync=true"
         );
 
         let capture = StreamCapture::new(&pipeline)?;
         set_location_property(&capture.pipeline, "filesrc", path.as_ref())?;
 
         Ok(Self(capture))
-    }
-
-    /// Sets whether frames are released at their presentation time.
-    ///
-    /// [`Self::new`] disables it and decodes as fast as possible, which suits offline processing:
-    /// end-of-stream arrives promptly and a slow consumer only has to drain the buffered frames.
-    /// Enable it for real-time playback, where frames must be released at their PTS so a consumer
-    /// reading at the video's frame rate does not lose frames.
-    ///
-    /// # Arguments
-    ///
-    /// * `realtime` - `true` to release frames at their presentation time, `false` to decode as
-    ///   fast as possible.
-    ///
-    /// # Returns
-    ///
-    /// `Ok(())` once the appsink has been configured.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`VideoReaderError::StreamCaptureError`] wrapping
-    /// [`StreamCaptureError::GetElementByNameError`] if the pipeline has no appsink named `sink`,
-    /// or [`StreamCaptureError::DowncastPipelineError`] if that element is not an `appsink`.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// use kornia_io::gstreamer::video::{ImageFormat, VideoReader};
-    ///
-    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let mut reader = VideoReader::new("input.mp4", ImageFormat::Rgb8)?;
-    /// // Release frames at their presentation time, e.g. to play the file in real time.
-    /// reader.set_realtime(true)?;
-    /// reader.start()?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn set_realtime(&self, realtime: bool) -> Result<(), VideoReaderError> {
-        let sink = self
-            .0
-            .pipeline
-            .by_name("sink")
-            .ok_or(StreamCaptureError::GetElementByNameError)?
-            .dynamic_cast::<gstreamer_app::AppSink>()
-            .map_err(StreamCaptureError::DowncastPipelineError)?;
-        sink.set_property("sync", realtime);
-        Ok(())
     }
 
     /// Starts the video reader pipeline
@@ -551,9 +502,6 @@ impl VideoReader {
     /// Returns [`VideoReaderError::StreamCaptureError`] wrapping
     /// [`StreamCaptureError::InvalidImageFormat`] if the reader was created with another format,
     /// or any other error of [`StreamCapture::grab_rgb8`].
-    ///
-    /// `None` cannot distinguish "no frame yet" from end-of-stream or a pipeline error; use
-    /// [`Self::try_grab_rgb8`] or [`Self::is_eos`]/[`Self::stream_error`] to tell them apart.
     #[inline]
     pub fn grab_rgb8(&mut self) -> Result<Option<Image<u8, 3>>, VideoReaderError> {
         self.0
@@ -580,9 +528,6 @@ impl VideoReader {
     /// Returns [`VideoReaderError::StreamCaptureError`] wrapping
     /// [`StreamCaptureError::InvalidImageFormat`] if the pipeline produces a different format,
     /// or any other error of [`StreamCapture::grab_gray8`].
-    ///
-    /// `None` cannot distinguish "no frame yet" from end-of-stream or a pipeline error; use
-    /// [`Self::try_grab_gray8`] or [`Self::is_eos`]/[`Self::stream_error`] to tell them apart.
     ///
     /// # Example
     ///
@@ -619,9 +564,8 @@ impl VideoReader {
     ///
     /// # Returns
     ///
-    /// [`Grab::Frame`] with the oldest decoded frame and its presentation timestamp,
-    /// [`Grab::Pending`] when none is buffered yet, or [`Grab::Eos`] once the video has ended
-    /// and no frame is left.
+    /// [`Grab::Frame`] with the oldest decoded frame, [`Grab::Pending`] when none is buffered
+    /// yet, or [`Grab::Eos`] once the video has ended and no frame is left.
     ///
     /// # Errors
     ///
@@ -647,9 +591,8 @@ impl VideoReader {
     ///
     /// # Returns
     ///
-    /// [`Grab::Frame`] with the oldest decoded frame and its presentation timestamp,
-    /// [`Grab::Pending`] when none is buffered yet, or [`Grab::Eos`] once the video has ended
-    /// and no frame is left.
+    /// [`Grab::Frame`] with the oldest decoded frame, [`Grab::Pending`] when none is buffered
+    /// yet, or [`Grab::Eos`] once the video has ended and no frame is left.
     ///
     /// # Errors
     ///
@@ -964,8 +907,8 @@ mod tests {
         let start = std::time::Instant::now();
         while start.elapsed() < Duration::from_secs(10) {
             match reader.try_grab_gray8()? {
-                Grab::Frame { image: frame, .. } if image.is_none() => image = Some(frame),
-                Grab::Frame { .. } => {}
+                Grab::Frame(frame) if image.is_none() => image = Some(frame),
+                Grab::Frame(_) => {}
                 Grab::Eos => {
                     saw_eos = true;
                     break;
@@ -991,7 +934,7 @@ mod tests {
         let start = std::time::Instant::now();
         while start.elapsed() < Duration::from_secs(10) {
             match reader.try_grab_rgb8()? {
-                Grab::Frame { image, .. } => values.push(image.as_slice()[0]),
+                Grab::Frame(image) => values.push(image.as_slice()[0]),
                 Grab::Eos => {
                     assert!(
                         reader.stream_error().is_none(),
@@ -1014,32 +957,6 @@ mod tests {
         Ok(values)
     }
 
-    /// Waits until the pipeline position stops advancing, i.e. decoding reached the end or the
-    /// streaming thread blocked on the full sink queue. A sleep alone does not prove either
-    /// condition. Queue occupancy itself is only exposed by GStreamer 1.28+.
-    fn wait_until_decode_stalls(reader: &VideoReader) -> Result<(), Box<dyn std::error::Error>> {
-        let start = std::time::Instant::now();
-        let mut last = None;
-        let mut stable = 0;
-        while start.elapsed() < Duration::from_secs(10) {
-            let position = reader
-                .0
-                .pipeline
-                .query_position::<gstreamer::format::ClockTime>();
-            if position.is_some() && position == last {
-                stable += 1;
-                if stable >= 3 {
-                    return Ok(());
-                }
-            } else {
-                stable = 0;
-            }
-            last = position;
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        Err(format!("decoding did not stall (last position {last:?})").into())
-    }
-
     /// A file that reaches its end must be detected through the explicit end-of-stream signal,
     /// not by the position reaching the duration or by a timeout (both of which never fired and
     /// made consumers hang or truncate).
@@ -1058,6 +975,48 @@ mod tests {
         write_and_close(writer, &[0, 40, 80, 120, 160])?;
         assert_eq!(frame_values(&file_path)?, [0, 40, 80, 120, 160]);
         Ok(())
+    }
+
+    /// A file that can never decode must report a stream error instead of returning `Ok(None)`
+    /// forever. Every consumer used to hang on this.
+    #[test]
+    fn video_reader_reports_an_error_for_a_non_media_file() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let tmp_dir = tempfile::tempdir()?;
+        let path = tmp_dir.path().join("not-a-video.bin");
+        std::fs::write(&path, b"this is not a media file")?;
+        let mut reader = VideoReader::new(&path, ImageFormat::Rgb8)?;
+        reader.start()?;
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(10) {
+            match reader.try_grab_rgb8() {
+                Err(
+                    err @ VideoReaderError::StreamCaptureError(StreamCaptureError::StreamError(_)),
+                ) => {
+                    // The GStreamer cause survives the wrap: VideoReaderError ->
+                    // StreamCaptureError -> glib::Error.
+                    assert!(
+                        std::error::Error::source(&err).is_some(),
+                        "the stream error lost its cause"
+                    );
+                    assert!(
+                        !err.to_string().is_empty(),
+                        "the stream error has no message"
+                    );
+                    // `stream_error` reports the same failure without grabbing a frame.
+                    assert!(
+                        reader.stream_error().is_some(),
+                        "stream_error() did not report the failure"
+                    );
+                    reader.close()?;
+                    return Ok(());
+                }
+                Err(err) => return Err(err.into()),
+                Ok(Grab::Pending) => std::thread::sleep(Duration::from_millis(5)),
+                Ok(_) => panic!("a non-media file must not deliver frames or end-of-stream"),
+            }
+        }
+        panic!("no stream error within 10 s");
     }
 
     /// A flushing seek to the end must report end-of-stream again. Clearing EOS *after* the seek
@@ -1116,200 +1075,6 @@ mod tests {
         Ok(())
     }
 
-    /// A seek while decoded frames are still queued must discard them: the next reads have to
-    /// come from the new position, not from the old one.
-    #[test]
-    fn video_reader_seek_discards_frames_buffered_before_the_seek(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let tmp_dir = tempfile::tempdir()?;
-        let file_path = tmp_dir.path().join("seek-discard.mov");
-        let mut writer = VideoWriter::from_pipeline_description(
-            RAW_MOV,
-            &file_path,
-            ImageFormat::Rgb8,
-            30,
-            SIZE,
-        )?;
-        writer.start()?;
-        write_and_close(writer, &[0, 40, 80, 120, 160])?;
-
-        let mut reader = VideoReader::new(&file_path, ImageFormat::Rgb8)?;
-        reader.start()?;
-        // Grab one frame and let the decoder queue the rest, so the queue is not empty.
-        let mut first = None;
-        let start = std::time::Instant::now();
-        while first.is_none() && start.elapsed() < Duration::from_secs(10) {
-            match reader.try_grab_rgb8()? {
-                Grab::Frame { image, .. } => first = Some(image.as_slice()[0]),
-                Grab::Pending => std::thread::sleep(Duration::from_millis(1)),
-                Grab::Eos => panic!("ended before the first frame"),
-            }
-        }
-        assert_eq!(first, Some(0));
-        wait_until_decode_stalls(&reader)?;
-
-        // Replay from the start: the queued 40, 80, ... must not be returned first. A deadlock
-        // must fail the test instead of hanging it.
-        let replayed = finishes_within(Duration::from_secs(10), move || {
-            reader.reset().map_err(|e| e.to_string())?;
-            read_frame_values(&mut reader).map_err(|e| e.to_string())
-        });
-        assert_eq!(
-            replayed,
-            Some(Ok(vec![0, 40, 80, 120, 160])),
-            "reset blocked or returned stale frames"
-        );
-        Ok(())
-    }
-
-    /// A flushing seek must complete even when the decoder is blocked on a full queue. An
-    /// application-owned wait that GStreamer cannot wake deadlocks here.
-    #[test]
-    fn video_reader_seek_completes_while_the_decode_queue_is_full(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let tmp_dir = tempfile::tempdir()?;
-        let file_path = tmp_dir.path().join("seek-full.mov");
-        let mut writer = VideoWriter::from_pipeline_description(
-            RAW_MOV,
-            &file_path,
-            ImageFormat::Rgb8,
-            30,
-            SIZE,
-        )?;
-        writer.start()?;
-        let values: Vec<u8> = (0..40).collect();
-        write_and_close(writer, &values)?;
-
-        let mut reader = VideoReader::new(&file_path, ImageFormat::Rgb8)?;
-        reader.start()?;
-        // Grab one frame, then give the decoder time to fill the queue and block on it.
-        let mut first = None;
-        let start = std::time::Instant::now();
-        while first.is_none() && start.elapsed() < Duration::from_secs(10) {
-            match reader.try_grab_rgb8()? {
-                Grab::Frame { image, .. } => first = Some(image.as_slice()[0]),
-                Grab::Pending => std::thread::sleep(Duration::from_millis(1)),
-                Grab::Eos => panic!("ended before the first frame"),
-            }
-        }
-        assert_eq!(first, Some(0));
-        wait_until_decode_stalls(&reader)?;
-
-        let replayed = finishes_within(Duration::from_secs(10), move || {
-            reader.reset().map_err(|e| e.to_string())?;
-            read_frame_values(&mut reader).map_err(|e| e.to_string())
-        });
-        assert_eq!(
-            replayed,
-            Some(Ok(values)),
-            "reset blocked on a full decode queue"
-        );
-        Ok(())
-    }
-
-    /// Resuming a paused reader must keep the frames that are already queued.
-    #[test]
-    fn video_reader_resume_keeps_buffered_frames() -> Result<(), Box<dyn std::error::Error>> {
-        let tmp_dir = tempfile::tempdir()?;
-        let file_path = tmp_dir.path().join("resume.mov");
-        let mut writer = VideoWriter::from_pipeline_description(
-            RAW_MOV,
-            &file_path,
-            ImageFormat::Rgb8,
-            30,
-            SIZE,
-        )?;
-        writer.start()?;
-        write_and_close(writer, &[0, 40, 80, 120])?;
-
-        let mut reader = VideoReader::new(&file_path, ImageFormat::Rgb8)?;
-        reader.start()?;
-        let mut first = None;
-        let start = std::time::Instant::now();
-        while first.is_none() && start.elapsed() < Duration::from_secs(10) {
-            match reader.try_grab_rgb8()? {
-                Grab::Frame { image, .. } => first = Some(image.as_slice()[0]),
-                Grab::Pending => std::thread::sleep(Duration::from_millis(1)),
-                Grab::Eos => panic!("ended before the first frame"),
-            }
-        }
-        assert_eq!(first, Some(0));
-        // Let the rest queue up, then pause and resume.
-        wait_until_decode_stalls(&reader)?;
-        reader.pause()?;
-        reader.start()?;
-        assert_eq!(read_frame_values(&mut reader)?, [40, 80, 120]);
-        reader.close()?;
-        Ok(())
-    }
-
-    /// `close` must not deadlock while the decoder is blocked on a full queue: the `Null`
-    /// transition flushes the queue and wakes the streaming thread.
-    #[test]
-    fn video_reader_close_completes_with_a_full_queue() -> Result<(), Box<dyn std::error::Error>> {
-        let tmp_dir = tempfile::tempdir()?;
-        let file_path = tmp_dir.path().join("close-full.mov");
-        let mut writer = VideoWriter::from_pipeline_description(
-            RAW_MOV,
-            &file_path,
-            ImageFormat::Rgb8,
-            30,
-            SIZE,
-        )?;
-        writer.start()?;
-        let values: Vec<u8> = (0..40).collect();
-        write_and_close(writer, &values)?;
-
-        let mut reader = VideoReader::new(&file_path, ImageFormat::Rgb8)?;
-        reader.start()?;
-        let mut first = None;
-        let start = std::time::Instant::now();
-        while first.is_none() && start.elapsed() < Duration::from_secs(10) {
-            match reader.try_grab_rgb8()? {
-                Grab::Frame { image, .. } => first = Some(image.as_slice()[0]),
-                Grab::Pending => std::thread::sleep(Duration::from_millis(1)),
-                Grab::Eos => panic!("ended before the first frame"),
-            }
-        }
-        assert_eq!(first, Some(0));
-        // Let the decoder fill the queue and block on it before closing.
-        wait_until_decode_stalls(&reader)?;
-
-        let closed = finishes_within(Duration::from_secs(5), move || {
-            reader.close().map_err(|e| e.to_string())
-        });
-        assert_eq!(closed, Some(Ok(())), "close blocked on a full queue");
-        Ok(())
-    }
-
-    /// Grabbing after `close` must report a stopped pipeline, not wait for frames forever.
-    #[test]
-    fn video_reader_grab_after_close_reports_not_running() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let tmp_dir = tempfile::tempdir()?;
-        let file_path = tmp_dir.path().join("closed.mov");
-        let mut writer = VideoWriter::from_pipeline_description(
-            RAW_MOV,
-            &file_path,
-            ImageFormat::Rgb8,
-            30,
-            SIZE,
-        )?;
-        writer.start()?;
-        write_and_close(writer, &[0])?;
-
-        let mut reader = VideoReader::new(&file_path, ImageFormat::Rgb8)?;
-        reader.start()?;
-        reader.close()?;
-        assert!(matches!(
-            reader.try_grab_rgb8(),
-            Err(VideoReaderError::StreamCaptureError(
-                StreamCaptureError::PipelineNotRunning
-            ))
-        ));
-        Ok(())
-    }
-
     /// A failed seek must keep the previous end-of-stream state instead of erasing it.
     #[test]
     fn video_reader_failed_seek_keeps_eos() -> Result<(), Box<dyn std::error::Error>> {
@@ -1336,48 +1101,6 @@ mod tests {
         ));
         assert!(reader.is_eos(), "a failed seek erased the end-of-stream");
         Ok(())
-    }
-
-    /// A file that can never decode must report a stream error instead of returning `Ok(None)`
-    /// forever. Every consumer used to hang on this.
-    #[test]
-    fn video_reader_reports_an_error_for_a_non_media_file() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let tmp_dir = tempfile::tempdir()?;
-        let path = tmp_dir.path().join("not-a-video.bin");
-        std::fs::write(&path, b"this is not a media file")?;
-        let mut reader = VideoReader::new(&path, ImageFormat::Rgb8)?;
-        reader.start()?;
-        let start = std::time::Instant::now();
-        while start.elapsed() < Duration::from_secs(10) {
-            match reader.try_grab_rgb8() {
-                Err(
-                    err @ VideoReaderError::StreamCaptureError(StreamCaptureError::StreamError(_)),
-                ) => {
-                    // The GStreamer cause survives the wrap: VideoReaderError ->
-                    // StreamCaptureError -> glib::Error.
-                    assert!(
-                        std::error::Error::source(&err).is_some(),
-                        "the stream error lost its cause"
-                    );
-                    assert!(
-                        !err.to_string().is_empty(),
-                        "the stream error has no message"
-                    );
-                    // `stream_error` reports the same failure without grabbing a frame.
-                    assert!(
-                        reader.stream_error().is_some(),
-                        "stream_error() did not report the failure"
-                    );
-                    reader.close()?;
-                    return Ok(());
-                }
-                Err(err) => return Err(err.into()),
-                Ok(Grab::Pending) => std::thread::sleep(Duration::from_millis(5)),
-                Ok(_) => panic!("a non-media file must not deliver frames or end-of-stream"),
-            }
-        }
-        panic!("no stream error within 10 s");
     }
 
     /// `write` and `close` before `start` must fail instead of reporting success for a file that
