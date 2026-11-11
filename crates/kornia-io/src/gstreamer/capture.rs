@@ -4,15 +4,18 @@ use gstreamer::prelude::*;
 use kornia_image::Image;
 use std::sync::{Arc, Mutex};
 
-/// How many decoded frames the appsink may queue for the next grab. When the queue is full the
-/// sink blocks the streaming thread (backpressure), so a slow consumer never loses frames.
-const FRAME_BUFFER_CAPACITY: u32 = 16;
+/// How many decoded frames the appsink may queue. A full queue blocks the streaming thread
+/// (backpressure) or drops the oldest frame, depending on the source.
+pub(crate) const FRAME_BUFFER_CAPACITY: u32 = 16;
 
 /// The terminal state a capture pipeline reports on its bus.
 #[derive(Default)]
 struct StreamStatus {
     eos: bool,
     error: Option<gstreamer::glib::Error>,
+    /// Set by [`StreamCapture::close`]: the pipeline was stopped before it reached a terminal
+    /// state, so a later grab must not report `Pending` forever.
+    closed: bool,
 }
 
 /// A decoded frame and the presentation timestamp the pipeline reported for it.
@@ -96,16 +99,21 @@ pub struct StreamCapture {
     /// The pipeline's bus. Auto-flush is off, so messages posted while the pipeline goes to null
     /// can still be read.
     bus: gstreamer::Bus,
-    /// The element that queues decoded frames. Its bounded queue applies backpressure and is
-    /// flushed by GStreamer on a flushing seek or a state change to null.
+    /// The element that queues decoded frames. Its bounded queue applies backpressure (file
+    /// decoding) or drops stale frames (live capture), and is flushed by GStreamer on a flushing
+    /// seek or a state change to null.
     appsink: gstreamer_app::AppSink,
-    fps: Arc<Mutex<gstreamer::Fraction>>,
+    fps: gstreamer::Fraction,
     /// End-of-stream and errors seen on the bus, updated by its sync handler.
     status: Arc<Mutex<StreamStatus>>,
 }
 
 impl StreamCapture {
     /// Creates a new StreamCapture instance with the given pipeline description.
+    ///
+    /// The appsink queue is bounded and applies backpressure: a slow consumer blocks the decoder
+    /// instead of losing frames. Use this for file decoding; live capture uses the crate-internal
+    /// dropping constructor.
     ///
     /// # Arguments
     ///
@@ -115,6 +123,25 @@ impl StreamCapture {
     ///
     /// A Result containing the StreamCapture instance or a StreamCaptureError.
     pub fn new(pipeline_desc: &str) -> Result<Self, StreamCaptureError> {
+        Self::from_pipeline(pipeline_desc, false)
+    }
+
+    /// Creates a capture whose bounded queue drops the oldest frame when it is full, for live
+    /// sources (cameras, RTSP) where a slow consumer must catch up with the current frame rather
+    /// than stall the pipeline.
+    ///
+    /// # Arguments
+    ///
+    /// * `pipeline_desc` - A string describing the GStreamer pipeline.
+    ///
+    /// # Returns
+    ///
+    /// A Result containing the StreamCapture instance or a StreamCaptureError.
+    pub(crate) fn new_dropping(pipeline_desc: &str) -> Result<Self, StreamCaptureError> {
+        Self::from_pipeline(pipeline_desc, true)
+    }
+
+    fn from_pipeline(pipeline_desc: &str, drop_frames: bool) -> Result<Self, StreamCaptureError> {
         if !gstreamer::INITIALIZED.load(std::sync::atomic::Ordering::Relaxed) {
             gstreamer::init()?;
         }
@@ -129,16 +156,16 @@ impl StreamCapture {
             .dynamic_cast::<gstreamer_app::AppSink>()
             .map_err(StreamCaptureError::DowncastPipelineError)?;
 
-        // Bounded queue: appsink blocks the streaming thread while the queue is full
-        // (backpressure) instead of dropping frames. GStreamer itself wakes it on a flushing
-        // seek and flushes the queue on a state change to Null.
+        // Bounded queue: a full queue blocks the streaming thread (backpressure) or drops the
+        // oldest frame (live capture). GStreamer wakes a blocked producer on a flush, and drops
+        // or flushes the queue on a seek/state change itself.
         appsink.set_max_buffers(FRAME_BUFFER_CAPACITY);
-        appsink.set_drop(false);
+        appsink.set_drop(drop_frames);
         // Post end-of-stream on the bus as soon as the sink sees it, without waiting for the
         // queued frames to be pulled: the terminal state is exposed while frames remain buffered.
         appsink.set_wait_on_eos(false);
 
-        let fps = Arc::new(Mutex::new(gstreamer::Fraction::new(1, 1)));
+        let fps = gstreamer::Fraction::new(1, 1);
         let status = Arc::new(Mutex::new(StreamStatus::default()));
 
         let bus = pipeline.bus().ok_or(StreamCaptureError::BusError)?;
@@ -174,10 +201,7 @@ impl StreamCapture {
 
     /// Gets the current fps of the stream, or `0.0` if the caps give no fixed framerate.
     pub fn get_fps(&self) -> Option<f64> {
-        self.fps
-            .lock()
-            .ok()
-            .map(|fps| fps.numer() as f64 / fps.denom() as f64)
+        Some(self.fps.numer() as f64 / self.fps.denom() as f64)
     }
 
     /// Gets the current state of the stream pipeline
@@ -341,10 +365,7 @@ impl StreamCapture {
             .structure(0)
             .and_then(|structure| structure.get::<gstreamer::Fraction>("framerate").ok())
             .unwrap_or_else(|| gstreamer::Fraction::new(0, 1));
-        *self
-            .fps
-            .lock()
-            .map_err(|_| StreamCaptureError::MutexPoisonError)? = fps;
+        self.fps = fps;
 
         let buffer = sample
             .buffer_owned()
@@ -379,8 +400,9 @@ impl StreamCapture {
     /// # Errors
     ///
     /// Returns [`StreamCaptureError::StreamError`] if the pipeline posted an error on its bus
-    /// (e.g. a file that cannot be decoded), [`StreamCaptureError::MutexPoisonError`] if the
-    /// status lock is poisoned, and any error of [`Self::grab_rgb8`] for the frame itself.
+    /// (e.g. a file that cannot be decoded), [`StreamCaptureError::PipelineNotRunning`] after
+    /// [`Self::close`], [`StreamCaptureError::MutexPoisonError`] if the status lock is poisoned,
+    /// and any error of [`Self::grab_rgb8`] for the frame itself.
     ///
     /// # Example
     ///
@@ -449,6 +471,9 @@ impl StreamCapture {
         if let Some(error) = &status.error {
             return Err(StreamCaptureError::StreamError(error.clone()));
         }
+        if status.closed {
+            return Err(StreamCaptureError::PipelineNotRunning);
+        }
         if status.eos {
             return Ok(Grab::Eos);
         }
@@ -461,7 +486,17 @@ impl StreamCapture {
     /// a streaming thread blocked on a full queue is woken, so this cannot deadlock. No
     /// end-of-stream event is sent first: with a filled sink queue it would wait for that same
     /// streaming thread, and a state change to `Null` finalizes downstream sinks anyway.
+    ///
+    /// Afterwards, `try_grab_*` reports [`StreamCaptureError::PipelineNotRunning`] instead of
+    /// waiting forever. [`Self::start`] begins a fresh run and clears that state.
     pub fn close(&self) -> Result<(), StreamCaptureError> {
+        {
+            let mut status = self
+                .status
+                .lock()
+                .map_err(|_| StreamCaptureError::MutexPoisonError)?;
+            status.closed = true;
+        }
         self.pipeline.set_state(gstreamer::State::Null)?;
         // Auto-flush is off, so drop the messages posted while stopping: they retain references
         // to the pipeline elements.

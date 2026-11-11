@@ -704,6 +704,58 @@ mod tests {
         Ok(())
     }
 
+    /// Live capture uses a dropping queue: a slow consumer must not block the pipeline, and the
+    /// queue keeps the newest frames so the consumer catches up with the camera.
+    #[test]
+    fn dropping_capture_keeps_the_newest_frames() -> Result<(), Box<dyn std::error::Error>> {
+        use gstreamer::prelude::*;
+        use std::time::Duration;
+
+        if !gstreamer::INITIALIZED.load(std::sync::atomic::Ordering::Relaxed) {
+            gstreamer::init()?;
+        }
+
+        const FRAMES: u8 = 40;
+        let mut capture = StreamCapture::new_dropping(
+            "appsrc name=src caps=video/x-raw,format=RGB,width=4,height=4 ! \
+             appsink name=sink sync=false",
+        )?;
+        capture.start()?;
+        let appsrc = capture
+            .pipeline
+            .by_name("src")
+            .ok_or("missing appsrc")?
+            .dynamic_cast::<gstreamer_app::AppSrc>()
+            .map_err(|_| "src is not an appsrc")?;
+        for value in 0..FRAMES {
+            appsrc.push_buffer(gstreamer::Buffer::from_slice(vec![value; 4 * 4 * 3]))?;
+        }
+        appsrc.end_of_stream()?;
+
+        // A dropping queue never blocks the producer, so EOS is posted once all frames went
+        // through; the queue then holds the newest frames only.
+        let start = std::time::Instant::now();
+        while !capture.is_eos() && start.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(capture.is_eos(), "the producer was blocked by a full queue");
+
+        let mut values = Vec::new();
+        loop {
+            match capture.try_grab_rgb8()? {
+                Grab::Frame { image, .. } => values.push(image.as_slice()[0]),
+                Grab::Eos => break,
+                Grab::Pending => panic!("the queue must hold the newest frames at EOS"),
+            }
+        }
+        capture.close()?;
+
+        let first_kept = FRAMES - crate::gstreamer::capture::FRAME_BUFFER_CAPACITY as u8;
+        let expected: Vec<u8> = (first_kept..FRAMES).collect();
+        assert_eq!(values, expected, "the queue did not keep the newest frames");
+        Ok(())
+    }
+
     /// The grab result carries the presentation timestamp of the grabbed frame.
     #[test]
     fn grab_rgb8_reports_the_frame_pts() -> Result<(), Box<dyn std::error::Error>> {

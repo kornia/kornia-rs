@@ -1014,6 +1014,32 @@ mod tests {
         Ok(values)
     }
 
+    /// Waits until the pipeline position stops advancing, i.e. decoding reached the end or the
+    /// streaming thread blocked on the full sink queue. A sleep alone does not prove either
+    /// condition. Queue occupancy itself is only exposed by GStreamer 1.28+.
+    fn wait_until_decode_stalls(reader: &VideoReader) -> Result<(), Box<dyn std::error::Error>> {
+        let start = std::time::Instant::now();
+        let mut last = None;
+        let mut stable = 0;
+        while start.elapsed() < Duration::from_secs(10) {
+            let position = reader
+                .0
+                .pipeline
+                .query_position::<gstreamer::format::ClockTime>();
+            if position.is_some() && position == last {
+                stable += 1;
+                if stable >= 3 {
+                    return Ok(());
+                }
+            } else {
+                stable = 0;
+            }
+            last = position;
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        Err(format!("decoding did not stall (last position {last:?})").into())
+    }
+
     /// A file that reaches its end must be detected through the explicit end-of-stream signal,
     /// not by the position reaching the duration or by a timeout (both of which never fired and
     /// made consumers hang or truncate).
@@ -1120,12 +1146,19 @@ mod tests {
             }
         }
         assert_eq!(first, Some(0));
-        std::thread::sleep(Duration::from_millis(100));
+        wait_until_decode_stalls(&reader)?;
 
-        // Replay from the start: the queued 40, 80, ... must not be returned first.
-        reader.reset()?;
-        assert_eq!(read_frame_values(&mut reader)?, [0, 40, 80, 120, 160]);
-        reader.close()?;
+        // Replay from the start: the queued 40, 80, ... must not be returned first. A deadlock
+        // must fail the test instead of hanging it.
+        let replayed = finishes_within(Duration::from_secs(10), move || {
+            reader.reset().map_err(|e| e.to_string())?;
+            read_frame_values(&mut reader).map_err(|e| e.to_string())
+        });
+        assert_eq!(
+            replayed,
+            Some(Ok(vec![0, 40, 80, 120, 160])),
+            "reset blocked or returned stale frames"
+        );
         Ok(())
     }
 
@@ -1160,16 +1193,17 @@ mod tests {
             }
         }
         assert_eq!(first, Some(0));
-        std::thread::sleep(Duration::from_millis(200));
+        wait_until_decode_stalls(&reader)?;
 
-        let seek_start = std::time::Instant::now();
-        reader.reset()?;
-        assert!(
-            seek_start.elapsed() < Duration::from_secs(5),
+        let replayed = finishes_within(Duration::from_secs(10), move || {
+            reader.reset().map_err(|e| e.to_string())?;
+            read_frame_values(&mut reader).map_err(|e| e.to_string())
+        });
+        assert_eq!(
+            replayed,
+            Some(Ok(values)),
             "reset blocked on a full decode queue"
         );
-        assert_eq!(read_frame_values(&mut reader)?, values);
-        reader.close()?;
         Ok(())
     }
 
@@ -1201,7 +1235,7 @@ mod tests {
         }
         assert_eq!(first, Some(0));
         // Let the rest queue up, then pause and resume.
-        std::thread::sleep(Duration::from_millis(100));
+        wait_until_decode_stalls(&reader)?;
         reader.pause()?;
         reader.start()?;
         assert_eq!(read_frame_values(&mut reader)?, [40, 80, 120]);
@@ -1239,12 +1273,40 @@ mod tests {
         }
         assert_eq!(first, Some(0));
         // Let the decoder fill the queue and block on it before closing.
-        std::thread::sleep(Duration::from_millis(200));
+        wait_until_decode_stalls(&reader)?;
 
         let closed = finishes_within(Duration::from_secs(5), move || {
             reader.close().map_err(|e| e.to_string())
         });
         assert_eq!(closed, Some(Ok(())), "close blocked on a full queue");
+        Ok(())
+    }
+
+    /// Grabbing after `close` must report a stopped pipeline, not wait for frames forever.
+    #[test]
+    fn video_reader_grab_after_close_reports_not_running() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let tmp_dir = tempfile::tempdir()?;
+        let file_path = tmp_dir.path().join("closed.mov");
+        let mut writer = VideoWriter::from_pipeline_description(
+            RAW_MOV,
+            &file_path,
+            ImageFormat::Rgb8,
+            30,
+            SIZE,
+        )?;
+        writer.start()?;
+        write_and_close(writer, &[0])?;
+
+        let mut reader = VideoReader::new(&file_path, ImageFormat::Rgb8)?;
+        reader.start()?;
+        reader.close()?;
+        assert!(matches!(
+            reader.try_grab_rgb8(),
+            Err(VideoReaderError::StreamCaptureError(
+                StreamCaptureError::PipelineNotRunning
+            ))
+        ));
         Ok(())
     }
 
