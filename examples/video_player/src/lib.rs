@@ -33,8 +33,8 @@ enum AppState {
     Playing(VideoReader, Instant, Option<TextureStore>),
     /// The video is paused
     Paused(VideoReader, Option<TextureStore>),
-    /// The video has been finished
-    Finished(VideoReader),
+    /// The video has been finished; the last texture is kept on screen until a restart.
+    Finished(VideoReader, Option<TextureStore>),
     /// The video is not loaded
     #[default]
     Stopped,
@@ -45,7 +45,7 @@ impl AppState {
         match self {
             AppState::Playing(reader, ..) => Some(reader),
             AppState::Paused(reader, ..) => Some(reader),
-            AppState::Finished(reader) => Some(reader),
+            AppState::Finished(reader, _) => Some(reader),
             AppState::Stopped => None,
         }
     }
@@ -142,7 +142,9 @@ fn render_play_controls(app: &mut MyApp, ctx: &eframe::egui::Context) {
 
     if is_finished {
         let app_state = match std::mem::take(&mut app.app_state) {
-            AppState::Playing(video_player, ..) => AppState::Finished(video_player),
+            AppState::Playing(video_player, _, texture_store) => {
+                AppState::Finished(video_player, texture_store)
+            }
             _ => panic!("Unexpected AppState"),
         };
         app.app_state = app_state;
@@ -174,7 +176,7 @@ fn render_play_controls(app: &mut MyApp, ctx: &eframe::egui::Context) {
                             app.app_state =
                                 AppState::Playing(video_reader, Instant::now(), texture_store);
                         }
-                        AppState::Finished(mut video_reader) => {
+                        AppState::Finished(mut video_reader, _) => {
                             video_reader.reset().expect("Failed to reset video");
                             video_reader.start().expect("Failed to start the video");
                             app.finished = false;
@@ -388,7 +390,7 @@ fn render_image(app: &mut MyApp, ui: &mut eframe::egui::Ui) {
                 ui.image(sized_texture);
             }
         }
-        AppState::Paused(_, Some(texture_store)) => {
+        AppState::Paused(_, Some(texture_store)) | AppState::Finished(_, Some(texture_store)) => {
             let sized_texture = egui::load::SizedTexture::new(
                 texture_store.texture_handle.id(),
                 egui::Vec2::new(

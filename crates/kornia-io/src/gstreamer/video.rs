@@ -706,8 +706,14 @@ impl VideoReader {
         // Convert the Duration to ClockTime (nanoseconds)
         let clock_time = gstreamer::ClockTime::from_nseconds(pos.as_nanos() as u64);
 
-        // A flushing seek clears EOS once it completes. Clear our copy first so an end-of-stream
-        // posted *by the seek* is not erased, and restore it if the seek fails.
+        // Only a flushing seek clears EOS in GStreamer. Clear our copy first so an end-of-stream
+        // posted *by the seek* is not erased, and restore it if the seek fails. A non-flushing
+        // seek leaves the stored state alone.
+        if !seek_flags.contains(gstreamer::SeekFlags::FLUSH) {
+            return pipeline
+                .seek_simple(seek_flags, clock_time)
+                .map_err(|_| VideoReaderError::SeekError);
+        }
         let was_eos = self.0.is_eos();
         self.0.clear_eos();
         match pipeline.seek_simple(seek_flags, clock_time) {
@@ -1106,6 +1112,38 @@ mod tests {
             Err(VideoReaderError::SeekError)
         ));
         assert!(reader.is_eos(), "a failed seek erased the end-of-stream");
+        Ok(())
+    }
+
+    /// A seeking without `FLUSH` does not undo EOS in GStreamer, so the stored EOS must survive
+    /// and later grabs must not report `Pending` forever.
+    #[test]
+    fn video_reader_non_flushing_seek_keeps_eos() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp_dir = tempfile::tempdir()?;
+        let file_path = tmp_dir.path().join("non-flushing-seek.mov");
+        let mut writer = VideoWriter::from_pipeline_description(
+            RAW_MOV,
+            &file_path,
+            ImageFormat::Rgb8,
+            30,
+            SIZE,
+        )?;
+        writer.start()?;
+        write_and_close(writer, &[0, 40, 80])?;
+
+        let mut reader = VideoReader::new(&file_path, ImageFormat::Rgb8)?;
+        reader.start()?;
+        assert_eq!(read_frame_values(&mut reader)?, [0, 40, 80]);
+        assert!(reader.is_eos());
+
+        // No FLUSH: GStreamer keeps its EOS state, so the reader must keep reporting it.
+        let _ = reader.seek(gstreamer::SeekFlags::ACCURATE, Duration::ZERO);
+        assert!(reader.is_eos(), "a non-flushing seek cleared EOS");
+        assert!(
+            !matches!(reader.try_grab_rgb8()?, Grab::Pending),
+            "a non-flushing seek left the reader pending"
+        );
+        reader.close()?;
         Ok(())
     }
 

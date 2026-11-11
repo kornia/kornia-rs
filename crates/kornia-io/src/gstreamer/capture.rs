@@ -451,14 +451,24 @@ impl StreamCapture {
             return Ok(Grab::Frame(image));
         }
 
-        let status = self
-            .status
-            .lock()
-            .map_err(|_| StreamCaptureError::MutexPoisonError)?;
-        if let Some(error) = &status.error {
-            return Err(StreamCaptureError::StreamError(error.clone()));
+        let (error, eos) = {
+            let status = self
+                .status
+                .lock()
+                .map_err(|_| StreamCaptureError::MutexPoisonError)?;
+            (status.error.clone(), status.eos)
+        };
+        // The final frame can land between the empty check above and the terminal state below:
+        // take one more look before reporting the end.
+        if error.is_some() || eos {
+            if let Some(image) = self.grab_image::<C>(grab_format)? {
+                return Ok(Grab::Frame(image));
+            }
         }
-        if status.eos {
+        if let Some(error) = error {
+            return Err(StreamCaptureError::StreamError(error));
+        }
+        if eos {
             return Ok(Grab::Eos);
         }
         Ok(Grab::Pending)
