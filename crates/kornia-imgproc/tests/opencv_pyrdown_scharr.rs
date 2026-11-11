@@ -45,6 +45,9 @@ use kornia_imgproc::pyramid::pyrdown_f32;
 /// OpenCV output.
 type Pins = ((usize, usize), f64, f64, [(usize, usize, f32); 8]);
 
+// The f32 pins are exact dyadic values, written in full as numpy prints them;
+// clippy would shorten them to the nearest-f32 form, which reads less exactly.
+#[allow(clippy::excessive_precision)]
 #[rustfmt::skip]
 const PYRDOWN: [Pins; 4] = [
     ((17, 9), 5184.37890625, 122898.3828125, [(0, 0, 19.9375), (1, 1, 80.0), (4, 2, 120.0546875), (8, 4, 78.703125), (7, 3, 111.33984375), (8, 1, 134.2265625), (8, 3, 103.140625), (8, 0, 122.109375)]),
