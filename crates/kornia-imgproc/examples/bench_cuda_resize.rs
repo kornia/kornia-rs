@@ -50,6 +50,10 @@ fn gb_per_sec(npix_dst: usize, ms_per_iter: f64) -> f64 {
 // Entry point
 // --------------------------------------------------------------------------
 
+/// Benchmark GPU and CPU resize operations.
+///
+/// Runs bilinear, nearest-neighbor, bicubic, lanczos, and fused-normalize
+/// benchmarks on CUDA when available, and CPU bilinear as baseline.
 fn main() {
     #[cfg(feature = "cuda")]
     run_gpu_cuda();
@@ -523,15 +527,11 @@ fn run_gpu_cuda_fused_normalize() {
 //   A  — NVRTC bilinear with __ldg  (shipping kernel)
 //   B  — NVRTC bilinear without __ldg (isolates __ldg contribution)
 //   C  — cuda-oxide bilinear, raw pointers  (byte-exact twin of A)
-//   D  — cuda-oxide bilinear, slice params  (negative result: ~12% upscale penalty)
-//   E  — NVRTC nearest-neighbour (shipping kernel)
-//   F  — cuda-oxide nearest-neighbour, raw pointers (byte-exact twin of E)
-//
-// PTX for arms C/D/F are pre-compiled to resize_*_oxide_sm75.ptx.
-// Until those files are regenerated on a CUDA 13+ host the launchers return
-// a runtime error; the bench prints a note and skips the arm.
-
 #[cfg(feature = "cuda")]
+/// Benchmark bilinear, nearest-neighbor, and bicubic resize kernels.
+///
+/// Tests oxide kernels with NVRTC fallback on GPUs supporting sm_75 and above.
+/// Covers downscale, upscale, and non-dyadic cases. Skips arms that fail to load.
 fn run_gpu_oxide_sweep() {
     use std::sync::Arc;
 
@@ -560,7 +560,10 @@ fn run_gpu_oxide_sweep() {
     const SECTIONS: &[(&str, &[(&str, Launcher)])] = &[
         (
             "bilinear (oxide + fallback)",
-            &[("bilinear", launch_resize_bilinear_downscale_cuda as Launcher)],
+            &[(
+                "bilinear",
+                launch_resize_bilinear_downscale_cuda as Launcher,
+            )],
         ),
         (
             "nearest-neighbor (oxide + fallback)",
