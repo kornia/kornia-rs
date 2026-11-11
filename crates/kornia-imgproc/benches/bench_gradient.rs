@@ -9,7 +9,7 @@ use kornia_imgproc::filter::{
 fn bench_gradient(c: &mut Criterion) {
     let mut group = c.benchmark_group("Spatial Gradient Float");
 
-    for (width, height) in [(512, 512), (1024, 1024), (2048, 2048)].iter() {
+    for (width, height) in [(752, 480), (512, 512), (1024, 1024), (2048, 2048)].iter() {
         group.throughput(criterion::Throughput::Elements((*width * *height) as u64));
 
         let parameter_string = format!("{width}x{height}");
