@@ -460,9 +460,9 @@ unsafe fn build_three_patches_interior_avx2(
     }
 
     (
-        hsum_avx_ps(a_acc) + a_scalar,
-        hsum_avx_ps(b_acc) + b_scalar,
-        hsum_avx_ps(c_acc) + c_scalar,
+        crate::simd::hsum_avx_ps(a_acc) + a_scalar,
+        crate::simd::hsum_avx_ps(b_acc) + b_scalar,
+        crate::simd::hsum_avx_ps(c_acc) + c_scalar,
     )
 }
 
@@ -793,23 +793,10 @@ unsafe fn iter_step_interior_avx2(
         idx += 21;
     }
 
-    (hsum_avx_ps(d_acc) + d_scalar, hsum_avx_ps(e_acc) + e_scalar)
-}
-
-/// Horizontal sum of a `__m256` of 8 f32 lanes.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
-#[inline]
-unsafe fn hsum_avx_ps(v: std::arch::x86_64::__m256) -> f32 {
-    use std::arch::x86_64::*;
-    let hi = _mm256_extractf128_ps::<1>(v);
-    let lo = _mm256_castps256_ps128(v);
-    let s128 = _mm_add_ps(lo, hi);
-    let shuf = _mm_movehdup_ps(s128);
-    let sums = _mm_add_ps(s128, shuf);
-    let shuf = _mm_movehl_ps(sums, sums);
-    let sums = _mm_add_ss(sums, shuf);
-    _mm_cvtss_f32(sums)
+    (
+        crate::simd::hsum_avx_ps(d_acc) + d_scalar,
+        crate::simd::hsum_avx_ps(e_acc) + e_scalar,
+    )
 }
 
 /// NEON iter-step kernel. Each row of 21 pixels processed as five 4-wide
@@ -1027,7 +1014,7 @@ unsafe fn error_pass_interior_avx2(
         idx += 21;
     }
 
-    hsum_avx_ps(err_acc) + err_scalar
+    crate::simd::hsum_avx_ps(err_acc) + err_scalar
 }
 
 /// NEON error-pass kernel. `|i1 - prev|` via `vabsq_f32`.

@@ -31,6 +31,18 @@ name = "bench_stereo_match"
 harness = false
 name = "bench_depth"
 
+[[bench]]
+harness = false
+name = "bench_voxel"
+
+[[bench]]
+harness = false
+name = "bench_affine_camera"
+
+[[bench]]
+harness = false
+name = "bench_affine_ba"
+
 [dependencies]
 bincode = { workspace = true }
 cudarc = { workspace = true, optional = true }
