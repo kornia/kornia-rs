@@ -47,6 +47,10 @@ name = "bench_affine_camera"
 harness = false
 name = "bench_affine_ba"
 
+[[bench]]
+harness = false
+name = "bench_pnp_refine"
+
 [dependencies]
 bincode = { workspace = true }
 cudarc = { workspace = true, optional = true }
