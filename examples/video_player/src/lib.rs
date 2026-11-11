@@ -203,11 +203,18 @@ fn render_play_controls(app: &mut MyApp, ctx: &eframe::egui::Context) {
                             // The failed pipeline may not recover, so retry reopens the file.
                             // A failure to reopen keeps the failed state (and last frame) visible.
                             let file_path = PathBuf::from(&app.file_path);
-                            let reopened = VideoReader::new(&file_path, ImageFormat::Rgb8)
-                                .and_then(|mut reader| {
-                                    reader.start()?;
-                                    Ok(reader)
-                                });
+                            let reopened = match VideoReader::new(&file_path, ImageFormat::Rgb8) {
+                                Ok(mut reader) => match reader.start() {
+                                    Ok(()) => Ok(reader),
+                                    // `start` can fail with a bare state-change error; the file's
+                                    // own reason is already on the reader's bus.
+                                    Err(start_error) => Err(reader
+                                        .stream_error()
+                                        .map(|error| error.to_string())
+                                        .unwrap_or_else(|| start_error.to_string())),
+                                },
+                                Err(error) => Err(error.to_string()),
+                            };
                             match reopened {
                                 Ok(video_reader) => {
                                     log::warn!("Retrying after playback error: {error}");
@@ -223,15 +230,17 @@ fn render_play_controls(app: &mut MyApp, ctx: &eframe::egui::Context) {
                                     app.finished = false;
                                     app.error = None;
                                     app.slider_pos = 0;
-                                    app.app_state =
-                                        AppState::Playing(video_reader, Instant::now(), None);
-                                }
-                                Err(retry_error) => {
-                                    app.app_state = AppState::Failed(
+                                    // Keep the last frame visible until the new pipeline delivers
+                                    // the first one; a later failure keeps it too.
+                                    app.app_state = AppState::Playing(
                                         video_reader,
-                                        retry_error.to_string(),
+                                        Instant::now(),
                                         texture_store,
                                     );
+                                }
+                                Err(retry_error) => {
+                                    app.app_state =
+                                        AppState::Failed(video_reader, retry_error, texture_store);
                                 }
                             }
                         }
