@@ -49,10 +49,10 @@ pub unsafe fn resize_bilinear_downscale_3c(
     let sx = if cx > 0.0 { cx } else { 0.0 };
     let sy = if cy > 0.0 { cy } else { 0.0 };
 
-    let x0 = sx as u32;
-    let y0 = sy as u32;
     let sw1 = src_w - 1;
     let sh1 = src_h - 1;
+    let x0 = (sx as u32).min(sw1);
+    let y0 = (sy as u32).min(sh1);
     let x1 = if x0 + 1 < sw1 { x0 + 1 } else { sw1 };
     let y1 = if y0 + 1 < sh1 { y0 + 1 } else { sh1 };
 
@@ -137,20 +137,8 @@ pub unsafe fn resize_nearest_downscale_3c(
 
     let sw1 = src_w - 1;
     let sh1 = src_h - 1;
-    let x = if sx < 0.0 {
-        0
-    } else if sx as u32 > sw1 {
-        sw1
-    } else {
-        sx as u32
-    };
-    let y = if sy < 0.0 {
-        0
-    } else if sy as u32 > sh1 {
-        sh1
-    } else {
-        sy as u32
-    };
+    let x = (sx as u32).min(sw1);
+    let y = (sy as u32).min(sh1);
 
     let src_idx = ((y * src_w + x) * 3) as usize;
     let dst_idx = ((dst_y * dst_w + dst_x) * 3) as usize;

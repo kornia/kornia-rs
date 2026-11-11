@@ -117,8 +117,8 @@ extern "C" __global__ void resize_bilinear_downscale_3c(
     float sx = fmaxf(fminf(ax * (float)dst_x + bx, (float)(src_w - 1u)), 0.0f);
     float sy = fmaxf(fminf(ay * (float)dst_y + by, (float)(src_h - 1u)), 0.0f);
 
-    unsigned int x0 = (unsigned int)sx;
-    unsigned int y0 = (unsigned int)sy;
+    unsigned int x0 = min((unsigned int)sx, src_w - 1u);
+    unsigned int y0 = min((unsigned int)sy, src_h - 1u);
     unsigned int x1 = min(x0 + 1u, src_w - 1u);
     unsigned int y1 = min(y0 + 1u, src_h - 1u);
 
@@ -205,8 +205,8 @@ extern "C" __global__ void resize_bilinear_normalize_3c(
     float sx = fmaxf(fminf(ax * (float)dst_x + bx, (float)(src_w - 1u)), 0.0f);
     float sy = fmaxf(fminf(ay * (float)dst_y + by, (float)(src_h - 1u)), 0.0f);
 
-    unsigned int x0 = (unsigned int)sx;
-    unsigned int y0 = (unsigned int)sy;
+    unsigned int x0 = min((unsigned int)sx, src_w - 1u);
+    unsigned int y0 = min((unsigned int)sy, src_h - 1u);
     unsigned int x1 = min(x0 + 1u, src_w - 1u);
     unsigned int y1 = min(y0 + 1u, src_h - 1u);
 
