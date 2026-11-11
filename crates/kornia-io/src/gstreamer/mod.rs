@@ -25,7 +25,7 @@ pub mod v4l2;
 pub mod video;
 
 pub use crate::stream::camera::{CameraCapture, CameraCaptureConfig};
-pub use crate::stream::capture::StreamCapture;
+pub use crate::stream::capture::{Grab, StreamCapture};
 pub use crate::stream::error::StreamCaptureError;
 pub use crate::stream::rtsp::RTSPCameraConfig;
 pub use crate::stream::v4l2::V4L2CameraConfig;
@@ -427,7 +427,7 @@ fn pack_rows(plane: &[u8], stride: usize, row_bytes: usize, height: usize) -> Ve
 
 #[cfg(test)]
 mod tests {
-    use crate::stream::{StreamCapture, StreamCaptureError};
+    use crate::stream::{Grab, StreamCapture, StreamCaptureError};
     use gstreamer_video::{VideoFormat, VideoFrameFlags, VideoInfo, VideoMeta};
     use kornia_image::Image;
 
@@ -490,8 +490,9 @@ mod tests {
 
     /// Verifies that capturing N frames with `videotestsrc` succeeds, that the pixel
     /// data is readable through the Image slice (proving the GstResource keepalive is
-    /// active), and that dropping each Image releases the buffer exactly once (no
-    /// crash / no double-unmap — validated by the clean exit without sanitizer errors).
+    /// active), that dropping each Image releases the buffer exactly once (no
+    /// crash / no double-unmap — validated by the clean exit without sanitizer errors), and
+    /// that the pipeline reports end-of-stream explicitly once the source is done.
     ///
     /// Uses `videotestsrc` (no camera or display required).
     #[test]
@@ -517,47 +518,56 @@ mod tests {
         capture.start()?;
 
         let mut frames_received = 0usize;
-        // Poll until we have all N frames (videotestsrc with num-buffers is bounded).
-        // We attempt up to 5×N polls to avoid an infinite loop.
-        let max_polls = N_FRAMES * 5;
-        for _ in 0..max_polls {
-            if let Some(image) = capture.grab_rgb8()? {
-                // 1. Verify dimensions.
-                assert_eq!(image.width(), WIDTH, "frame width mismatch");
-                assert_eq!(image.height(), HEIGHT, "frame height mismatch");
-                assert_eq!(image.num_channels(), 3, "frame channels mismatch");
+        let mut saw_eos = false;
+        // The deadline only guards the test against a hang; end-of-stream itself is asserted
+        // below, not inferred from a timeout.
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_secs(10) {
+            match capture.try_grab_rgb8()? {
+                Grab::Frame(image) => {
+                    // 1. Verify dimensions.
+                    assert_eq!(image.width(), WIDTH, "frame width mismatch");
+                    assert_eq!(image.height(), HEIGHT, "frame height mismatch");
+                    assert_eq!(image.num_channels(), 3, "frame channels mismatch");
 
-                // 2. Read pixel data — proves the GstResource keepalive is active and
-                //    the underlying mapped buffer is still valid.
-                let slice = image.as_slice();
-                assert_eq!(
-                    slice.len(),
-                    WIDTH * HEIGHT * 3,
-                    "frame pixel count mismatch"
-                );
-                // Access first and last byte to ensure the mapping is live.
-                let _ = slice[0];
-                let _ = slice[slice.len() - 1];
+                    // 2. Read pixel data — proves the GstResource keepalive is active and
+                    //    the underlying mapped buffer is still valid.
+                    let slice = image.as_slice();
+                    assert_eq!(
+                        slice.len(),
+                        WIDTH * HEIGHT * 3,
+                        "frame pixel count mismatch"
+                    );
+                    // Access first and last byte to ensure the mapping is live.
+                    let _ = slice[0];
+                    let _ = slice[slice.len() - 1];
 
-                frames_received += 1;
+                    frames_received += 1;
 
-                // 3. `image` drops here — GstResource::Drop unmaps and releases the
-                //    GStreamer buffer ref exactly once.  A double-free or use-after-free
-                //    would crash here (or be caught by valgrind/asan in CI).
+                    // 3. `image` drops here — GstResource::Drop unmaps and releases the
+                    //    GStreamer buffer ref exactly once.  A double-free or use-after-free
+                    //    would crash here (or be caught by valgrind/asan in CI).
+                }
+                Grab::Eos => {
+                    saw_eos = true;
+                    break;
+                }
+                Grab::Pending => {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
             }
-            if frames_received >= N_FRAMES {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
         }
 
-        // Close pipeline before asserting so Close errors don't shadow the count.
-        capture.close()?;
-
+        // Assert before close: close() sends its own EOS and would satisfy the assertion.
+        assert!(
+            saw_eos,
+            "videotestsrc num-buffers={N_FRAMES} did not report end-of-stream"
+        );
         assert_eq!(
             frames_received, N_FRAMES,
             "expected {N_FRAMES} frames but received {frames_received}"
         );
+        capture.close()?;
 
         Ok(())
     }

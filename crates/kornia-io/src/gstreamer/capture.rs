@@ -1,4 +1,4 @@
-use super::image_from_gst_buffer;
+use super::{image_from_gst_buffer, video::detailed_error};
 use crate::stream::error::StreamCaptureError;
 use circular_buffer::FixedCircularBuffer;
 use gstreamer::prelude::*;
@@ -38,6 +38,27 @@ impl std::fmt::Display for GrabFormat {
     }
 }
 
+/// The terminal state a capture pipeline reports on its bus.
+#[derive(Default)]
+struct StreamStatus {
+    eos: bool,
+    error: Option<gstreamer::glib::Error>,
+}
+
+/// The outcome of [`StreamCapture::try_grab_rgb8`] and [`StreamCapture::try_grab_gray8`].
+///
+/// Unlike [`StreamCapture::grab_rgb8`] and [`StreamCapture::grab_gray8`], which report `None`
+/// for a frame that has not arrived yet, the end of the stream and a pipeline error alike, this
+/// enum keeps the three cases apart.
+pub enum Grab<const C: usize> {
+    /// A decoded frame.
+    Frame(Image<u8, C>),
+    /// No frame is buffered yet; the stream is still running.
+    Pending,
+    /// The stream reached end-of-stream and every decoded frame has been grabbed.
+    Eos,
+}
+
 /// A enum representing the state of [VideoReader] pipeline.
 ///
 /// For more info, refer to <https://gstreamer.freedesktop.org/documentation/additional/design/states.html?gi-language=c>
@@ -67,8 +88,13 @@ impl From<gstreamer::State> for StreamerState {
 /// Represents a stream capture pipeline using GStreamer.
 pub struct StreamCapture {
     pub(crate) pipeline: gstreamer::Pipeline,
+    /// The pipeline's bus. Auto-flush is off, so messages posted while the pipeline goes to null
+    /// can still be read.
+    bus: gstreamer::Bus,
     circular_buffer: Arc<Mutex<FixedCircularBuffer<FrameBuffer, 5>>>,
     fps: Arc<Mutex<gstreamer::Fraction>>,
+    /// End-of-stream and errors seen on the bus, updated by its sync handler.
+    status: Arc<Mutex<StreamStatus>>,
 }
 
 impl StreamCapture {
@@ -98,6 +124,29 @@ impl StreamCapture {
 
         let circular_buffer = Arc::new(Mutex::new(FixedCircularBuffer::new()));
         let fps = Arc::new(Mutex::new(gstreamer::Fraction::new(1, 1)));
+        let status = Arc::new(Mutex::new(StreamStatus::default()));
+
+        let bus = pipeline.bus().ok_or(StreamCaptureError::BusError)?;
+        // By default the bus is flushed when the pipeline goes to null, which drops an error
+        // posted in that same transition. `Pass` keeps the message queued for `drain_bus`.
+        pipeline.set_auto_flush_bus(false);
+        bus.set_sync_handler({
+            let status = status.clone();
+            move |_bus, msg| {
+                if let Ok(mut status) = status.lock() {
+                    match msg.view() {
+                        gstreamer::MessageView::Eos(_) => status.eos = true,
+                        gstreamer::MessageView::Error(err) => {
+                            let error = detailed_error(msg, err);
+                            log::error!("{error}");
+                            status.error.get_or_insert(error);
+                        }
+                        _ => {}
+                    }
+                }
+                gstreamer::BusSyncReply::Pass
+            }
+        });
 
         appsink.set_callbacks(
             gstreamer_app::AppSinkCallbacks::builder()
@@ -124,8 +173,10 @@ impl StreamCapture {
 
         Ok(Self {
             pipeline,
+            bus,
             circular_buffer,
             fps,
+            status,
         })
     }
 
@@ -142,8 +193,63 @@ impl StreamCapture {
         self.pipeline.current_state().into()
     }
 
+    /// Returns whether the stream has reached end-of-stream.
+    ///
+    /// End-of-stream is read from the pipeline's bus, so it does not depend on the position
+    /// reaching the duration or on a timeout. Frames decoded before it are still returned by
+    /// [`Self::try_grab_rgb8`] and [`Self::try_grab_gray8`], so this can be `true` while such
+    /// frames remain buffered.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The stream capture.
+    ///
+    /// # Returns
+    ///
+    /// `true` once the pipeline has posted end-of-stream; frames decoded before it may still
+    /// remain buffered for the `try_grab_*` methods.
+    pub fn is_eos(&self) -> bool {
+        self.drain_bus();
+        self.status.lock().is_ok_and(|status| status.eos)
+    }
+
+    /// Returns the first error the pipeline posted on its bus, if any.
+    ///
+    /// A pipeline that cancels its own stream (an undecodable file, a missing decoder, failed
+    /// negotiation) sets this instead of silently delivering no more frames.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The stream capture.
+    ///
+    /// # Returns
+    ///
+    /// The GStreamer error, with the failing element and its debug details, or `None` if the
+    /// pipeline has not failed.
+    pub fn stream_error(&self) -> Option<gstreamer::glib::Error> {
+        self.drain_bus();
+        self.status
+            .lock()
+            .ok()
+            .and_then(|status| status.error.clone())
+    }
+
     /// Starts the stream capture pipeline and processes messages on the bus.
     pub fn start(&self) -> Result<(), StreamCaptureError> {
+        self.drain_bus();
+        // Starting a stopped pipeline begins a fresh run, so its previous terminal state is
+        // discarded. Resuming a PLAYING/PAUSED one keeps it: a pipeline that already reached
+        // end-of-stream stays there until it is seeked, and forgetting that would report
+        // `Pending` forever instead of `Eos`.
+        if matches!(
+            self.pipeline.current_state(),
+            gstreamer::State::Null | gstreamer::State::Ready
+        ) {
+            *self
+                .status
+                .lock()
+                .map_err(|_| StreamCaptureError::MutexPoisonError)? = StreamStatus::default();
+        }
         self.circular_buffer
             .lock()
             .map_err(|_| StreamCaptureError::MutexPoisonError)?
@@ -220,6 +326,9 @@ impl StreamCapture {
         &mut self,
         grab_format: GrabFormat,
     ) -> Result<Option<Image<u8, C>>, StreamCaptureError> {
+        // Keeps the bus queue bounded for callers that only ever use the grab methods; the sync
+        // handler has already recorded EOS and errors.
+        self.drain_bus();
         // Pop in its own statement so the lock is released before the frame is mapped or
         // repacked: the appsink streaming thread needs it to push the next sample.
         let frame_buffer = self
@@ -248,18 +357,136 @@ impl StreamCapture {
         Ok(Some(image))
     }
 
+    /// Tries to grab the oldest captured frame as an RGB image, distinguishing a frame from
+    /// "no frame yet", end-of-stream and a pipeline error.
+    ///
+    /// Frames decoded before end-of-stream or before an error are returned first; the terminal
+    /// state is reported once the buffer is empty. A caller can therefore loop on this method
+    /// without any timeout: `Grab::Frame` continues, `Grab::Eos` stops, `Grab::Pending` backs
+    /// off, and a failed pipeline is returned as `Err`.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The mutable stream capture.
+    ///
+    /// # Returns
+    ///
+    /// [`Grab::Frame`] with the oldest buffered frame, [`Grab::Pending`] when none is buffered
+    /// yet, or [`Grab::Eos`] once the stream has ended and no frame is left.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StreamCaptureError::StreamError`] if the pipeline posted an error on its bus
+    /// (e.g. a file that cannot be decoded), [`StreamCaptureError::MutexPoisonError`] if the
+    /// status lock is poisoned, and any error of [`Self::grab_rgb8`] for the frame itself.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use kornia_io::gstreamer::{Grab, StreamCapture};
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut capture = StreamCapture::new(
+    ///     "videotestsrc num-buffers=2 ! video/x-raw,format=RGB ! appsink name=sink sync=false",
+    /// )?;
+    /// capture.start()?;
+    /// loop {
+    ///     match capture.try_grab_rgb8()? {
+    ///         Grab::Frame(frame) => println!("{}x{}", frame.width(), frame.height()),
+    ///         Grab::Eos => break,
+    ///         Grab::Pending => std::thread::sleep(std::time::Duration::from_millis(1)),
+    ///     }
+    /// }
+    /// capture.close()?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn try_grab_rgb8(&mut self) -> Result<Grab<3>, StreamCaptureError> {
+        self.try_grab_image::<3>(GrabFormat::Rgb8)
+    }
+
+    /// Tries to grab the oldest captured frame as a grayscale image, distinguishing a frame from
+    /// "no frame yet", end-of-stream and a pipeline error.
+    ///
+    /// See [`Self::try_grab_rgb8`] for the loop contract.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The mutable stream capture.
+    ///
+    /// # Returns
+    ///
+    /// [`Grab::Frame`] with the oldest buffered frame, [`Grab::Pending`] when none is buffered
+    /// yet, or [`Grab::Eos`] once the stream has ended and no frame is left.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`Self::try_grab_rgb8`], with [`Self::grab_gray8`] for the frame itself.
+    pub fn try_grab_gray8(&mut self) -> Result<Grab<1>, StreamCaptureError> {
+        self.try_grab_image::<1>(GrabFormat::Gray8)
+    }
+
+    fn try_grab_image<const C: usize>(
+        &mut self,
+        grab_format: GrabFormat,
+    ) -> Result<Grab<C>, StreamCaptureError> {
+        if let Some(image) = self.grab_image::<C>(grab_format)? {
+            return Ok(Grab::Frame(image));
+        }
+
+        let status = self
+            .status
+            .lock()
+            .map_err(|_| StreamCaptureError::MutexPoisonError)?;
+        if let Some(error) = &status.error {
+            return Err(StreamCaptureError::StreamError(error.clone()));
+        }
+        if status.eos {
+            return Ok(Grab::Eos);
+        }
+        Ok(Grab::Pending)
+    }
+
     /// Closes the stream capture pipeline.
     pub fn close(&self) -> Result<(), StreamCaptureError> {
-        let res = self.pipeline.send_event(gstreamer::event::Eos::new());
-        if !res {
-            return Err(StreamCaptureError::SendEosError);
+        // A pipeline that already ended, or failed, rejects a second end-of-stream event.
+        if !self.is_eos() && self.stream_error().is_none() {
+            let res = self.pipeline.send_event(gstreamer::event::Eos::new());
+            if !res {
+                return Err(StreamCaptureError::SendEosError);
+            }
         }
         self.pipeline.set_state(gstreamer::State::Null)?;
+        // Auto-flush is off, so drop the messages posted while stopping: they retain references
+        // to the pipeline elements.
+        self.drain_bus();
         self.circular_buffer
             .lock()
             .map_err(|_| StreamCaptureError::MutexPoisonError)?
             .clear();
         Ok(())
+    }
+
+    /// Forgets end-of-stream after a flushing seek, which clears EOS in GStreamer and lets the
+    /// pipeline deliver frames again. Pipeline errors are kept: they do not recover.
+    pub(crate) fn clear_eos(&self) {
+        if let Ok(mut status) = self.status.lock() {
+            status.eos = false;
+        }
+    }
+
+    /// Restores end-of-stream after a failed seek, which did not clear it in GStreamer.
+    pub(crate) fn mark_eos(&self) {
+        if let Ok(mut status) = self.status.lock() {
+            status.eos = true;
+        }
+    }
+
+    /// Reads every message queued on the bus, so the queue cannot grow without bound. The sync
+    /// handler records end-of-stream and errors as they are posted, so the messages themselves
+    /// can be discarded.
+    fn drain_bus(&self) {
+        while self.bus.pop().is_some() {}
     }
 
     /// Extracts a frame buffer from the AppSink.
