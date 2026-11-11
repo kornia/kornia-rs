@@ -1291,8 +1291,9 @@ fn sparse_llt_solve(
 /// accept test compares the true robust cost ½ρ(s)), plus `max_iterations`,
 /// `initial_lambda` and `cost_tolerance`.
 ///
-/// `RobustKernelKind::Tukey` is rejected with [`BaError::InvalidInput`], as in
-/// [`crate::ba::bundle_adjust`]. A non-finite or non-positive
+/// `RobustKernelKind::Tukey` is rejected with `SchurBaError::Ba(BaError::InvalidInput(_))`
+/// (the wrapper around [`BaError::InvalidInput`]); [`crate::ba::bundle_adjust`] returns
+/// [`BaError::InvalidInput`] directly. A non-finite or non-positive
 /// `BaParams::robust_scale_sq` collapses to plain L2 for every kernel, as
 /// `BaParams::robust_scale_sq` documents.
 ///
