@@ -199,17 +199,41 @@ fn render_play_controls(app: &mut MyApp, ctx: &eframe::egui::Context) {
                             app.finished = false;
                             app.app_state = AppState::Playing(video_reader, Instant::now(), None);
                         }
-                        AppState::Failed(_, error, _) => {
+                        AppState::Failed(video_reader, error, texture_store) => {
                             // The failed pipeline may not recover, so retry reopens the file.
+                            // A failure to reopen keeps the failed state (and last frame) visible.
                             let file_path = PathBuf::from(&app.file_path);
-                            let mut video_reader = VideoReader::new(&file_path, ImageFormat::Rgb8)
-                                .expect("Failed to reopen the video");
-                            video_reader.start().expect("Failed to start the video");
-                            log::warn!("Retrying after playback error: {error}");
-                            app.finished = false;
-                            app.error = None;
-                            app.slider_pos = 0;
-                            app.app_state = AppState::Playing(video_reader, Instant::now(), None);
+                            let reopened = VideoReader::new(&file_path, ImageFormat::Rgb8)
+                                .and_then(|mut reader| {
+                                    reader.start()?;
+                                    Ok(reader)
+                                });
+                            match reopened {
+                                Ok(video_reader) => {
+                                    log::warn!("Retrying after playback error: {error}");
+                                    // The slider may still show the old speed; apply it to the new
+                                    // pipeline, or reset it if the seek is not possible yet.
+                                    if app.playback_speed != 1
+                                        && video_reader
+                                            .set_playback_speed(app.playback_speed as f64)
+                                            .is_err()
+                                    {
+                                        app.playback_speed = 1;
+                                    }
+                                    app.finished = false;
+                                    app.error = None;
+                                    app.slider_pos = 0;
+                                    app.app_state =
+                                        AppState::Playing(video_reader, Instant::now(), None);
+                                }
+                                Err(retry_error) => {
+                                    app.app_state = AppState::Failed(
+                                        video_reader,
+                                        retry_error.to_string(),
+                                        texture_store,
+                                    );
+                                }
+                            }
                         }
                         _ => {
                             log::error!("Unrecognized AppState");
