@@ -256,6 +256,13 @@ impl SE3F32 {
         // closed forms lose up to ~40 ulps of Q to cancellation below 0.5 rad, and
         // the series truncated after θ⁴ stays within ~2 ulps up to there.
         const Q_SERIES_THETA2: f32 = 0.25;
+        // Taylor coefficients in θ⁰, θ², θ⁴ of c1 = (θ − sinθ)/θ³,
+        // c2 = (θ² + 2cosθ − 2)/(2θ⁴) and c3 = (2θ − 3sinθ + θcosθ)/(2θ⁵).
+        const Q_SERIES: [[f32; 3]; 3] = [
+            [1.0 / 6.0, -1.0 / 120.0, 1.0 / 5040.0],
+            [1.0 / 24.0, -1.0 / 720.0, 1.0 / 40320.0],
+            [1.0 / 120.0, -1.0 / 2520.0, 1.0 / 120960.0],
+        ];
 
         let theta2 = omega.dot(omega);
 
@@ -269,21 +276,16 @@ impl SE3F32 {
 
         // The three coefficients of Q above, signs folded in (Barfoot, State
         // Estimation for Robotics, eq. 7.86).
-        let (c1, c2, c3) = if theta2 < Q_SERIES_THETA2 {
-            let theta4 = theta2 * theta2;
-            (
-                1.0 / 6.0 - theta2 / 120.0 + theta4 / 5040.0,
-                1.0 / 24.0 - theta2 / 720.0 + theta4 / 40320.0,
-                1.0 / 120.0 - theta2 / 2520.0 + theta4 / 120960.0,
-            )
+        let [c1, c2, c3] = if theta2 < Q_SERIES_THETA2 {
+            Q_SERIES.map(|k| k[0] + theta2 * (k[1] + theta2 * k[2]))
         } else {
             let theta = theta2.sqrt();
             let (s, c) = theta.sin_cos();
-            (
+            [
                 (theta - s) / (theta2 * theta),
                 (theta2 + 2.0 * c - 2.0) / (2.0 * theta2 * theta2),
                 (2.0 * theta - 3.0 * s + theta * c) / (2.0 * theta2 * theta2 * theta),
-            )
+            ]
         };
         let q_mat = 0.5 * rho_hat
             + c1 * (wp + pw + wpw)
