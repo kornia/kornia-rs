@@ -29,6 +29,10 @@ name = "bench_stereo_match"
 
 [[bench]]
 harness = false
+name = "bench_depth"
+
+[[bench]]
+harness = false
 name = "bench_voxel"
 
 [[bench]]
