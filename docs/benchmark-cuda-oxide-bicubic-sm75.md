@@ -1,8 +1,8 @@
 # cuda-oxide Bicubic Resize: GTX 1650 (sm_75)
 
-**Date:** 2026-10-02  
-**GPU:** NVIDIA GeForce GTX 1650 (Turing, sm_75)  
-**CUDA:** 12.4  
+**Date:** 2026-10-02
+**GPU:** NVIDIA GeForce GTX 1650 (Turing, sm_75)
+**CUDA:** 12.4
 **Test Count:** 7 cases (2× downscale, 2× upscale, HD, 4K, non-dyadic)
 
 ## Summary

@@ -1,8 +1,8 @@
 # cuda-oxide Bicubic Resize: Jetson Orin Nano (sm_87)
 
-**Date:** 2026-10-02  
-**GPU:** NVIDIA Jetson Orin Nano Super (Ampere, sm_87)  
-**CUDA:** 12.6  
+**Date:** 2026-10-02
+**GPU:** NVIDIA Jetson Orin Nano Super (Ampere, sm_87)
+**CUDA:** 12.6
 **Test Count:** 7 cases (2× downscale, 2× upscale, HD, 4K, non-dyadic)
 
 ## Summary

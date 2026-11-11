@@ -137,8 +137,20 @@ pub unsafe fn resize_nearest_downscale_3c(
 
     let sw1 = src_w - 1;
     let sh1 = src_h - 1;
-    let x = if sx < 0.0 { 0 } else if sx as u32 > sw1 { sw1 } else { sx as u32 };
-    let y = if sy < 0.0 { 0 } else if sy as u32 > sh1 { sh1 } else { sy as u32 };
+    let x = if sx < 0.0 {
+        0
+    } else if sx as u32 > sw1 {
+        sw1
+    } else {
+        sx as u32
+    };
+    let y = if sy < 0.0 {
+        0
+    } else if sy as u32 > sh1 {
+        sh1
+    } else {
+        sy as u32
+    };
 
     let src_idx = ((y * src_w + x) * 3) as usize;
     let dst_idx = ((dst_y * dst_w + dst_x) * 3) as usize;
