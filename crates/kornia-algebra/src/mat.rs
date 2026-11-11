@@ -373,9 +373,29 @@ pub type DMatF32 = nalgebra::DMatrix<f32>;
 /// Dynamic-sized matrix with f64 elements.
 pub type DMatF64 = nalgebra::DMatrix<f64>;
 
+// Fixed 6x6 from nalgebra: glam stops at 4x4. Six is the tangent size of SE(3) and of a
+// rotation-plus-translation pose, so normal equations of a pose solve live here.
+/// 6x6 matrix with f64 elements, e.g. the `J^T W J` normal matrix of a 6-DoF pose solve.
+///
+/// A stack value (no allocation). Factorisations are nalgebra's: `cholesky()`,
+/// `symmetric_eigen()`.
+pub type Mat6F64 = nalgebra::Matrix6<f64>;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Vec6F64;
+
+    #[test]
+    fn mat6_cholesky_solves_spd_system() {
+        // A = M^T M + I is symmetric positive definite
+        let m = Mat6F64::from_fn(|i, k| ((i * 7 + k * 3) % 5) as f64 - 2.0);
+        let a = m.transpose() * m + Mat6F64::identity();
+        let x = Vec6F64::new(1.0, -2.0, 0.5, 3.0, -0.25, 4.0);
+        let b = a * x;
+        let solved = a.cholesky().map(|c| c.solve(&b)).unwrap();
+        assert!((solved - x).amax() < 1e-12);
+    }
 
     // Mat2 tests
     #[test]
