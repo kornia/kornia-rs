@@ -29,10 +29,11 @@
 //! is solved by eigen pseudo-inverse. The `J^T W J` of a final pass at the returned pose is
 //! reported as [`IcpPlaneResult::information`].
 //!
-//! An optional [`IcpPlaneCriteria::rotation_prior`] adds three weighted rows to each step, after
-//! the unobserved directions are removed from the data, so it can carry a rotation the geometry
-//! does not observe. It shapes the solve only: the conditioning, the degenerate directions and
-//! the information describe the data alone.
+//! An optional [`IcpPlaneCriteria::rotation_prior`] adds three weighted rows to each step, and
+//! an optional [`IcpPlaneCriteria::pose_prior`] six, after the unobserved directions are removed
+//! from the data, so they can carry motion the geometry does not observe. They shape the solve
+//! only: the conditioning, the degenerate directions and the information describe the data
+//! alone.
 
 use super::rgbd::{is_valid_normal, is_valid_vertex, RgbdIcpError, RgbdLevel, RgbdPyramid};
 use crate::ransac::{HuberKernel, RobustKernel};
@@ -110,7 +111,20 @@ pub struct IcpPlaneCriteria {
     /// removed from the data: ample geometry outvotes it, weak geometry defers to it, and it
     /// carries the update along directions the data do not observe. It never enters
     /// [`IcpPlaneResult::information`], the conditioning or the degenerate directions.
+    ///
+    /// The same as a [`PosePrior`] with zero translation information. Both may be set: their
+    /// rows add, as two independent measurements would, so a rotation must not reach the solve
+    /// through both from one source, or it counts twice.
     pub rotation_prior: Option<RotationPrior>,
+    /// Optional external estimate of the whole transform, e.g. the motion predicted by a fused
+    /// odometry; `None` by default.
+    ///
+    /// It enters each step as six rows weighted by the inverse of its covariance, added after
+    /// the unobserved directions are removed from the data, like [`Self::rotation_prior`]: it
+    /// shapes the answer where the data are weak and carries the update along directions they
+    /// do not observe, such as the slide along a bare wall. It never enters
+    /// [`IcpPlaneResult::information`], the conditioning or the degenerate directions.
+    pub pose_prior: Option<PosePrior>,
 }
 
 impl Default for IcpPlaneCriteria {
@@ -125,6 +139,7 @@ impl Default for IcpPlaneCriteria {
             depth_noise: DepthNoise::Constant { sigma_m: 0.01 },
             degeneracy_rtol: DEFAULT_DEGENERACY_RTOL,
             rotation_prior: None,
+            pose_prior: None,
         }
     }
 }
@@ -142,6 +157,23 @@ pub struct RotationPrior {
     /// against the sensor's total error, systematic terms such as a camera-to-gyro misalignment
     /// included: a tight sigma on a biased rotation pulls the solve toward the bias.
     pub sigma_rad: f64,
+}
+
+/// An external estimate of the whole transform for [`IcpPlaneCriteria::pose_prior`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PosePrior {
+    /// Prior on the rotation of `T_target_source`, the convention of
+    /// [`IcpPlaneResult::rotation`]. Must be a rotation matrix.
+    pub rotation: Mat3F64,
+    /// Prior on the translation of `T_target_source`, in metres. Must be finite.
+    pub translation: Vec3F64,
+    /// Covariance of the prior's error `xi = [w, v]`, rotation first (rad^2, rad m, m^2), with
+    /// the true transform `exp(xi)` applied on the left of the prior: the tangent of the solver
+    /// and of [`IcpPlaneResult::information`].
+    ///
+    /// Must be finite, symmetric and positive definite, with an inverse that does not overflow.
+    /// Scale it with the interval the prior spans, as for [`RotationPrior::sigma_rad`].
+    pub covariance: Mat6F64,
 }
 
 /// Depth noise model for the row weights of [`icp_projective_plane`].
@@ -310,7 +342,9 @@ pub struct IcpPlaneResult {
 ///   included) or a parameter of its `depth_noise` is not finite and positive, if
 ///   `max_normal_angle_rad` exceeds pi, or if its `rotation_prior` has a `sigma_rad` that is not
 ///   finite and positive (or so small that its weight overflows) or a `rotation` that is not a
-///   finite rotation matrix.
+///   finite rotation matrix, or if its `pose_prior` has such a `rotation`, a `translation` that
+///   is not finite, or a `covariance` that is not finite, symmetric and positive definite with a
+///   finite inverse.
 /// * [`RgbdIcpError::TooFewCorrespondences`] if fewer than 6 correspondences pass the gates in
 ///   any pass, the final one included (low overlap or a bad initial guess).
 /// * [`RgbdIcpError::SingularNormalEquations`] if the normal equations or their solve are not
@@ -361,12 +395,22 @@ pub fn icp_projective_plane(
             levels: num_levels,
         });
     }
-    let gates = check_criteria(criteria)?;
-    run_icp(src, tgt, init_rotation, init_translation, criteria, &gates)
+    let (gates, priors) = check_criteria(criteria)?;
+    run_icp(
+        src,
+        tgt,
+        init_rotation,
+        init_translation,
+        criteria,
+        &gates,
+        &priors,
+    )
 }
 
-/// The gates of `criteria`, or the first threshold out of its range.
-fn check_criteria(criteria: &IcpPlaneCriteria) -> Result<PassGates, RgbdIcpError> {
+/// The gates and prior rows of `criteria`, or the first threshold out of its range.
+fn check_criteria(
+    criteria: &IcpPlaneCriteria,
+) -> Result<(PassGates, [Option<PriorRows>; 2]), RgbdIcpError> {
     let inf = f64::INFINITY;
     let noise = criteria.depth_noise.params().map(|(f, v)| (f, v, inf));
     for (field, value, max) in [
@@ -392,12 +436,21 @@ fn check_criteria(criteria: &IcpPlaneCriteria) -> Result<PassGates, RgbdIcpError
     if let Some(prior) = &criteria.rotation_prior {
         check_rotation_prior(prior)?;
     }
-    Ok(PassGates {
+    let priors = [
+        criteria.rotation_prior.map(PriorRows::from_rotation),
+        criteria
+            .pose_prior
+            .as_ref()
+            .map(PriorRows::from_pose)
+            .transpose()?,
+    ];
+    let gates = PassGates {
         max_dist_m: criteria.max_dist_m,
         cos_max_normal_angle: criteria.max_normal_angle_rad.cos(),
         huber_delta: criteria.huber_delta,
         depth_noise: criteria.depth_noise,
-    })
+    };
+    Ok((gates, priors))
 }
 
 /// `Ok` if `prior` has a finite positive sigma with a finite weight and a finite rotation matrix.
@@ -410,15 +463,19 @@ fn check_rotation_prior(prior: &RotationPrior) -> Result<(), RgbdIcpError> {
             value: sigma,
         });
     }
-    let r = prior.rotation;
-    let orth = (r.transpose() * r - Mat3F64::IDENTITY).to_cols_array();
+    check_rotation(&prior.rotation, "rotation_prior.rotation")
+}
+
+/// `Ok` if `r` is a finite rotation matrix; `field` names it in the error.
+fn check_rotation(r: &Mat3F64, field: &'static str) -> Result<(), RgbdIcpError> {
+    let orth = (r.transpose() * *r - Mat3F64::IDENTITY).to_cols_array();
     // `f64::max` drops NaN, hence the separate finiteness check
     let deviation = orth
         .iter()
         .fold((r.determinant() - 1.0).abs(), |m, x| m.max(x.abs()));
     if !(r.is_finite() && deviation <= ROTATION_TOL) {
         return Err(RgbdIcpError::InvalidCriteria {
-            field: "rotation_prior.rotation",
+            field,
             value: deviation,
         });
     }
@@ -717,6 +774,7 @@ fn cholesky_step(a: &Mat6F64, b: &Vec6F64) -> Option<Vec6F64> {
 /// `[log(exp(w) exp(e_r)), exp(w) e_t + v]`, so its Jacobian at `w = v = 0` is
 /// `[[Jl(e_r)^-1, 0], [-[e_t]x, I]]`, with `Jl` the left Jacobian of SO(3). A rotation prior is
 /// the case `t_p = 0` with zero translation information.
+#[derive(Debug, Clone, Copy)]
 struct PriorRows {
     rotation: Mat3F64,
     translation: Vec3F64,
@@ -731,6 +789,52 @@ impl PriorRows {
             rotation: p.rotation,
             translation: Vec3F64::ZERO,
             info: Mat6F64::from_diagonal(&Vec6F64::new(w, w, w, 0.0, 0.0, 0.0)),
+        }
+    }
+
+    /// Rows of a pose prior, whose information is the inverse of its covariance.
+    ///
+    /// # Errors
+    ///
+    /// [`RgbdIcpError::InvalidCriteria`] if the rotation is not a finite rotation matrix, the
+    /// translation is not finite, or the covariance is not finite, symmetric and positive
+    /// definite with a finite inverse.
+    fn from_pose(p: &PosePrior) -> Result<Self, RgbdIcpError> {
+        check_rotation(&p.rotation, "pose_prior.rotation")?;
+        if !p.translation.to_array().iter().all(|v| v.is_finite()) {
+            return Err(RgbdIcpError::InvalidCriteria {
+                field: "pose_prior.translation",
+                value: p.translation.length(),
+            });
+        }
+        let c = p.covariance;
+        let field = "pose_prior.covariance";
+        if let Some(&value) = c.iter().find(|v| !v.is_finite()) {
+            return Err(RgbdIcpError::InvalidCriteria { field, value });
+        }
+        // relative, so that a covariance in any unit passes; the entries are finite here, so
+        // `>` cannot let a NaN through
+        let asymmetry = (c - c.transpose()).amax();
+        if asymmetry > 1e-9 * c.amax() {
+            return Err(RgbdIcpError::InvalidCriteria {
+                field,
+                value: asymmetry,
+            });
+        }
+        let info = c.cholesky().map(|l| l.inverse());
+        match info {
+            // a near-singular covariance can factor and still overflow its inverse
+            Some(info) if info.iter().all(|v| v.is_finite()) => Ok(Self {
+                rotation: p.rotation,
+                translation: p.translation,
+                // symmetrise away the rounding of the inverse
+                info: (info + info.transpose()) * 0.5,
+            }),
+            // the smallest eigenvalue says how far from positive definite it is
+            _ => Err(RgbdIcpError::InvalidCriteria {
+                field,
+                value: c.symmetric_eigen().eigenvalues.min(),
+            }),
         }
     }
 
@@ -774,7 +878,7 @@ fn solve_step(
     a: &Mat6F64,
     b: &Vec6F64,
     split: &DegenerateSplit,
-    priors: &[PriorRows],
+    priors: &[Option<PriorRows>],
     rotation: &Mat3F64,
     translation: &Vec3F64,
     rtol: f64,
@@ -786,7 +890,7 @@ fn solve_step(
         let b_observed = (split.projector * b.component_div(&s)).component_mul(&s);
         (split.a_observed, b_observed)
     };
-    for p in priors {
+    for p in priors.iter().flatten() {
         p.add_to(rotation, translation, &mut a, &mut b);
     }
     let x = if split.num_degenerate == 0 {
@@ -930,10 +1034,10 @@ fn run_icp(
     init_translation: &Vec3F64,
     criteria: &IcpPlaneCriteria,
     gates: &PassGates,
+    priors: &[Option<PriorRows>],
 ) -> Result<IcpPlaneResult, RgbdIcpError> {
     let (mut rotation, mut translation) = (*init_rotation, *init_translation);
     let mut iterations = 0;
-    let priors = criteria.rotation_prior.map(PriorRows::from_rotation);
 
     // iters_per_level is coarsest first; levels[0] is the finest
     let levels = (0..src.levels.len()).rev();
@@ -951,7 +1055,7 @@ fn run_icp(
                 &eqs.a,
                 &eqs.b,
                 &split,
-                priors.as_slice(),
+                priors,
                 &rotation,
                 &translation,
                 rtol,
@@ -1512,7 +1616,7 @@ mod tests {
             let t = pyramid(scene, &Mat3F64::IDENTITY, &slide)?;
             let c = IcpPlaneCriteria::default();
             let r = icp_from_identity(&s, &t, &c)?;
-            let gates = check_criteria(&c)?;
+            let (gates, _) = check_criteria(&c)?;
             let eqs = accumulate_level(
                 &s.levels[0],
                 &t.levels[0],
@@ -1822,7 +1926,7 @@ mod tests {
         let info = &res.information;
         assert!((info - info.transpose()).amax() == 0.0);
 
-        let gates = check_criteria(&criteria)?;
+        let (gates, _) = check_criteria(&criteria)?;
         let (rot, t) = (res.rotation, res.translation);
         let rows = gated_rows(&src.levels[0], &tgt.levels[0], &rot, &t, &gates);
         assert_eq!(rows.len(), res.num_inliers);
@@ -2107,7 +2211,7 @@ mod tests {
         );
 
         // the figures equal a prior-free pass at the returned pose
-        let gates = check_criteria(&criteria)?;
+        let (gates, _) = check_criteria(&criteria)?;
         let (s0, t0) = (&src.levels[0], &tgt.levels[0]);
         let eqs = accumulate_level(s0, t0, &with.rotation, &with.translation, &gates, None);
         let split = split_degenerate(&eqs.a, with.median_depth_m, criteria.degeneracy_rtol)?;
@@ -2169,6 +2273,188 @@ mod tests {
             rich_with < rich_without.max(0.05) * 3.0,
             "rich: {rich_without:.4} deg without, {rich_with:.4} with"
         );
+        Ok(())
+    }
+
+    /// A wall gives exactly its three blind directions zero information, and the solve takes
+    /// the pose prior along them instead of leaving them where they started.
+    #[test]
+    fn wall_takes_prior_along_its_null_space() -> Result<(), Box<dyn std::error::Error>> {
+        let wall = Scene {
+            planes: vec![Plane {
+                normal: Vec3F64::new(0.0, 0.0, 1.0),
+                d: 2.0,
+            }],
+            spheres: vec![],
+        };
+        // roll and in-plane slide are invisible, the approach along z is not
+        let rot_wc = SO3F64::exp(Vec3F64::new(0.0, 0.0, 1f64.to_radians())).matrix();
+        let t_wc = Vec3F64::new(0.02, -0.01, 0.005);
+        let rot_gt = rot_wc.transpose();
+        let t_gt = -(rot_gt * t_wc);
+        let src = pyramid(&wall, &Mat3F64::IDENTITY, &Vec3F64::ZERO)?;
+        let tgt = pyramid(&wall, &rot_wc, &t_wc)?;
+
+        let check_null_space = |r: &IcpPlaneResult| {
+            assert_eq!(r.num_degenerate, 3, "wall must have three blind directions");
+            let dirs = &r.degenerate_directions;
+            for d in &dirs[..3] {
+                // only rotation about the normal and in-plane translation
+                assert!(d[0].abs() + d[1].abs() + d[5].abs() < 1e-6, "{d:?}");
+                let info = d.dot(&(r.information * d)) / r.information.amax();
+                assert!(info.abs() < 1e-12, "information along {d:?}: {info:.3e}");
+            }
+            let basis = Mat3F64::from_cols(
+                Vec3F64::new(dirs[0][2], dirs[0][3], dirs[0][4]),
+                Vec3F64::new(dirs[1][2], dirs[1][3], dirs[1][4]),
+                Vec3F64::new(dirs[2][2], dirs[2][3], dirs[2][4]),
+            );
+            let det = basis.determinant();
+            assert!(
+                det.abs() > 0.5,
+                "directions do not span w_z, v_x, v_y: {det}"
+            );
+            assert!(r.information[(5, 5)] > 0.0, "v_z is observed");
+        };
+
+        // no prior: the blind directions get no update at all, the observed one is solved
+        let bare = icp_from_identity(&src, &tgt, &IcpPlaneCriteria::default())?;
+        check_null_space(&bare);
+        assert!(bare.translation.x.abs() < 1e-6 && bare.translation.y.abs() < 1e-6);
+        assert!(SO3F64::from_matrix(&bare.rotation).log().z.abs() < 1e-6);
+        assert!((bare.translation.z - t_gt.z).abs() < 1e-4, "{bare:?}");
+
+        // a prior 3 mm off along x: the blind directions follow it, z still follows the data
+        let prior_t = t_gt + Vec3F64::new(0.003, 0.0, 0.004);
+        let (var_r, var_t) = (0.2f64.to_radians().powi(2), 0.01f64.powi(2));
+        let diag = Vec6F64::new(var_r, var_r, var_r, var_t, var_t, var_t);
+        let criteria = IcpPlaneCriteria {
+            pose_prior: Some(PosePrior {
+                rotation: rot_gt,
+                translation: prior_t,
+                covariance: Mat6F64::from_diagonal(&diag),
+            }),
+            ..Default::default()
+        };
+        let with = icp_from_identity(&src, &tgt, &criteria)?;
+        check_null_space(&with);
+        let e = tangent_error(&with.rotation, &with.translation, &rot_gt, &prior_t);
+        assert!(e[3].abs() < 1e-5 && e[4].abs() < 1e-5, "slide: {e:?}");
+        assert!(e[2].abs() < 1e-5, "roll: {e:?}");
+        // the prior is 4 mm off along the observed z too: the data must win there
+        let dz = with.translation.z - t_gt.z;
+        assert!(dz.abs() < 2e-4, "z follows the 4 mm-off prior: {dz}");
+        Ok(())
+    }
+
+    /// A rotation prior is a pose prior with no translation information: the same weighted
+    /// rows, so the same answer.
+    #[test]
+    fn rotation_prior_equals_pose_prior_without_translation(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let scene = roll_blind_scene();
+        let roll = SO3F64::exp(Vec3F64::new(0.0, 0.0, 3f64.to_radians())).matrix();
+        let src = pyramid(&scene, &Mat3F64::IDENTITY, &Vec3F64::ZERO)?;
+        let tgt = pyramid(&scene, &roll, &Vec3F64::new(0.01, 0.0, 0.0))?;
+        let rot_gt = roll.transpose();
+        let sigma = 0.1f64.to_radians();
+        let a = icp_from_identity(
+            &src,
+            &tgt,
+            &IcpPlaneCriteria {
+                rotation_prior: Some(RotationPrior {
+                    rotation: rot_gt,
+                    sigma_rad: sigma,
+                }),
+                ..Default::default()
+            },
+        )?;
+        // translation variance (1 km)^2: its information is negligible, not zero
+        let diag = Vec6F64::new(sigma * sigma, sigma * sigma, sigma * sigma, 1e6, 1e6, 1e6);
+        let b = icp_from_identity(
+            &src,
+            &tgt,
+            &IcpPlaneCriteria {
+                pose_prior: Some(PosePrior {
+                    rotation: rot_gt,
+                    // irrelevant at that variance
+                    translation: Vec3F64::new(5.0, -3.0, 1.0),
+                    covariance: Mat6F64::from_diagonal(&diag),
+                }),
+                ..Default::default()
+            },
+        )?;
+        assert!(rotation_error_deg(&a.rotation, &b.rotation) < 1e-4);
+        assert!((a.translation - b.translation).length() < 1e-6);
+        // and the prior never shows in the reported conditioning
+        assert!(a.rotation_conditioning < 1e-3 && b.rotation_conditioning < 1e-3);
+        Ok(())
+    }
+
+    /// Bad rotations, translations and covariances in a pose prior are errors, not weights;
+    /// both priors at once are not.
+    #[test]
+    fn invalid_pose_prior_is_an_error() -> Result<(), Box<dyn std::error::Error>> {
+        let pyr = pyramid(
+            &Scene::corner_and_sphere(),
+            &Mat3F64::IDENTITY,
+            &Vec3F64::ZERO,
+        )?;
+        let with =
+            |rotation: Mat3F64, translation: Vec3F64, covariance: Mat6F64| IcpPlaneCriteria {
+                pose_prior: Some(PosePrior {
+                    rotation,
+                    translation,
+                    covariance,
+                }),
+                ..Default::default()
+            };
+        let (id, zero) = (Mat3F64::IDENTITY, Vec3F64::ZERO);
+        let cov = Mat6F64::from_diagonal(&Vec6F64::from_element(1e-4));
+        let edit = |i: usize, k: usize, v: f64| {
+            let mut c = cov;
+            c[(i, k)] = v;
+            c
+        };
+        let reflection = Mat3F64::from_diagonal(Vec3F64::new(1.0, 1.0, -1.0));
+        let cases = [
+            (with(reflection, zero, cov), "pose_prior.rotation"),
+            (
+                with(id, Vec3F64::new(0.0, f64::NAN, 0.0), cov),
+                "pose_prior.translation",
+            ),
+            (
+                with(id, Vec3F64::new(f64::INFINITY, 0.0, 0.0), cov),
+                "pose_prior.translation",
+            ),
+            (
+                with(id, zero, edit(2, 2, f64::NAN)),
+                "pose_prior.covariance",
+            ),
+            (with(id, zero, edit(0, 4, 1e-5)), "pose_prior.covariance"),
+            (with(id, zero, edit(0, 0, -1e-4)), "pose_prior.covariance"),
+            (with(id, zero, edit(5, 5, 0.0)), "pose_prior.covariance"),
+            (with(id, zero, Mat6F64::zeros()), "pose_prior.covariance"),
+            // positive definite, but the inverse overflows
+            (with(id, zero, edit(3, 3, 1e-320)), "pose_prior.covariance"),
+        ];
+        for (c, expected) in &cases {
+            let result = icp_from_identity(&pyr, &pyr, c);
+            assert!(
+                matches!(result, Err(RgbdIcpError::InvalidCriteria { field, .. }) if field == *expected),
+                "{c:?}: {result:?}"
+            );
+        }
+        // coupled, symmetric and positive definite passes, with a rotation prior beside it
+        let mut coupled = edit(0, 4, 2e-5);
+        coupled[(4, 0)] = 2e-5;
+        let mut both = with(id, zero, coupled);
+        both.rotation_prior = Some(RotationPrior {
+            rotation: id,
+            sigma_rad: 1e-3,
+        });
+        let r = icp_from_identity(&pyr, &pyr, &both)?;
+        assert!(rotation_error_deg(&r.rotation, &id) < 1e-6 && r.translation.length() < 1e-9);
         Ok(())
     }
 }
