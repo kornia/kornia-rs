@@ -1,5 +1,21 @@
 # cuda-oxide resize sweep: sm_75 (Turing / GTX 1650)
 
+> **Historical snapshot, not reproducible on current `main`.** This report was
+> measured against kornia-rs commit `d0c9f3b6`, when the oxide kernels lived in
+> a standalone `oxide-kernels/` crate with committed per-arch PTX and the A–H
+> comparison arms described below. That layout has since been replaced:
+> the kernels now live in `kornia-oxide-kernels/device/src/resize.rs`, PTX is
+> built from source (no committed artifacts), and the launchers in
+> `crates/kornia-imgproc/src/cuda/resize.rs` select the oxide kernel
+> automatically with an NVRTC fallback — there is no separate "arm" to pick.
+> To reproduce a comparable sweep on current `main`, check out `d0c9f3b6` first
+> (`git checkout d0c9f3b6 -- oxide-kernels/`), or compare the current
+> `launch_resize_bilinear_downscale_cuda` / `launch_resize_nearest_downscale_cuda`
+> against the NVRTC-only path via the `nearest`/`bilinear` sections of
+> `cargo run -p kornia-imgproc --example bench_cuda_resize --features cuda`.
+> The byte-exactness and throughput findings below still held at the time they
+> were measured; they are kept for historical reference.
+
 Follow-up to [benchmark-cuda-oxide-resize.md](benchmark-cuda-oxide-resize.md), which
 covered bilinear resize on sm_87 (Jetson Orin Nano).  This report extends that
 work to **Turing (sm_75)** and adds a **nearest-neighbour** sweep (arms E–F).

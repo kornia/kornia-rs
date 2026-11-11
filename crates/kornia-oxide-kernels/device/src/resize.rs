@@ -143,13 +143,19 @@ pub unsafe fn resize_nearest_downscale_3c(
     let src_idx = ((y * src_w + x) * 3) as usize;
     let dst_idx = ((dst_y * dst_w + dst_x) * 3) as usize;
 
+    // All three source loads are issued before the first store, for the same
+    // reason as the bilinear kernel: raw pointers carry no `noalias`, so an
+    // interleaved load/store cannot be hoisted by the compiler on its own.
     // SAFETY: src and dst are valid pointers to device memory with at least the
     // required sizes (validated by launcher). Indices are in bounds: dst coordinates
     // are checked at function entry, source coordinates are clamped to [0, src_w-1]
     // and [0, src_h-1], and the 3-channel stride keeps all accesses within bounds.
     unsafe {
-        *dst.add(dst_idx) = *src.add(src_idx);
-        *dst.add(dst_idx + 1) = *src.add(src_idx + 1);
-        *dst.add(dst_idx + 2) = *src.add(src_idx + 2);
+        let s0 = *src.add(src_idx);
+        let s1 = *src.add(src_idx + 1);
+        let s2 = *src.add(src_idx + 2);
+        *dst.add(dst_idx) = s0;
+        *dst.add(dst_idx + 1) = s1;
+        *dst.add(dst_idx + 2) = s2;
     }
 }

@@ -575,20 +575,26 @@ fn run_gpu_oxide_sweep() {
         ),
     ];
 
-    // Covers downscale, upscale and HD variants.
+    // Covers downscale, upscale, HD, 4K and a non-dyadic (odd-size) case; the
+    // last matches `resize_odd_sizes_match_cpu` in `cuda::resize::tests`.
     const SWEEP_CASES: &[(u32, u32, u32, u32)] = &[
         (1024, 1024, 512, 512),   // 2× downscale
         (512, 512, 1024, 1024),   // 2× upscale
         (1920, 1080, 960, 540),   // HD downscale
         (960, 540, 1920, 1080),   // HD upscale
         (3840, 2160, 1920, 1080), // 4K downscale
+        (255, 130, 133, 67),      // non-dyadic
     ];
 
     let ctx = std::sync::Arc::new(CudaContext::new(0).expect("CUDA context"));
     let stream = ctx.default_stream();
+    let (cc_major, cc_minor) = ctx.compute_capability().expect("cc");
 
     for &(section, arms) in SECTIONS {
-        println!("\n=== {} (sm_75, {} iters) ===", section, ITERS);
+        println!(
+            "\n=== {} (sm_{cc_major}{cc_minor}, {} iters) ===",
+            section, ITERS
+        );
         println!(
             "  {:<14}  {:<24}  {:>10}  {:>10}",
             "arm", "case (src→dst)", "ms/iter", "GB/s"
