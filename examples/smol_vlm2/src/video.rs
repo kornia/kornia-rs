@@ -64,6 +64,7 @@ pub enum VideoSamplingMethod {
 
 #[cfg(not(feature = "gstreamer"))]
 #[allow(dead_code)]
+/// Fallback that panics when the `gstreamer` feature is disabled.
 pub fn from_video_path<P: AsRef<std::path::Path>>(
     _path: P,
     _sampling: VideoSamplingMethod,
@@ -72,6 +73,7 @@ pub fn from_video_path<P: AsRef<std::path::Path>>(
 }
 
 #[cfg(feature = "gstreamer")]
+/// Loads a video file and samples frames according to `sampling`.
 pub fn from_video_path<const N: usize, P: AsRef<std::path::Path>>(
     path: P,
     sampling: VideoSamplingMethod,

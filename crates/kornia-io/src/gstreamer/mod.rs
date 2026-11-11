@@ -643,6 +643,64 @@ mod tests {
         Ok(())
     }
 
+    /// An extraction failure inside the appsink callback must surface as a stream error, not as
+    /// a normal end-of-stream. A buffer-list sample has no single buffer, so `extract_frame_buffer`
+    /// fails with `GetBufferError` — reachable through the public pipeline API.
+    #[test]
+    fn extraction_failure_reports_a_stream_error() -> Result<(), Box<dyn std::error::Error>> {
+        use gstreamer::prelude::*;
+        use std::time::Duration;
+
+        if !gstreamer::INITIALIZED.load(std::sync::atomic::Ordering::Relaxed) {
+            gstreamer::init()?;
+        }
+
+        let mut capture = StreamCapture::new(
+            "appsrc name=src caps=video/x-raw,format=RGB,width=4,height=4 ! \
+             appsink name=sink sync=false",
+        )?;
+        // Deliver buffer lists: the resulting sample has no single buffer.
+        capture
+            .pipeline
+            .by_name("sink")
+            .ok_or("missing sink")?
+            .dynamic_cast::<gstreamer_app::AppSink>()
+            .map_err(|_| "sink is not an appsink")?
+            .set_buffer_list_support(true);
+
+        capture.start()?;
+        let appsrc = capture
+            .pipeline
+            .by_name("src")
+            .ok_or("missing appsrc")?
+            .dynamic_cast::<gstreamer_app::AppSrc>()
+            .map_err(|_| "src is not an appsrc")?;
+        let mut list = gstreamer::BufferList::new();
+        list.get_mut()
+            .ok_or("buffer list is not writable")?
+            .add(gstreamer::Buffer::from_slice(vec![0u8; 4 * 4 * 3]));
+        appsrc.push_buffer_list(list)?;
+        appsrc.end_of_stream()?;
+
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(10) {
+            match capture.try_grab_rgb8() {
+                Err(StreamCaptureError::StreamError(err)) => {
+                    assert!(
+                        !err.to_string().is_empty(),
+                        "the stream error has no message"
+                    );
+                    capture.close()?;
+                    return Ok(());
+                }
+                Err(err) => return Err(err.into()),
+                Ok(Grab::Pending) => std::thread::sleep(Duration::from_millis(5)),
+                Ok(_) => panic!("an extraction failure must not deliver frames or end-of-stream"),
+            }
+        }
+        panic!("no stream error within 10 s");
+    }
+
     /// `pack_rows` must drop the padding after every row and keep the pixel bytes in order.
     #[test]
     fn pack_rows_skips_row_padding() {

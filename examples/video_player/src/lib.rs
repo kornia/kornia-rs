@@ -45,6 +45,7 @@ enum AppState {
 }
 
 impl AppState {
+    /// Returns the reader for the current state, if a video is loaded.
     fn inner(&mut self) -> Option<&mut VideoReader> {
         match self {
             AppState::Playing(reader, ..) => Some(reader),
@@ -71,6 +72,7 @@ impl PartialEq for AppState {
 }
 
 impl Default for MyApp {
+    /// Creates the player with default playback settings.
     fn default() -> Self {
         Self {
             file_path: String::new(),
@@ -100,6 +102,7 @@ impl eframe::App for MyApp {
     }
 }
 
+/// Draws the file path field and the load button.
 fn render_navbar(app: &mut MyApp, ui: &mut eframe::egui::Ui) {
     ui.horizontal(|ui| {
         // Clear Button
@@ -132,6 +135,7 @@ fn render_navbar(app: &mut MyApp, ui: &mut eframe::egui::Ui) {
 }
 
 // This function only runs if `VideoReader` is present
+/// Draws the playback controls and switches to `Finished`/`Failed` when playback ends.
 fn render_play_controls(app: &mut MyApp, ctx: &eframe::egui::Context) {
     let mut is_playing = false;
     let mut is_finished = false;
@@ -283,6 +287,7 @@ fn render_play_controls(app: &mut MyApp, ctx: &eframe::egui::Context) {
     });
 }
 
+/// Draws the current frame, grabbing a new one when it is time.
 fn render_image(app: &mut MyApp, ui: &mut eframe::egui::Ui) {
     match &mut app.app_state {
         AppState::Playing(video_reader, instant, texture_store) => {

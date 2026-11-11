@@ -339,6 +339,7 @@ impl StreamCapture {
         self.grab_image::<1>(GrabFormat::Gray8)
     }
 
+    /// Pops the oldest buffered frame and converts it to an image with `C` channels.
     fn grab_image<const C: usize>(
         &mut self,
         grab_format: GrabFormat,
@@ -443,6 +444,8 @@ impl StreamCapture {
         self.try_grab_image::<1>(GrabFormat::Gray8)
     }
 
+    /// Grabs a frame or classifies the stream as pending, ended or failed. When a terminal state
+    /// is observed, the queue is re-checked once so a frame that arrived in between is returned.
     fn try_grab_image<const C: usize>(
         &mut self,
         grab_format: GrabFormat,
