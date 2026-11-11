@@ -547,11 +547,14 @@ impl SE3F64 {
 
     /// Returns `(υ, ω)` with `Exp(υ, ω) = self`.
     pub fn log(&self) -> (Vec3F64, Vec3F64) {
+        // Taylor coefficients in θ⁰, θ² of c below.
+        const C_SERIES: [f64; 2] = [1.0 / 12.0, 1.0 / 720.0];
+
         let omega = self.r.log();
         let theta2 = omega.dot(omega);
         // V⁻¹ = I − ½ω× + c·ω×², c = (1 − (θ/2)·cot(θ/2)) / θ².
         let c = if theta2 < SERIES_THETA2_F64 {
-            1.0 / 12.0 + theta2 / 720.0
+            C_SERIES[0] + theta2 * C_SERIES[1]
         } else {
             let half = 0.5 * theta2.sqrt();
             (1.0 - half * half.cos() / half.sin()) / theta2
@@ -604,21 +607,25 @@ impl SE3F64 {
 /// The `Q(ρ, ω)` block of the SE(3) left Jacobian (Barfoot, State Estimation
 /// for Robotics, eq. 7.86).
 fn q_block(rho: Vec3F64, omega: Vec3F64) -> Mat3F64 {
+    // Taylor coefficients in θ⁰, θ² of c1 = (θ − sinθ)/θ³,
+    // c2 = (θ² + 2cosθ − 2)/(2θ⁴) and c3 = (2θ − 3sinθ + θcosθ)/(2θ⁵).
+    const Q_SERIES: [[f64; 2]; 3] = [
+        [1.0 / 6.0, -1.0 / 120.0],
+        [1.0 / 24.0, -1.0 / 720.0],
+        [1.0 / 120.0, -1.0 / 2520.0],
+    ];
+
     let theta2 = omega.dot(omega);
-    let (c1, c2, c3) = if theta2 < SERIES_THETA2_F64 {
-        (
-            1.0 / 6.0 - theta2 / 120.0,
-            1.0 / 24.0 - theta2 / 720.0,
-            1.0 / 120.0 - theta2 / 2520.0,
-        )
+    let [c1, c2, c3] = if theta2 < SERIES_THETA2_F64 {
+        Q_SERIES.map(|k| k[0] + theta2 * k[1])
     } else {
         let theta = theta2.sqrt();
         let (s, c) = theta.sin_cos();
-        (
+        [
             (theta - s) / (theta2 * theta),
             (theta2 + 2.0 * c - 2.0) / (2.0 * theta2 * theta2),
             (2.0 * theta - 3.0 * s + theta * c) / (2.0 * theta2 * theta2 * theta),
-        )
+        ]
     };
     let p = SO3F64::hat(rho);
     let w = SO3F64::hat(omega);
