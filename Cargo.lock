@@ -8002,6 +8002,7 @@ dependencies = [
  "nalgebra 0.35.0",
  "rand 0.10.3",
  "thiserror 2.0.21",
+ "wide 1.7.1",
 ]
 
 [[package]]
