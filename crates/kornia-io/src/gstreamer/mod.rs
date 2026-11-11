@@ -518,12 +518,13 @@ mod tests {
         capture.start()?;
 
         let mut frames_received = 0usize;
+        let mut saw_eos = false;
         // The deadline only guards the test against a hang; end-of-stream itself is asserted
         // below, not inferred from a timeout.
         let start = std::time::Instant::now();
         while start.elapsed() < std::time::Duration::from_secs(10) {
             match capture.try_grab_rgb8()? {
-                Grab::Frame(image) => {
+                Grab::Frame { image, .. } => {
                     // 1. Verify dimensions.
                     assert_eq!(image.width(), WIDTH, "frame width mismatch");
                     assert_eq!(image.height(), HEIGHT, "frame height mismatch");
@@ -547,24 +548,26 @@ mod tests {
                     //    GStreamer buffer ref exactly once.  A double-free or use-after-free
                     //    would crash here (or be caught by valgrind/asan in CI).
                 }
-                Grab::Eos => break,
+                Grab::Eos => {
+                    saw_eos = true;
+                    break;
+                }
                 Grab::Pending => {
                     std::thread::sleep(std::time::Duration::from_millis(1));
                 }
             }
         }
 
-        // Close pipeline before asserting so Close errors don't shadow the count.
-        capture.close()?;
-
+        // Assert before close: close() sends its own EOS and would satisfy the assertion.
+        assert!(
+            saw_eos,
+            "videotestsrc num-buffers={N_FRAMES} did not report end-of-stream"
+        );
         assert_eq!(
             frames_received, N_FRAMES,
             "expected {N_FRAMES} frames but received {frames_received}"
         );
-        assert!(
-            capture.is_eos(),
-            "videotestsrc num-buffers={N_FRAMES} did not report end-of-stream"
-        );
+        capture.close()?;
 
         Ok(())
     }
@@ -606,7 +609,7 @@ mod tests {
         let start = std::time::Instant::now();
         while start.elapsed() < std::time::Duration::from_secs(10) {
             match capture.try_grab_rgb8()? {
-                Grab::Frame(frame) => {
+                Grab::Frame { image: frame, .. } => {
                     image = Some(frame);
                     break;
                 }
@@ -638,7 +641,7 @@ mod tests {
         while start.elapsed() < std::time::Duration::from_secs(10) {
             match capture.try_grab_rgb8()? {
                 Grab::Eos => break,
-                Grab::Frame(_) | Grab::Pending => {
+                Grab::Frame { .. } | Grab::Pending => {
                     std::thread::sleep(std::time::Duration::from_millis(1));
                 }
             }
@@ -647,6 +650,149 @@ mod tests {
         assert!(capture.is_eos(), "start() forgot the end-of-stream");
         assert!(matches!(capture.try_grab_rgb8()?, Grab::Eos));
         capture.close()?;
+        Ok(())
+    }
+
+    /// A slow consumer must not lose frames: the streaming thread waits while the queue is full
+    /// instead of overwriting the oldest frame.
+    #[test]
+    fn slow_consumer_receives_every_frame() -> Result<(), Box<dyn std::error::Error>> {
+        use gstreamer::prelude::*;
+        use std::time::Duration;
+
+        if !gstreamer::INITIALIZED.load(std::sync::atomic::Ordering::Relaxed) {
+            gstreamer::init()?;
+        }
+
+        const FRAMES: usize = 40;
+        const WIDTH: usize = 4;
+        const HEIGHT: usize = 4;
+        let mut capture = StreamCapture::new(
+            "appsrc name=src caps=video/x-raw,format=RGB,width=4,height=4 ! \
+             appsink name=sink sync=false",
+        )?;
+        capture.start()?;
+        let appsrc = capture
+            .pipeline
+            .by_name("src")
+            .ok_or("missing appsrc")?
+            .dynamic_cast::<gstreamer_app::AppSrc>()
+            .map_err(|_| "src is not an appsrc")?;
+        for value in 0..FRAMES {
+            let buffer = gstreamer::Buffer::from_slice(vec![value as u8; WIDTH * HEIGHT * 3]);
+            appsrc.push_buffer(buffer)?;
+        }
+        appsrc.end_of_stream()?;
+
+        // Deliberately slower than the producer; more frames than the queue can hold.
+        let mut values = Vec::new();
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(20) {
+            match capture.try_grab_rgb8()? {
+                Grab::Frame { image, .. } => {
+                    values.push(image.as_slice()[0]);
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                Grab::Eos => break,
+                Grab::Pending => std::thread::sleep(Duration::from_millis(1)),
+            }
+        }
+        capture.close()?;
+
+        let expected: Vec<u8> = (0..FRAMES as u8).collect();
+        assert_eq!(values, expected, "frames were dropped or reordered");
+        Ok(())
+    }
+
+    /// The grab result carries the presentation timestamp of the grabbed frame.
+    #[test]
+    fn grab_rgb8_reports_the_frame_pts() -> Result<(), Box<dyn std::error::Error>> {
+        use gstreamer::prelude::*;
+
+        if !gstreamer::INITIALIZED.load(std::sync::atomic::Ordering::Relaxed) {
+            gstreamer::init()?;
+        }
+
+        let expected_pts = gstreamer::ClockTime::from_mseconds(123);
+        let mut buffer = gstreamer::Buffer::from_slice(vec![0u8; 4 * 4 * 3]);
+        buffer
+            .get_mut()
+            .ok_or("buffer is not writable")?
+            .set_pts(Some(expected_pts));
+
+        let mut capture = StreamCapture::new(
+            "appsrc name=src format=time \
+             caps=video/x-raw,format=RGB,width=4,height=4 ! appsink name=sink sync=false",
+        )?;
+        capture.start()?;
+        capture
+            .pipeline
+            .by_name("src")
+            .ok_or("missing appsrc")?
+            .dynamic_cast::<gstreamer_app::AppSrc>()
+            .map_err(|_| "src is not an appsrc")?
+            .push_buffer(buffer)?;
+
+        let mut pts = None;
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_secs(10) {
+            match capture.try_grab_rgb8()? {
+                Grab::Frame { pts: frame_pts, .. } => {
+                    pts = Some(frame_pts);
+                    break;
+                }
+                Grab::Pending => std::thread::sleep(std::time::Duration::from_millis(1)),
+                Grab::Eos => break,
+            }
+        }
+        capture.close()?;
+        assert_eq!(pts.flatten(), Some(expected_pts));
+        Ok(())
+    }
+
+    /// `is_eos` reports the end as soon as the bus posts it; frames buffered before it are still
+    /// returned afterwards, in order.
+    #[test]
+    fn eos_can_arrive_before_the_last_frames_are_grabbed() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use gstreamer::prelude::*;
+
+        if !gstreamer::INITIALIZED.load(std::sync::atomic::Ordering::Relaxed) {
+            gstreamer::init()?;
+        }
+
+        let mut capture = StreamCapture::new(
+            "appsrc name=src caps=video/x-raw,format=RGB,width=4,height=4 ! \
+             appsink name=sink sync=false",
+        )?;
+        capture.start()?;
+        let appsrc = capture
+            .pipeline
+            .by_name("src")
+            .ok_or("missing appsrc")?
+            .dynamic_cast::<gstreamer_app::AppSrc>()
+            .map_err(|_| "src is not an appsrc")?;
+        for value in 0..3u8 {
+            appsrc.push_buffer(gstreamer::Buffer::from_slice(vec![value; 4 * 4 * 3]))?;
+        }
+        appsrc.end_of_stream()?;
+
+        let start = std::time::Instant::now();
+        while !capture.is_eos() && start.elapsed() < std::time::Duration::from_secs(10) {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(capture.is_eos(), "end-of-stream was not posted");
+
+        let mut values = Vec::new();
+        loop {
+            match capture.try_grab_rgb8()? {
+                Grab::Frame { image, .. } => values.push(image.as_slice()[0]),
+                Grab::Eos => break,
+                Grab::Pending => panic!("every frame must be buffered once EOS is posted"),
+            }
+        }
+        capture.close()?;
+        assert_eq!(values, [0, 1, 2]);
         Ok(())
     }
 

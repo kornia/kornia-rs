@@ -3,6 +3,7 @@ use humanize_duration::{prelude::*, Truncate};
 use kornia::image::{Image, ImageSize};
 use kornia::imgproc::resize::resize_fast_rgb;
 use kornia::io::stream::video::{ImageFormat, SeekFlags, VideoReader};
+use kornia::io::stream::Grab;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -13,6 +14,8 @@ pub struct MyApp {
     slider_pos: u64,
     playback_speed: u32,
     fps: f64,
+    /// Set when `try_grab_rgb8` reports `Grab::Eos`, i.e. after every buffered frame was drawn.
+    finished: bool,
     app_state: AppState,
 }
 
@@ -68,6 +71,7 @@ impl Default for MyApp {
             slider_pos: 0,
             playback_speed: 1,
             fps: 8.,
+            finished: false,
             app_state: AppState::default(),
         }
     }
@@ -109,6 +113,7 @@ fn render_navbar(app: &mut MyApp, ui: &mut eframe::egui::Ui) {
                 // frames at their PTS instead of decoding the whole file up front.
                 video_reader.set_realtime(true).unwrap();
                 video_reader.start().unwrap();
+                app.finished = false;
 
                 app.app_state = AppState::Playing(video_reader, Instant::now(), None);
             }
@@ -134,8 +139,8 @@ fn render_play_controls(app: &mut MyApp, ctx: &eframe::egui::Context) {
         }
 
         // The reader reports end-of-stream explicitly; the position never reaches the duration
-        // (the last frame's PTS is always before it).
-        is_finished = video_reader.is_eos();
+        // (the last frame's PTS is always before it). Wait until every buffered frame was drawn.
+        is_finished = app.finished;
     }
 
     if is_finished {
@@ -175,6 +180,7 @@ fn render_play_controls(app: &mut MyApp, ctx: &eframe::egui::Context) {
                         AppState::Finished(mut video_reader) => {
                             video_reader.reset().expect("Failed to reset video");
                             video_reader.start().expect("Failed to start the video");
+                            app.finished = false;
                             app.app_state = AppState::Playing(video_reader, Instant::now(), None);
                         }
                         _ => {
@@ -267,9 +273,19 @@ fn render_image(app: &mut MyApp, ui: &mut eframe::egui::Ui) {
                 && texture_store.is_some()
             {
                 // Don't grab the new image, load the previous one instead
-            } else if let Some(image_frame) =
-                video_reader.grab_rgb8().expect("Failed to grab the image")
-            {
+            } else if let Some(image_frame) = match video_reader.try_grab_rgb8() {
+                Ok(Grab::Frame { image, .. }) => Some(image),
+                // Finish only after every buffered frame has been drawn.
+                Ok(Grab::Eos) => {
+                    app.finished = true;
+                    None
+                }
+                Ok(Grab::Pending) => None,
+                Err(_) => {
+                    app.finished = true;
+                    None
+                }
+            } {
                 *instant = Instant::now();
 
                 let mut resize_required = false;
