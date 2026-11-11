@@ -823,6 +823,7 @@ impl OrbDetector {
     /// let pyramid: Vec<&Image<u8, 1>> = std::iter::once(&img).chain(levels.iter()).collect();
     /// let shared = orb.detect_and_extract_u8_from_pyramid(&pyramid)?;
     /// let fused = orb.detect_and_extract_u8(&img)?;
+    /// assert!(!fused.keypoints_xy.is_empty());
     /// assert_eq!(shared.keypoints_xy, fused.keypoints_xy);
     /// assert_eq!(shared.descriptors, fused.descriptors);
     /// # Ok(())
@@ -935,6 +936,7 @@ impl OrbDetector {
     ///
     /// let shared = orb.detect_and_extract_u8_from_pyramid(&pyramid)?;
     /// let fused = orb.detect_and_extract_u8(&img)?;
+    /// assert!(!fused.keypoints_xy.is_empty());
     /// assert_eq!(shared.keypoints_xy, fused.keypoints_xy);
     /// assert_eq!(shared.orientations, fused.orientations);
     /// assert_eq!(shared.descriptors, fused.descriptors);
