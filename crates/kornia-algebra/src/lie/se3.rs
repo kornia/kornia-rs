@@ -139,6 +139,18 @@ impl SE3F32 {
 
     /// Adjoint for the `[υ; ω]` tangent order of [`Self::exp`]:
     /// `Ad(T) = [[R, t×R], [0, R]]`, so that `T · Exp(ξ) · T⁻¹ = Exp(Ad(T) · ξ)`.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The transform `T = (R, t)`.
+    ///
+    /// # Returns
+    ///
+    /// The 6×6 adjoint, row-major, acting on twists ordered `[υ; ω]`.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible.
     pub fn adjoint(&self) -> [[f32; 6]; 6] {
         let r = self.r.matrix();
         let t = SO3F32::hat(self.t) * r;
@@ -240,9 +252,10 @@ impl SE3F32 {
     /// ```
     /// ref: https://arxiv.org/pdf/1812.01537 (eq 180)
     pub fn left_jacobian(rho: Vec3AF32, omega: Vec3AF32) -> [[f32; 6]; 6] {
-        // θ² below which the closed forms of the Q coefficients cancel
-        // catastrophically in f32 (~0.1 rad), so their Taylor series is used.
-        const Q_SERIES_THETA2: f32 = 1.0e-2;
+        // θ² below which the Q coefficients use their Taylor series: in f32 the
+        // closed forms lose up to ~40 ulps of Q to cancellation below 0.5 rad, and
+        // the series truncated after θ⁴ stays within ~2 ulps up to there.
+        const Q_SERIES_THETA2: f32 = 0.25;
 
         let theta2 = omega.dot(omega);
 
@@ -257,10 +270,11 @@ impl SE3F32 {
         // The three coefficients of Q above, signs folded in (Barfoot, State
         // Estimation for Robotics, eq. 7.86).
         let (c1, c2, c3) = if theta2 < Q_SERIES_THETA2 {
+            let theta4 = theta2 * theta2;
             (
-                1.0 / 6.0 - theta2 / 120.0,
-                1.0 / 24.0 - theta2 / 720.0,
-                1.0 / 120.0 - theta2 / 2520.0,
+                1.0 / 6.0 - theta2 / 120.0 + theta4 / 5040.0,
+                1.0 / 24.0 - theta2 / 720.0 + theta4 / 40320.0,
+                1.0 / 120.0 - theta2 / 2520.0 + theta4 / 120960.0,
             )
         } else {
             let theta = theta2.sqrt();
@@ -1102,6 +1116,69 @@ mod tests {
                         (analytic - numeric).abs() < 2e-3,
                         "ξ = ({rho:?}, {omega:?}), J[{i}][{k}] = {analytic} vs {numeric}"
                     );
+                }
+            }
+        }
+    }
+
+    /// `Q` in f64 from the closed-form coefficients, as the accuracy reference.
+    fn q_block_f64(rho: [f64; 3], omega: [f64; 3]) -> [[f64; 3]; 3] {
+        type M = [[f64; 3]; 3];
+        let hat =
+            |v: [f64; 3]| -> M { [[0.0, -v[2], v[1]], [v[2], 0.0, -v[0]], [-v[1], v[0], 0.0]] };
+        let mul = |a: M, b: M| -> M {
+            std::array::from_fn(|i| {
+                std::array::from_fn(|j| (0..3).map(|k| a[i][k] * b[k][j]).sum())
+            })
+        };
+        let lin = |terms: &[(f64, M)]| -> M {
+            std::array::from_fn(|i| {
+                std::array::from_fn(|j| terms.iter().map(|(c, m)| c * m[i][j]).sum())
+            })
+        };
+        let theta2: f64 = omega.iter().map(|w| w * w).sum();
+        let theta = theta2.sqrt();
+        let (s, c) = theta.sin_cos();
+        let c1 = (theta - s) / (theta2 * theta);
+        let c2 = (theta2 + 2.0 * c - 2.0) / (2.0 * theta2 * theta2);
+        let c3 = (2.0 * theta - 3.0 * s + theta * c) / (2.0 * theta2 * theta2 * theta);
+        let (p, w) = (hat(rho), hat(omega));
+        let (wp, pw) = (mul(w, p), mul(p, w));
+        let wpw = mul(wp, w);
+        lin(&[
+            (0.5, p),
+            (c1, lin(&[(1.0, wp), (1.0, pw), (1.0, wpw)])),
+            (
+                c2,
+                lin(&[(1.0, mul(w, wp)), (1.0, mul(pw, w)), (-3.0, wpw)]),
+            ),
+            (c3, lin(&[(1.0, mul(wpw, w)), (1.0, mul(w, wpw))])),
+        ])
+    }
+
+    /// Below 0.5 rad the closed-form `Q` coefficients cancel in f32; large
+    /// translations expose it.
+    #[test]
+    fn test_left_jacobian_q_matches_f64_at_small_angles() {
+        let rhos = [[0.0, 1000.0, 0.0], [1000.0, 2000.0, -3000.0]];
+        let axes = [[1.0, 0.0, 0.0], [0.267_261_24, 0.534_522_5, 0.801_783_7]];
+        for theta in [0.101f32, 0.12, 0.15, 0.2, 0.25, 0.3, 0.45, 0.55] {
+            for axis in axes {
+                for rho in rhos {
+                    let omega = Vec3AF32::from_array(axis) * theta;
+                    let rho32 = Vec3AF32::from_array(rho.map(|x| x as f32));
+                    let jl = SE3F32::left_jacobian(rho32, omega);
+                    let q_ref = q_block_f64(rho, omega.to_array().map(f64::from));
+                    let scale = q_ref.iter().flatten().fold(0.0f64, |m, x| m.max(x.abs()));
+                    for (i, row) in q_ref.iter().enumerate() {
+                        for (j, &expected) in row.iter().enumerate() {
+                            let err = (f64::from(jl[i][j + 3]) - expected).abs() / scale;
+                            assert!(
+                                err < 1e-6,
+                                "θ = {theta}, ρ = {rho:?}: Q[{i}][{j}] off by {err:e}"
+                            );
+                        }
+                    }
                 }
             }
         }
