@@ -540,11 +540,6 @@ fn run_gpu_oxide_sweep() {
         launch_resize_bicubic_cuda, launch_resize_bilinear_downscale_cuda,
         launch_resize_nearest_downscale_cuda, CudaResizeError, PixelMapping,
     };
-    use kornia_imgproc::cuda::resize_oxide::{
-        launch_resize_bicubic_oxide_cuda, launch_resize_bilinear_noldg_cuda,
-        launch_resize_bilinear_oxide_cuda, launch_resize_bilinear_oxide_slice_cuda,
-        launch_resize_nearest_oxide_cuda,
-    };
 
     type Launcher = fn(
         &Arc<CudaContext>,
@@ -559,44 +554,21 @@ fn run_gpu_oxide_sweep() {
         Option<(u32, u32)>,
     ) -> Result<(), CudaResizeError>;
 
+    // With cuda-oxide kernels integrated into the main launchers, the oxide
+    // kernels are automatically selected on compatible GPUs (sm_75+), with
+    // NVRTC fallback for older architectures or stub builds.
     const SECTIONS: &[(&str, &[(&str, Launcher)])] = &[
         (
-            "cuda-oxide bilinear sweep",
-            &[
-                (
-                    "A nvrtc-ldg",
-                    launch_resize_bilinear_downscale_cuda as Launcher,
-                ),
-                (
-                    "B nvrtc-noldg",
-                    launch_resize_bilinear_noldg_cuda as Launcher,
-                ),
-                ("C oxide-ptr", launch_resize_bilinear_oxide_cuda as Launcher),
-                (
-                    "D oxide-slice",
-                    launch_resize_bilinear_oxide_slice_cuda as Launcher,
-                ),
-            ],
+            "bilinear (oxide + fallback)",
+            &[("bilinear", launch_resize_bilinear_downscale_cuda as Launcher)],
         ),
         (
-            "cuda-oxide nearest sweep",
-            &[
-                (
-                    "E nvrtc-nn",
-                    launch_resize_nearest_downscale_cuda as Launcher,
-                ),
-                ("F oxide-nn", launch_resize_nearest_oxide_cuda as Launcher),
-            ],
+            "nearest-neighbor (oxide + fallback)",
+            &[("nearest", launch_resize_nearest_downscale_cuda as Launcher)],
         ),
         (
-            "cuda-oxide bicubic sweep",
-            &[
-                ("H nvrtc-bicubic", launch_resize_bicubic_cuda as Launcher),
-                (
-                    "G oxide-bicubic",
-                    launch_resize_bicubic_oxide_cuda as Launcher,
-                ),
-            ],
+            "bicubic (NVRTC only, awaiting cuda-oxide FMA support)",
+            &[("bicubic", launch_resize_bicubic_cuda as Launcher)],
         ),
     ];
 
