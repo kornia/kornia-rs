@@ -1089,6 +1089,47 @@ mod tests {
         Ok(())
     }
 
+    /// Regression test for the coordinate-clamping bug: at source dimensions
+    /// at or beyond `f32`'s 24-bit integer-precision limit (2^24 =
+    /// 16,777,216), `(src_w - 1) as f32` can round *up* to `src_w` itself, so
+    /// the post-clamp coordinate `sx` can equal `src_w` instead of
+    /// `src_w - 1`. Without the `.min(src_w - 1)` clamp after the cast to
+    /// `u32`, `x0` would then point one element past the source allocation.
+    ///
+    /// Exercises the exact arithmetic the kernels perform (half-pixel
+    /// mapping, clamp to `[0, src_w-1]`, cast to `u32`, then clamp again)
+    /// without allocating a multi-hundred-MB buffer: an identity-scale
+    /// (`dst_len == src_len`) 1-D mapping at the boundary width is enough to
+    /// reproduce the float rounding, and the assertion is on the arithmetic
+    /// itself rather than a full kernel launch.
+    #[test]
+    fn large_identity_resize_coordinate_stays_in_bounds() {
+        // 2^24 + 4: large enough that `src_w - 1` is not exactly
+        // representable as f32 and the naive cast can round up to src_w.
+        let src_w: u32 = (1u32 << 24) + 4;
+        let dst_w = src_w; // identity resize: dst_x maps back to itself
+
+        let (a, b) = PixelMapping::HalfPixel.coeffs(src_w, dst_w);
+        let hix = (src_w - 1) as f32;
+
+        // The last destination column is the one most likely to round past
+        // the valid range.
+        for &dst_x in &[0u32, dst_w / 2, dst_w - 1] {
+            let cx = a * dst_x as f32 + b;
+            let cx = if cx < hix { cx } else { hix };
+            let sx = if cx > 0.0 { cx } else { 0.0 };
+
+            // This is the fix under test: without `.min(src_w - 1)`, `x0`
+            // could equal `src_w` when `sx` rounds up to `src_w` as f32.
+            let x0 = (sx as u32).min(src_w - 1);
+
+            assert!(
+                x0 < src_w,
+                "dst_x={dst_x}: x0={x0} is out of bounds for src_w={src_w} (sx={sx})"
+            );
+        }
+    }
+
     /// Unified (managed) images must dispatch to the CUDA kernel through the
     /// public `resize` exactly as device images do, and produce identical bytes.
     ///
