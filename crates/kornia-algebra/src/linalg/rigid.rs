@@ -378,7 +378,8 @@ impl RobustUmeyamaConfig {
 /// robustly as `σ̂ = MAD / Φ⁻¹(3/4) ≈ 1.4826 · MAD` of the residuals around
 /// their median, and correspondences whose residual exceeds
 /// `med + 3.5 · σ̂` are dropped before a final unweighted fit on the
-/// survivors. Returns `(R, t, s)`.
+/// survivors. Returns the fit as an [`UmeyamaOutputF64`] with `r`, `t` and
+/// `s` fields.
 ///
 /// Rejection is one-sided: residuals are norms, so only residuals above the
 /// consensus are outliers — a residual below the median is a better fit, not a
