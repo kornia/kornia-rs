@@ -4,7 +4,9 @@ use kornia_image::{Image, ImageSize};
 use kornia_imgproc::optical_flow_pyr_lk::{
     build_lk_precomputed, calc_optical_flow_pyr_lk_with_precomputed,
 };
-use kornia_imgproc::optical_flow_pyr_lk::{calc_optical_flow_pyr_lk, PyrLKParams};
+use kornia_imgproc::optical_flow_pyr_lk::{
+    calc_optical_flow_pyr_lk, calc_optical_flow_pyr_lk_u8, LkPyramidU8, PyrLKParams,
+};
 #[cfg(feature = "opencv_bench")]
 use std::hint::black_box;
 
@@ -123,6 +125,24 @@ fn bench_optical_flow(c: &mut Criterion) {
             |b, pts| {
                 b.iter(|| {
                     let _ = calc_optical_flow_pyr_lk(&img1, &img2, pts, None, &params).unwrap();
+                });
+            },
+        );
+        // Fixed-point u8 path, pyramids built per call like the f32 one.
+        let to_u8 = |img: &GrayImage| {
+            let d = img.as_slice().iter().map(|&v| (v * 255.0) as u8).collect();
+            Image::<u8, 1>::new(img.size(), d).unwrap()
+        };
+        let (u1, u2) = (to_u8(&img1), to_u8(&img2));
+        group.bench_with_input(
+            BenchmarkId::new("kornia_cpu_u8/points", format!("{size}x{size}/{n_points}")),
+            &pts,
+            |b, pts| {
+                b.iter(|| {
+                    let p = LkPyramidU8::new(&u1, params.win_size, params.max_level, true).unwrap();
+                    let q =
+                        LkPyramidU8::new(&u2, params.win_size, params.max_level, false).unwrap();
+                    let _ = calc_optical_flow_pyr_lk_u8(&p, &q, pts, None, &params).unwrap();
                 });
             },
         );
