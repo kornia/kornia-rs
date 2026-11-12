@@ -241,10 +241,10 @@ fn unproject_u16_parallel_matches_sequential() -> TestResult {
 }
 
 /// At every accepted `meter`, a u16 sample is valid iff non-zero, and that
-/// equals the metres-value test of the sequential path and the scatter,
-/// from `f32::MAX`
-/// (a subnormal `1 / meter`) down to the smallest accepted `meter`
-/// (`65535 * (1 / meter)` still finite). Smaller `meter`s are rejected.
+/// equals the metres-value test of the sequential path, the scatter and
+/// the CUDA kernels, from `f32::MAX` (a subnormal `1 / meter`) down to the
+/// smallest accepted `meter` (`65535 * (1 / meter)` still finite). Smaller
+/// `meter`s are rejected.
 #[test]
 fn u16_validity_is_nonzero_at_every_accepted_meter() {
     let smallest = smallest_meter::<u16>();
