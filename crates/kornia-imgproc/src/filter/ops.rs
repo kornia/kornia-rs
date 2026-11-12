@@ -845,6 +845,61 @@ pub fn gaussian_blur_u8<const C: usize>(
 
     Ok(())
 }
+/// Q8 weights of the 7-tap Gaussian that [`gaussian_blur_u8`] uses for
+/// `kernel_size = (7, 7)` and this `sigma`.
+pub(crate) fn gaussian_kernel_7_q8(sigma: f32) -> [u8; 7] {
+    let q = quantize_kernel_256(&kernels::gaussian_kernel_1d(7, sigma));
+    std::array::from_fn(|i| q[i])
+}
+
+/// Serial 7x7 Gaussian blur of a 1-channel u8 plane into `dst` with the
+/// caller's row buffers: the same bytes as [`gaussian_blur_u8`] with
+/// `kernel_size = (7, 7)` and the sigma `kx`/`ky` came from
+/// ([`gaussian_kernel_7_q8`]), without allocating once `ring` and `padded`
+/// have grown to the largest plane.
+///
+/// Returns `false`, leaving `dst` untouched, when this CPU has no 7x7 SIMD
+/// path (x86-64 without AVX2); the caller then uses [`gaussian_blur_u8`].
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn gaussian_blur_7x7_u8_serial(
+    src: &[u8],
+    dst: &mut [u8],
+    rows: usize,
+    cols: usize,
+    kx: &[u8; 7],
+    ky: &[u8; 7],
+    ring: &mut Vec<u8>,
+    padded: &mut Vec<u8>,
+) -> bool {
+    let (ring_len, padded_len) = (7 * cols, cols + 6);
+    if ring.len() < ring_len {
+        ring.resize(ring_len, 0);
+    }
+    if padded.len() < padded_len {
+        padded.resize(padded_len, 0);
+    }
+    let (ring, padded) = (&mut ring[..ring_len], &mut padded[..padded_len]);
+    #[cfg(target_arch = "aarch64")]
+    {
+        blur7_strip_neon::<1>(src, dst, 0, rows, rows, cols, kx, ky, ring, padded);
+        true
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        if !crate::simd::cpu_features().has_avx2 {
+            return false;
+        }
+        // SAFETY: AVX2 is present.
+        unsafe { blur7_strip_avx2::<1>(src, dst, 0, rows, rows, cols, kx, ky, ring, padded) };
+        true
+    }
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    {
+        let _ = (src, dst, rows, kx, ky, ring, padded);
+        false
+    }
+}
+
 /// Quantize a float kernel (summing to 1.0) to u8 weights summing to 256.
 fn quantize_kernel_256(kernel: &[f32]) -> Vec<u8> {
     let half = kernel.len() / 2;
@@ -1402,16 +1457,6 @@ fn gaussian_blur_7x7_sym_u8<const C: usize>(
     debug_assert_eq!(kx.len(), 7);
     debug_assert_eq!(ky.len(), 7);
 
-    // Four unique weights: outer, mid-outer, mid-inner, center.
-    let kx0 = kx[0] as u16;
-    let kx1 = kx[1] as u16;
-    let kx2 = kx[2] as u16;
-    let kx3 = kx[3] as u16;
-    let ky0 = ky[0] as u16;
-    let ky1 = ky[1] as u16;
-    let ky2 = ky[2] as u16;
-    let ky3 = ky[3] as u16;
-
     let stride = cols * C;
     const KSIZE: usize = 7;
     const HALF: usize = 3;
@@ -1427,114 +1472,130 @@ fn gaussian_blur_7x7_sym_u8<const C: usize>(
 
     strip_slices.par_iter_mut().zip(strips.par_iter()).for_each(
         |(strip_dst, &(out_start, out_end))| {
-            let out_rows = out_end - out_start;
-            let ring_len = KSIZE * stride;
             // Zero-initialised: see `separable_blur_u8_striped`.
-            let mut ring: Vec<u8> = vec![0u8; ring_len];
+            let mut ring: Vec<u8> = vec![0u8; KSIZE * stride];
             let mut padded = vec![0u8; padded_stride];
-
-            // Prime: H-pass rows [out_start - HALF, out_start + HALF] into the ring.
-            for k in 0..KSIZE {
-                let r_abs = out_start as isize + k as isize - HALF as isize;
-                let slot = r_abs.rem_euclid(KSIZE as isize) as usize;
-                let dst_row = &mut ring[slot * stride..(slot + 1) * stride];
-                hpass_sym7_row::<C>(
-                    src,
-                    r_abs,
-                    rows,
-                    cols,
-                    stride,
-                    kx0,
-                    kx1,
-                    kx2,
-                    kx3,
-                    &mut padded,
-                    dst_row,
-                );
-            }
-
-            for oi in 0..out_rows {
-                if oi > 0 {
-                    let r_new = out_start as isize + oi as isize + HALF as isize;
-                    let slot = r_new.rem_euclid(KSIZE as isize) as usize;
-                    let dst_row = &mut ring[slot * stride..(slot + 1) * stride];
-                    hpass_sym7_row::<C>(
-                        src,
-                        r_new,
-                        rows,
-                        cols,
-                        stride,
-                        kx0,
-                        kx1,
-                        kx2,
-                        kx3,
-                        &mut padded,
-                        dst_row,
-                    );
-                }
-
-                let ring_ptr = ring.as_ptr();
-                let mut tap_ptrs: [*const u8; KSIZE] = [std::ptr::null(); KSIZE];
-                for (k, slot_ptr) in tap_ptrs.iter_mut().enumerate() {
-                    let r_abs = out_start as isize + oi as isize - HALF as isize + k as isize;
-                    let slot = r_abs.rem_euclid(KSIZE as isize) as usize;
-                    *slot_ptr = unsafe { ring_ptr.add(slot * stride) };
-                }
-
-                let out_row = &mut strip_dst[oi * stride..(oi + 1) * stride];
-                unsafe {
-                    use std::arch::aarch64::*;
-                    let dp = out_row.as_mut_ptr();
-                    let t0 = tap_ptrs[0];
-                    let t1 = tap_ptrs[1];
-                    let t2 = tap_ptrs[2];
-                    let t3 = tap_ptrs[3];
-                    let t4 = tap_ptrs[4];
-                    let t5 = tap_ptrs[5];
-                    let t6 = tap_ptrs[6];
-                    let bulk16 = stride & !15;
-                    let mut j = 0usize;
-                    while j < bulk16 {
-                        let s0 = vld1q_u8(t0.add(j));
-                        let s1 = vld1q_u8(t1.add(j));
-                        let s2 = vld1q_u8(t2.add(j));
-                        let s3 = vld1q_u8(t3.add(j));
-                        let s4 = vld1q_u8(t4.add(j));
-                        let s5 = vld1q_u8(t5.add(j));
-                        let s6 = vld1q_u8(t6.add(j));
-                        let p0_lo = vaddl_u8(vget_low_u8(s0), vget_low_u8(s6));
-                        let p1_lo = vaddl_u8(vget_low_u8(s1), vget_low_u8(s5));
-                        let p2_lo = vaddl_u8(vget_low_u8(s2), vget_low_u8(s4));
-                        let c_lo = vmovl_u8(vget_low_u8(s3));
-                        let p0_hi = vaddl_u8(vget_high_u8(s0), vget_high_u8(s6));
-                        let p1_hi = vaddl_u8(vget_high_u8(s1), vget_high_u8(s5));
-                        let p2_hi = vaddl_u8(vget_high_u8(s2), vget_high_u8(s4));
-                        let c_hi = vmovl_u8(vget_high_u8(s3));
-                        let mut al = vmulq_n_u16(p0_lo, ky0);
-                        let mut ah = vmulq_n_u16(p0_hi, ky0);
-                        al = vmlaq_n_u16(al, p1_lo, ky1);
-                        ah = vmlaq_n_u16(ah, p1_hi, ky1);
-                        al = vmlaq_n_u16(al, p2_lo, ky2);
-                        ah = vmlaq_n_u16(ah, p2_hi, ky2);
-                        al = vmlaq_n_u16(al, c_lo, ky3);
-                        ah = vmlaq_n_u16(ah, c_hi, ky3);
-                        let packed = vcombine_u8(vrshrn_n_u16(al, 8), vrshrn_n_u16(ah, 8));
-                        vst1q_u8(dp.add(j), packed);
-                        j += 16;
-                    }
-                    while j < stride {
-                        let a = *t0.add(j) as u32 + *t6.add(j) as u32;
-                        let b = *t1.add(j) as u32 + *t5.add(j) as u32;
-                        let c = *t2.add(j) as u32 + *t4.add(j) as u32;
-                        let d = *t3.add(j) as u32;
-                        let acc = a * ky0 as u32 + b * ky1 as u32 + c * ky2 as u32 + d * ky3 as u32;
-                        *dp.add(j) = ((acc + 128) >> 8) as u8;
-                        j += 1;
-                    }
-                }
-            }
+            blur7_strip_neon::<C>(
+                src,
+                strip_dst,
+                out_start,
+                out_end,
+                rows,
+                cols,
+                kx,
+                ky,
+                &mut ring,
+                &mut padded,
+            );
         },
     );
+}
+
+/// One output strip `[out_start, out_end)` of the symmetric 7x7 blur, with
+/// the caller's ring (`7 * cols * C` bytes) and padded-row (`(cols + 6) * C`
+/// bytes) buffers; every ring row is written before it is read.
+#[cfg(target_arch = "aarch64")]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn blur7_strip_neon<const C: usize>(
+    src: &[u8],
+    strip_dst: &mut [u8],
+    out_start: usize,
+    out_end: usize,
+    rows: usize,
+    cols: usize,
+    kx: &[u8],
+    ky: &[u8],
+    ring: &mut [u8],
+    padded: &mut [u8],
+) {
+    // Four unique weights: outer, mid-outer, mid-inner, center.
+    let (kx0, kx1, kx2, kx3) = (kx[0] as u16, kx[1] as u16, kx[2] as u16, kx[3] as u16);
+    let (ky0, ky1, ky2, ky3) = (ky[0] as u16, ky[1] as u16, ky[2] as u16, ky[3] as u16);
+    let stride = cols * C;
+    const KSIZE: usize = 7;
+    const HALF: usize = 3;
+    let out_rows = out_end - out_start;
+
+    // Prime: H-pass rows [out_start - HALF, out_start + HALF] into the ring.
+    for k in 0..KSIZE {
+        let r_abs = out_start as isize + k as isize - HALF as isize;
+        let slot = r_abs.rem_euclid(KSIZE as isize) as usize;
+        let dst_row = &mut ring[slot * stride..(slot + 1) * stride];
+        hpass_sym7_row::<C>(
+            src, r_abs, rows, cols, stride, kx0, kx1, kx2, kx3, padded, dst_row,
+        );
+    }
+
+    for oi in 0..out_rows {
+        if oi > 0 {
+            let r_new = out_start as isize + oi as isize + HALF as isize;
+            let slot = r_new.rem_euclid(KSIZE as isize) as usize;
+            let dst_row = &mut ring[slot * stride..(slot + 1) * stride];
+            hpass_sym7_row::<C>(
+                src, r_new, rows, cols, stride, kx0, kx1, kx2, kx3, padded, dst_row,
+            );
+        }
+
+        let ring_ptr = ring.as_ptr();
+        let mut tap_ptrs: [*const u8; KSIZE] = [std::ptr::null(); KSIZE];
+        for (k, slot_ptr) in tap_ptrs.iter_mut().enumerate() {
+            let r_abs = out_start as isize + oi as isize - HALF as isize + k as isize;
+            let slot = r_abs.rem_euclid(KSIZE as isize) as usize;
+            *slot_ptr = unsafe { ring_ptr.add(slot * stride) };
+        }
+
+        let out_row = &mut strip_dst[oi * stride..(oi + 1) * stride];
+        unsafe {
+            use std::arch::aarch64::*;
+            let dp = out_row.as_mut_ptr();
+            let t0 = tap_ptrs[0];
+            let t1 = tap_ptrs[1];
+            let t2 = tap_ptrs[2];
+            let t3 = tap_ptrs[3];
+            let t4 = tap_ptrs[4];
+            let t5 = tap_ptrs[5];
+            let t6 = tap_ptrs[6];
+            let bulk16 = stride & !15;
+            let mut j = 0usize;
+            while j < bulk16 {
+                let s0 = vld1q_u8(t0.add(j));
+                let s1 = vld1q_u8(t1.add(j));
+                let s2 = vld1q_u8(t2.add(j));
+                let s3 = vld1q_u8(t3.add(j));
+                let s4 = vld1q_u8(t4.add(j));
+                let s5 = vld1q_u8(t5.add(j));
+                let s6 = vld1q_u8(t6.add(j));
+                let p0_lo = vaddl_u8(vget_low_u8(s0), vget_low_u8(s6));
+                let p1_lo = vaddl_u8(vget_low_u8(s1), vget_low_u8(s5));
+                let p2_lo = vaddl_u8(vget_low_u8(s2), vget_low_u8(s4));
+                let c_lo = vmovl_u8(vget_low_u8(s3));
+                let p0_hi = vaddl_u8(vget_high_u8(s0), vget_high_u8(s6));
+                let p1_hi = vaddl_u8(vget_high_u8(s1), vget_high_u8(s5));
+                let p2_hi = vaddl_u8(vget_high_u8(s2), vget_high_u8(s4));
+                let c_hi = vmovl_u8(vget_high_u8(s3));
+                let mut al = vmulq_n_u16(p0_lo, ky0);
+                let mut ah = vmulq_n_u16(p0_hi, ky0);
+                al = vmlaq_n_u16(al, p1_lo, ky1);
+                ah = vmlaq_n_u16(ah, p1_hi, ky1);
+                al = vmlaq_n_u16(al, p2_lo, ky2);
+                ah = vmlaq_n_u16(ah, p2_hi, ky2);
+                al = vmlaq_n_u16(al, c_lo, ky3);
+                ah = vmlaq_n_u16(ah, c_hi, ky3);
+                let packed = vcombine_u8(vrshrn_n_u16(al, 8), vrshrn_n_u16(ah, 8));
+                vst1q_u8(dp.add(j), packed);
+                j += 16;
+            }
+            while j < stride {
+                let a = *t0.add(j) as u32 + *t6.add(j) as u32;
+                let b = *t1.add(j) as u32 + *t5.add(j) as u32;
+                let c = *t2.add(j) as u32 + *t4.add(j) as u32;
+                let d = *t3.add(j) as u32;
+                let acc = a * ky0 as u32 + b * ky1 as u32 + c * ky2 as u32 + d * ky3 as u32;
+                *dp.add(j) = ((acc + 128) >> 8) as u8;
+                j += 1;
+            }
+        }
+    }
 }
 
 /// Horizontal pass for the symmetric 7-tap path. Writes Q8-shifted u8 into `dst_row`.
@@ -1795,15 +1856,6 @@ fn gaussian_blur_7x7_sym_u8_avx2<const C: usize>(
     debug_assert_eq!(kx.len(), 7);
     debug_assert_eq!(ky.len(), 7);
 
-    let kx0 = kx[0] as u16;
-    let kx1 = kx[1] as u16;
-    let kx2 = kx[2] as u16;
-    let kx3 = kx[3] as u16;
-    let ky0 = ky[0] as u16;
-    let ky1 = ky[1] as u16;
-    let ky2 = ky[2] as u16;
-    let ky3 = ky[3] as u16;
-
     let stride = cols * C;
     const KSIZE: usize = 7;
     const HALF: usize = 3;
@@ -1819,70 +1871,91 @@ fn gaussian_blur_7x7_sym_u8_avx2<const C: usize>(
 
     strip_slices.par_iter_mut().zip(strips.par_iter()).for_each(
         |(strip_dst, &(out_start, out_end))| {
-            let out_rows = out_end - out_start;
-            let ring_len = KSIZE * stride;
             // Zero-initialised: see `separable_blur_u8_striped`.
-            let mut ring: Vec<u8> = vec![0u8; ring_len];
+            let mut ring: Vec<u8> = vec![0u8; KSIZE * stride];
             let mut padded = vec![0u8; padded_stride];
-
-            for k in 0..KSIZE {
-                let r_abs = out_start as isize + k as isize - HALF as isize;
-                let slot = r_abs.rem_euclid(KSIZE as isize) as usize;
-                let dst_row = &mut ring[slot * stride..(slot + 1) * stride];
-                unsafe {
-                    hpass_sym7_row_avx2::<C>(
-                        src,
-                        r_abs,
-                        rows,
-                        cols,
-                        stride,
-                        kx0,
-                        kx1,
-                        kx2,
-                        kx3,
-                        &mut padded,
-                        dst_row,
-                    )
-                };
-            }
-
-            for oi in 0..out_rows {
-                if oi > 0 {
-                    let r_new = out_start as isize + oi as isize + HALF as isize;
-                    let slot = r_new.rem_euclid(KSIZE as isize) as usize;
-                    let dst_row = &mut ring[slot * stride..(slot + 1) * stride];
-                    unsafe {
-                        hpass_sym7_row_avx2::<C>(
-                            src,
-                            r_new,
-                            rows,
-                            cols,
-                            stride,
-                            kx0,
-                            kx1,
-                            kx2,
-                            kx3,
-                            &mut padded,
-                            dst_row,
-                        )
-                    };
-                }
-
-                let ring_ptr = ring.as_ptr();
-                let mut tap_ptrs: [*const u8; KSIZE] = [std::ptr::null(); KSIZE];
-                for (k, slot_ptr) in tap_ptrs.iter_mut().enumerate() {
-                    let r_abs = out_start as isize + oi as isize - HALF as isize + k as isize;
-                    let slot = r_abs.rem_euclid(KSIZE as isize) as usize;
-                    *slot_ptr = unsafe { ring_ptr.add(slot * stride) };
-                }
-
-                let out_row = &mut strip_dst[oi * stride..(oi + 1) * stride];
-                unsafe {
-                    vpass_sym7_row_avx2(&tap_ptrs, out_row.as_mut_ptr(), stride, ky0, ky1, ky2, ky3)
-                };
-            }
+            // SAFETY: the caller dispatched here after checking AVX2.
+            unsafe {
+                blur7_strip_avx2::<C>(
+                    src,
+                    strip_dst,
+                    out_start,
+                    out_end,
+                    rows,
+                    cols,
+                    kx,
+                    ky,
+                    &mut ring,
+                    &mut padded,
+                )
+            };
         },
     );
+}
+
+/// One output strip `[out_start, out_end)` of the symmetric 7x7 blur, with
+/// the caller's ring (`7 * cols * C` bytes) and padded-row (`(cols + 6) * C`
+/// bytes) buffers; every ring row is written before it is read.
+///
+/// # Safety
+///
+/// The CPU must support AVX2.
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::too_many_arguments)]
+pub(crate) unsafe fn blur7_strip_avx2<const C: usize>(
+    src: &[u8],
+    strip_dst: &mut [u8],
+    out_start: usize,
+    out_end: usize,
+    rows: usize,
+    cols: usize,
+    kx: &[u8],
+    ky: &[u8],
+    ring: &mut [u8],
+    padded: &mut [u8],
+) {
+    // Four unique weights: outer, mid-outer, mid-inner, center.
+    let (kx0, kx1, kx2, kx3) = (kx[0] as u16, kx[1] as u16, kx[2] as u16, kx[3] as u16);
+    let (ky0, ky1, ky2, ky3) = (ky[0] as u16, ky[1] as u16, ky[2] as u16, ky[3] as u16);
+    let stride = cols * C;
+    const KSIZE: usize = 7;
+    const HALF: usize = 3;
+    let out_rows = out_end - out_start;
+
+    for k in 0..KSIZE {
+        let r_abs = out_start as isize + k as isize - HALF as isize;
+        let slot = r_abs.rem_euclid(KSIZE as isize) as usize;
+        let dst_row = &mut ring[slot * stride..(slot + 1) * stride];
+        unsafe {
+            hpass_sym7_row_avx2::<C>(
+                src, r_abs, rows, cols, stride, kx0, kx1, kx2, kx3, padded, dst_row,
+            )
+        };
+    }
+
+    for oi in 0..out_rows {
+        if oi > 0 {
+            let r_new = out_start as isize + oi as isize + HALF as isize;
+            let slot = r_new.rem_euclid(KSIZE as isize) as usize;
+            let dst_row = &mut ring[slot * stride..(slot + 1) * stride];
+            unsafe {
+                hpass_sym7_row_avx2::<C>(
+                    src, r_new, rows, cols, stride, kx0, kx1, kx2, kx3, padded, dst_row,
+                )
+            };
+        }
+
+        let ring_ptr = ring.as_ptr();
+        let mut tap_ptrs: [*const u8; KSIZE] = [std::ptr::null(); KSIZE];
+        for (k, slot_ptr) in tap_ptrs.iter_mut().enumerate() {
+            let r_abs = out_start as isize + oi as isize - HALF as isize + k as isize;
+            let slot = r_abs.rem_euclid(KSIZE as isize) as usize;
+            *slot_ptr = unsafe { ring_ptr.add(slot * stride) };
+        }
+
+        let out_row = &mut strip_dst[oi * stride..(oi + 1) * stride];
+        unsafe { vpass_sym7_row_avx2(&tap_ptrs, out_row.as_mut_ptr(), stride, ky0, ky1, ky2, ky3) };
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
