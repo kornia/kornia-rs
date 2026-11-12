@@ -26,6 +26,8 @@ py312 = { features = ["rust", "python", "py312"] }
 py313 = { features = ["rust", "python", "py313"] }
 py314 = { features = ["rust", "python", "py314"] }
 py314t = { features = ["rust", "py314t"] }
+py315 = { features = ["rust", "python", "py315"] }
+py315t = { features = ["rust", "py315t"] }
 
 # ------------------------------------------------------------------------------
 # Feature: Rust
