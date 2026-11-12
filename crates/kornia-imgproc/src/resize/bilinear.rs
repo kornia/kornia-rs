@@ -6,6 +6,7 @@
 //! Algorithm file: LUT precompute + row parallelism only — the per-row inner
 //! loop lives in [`super::kernels::bilinear_row_u8`] (the per-arch seam).
 
+use kornia_image::ImageError;
 use rayon::prelude::*;
 
 use super::kernels::{bilinear_row_u8, BilinearXTaps};
@@ -112,9 +113,13 @@ pub(crate) struct BilinearLutScratch {
 }
 
 /// Single-threaded single-channel bilinear u8 resize with caller-owned x
-/// tables: the same bytes as [`super::resize_fast_u8`] (`Bilinear`, `C = 1`,
-/// source at least 2x2), without allocating once `lut` has grown to the
-/// widest destination.
+/// tables: the same bytes as [`super::resize_fast_u8`] (`Bilinear`, `C = 1`),
+/// without allocating once `lut` has grown to the widest destination.
+///
+/// An empty destination is a no-op. Errors, as `resize_fast_u8`:
+/// [`ImageError::InvalidImageSize`] `(src_w, src_h, 2, 2)` for a source
+/// narrower or shorter than 2 px (no second bilinear tap), and
+/// `(len, 1, w, h)` for a buffer shorter than its `w x h` plane.
 pub(crate) fn resize_bilinear_u8_c1_serial(
     src: &[u8],
     src_w: usize,
@@ -123,7 +128,19 @@ pub(crate) fn resize_bilinear_u8_c1_serial(
     dst_w: usize,
     dst_h: usize,
     lut: &mut BilinearLutScratch,
-) {
+) -> Result<(), ImageError> {
+    if dst_w == 0 || dst_h == 0 {
+        return Ok(());
+    }
+    if src_w < 2 || src_h < 2 {
+        return Err(ImageError::InvalidImageSize(src_w, src_h, 2, 2));
+    }
+    if src.len() < src_w * src_h {
+        return Err(ImageError::InvalidImageSize(src.len(), 1, src_w, src_h));
+    }
+    if dst.len() < dst_w * dst_h {
+        return Err(ImageError::InvalidImageSize(dst.len(), 1, dst_w, dst_h));
+    }
     let scale_x = src_w as f64 / dst_w as f64;
     lut.ofs.clear();
     lut.fx.clear();
@@ -146,5 +163,30 @@ pub(crate) fn resize_bilinear_u8_c1_serial(
         let row0 = &src[yi * src_w..(yi + 1) * src_w];
         let row1 = &src[(yi + 1) * src_w..(yi + 2) * src_w];
         bilinear_row_u8::<1>(row0, row1, &x_taps, fy, Q14_SCALE - fy, dst_row);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn serial_c1_rejects_sizes_without_two_taps_or_short_buffers() {
+        let mut lut = BilinearLutScratch::default();
+        let src = [7u8; 12];
+        let mut dst = [0u8; 4];
+        for (w, h) in [(1, 1), (1, 6), (6, 1), (0, 3), (3, 0)] {
+            assert!(matches!(
+                resize_bilinear_u8_c1_serial(&src, w, h, &mut dst, 2, 2, &mut lut),
+                Err(ImageError::InvalidImageSize(a, b, 2, 2)) if (a, b) == (w, h)
+            ));
+        }
+        assert!(resize_bilinear_u8_c1_serial(&src[..5], 3, 2, &mut dst, 2, 2, &mut lut).is_err());
+        assert!(resize_bilinear_u8_c1_serial(&src, 4, 3, &mut dst[..3], 2, 2, &mut lut).is_err());
+        // Empty destination: nothing to write, even from a degenerate source.
+        resize_bilinear_u8_c1_serial(&src, 1, 1, &mut dst, 0, 2, &mut lut).unwrap();
+        resize_bilinear_u8_c1_serial(&src, 4, 3, &mut dst, 2, 2, &mut lut).unwrap();
+        assert_eq!(dst, [7; 4]);
     }
 }

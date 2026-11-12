@@ -1098,6 +1098,9 @@ impl OrbDetector {
         let trace = std::env::var_os("KORNIA_ORB_TRACE").is_some();
         let t0 = std::time::Instant::now();
         out.clear();
+        if self.n_scales == 0 {
+            return Ok(());
+        }
         let OrbScratch { levels, octave: ws } = scratch;
         self.features_per_level_into(&mut ws.features_per_level);
 
@@ -1122,8 +1125,8 @@ impl OrbDetector {
                 }
                 let (done, rest) = levels.split_at_mut(slot);
                 let prev = if octave == 1 { src } else { &done[slot - 1] };
-                // `resize_fast_u8` needs a 2x2 source; a smaller level would
-                // not shrink, so `level_size_u8` has already stopped.
+                // A 1-px-wide or -high `prev` with a shrinking target is an
+                // error, as in `resize_fast_u8` on the fused path.
                 resize_bilinear_u8_c1_serial(
                     prev.as_slice(),
                     prev.width(),
@@ -1132,7 +1135,7 @@ impl OrbDetector {
                     target.width,
                     target.height,
                     &mut ws.lut,
-                );
+                )?;
                 built = octave;
                 if trace {
                     eprintln!(
@@ -2913,6 +2916,65 @@ mod tests {
             );
             assert_same_features(&fused, &out);
         }
+        Ok(())
+    }
+
+    /// Tiny and degenerate images: the scratch path stops, or fails, exactly
+    /// where the fused path does (a 1-px axis that would still shrink is an
+    /// `InvalidImageSize` from the resize), and never panics. One scratch is
+    /// reused across all of them.
+    #[test]
+    fn detect_and_extract_u8_into_tiny_images_match_fused_path() -> Result<(), ImageError> {
+        let mut scratch = OrbScratch::default();
+        let mut out = OrbFeatures::default();
+        let mut errors = 0;
+        let sizes = [
+            (1, 1),
+            (1, 2),
+            (2, 1),
+            (1, 7),
+            (7, 1),
+            (1, 64),
+            (64, 1),
+            (2, 2),
+            (3, 3),
+            (2, 9),
+            (9, 2),
+            (5, 4),
+            (40, 30),
+        ];
+        let configs = [
+            (1usize, 1.2f32),
+            (2, 1.2),
+            (8, 1.2),
+            (20, 1.2),
+            (8, 2.0),
+            (8, 1.0),
+            (3, 0.5),
+        ];
+        for &(w, h) in &sizes {
+            let img = make_textured_u8(w, h)?;
+            for &(n_scales, downscale) in &configs {
+                let det = OrbDetector {
+                    n_scales,
+                    downscale,
+                    ..OrbDetector::default()
+                };
+                let fused = det.detect_and_extract_u8(&img);
+                let serial = det.detect_and_extract_u8_into(&img, &mut scratch, &mut out);
+                let what = format!("{w}x{h} n_scales {n_scales} downscale {downscale}");
+                match (fused, serial) {
+                    (Ok(f), Ok(())) => assert_same_features(&f, &out),
+                    (Err(a), Err(b)) => {
+                        assert_eq!(format!("{a:?}"), format!("{b:?}"), "{what}");
+                        errors += 1;
+                    }
+                    (f, s) => panic!("{what}: fused {:?} serial {s:?}", f.map(|f| f.len())),
+                }
+            }
+        }
+        // 1xN / Nx1 inputs reach the 1-px resize error.
+        assert!(errors > 0);
         Ok(())
     }
 
