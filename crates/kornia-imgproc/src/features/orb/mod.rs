@@ -1,7 +1,9 @@
+mod cv;
 mod extractor;
 mod matcher;
 mod pattern;
 
+pub use cv::{OrbCvDetector, OrbCvScratch};
 pub use extractor::{OrbDetector, OrbFeatures, OrbScratch};
 pub use matcher::{match_orb_descriptors, OrbMatchConfig};
 

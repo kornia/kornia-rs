@@ -37,6 +37,7 @@ mod separable;
 pub use bilinear::bilinear_axis_lut;
 pub(crate) use bilinear::{resize_bilinear_u8_c1_serial, BilinearLutScratch};
 pub use nearest::nearest_axis_lut;
+pub(crate) use opencv_compat::{resize_linear_exact_u8_c1, LinearExactScratch};
 pub use opencv_compat::{resize_opencv_f32, resize_opencv_u8};
 
 pub use fused::{

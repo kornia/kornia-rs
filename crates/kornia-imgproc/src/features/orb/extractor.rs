@@ -2142,7 +2142,7 @@ const DC_HIGH: [i16; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
 
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
-unsafe fn orientation_kp_neon(src_slice: &[u8], r0: usize, c0: usize, cols: usize) -> f32 {
+unsafe fn ic_moments_kp_neon(src_slice: &[u8], r0: usize, c0: usize, cols: usize) -> (i32, i32) {
     unsafe {
         use std::arch::aarch64::*;
 
@@ -2190,12 +2190,11 @@ unsafe fn orientation_kp_neon(src_slice: &[u8], r0: usize, c0: usize, cols: usiz
             m10_sum = vaddq_s32(m10_sum, vaddq_s32(vaddq_s32(p4, p5), vaddq_s32(p6, p7)));
         }
 
-        let m10 = vaddvq_s32(m10_sum);
-        (m01_acc as f32).atan2(m10 as f32)
+        (m01_acc, vaddvq_s32(m10_sum))
     }
 }
 
-/// AVX2 mirror of [`orientation_kp_neon`]. Same disk-masked moment scan,
+/// AVX2 mirror of [`ic_moments_kp_neon`]. Same disk-masked moment scan,
 /// translated 1:1 to `__m128i`. NEON's `vmull_s16` lane-by-lane multiply
 /// chain is replaced with `_mm_madd_epi16` which pairwise-multiplies 8 i16
 /// lanes into 4 i32 sums — exactly equivalent after the final horizontal
@@ -2204,7 +2203,7 @@ unsafe fn orientation_kp_neon(src_slice: &[u8], r0: usize, c0: usize, cols: usiz
 /// equivalent).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-unsafe fn orientation_kp_avx2(src_slice: &[u8], r0: usize, c0: usize, cols: usize) -> f32 {
+unsafe fn ic_moments_kp_avx2(src_slice: &[u8], r0: usize, c0: usize, cols: usize) -> (i32, i32) {
     use std::arch::x86_64::*;
     let zero = _mm_setzero_si128();
 
@@ -2257,9 +2256,7 @@ unsafe fn orientation_kp_avx2(src_slice: &[u8], r0: usize, c0: usize, cols: usiz
 
     let s = _mm_add_epi32(m10_sum, _mm_srli_si128::<8>(m10_sum));
     let s = _mm_add_epi32(s, _mm_srli_si128::<4>(s));
-    let m10 = _mm_cvtsi128_si32(s);
-
-    (m01_acc as f32).atan2(m10 as f32)
+    (m01_acc, _mm_cvtsi128_si32(s))
 }
 
 fn corner_orientations_u8(src: &Image<u8, 1>, corners: &[[usize; 2]]) -> Vec<f32> {
@@ -2274,8 +2271,8 @@ fn corner_orientations_u8(src: &Image<u8, 1>, corners: &[[usize; 2]]) -> Vec<f32
         .collect()
 }
 
-/// Whether [`orientation_u8_at`] may take its SIMD path on this CPU.
-fn orientation_simd_enabled() -> bool {
+/// Whether [`ic_moments_u8_at`] may take its SIMD path on this CPU.
+pub(super) fn orientation_simd_enabled() -> bool {
     #[cfg(target_arch = "aarch64")]
     return std::env::var("KORNIA_ORB_ORI_NEON").map_or(true, |v| v != "0");
     #[cfg(target_arch = "x86_64")]
@@ -2289,15 +2286,30 @@ fn orientation_simd_enabled() -> bool {
 /// [`orientation_simd_enabled`]; every path gives the same bits.
 #[inline]
 fn orientation_u8_at(src_slice: &[u8], cols: usize, r0: usize, c0: usize, simd: bool) -> f32 {
+    let (m01, m10) = ic_moments_u8_at(src_slice, cols, r0, c0, simd);
+    (m01 as f32).atan2(m10 as f32)
+}
+
+/// ORB `ICAngle` moments `(m01, m10)` over the radius-15 disk around
+/// `(r0, c0)`, which is at least 15 px from every border. Every path gives
+/// the same integers.
+#[inline]
+pub(super) fn ic_moments_u8_at(
+    src_slice: &[u8],
+    cols: usize,
+    r0: usize,
+    c0: usize,
+    simd: bool,
+) -> (i32, i32) {
     const HALF: i32 = 15;
 
     #[cfg(target_arch = "aarch64")]
     if simd {
-        return unsafe { orientation_kp_neon(src_slice, r0, c0, cols) };
+        return unsafe { ic_moments_kp_neon(src_slice, r0, c0, cols) };
     }
     #[cfg(target_arch = "x86_64")]
     if simd {
-        return unsafe { orientation_kp_avx2(src_slice, r0, c0, cols) };
+        return unsafe { ic_moments_kp_avx2(src_slice, r0, c0, cols) };
     }
     let _ = simd;
 
@@ -2330,7 +2342,7 @@ fn orientation_u8_at(src_slice: &[u8], cols: usize, r0: usize, c0: usize, simd: 
         }
         m01 += v * v_sum;
     }
-    (m01 as f32).atan2(m10 as f32)
+    (m01, m10)
 }
 
 fn corner_orientations(src: &Image<f32, 1>, corners: &[[usize; 2]]) -> Vec<f32> {
@@ -2391,7 +2403,13 @@ fn orb_loop_u8(src: &Image<u8, 1>, keypoints: &[(i32, i32)], orientation: &[f32]
 /// rBRIEF descriptor of the keypoint at `(kr, kc)` (at least 20 px from
 /// every border) on the blurred level `src_data` of row stride `cols`.
 #[inline]
-fn brief_descriptor_u8_at(src_data: &[u8], cols: usize, kr: i32, kc: i32, angle: f32) -> [u8; 32] {
+pub(super) fn brief_descriptor_u8_at(
+    src_data: &[u8],
+    cols: usize,
+    kr: i32,
+    kc: i32,
+    angle: f32,
+) -> [u8; 32] {
     let base = (kr as isize) * (cols as isize) + (kc as isize);
     let mut rotated = [[0i8; 4]; 256];
     rotate_pattern_for_angle(angle, &mut rotated);

@@ -130,6 +130,13 @@ the pyramid levels over rayon; `detect_and_extract_u8_into` gives the same bits
 on the calling thread with a caller-owned `OrbScratch` and output, and makes no
 heap allocation once both are reused across same-sized frames.
 
+`features::OrbCvDetector` is OpenCV's ORB (`cv::ORB::create` with its
+defaults): the same keypoints, angles and descriptors bit for bit
+(`INTER_LINEAR_EXACT` pyramid, FAST-9 with 3x3 suppression, `retainBest`, 7x7
+Harris, `fastAtan2`, OpenCV's float pre-BRIEF blur), checked against OpenCV
+5.0 fixtures (`benches/opencv_orb_fixtures.py`). With an `OrbCvScratch` it is
+allocation-free after the first frame. Orientations are radians.
+
 ### Binary descriptor matching
 
 `features::match_descriptors` matches fixed-width binary descriptors with

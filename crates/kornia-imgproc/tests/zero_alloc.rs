@@ -4,7 +4,7 @@
 //! one `#[test]` so no other test allocates concurrently.
 
 use kornia_image::{Image, ImageSize};
-use kornia_imgproc::features::{OrbDetector, OrbFeatures, OrbScratch};
+use kornia_imgproc::features::{OrbCvDetector, OrbCvScratch, OrbDetector, OrbFeatures, OrbScratch};
 use kornia_imgproc::filter::scharr_spatial_gradient_separable_f32;
 use kornia_imgproc::optical_flow_pyr_lk::LkPyramidU8;
 use kornia_imgproc::pyramid::{pyrdown_separable_f32, pyrdown_u8};
@@ -121,5 +121,21 @@ fn frontend_kernels_do_not_allocate_in_steady_state() -> Result<(), Box<dyn std:
         assert!(feats.len() > 900, "{} ORB features", feats.len());
         assert_eq!(n, 0, "OrbDetector::detect_and_extract_u8_into");
     }
+
+    let png = kornia_io::png::read_image_png_mono8(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/data/mh01_frame1.png"),
+    )?;
+    let frame = Image::<u8, 1>::new(png.size(), png.as_slice().to_vec())?;
+    let orb = OrbCvDetector {
+        n_features: 1000,
+        ..OrbCvDetector::default()
+    };
+    let (mut scratch, mut feats) = (OrbCvScratch::default(), OrbFeatures::default());
+    let n = steady_allocs(|| {
+        orb.detect_and_extract_u8_into(&frame, &mut scratch, &mut feats)
+            .unwrap()
+    });
+    assert_eq!(feats.len(), 1000);
+    assert_eq!(n, 0, "OrbCvDetector::detect_and_extract_u8_into");
     Ok(())
 }
