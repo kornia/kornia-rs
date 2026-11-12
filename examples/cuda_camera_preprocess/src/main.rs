@@ -11,7 +11,7 @@
 //! straight DMA; `cuMemHostAlloc` is far too expensive per frame).
 //!
 //! ```text
-//! cargo run -p cuda-camera-preprocess --release -- [--device /dev/video0] [--frames 100] [--out-size 640]
+//! cargo run -p cuda-camera-preprocess --release --features cuda -- [--device /dev/video0] [--frames 100] [--out-size 640]
 //! ```
 
 #[cfg(target_os = "linux")]

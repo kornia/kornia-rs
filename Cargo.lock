@@ -8002,6 +8002,7 @@ dependencies = [
  "nalgebra 0.35.0",
  "rand 0.10.3",
  "thiserror 2.0.21",
+ "wide 1.7.1",
 ]
 
 [[package]]
@@ -8088,7 +8089,9 @@ dependencies = [
  "kornia-algebra",
  "kornia-image",
  "kornia-io",
+ "kornia-oxide-kernels",
  "kornia-tensor",
+ "libc",
  "ndarray 0.17.2",
  "num-traits",
  "opencv",
@@ -8122,6 +8125,15 @@ dependencies = [
  "turbojpeg",
  "v4l 0.14.0",
  "zune-jpeg",
+]
+
+[[package]]
+name = "kornia-oxide-kernels"
+version = "0.2.0"
+dependencies = [
+ "cudarc 0.19.9",
+ "kornia-tensor",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

@@ -31,3 +31,7 @@ pub use integral::{integral_image_f32, integral_image_u8};
 /// Laplacian filter.
 pub mod laplacian;
 pub use laplacian::laplacian_u8;
+
+/// Separable Scharr derivatives.
+mod scharr;
+pub use scharr::scharr_spatial_gradient_separable_f32;
