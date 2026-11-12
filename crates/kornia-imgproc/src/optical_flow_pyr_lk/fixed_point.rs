@@ -30,8 +30,10 @@ const ROW_PAIR: usize = 2;
 /// iteration oscillates; OpenCV then takes the half step and stops.
 const OSCILLATION_TOL: f32 = 0.01;
 /// Bound of `|J - I|` in window units: 255 * 32.
+#[cfg(target_arch = "x86_64")]
 const MAX_DIFF: i64 = 255 * 32;
 /// Bound of an unscaled Scharr derivative: 16 * 255.
+#[cfg(target_arch = "x86_64")]
 const MAX_DERIV: i64 = 16 * 255;
 /// Points per rayon task.
 const POINTS_PER_TASK: usize = 16;
@@ -639,6 +641,7 @@ impl Window {
 
 /// Window rows per i32 flush so no lane overflows: each lane gathers two
 /// products of at most `MAX_DIFF * MAX_DERIV` per chunk and row.
+#[cfg(target_arch = "x86_64")]
 fn rows_per_flush(shape: WinShape) -> usize {
     let per_row = 2 * shape.chunks() as i64 * MAX_DIFF * MAX_DERIV;
     ((i64::from(i32::MAX) / per_row) as usize / ROW_PAIR * ROW_PAIR).max(ROW_PAIR)
@@ -1280,6 +1283,17 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn scharr_deriv_isa_paths_agree() {
+        let p = LkPyramidU8::new(&frame("mh01_frame1.png"), 21, 0, false).unwrap();
+        let img = &p.levels[0].image;
+        let new = || Plane::<i16>::new(img.width, img.height, img.pad);
+        let (mut ax, mut ay, mut bx, mut by) = (new(), new(), new(), new());
+        scharr_deriv_i16(img, &mut ax, &mut ay);
+        scharr_deriv_i16_rows(img, &mut bx, &mut by);
+        assert_eq!((ax.data, ay.data), (bx.data, by.data));
     }
 
     #[test]

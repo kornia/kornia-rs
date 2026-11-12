@@ -51,7 +51,7 @@ fn hrow_u8<const SSE2: bool>(src: &[u8], row: &mut [u16]) {
     let start = if SSE2 {
         interior_simd_u8(src, row, end)
     } else {
-        1
+        interior_avx2_u8(src, row, end)
     };
     let pairs = src[2 * (start - 1)..].chunks_exact(2);
     for (((out, a), b), c) in row[start..end]
@@ -85,7 +85,7 @@ fn hrow_f32<const SSE2: bool>(src: &[f32], row: &mut [f32]) {
     let start = if SSE2 {
         interior_simd_f32(src, row, end)
     } else {
-        1
+        interior_avx2_f32(src, row, end)
     };
     let pairs = src[2 * (start - 1)..].chunks_exact(2);
     for (((out, a), b), c) in row[start..end]
@@ -125,6 +125,108 @@ fn interior_simd_f32(src: &[f32], row: &mut [f32], end: usize) -> usize {
         let _ = (src, row, end);
         1
     }
+}
+
+/// AVX2 interior, reached only from the `_avx2` entry points (`SSE2 = false`).
+#[inline(always)]
+fn interior_avx2_u8(src: &[u8], row: &mut [u16], end: usize) -> usize {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // SAFETY: only `pyrdown_c1_u8_avx2` instantiates the `SSE2 = false`
+        // body, after checking AVX2; bounds are checked inside.
+        return unsafe { hrow_u8_avx2(src, row, end) };
+    }
+    #[allow(unreachable_code)]
+    {
+        let _ = (src, row, end);
+        1
+    }
+}
+
+#[inline(always)]
+fn interior_avx2_f32(src: &[f32], row: &mut [f32], end: usize) -> usize {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // SAFETY: only `pyrdown_c1_f32_avx2` instantiates the `SSE2 = false`
+        // body, after checking AVX2; bounds are checked inside.
+        return unsafe { hrow_f32_avx2(src, row, end) };
+    }
+    #[allow(unreachable_code)]
+    {
+        let _ = (src, row, end);
+        1
+    }
+}
+
+/// [`hrow_u8_sse2`] on 256-bit vectors: 16 outputs per step. The byte-to-u16
+/// split works within each 128-bit lane, so no lane crossing is needed.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn hrow_u8_avx2(src: &[u8], row: &mut [u16], end: usize) -> usize {
+    use std::arch::x86_64::*;
+    const STEP: usize = 16;
+    let even = _mm256_set1_epi16(0x00ff);
+    let mut d = 1;
+    // The last load reads bytes `2d + 2 .. 2d + 34`.
+    while d + STEP <= end && 2 * d + 34 <= src.len() {
+        let p = src.as_ptr().add(2 * d - 2);
+        let l = _mm256_loadu_si256(p as *const __m256i);
+        let m = _mm256_loadu_si256(p.add(2) as *const __m256i);
+        let n = _mm256_loadu_si256(p.add(4) as *const __m256i);
+        let (s0, s1) = (_mm256_and_si256(l, even), _mm256_srli_epi16(l, 8));
+        let (s2, s3) = (_mm256_and_si256(m, even), _mm256_srli_epi16(m, 8));
+        let s4 = _mm256_and_si256(n, even);
+        let outer = _mm256_add_epi16(s0, s4);
+        let mid = _mm256_slli_epi16(_mm256_add_epi16(s1, s3), 2);
+        let center = _mm256_add_epi16(_mm256_slli_epi16(s2, 2), _mm256_slli_epi16(s2, 1));
+        let v = _mm256_add_epi16(_mm256_add_epi16(outer, mid), center);
+        _mm256_storeu_si256(row.as_mut_ptr().add(d) as *mut __m256i, v);
+        d += STEP;
+    }
+    d
+}
+
+/// [`hrow_f32_sse2`] on 256-bit vectors: 8 outputs per step; `shufps` works
+/// per 128-bit lane, so one `vpermpd` restores the order.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn hrow_f32_avx2(src: &[f32], row: &mut [f32], end: usize) -> usize {
+    use std::arch::x86_64::*;
+    const STEP: usize = 8;
+    const EVEN: i32 = 0b10_00_10_00;
+    const ODD: i32 = 0b11_01_11_01;
+    // 64-bit chunks (a0 a2)(b0 b2)(a4 a6)(b4 b6) -> (a0 a2)(a4 a6)(b0 b2)(b4 b6).
+    const ORDER: i32 = 0b11_01_10_00;
+    let (four, six) = (_mm256_set1_ps(4.0), _mm256_set1_ps(6.0));
+    macro_rules! split {
+        ($a:expr, $b:expr) => {{
+            let (a, b) = ($a, $b);
+            let e = _mm256_castps_pd(_mm256_shuffle_ps::<EVEN>(a, b));
+            let o = _mm256_castps_pd(_mm256_shuffle_ps::<ODD>(a, b));
+            (
+                _mm256_castpd_ps(_mm256_permute4x64_pd::<ORDER>(e)),
+                _mm256_castpd_ps(_mm256_permute4x64_pd::<ORDER>(o)),
+            )
+        }};
+    }
+    let mut d = 1;
+    // The last load reads floats `2d + 14 .. 2d + 22`.
+    while d + STEP <= end && 2 * d + 22 <= src.len() {
+        let p = src.as_ptr().add(2 * d - 2);
+        let (s0, s1) = split!(_mm256_loadu_ps(p), _mm256_loadu_ps(p.add(8)));
+        let (s2, s3) = split!(_mm256_loadu_ps(p.add(2)), _mm256_loadu_ps(p.add(10)));
+        let (s4, _) = split!(_mm256_loadu_ps(p.add(4)), _mm256_loadu_ps(p.add(12)));
+        let v = _mm256_add_ps(
+            _mm256_mul_ps(s2, six),
+            _mm256_add_ps(
+                _mm256_mul_ps(_mm256_add_ps(s1, s3), four),
+                _mm256_add_ps(s0, s4),
+            ),
+        );
+        _mm256_storeu_ps(row.as_mut_ptr().add(d), v);
+        d += STEP;
+    }
+    d
 }
 
 /// Eight outputs per step: the 16 bytes at `2d - 2`, `2d` and `2d + 2` give,
@@ -257,8 +359,7 @@ pub(crate) fn pyrdown_c1_u8(
     pyrdown_c1_u8_body::<true>(src, src_stride, w, h, dst, dst_stride, dw);
 }
 
-/// The portable loops compiled for AVX2: LLVM vectorises the stride-2
-/// horizontal pass with 256-bit shuffles, which beats the explicit SSE2 one.
+/// The ring kernel compiled for AVX2, with the AVX2 horizontal pass.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn pyrdown_c1_u8_avx2(
@@ -310,7 +411,8 @@ pub(super) fn pyrdown_c1_f32(src: &[f32], w: usize, h: usize, dst: &mut [f32], d
     pyrdown_c1_f32_body::<true>(src, w, h, dst, dw);
 }
 
-/// The portable loops compiled for AVX2 (no FMA, so the same rounding).
+/// The ring kernel compiled for AVX2, with the AVX2 horizontal pass (no
+/// FMA, so the same rounding).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn pyrdown_c1_f32_avx2(src: &[f32], w: usize, h: usize, dst: &mut [f32], dw: usize) {
@@ -334,6 +436,52 @@ fn pyrdown_c1_f32_body<const SSE2: bool>(
         let rows = out.iter_mut().zip(r0).zip(r1).zip(r2).zip(r3).zip(r4);
         for (((((o, a), b), c), d), e) in rows {
             *o = (c * 6.0 + ((b + d) * 4.0 + (a + e))) * SCALE;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lcg(n: usize, seed: u64) -> Vec<u8> {
+        let mut x = seed;
+        (0..n)
+            .map(|_| {
+                x = x
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                (x >> 56) as u8
+            })
+            .collect()
+    }
+
+    /// The SSE2 body (scalar off x86_64) and the dispatched path (AVX2 where
+    /// present) give identical outputs, tails included.
+    #[test]
+    fn isa_paths_agree() {
+        for (i, (w, h)) in [
+            (5usize, 3usize),
+            (17, 9),
+            (37, 5),
+            (64, 33),
+            (127, 64),
+            (752, 480),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let (dw, dh) = (w.div_ceil(2), h.div_ceil(2));
+            let src = lcg(w * h, i as u64);
+            let (mut a, mut b) = (vec![0u8; dw * dh], vec![0u8; dw * dh]);
+            pyrdown_c1_u8(&src, w, w, h, &mut a, dw, dw);
+            pyrdown_c1_u8_body::<true>(&src, w, w, h, &mut b, dw, dw);
+            assert_eq!(a, b, "u8 {w}x{h}");
+            let srcf: Vec<f32> = src.iter().map(|&v| f32::from(v) * 0.37 + 0.11).collect();
+            let (mut a, mut b) = (vec![0f32; dw * dh], vec![0f32; dw * dh]);
+            pyrdown_c1_f32(&srcf, w, h, &mut a, dw);
+            pyrdown_c1_f32_body::<true>(&srcf, w, h, &mut b, dw);
+            assert_eq!(a, b, "f32 {w}x{h}");
         }
     }
 }

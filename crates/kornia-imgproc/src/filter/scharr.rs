@@ -208,6 +208,30 @@ mod tests {
         Ok(())
     }
 
+    /// The AVX2 build of the row loops (where present) equals the default one.
+    #[test]
+    fn isa_paths_agree() -> Result<(), ImageError> {
+        let (w, h) = (53, 21);
+        let data: Vec<f32> = lcg_bytes(w * h, 5)
+            .into_iter()
+            .map(|v| f32::from(v) * 0.7 + 0.3)
+            .collect();
+        let src = Image::<f32, 1>::new(
+            ImageSize {
+                width: w,
+                height: h,
+            },
+            data.clone(),
+        )?;
+        let mut dx = Image::<f32, 1>::from_size_val(src.size(), 0.0)?;
+        let mut dy = Image::<f32, 1>::from_size_val(src.size(), 0.0)?;
+        scharr_spatial_gradient_separable_f32(&src, &mut dx, &mut dy)?;
+        let (mut ex, mut ey) = (vec![0.0; w * h], vec![0.0; w * h]);
+        scharr_rows(&data, w, h, &mut ex, &mut ey);
+        assert_eq!((dx.as_slice(), dy.as_slice()), (&ex[..], &ey[..]));
+        Ok(())
+    }
+
     #[test]
     fn separable_rejects_wrong_size() -> Result<(), ImageError> {
         let src = Image::<f32, 1>::from_size_val(
