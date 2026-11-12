@@ -41,6 +41,8 @@ use crate::ransac::{HuberKernel, RobustKernel};
 use kornia_algebra::{Mat3F64, Mat6F64, Vec3F64, Vec6F64, SO3F64};
 use kornia_image::Image;
 
+mod simd;
+
 /// Smallest residual sigma, in metres, whatever its source (a model or a sigma map). A row
 /// weight is `1 / sigma^2`, so a floor near `f64::MIN_POSITIVE` would overflow `J^T W J`; at
 /// 1 nm the weight is `1e18`.
@@ -365,6 +367,9 @@ pub struct IcpPlaneResult {
 
 /// Projective point-to-plane ICP between two RGB-D pyramids, coarse to fine.
 ///
+/// Runs [`IcpKernel::Simd`]; [`icp_projective_plane_with`] takes a workspace that selects the
+/// kernel.
+///
 /// # Arguments
 ///
 /// * `src` - Source frame pyramid.
@@ -439,21 +444,68 @@ pub fn icp_projective_plane(
     )
 }
 
-/// Reusable buffers for [`icp_projective_plane_with`].
+/// Implementation of the association passes of [`icp_projective_plane_with`].
+///
+/// Both run the same gates, weights and sums; they differ in precision. Dense RGB-D trackers
+/// accumulate in `f32` too (Open3D's tensor RGB-D odometry, ElasticFusion, InfiniTAM).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum IcpKernel {
+    /// Plain `f64` loops: the reference [`Self::Simd`] is tested against.
+    Scalar,
+    /// Eight `f32` lanes per [`kornia_algebra::simd::F32x8`], the normal equations summed in
+    /// `f32` over 128-point blocks and the blocks in `f64`. Agrees with [`Self::Scalar`] to `f32`
+    /// rounding, not `f64`: about 1e-5 relative on the pose and the information matrix, and a
+    /// projection on a pixel boundary can round to the neighbouring pixel, so correspondence
+    /// counts can differ by a few in 1e4. The 256-bit path needs an `+avx2` build of
+    /// kornia-algebra; the x86-64 baseline runs two 128-bit halves.
+    #[default]
+    Simd,
+}
+
+/// Reusable buffers for [`icp_projective_plane_with`], and the kernel it runs.
 ///
 /// Each buffer is reserved by the image size, not by the number of valid pixels or inliers, so
 /// after one call at a given source size a call allocates nothing, however full or sparse the
 /// frames that follow are.
 #[derive(Debug, Default, Clone)]
 pub struct IcpWorkspace {
+    /// Kernel of the association passes.
+    kernel: IcpKernel,
+    /// Valid source points of each level, for [`IcpKernel::Simd`].
+    soa: Vec<simd::SourceSoa>,
     /// Target depths of the final pass's inliers, for their median.
     depths: Vec<f32>,
 }
 
+impl IcpWorkspace {
+    /// An empty workspace running `kernel`; [`Default`] runs [`IcpKernel::Simd`].
+    ///
+    /// # Arguments
+    ///
+    /// * `kernel` - Kernel of the association passes.
+    ///
+    /// # Returns
+    ///
+    /// The workspace; its buffers grow on the first call.
+    pub fn new(kernel: IcpKernel) -> Self {
+        Self {
+            kernel,
+            ..Default::default()
+        }
+    }
+
+    /// Kernel of the association passes.
+    pub fn kernel(&self) -> IcpKernel {
+        self.kernel
+    }
+}
+
 /// [`icp_projective_plane`] with reused buffers, for a loop over frames.
 ///
-/// The same result as [`icp_projective_plane`], bit for bit; the workspace holds no state that
-/// carries from one call to the next.
+/// With a [`Default`] workspace ([`IcpKernel::Simd`]) the same result as
+/// [`icp_projective_plane`], bit for bit; the workspace holds no state that carries from one
+/// call to the next. [`IcpWorkspace::new`] selects the kernel.
 ///
 /// # Arguments
 ///
@@ -1247,16 +1299,38 @@ fn run_icp(
     let (mut rotation, mut translation) = (*init_rotation, *init_translation);
     let mut iterations = 0;
     let hybrid = criteria.association == Association::Hybrid;
+    let kernel = workspace.kernel;
+    if kernel == IcpKernel::Simd {
+        workspace
+            .soa
+            .resize_with(src.levels.len(), Default::default);
+        for (buf, level) in workspace.soa.iter_mut().zip(&src.levels) {
+            buf.fill(level, &gates.depth_noise);
+        }
+    }
+    let soa = &workspace.soa;
+    let pass = |level: usize,
+                rotation: &Mat3F64,
+                translation: &Vec3F64,
+                gates: &PassGates,
+                depths: Option<&mut Vec<f32>>| {
+        let (s, t) = (&src.levels[level], &tgt.levels[level]);
+        match kernel {
+            IcpKernel::Scalar => accumulate_level(s, t, rotation, translation, gates, depths),
+            IcpKernel::Simd => {
+                simd::accumulate(&soa[level], s, t, rotation, translation, gates, depths)
+            }
+        }
+    };
 
     // iters_per_level is coarsest first; levels[0] is the finest
     let levels = (0..src.levels.len()).rev();
     for (&iters, level) in criteria.iters_per_level.iter().zip(levels) {
-        let (s, t) = (&src.levels[level], &tgt.levels[level]);
         // the switch to bilinear brings its own budget of `iters` more iterations
         let (mut it, mut budget) = (0, iters);
         while it < budget {
             it += 1;
-            let eqs = accumulate_level(s, t, &rotation, &translation, &gates, None);
+            let eqs = pass(level, &rotation, &translation, &gates, None);
             check_inliers(&eqs)?;
             // the mean, not the median: a select per iteration costs more than the scale needs
             let mean_depth = eqs.sum_depth_m / eqs.num_inliers as f64;
@@ -1301,14 +1375,7 @@ fn run_icp(
     depths.clear();
     // by the image, not the inlier count, so a fuller frame after a sparse one never regrows it
     depths.reserve(finest.size().width * finest.size().height);
-    let eqs = accumulate_level(
-        finest,
-        &tgt.levels[0],
-        &rotation,
-        &translation,
-        &gates,
-        Some(&mut *depths),
-    );
+    let eqs = pass(0, &rotation, &translation, &gates, Some(&mut *depths));
     check_inliers(&eqs)?;
     let (rotation_conditioning, translation_conditioning) = block_conditioning(&eqs.a);
     let median_depth_m = median_depth_m(depths);
@@ -2606,26 +2673,39 @@ mod tests {
             }),
             ..Default::default()
         };
-        let with = icp_from_identity(&src, &tgt, &criteria)?;
-        // the prior did carry the roll
-        assert!(rotation_error_deg(&with.rotation, &rot_gt) < 0.1);
-        assert!(
-            with.rotation_conditioning < 1e-3 && with.observability < 1e-3,
-            "prior inflated the reported conditioning: {with:?}"
-        );
-
-        // the figures equal a prior-free pass at the returned pose
         let (gates, _) = check_criteria(&criteria)?;
         let (s0, t0) = (&src.levels[0], &tgt.levels[0]);
-        let eqs = accumulate_level(s0, t0, &with.rotation, &with.translation, &gates, None);
-        let split = split_degenerate(&eqs.a, with.median_depth_m, criteria.degeneracy_rtol)?;
-        assert_eq!(split.num_degenerate, with.num_degenerate);
-        assert_eq!(with.information, split.observed(&eqs.a));
-        let (rot_cond, trans_cond) = block_conditioning(&eqs.a);
-        assert_eq!(
-            (with.rotation_conditioning, with.translation_conditioning),
-            (rot_cond, trans_cond)
-        );
+        // each kernel against a prior-free pass of the same kernel, so the comparison is exact
+        for kernel in [IcpKernel::Scalar, IcpKernel::Simd] {
+            let (r, t) = (Mat3F64::IDENTITY, Vec3F64::ZERO);
+            let mut ws = IcpWorkspace::new(kernel);
+            let with = icp_projective_plane_with(&mut ws, &src, &tgt, &r, &t, &criteria)?;
+            // the prior did carry the roll
+            assert!(rotation_error_deg(&with.rotation, &rot_gt) < 0.1);
+            assert!(
+                with.rotation_conditioning < 1e-3 && with.observability < 1e-3,
+                "{kernel:?}: prior inflated the reported conditioning: {with:?}"
+            );
+
+            // the figures equal a prior-free pass at the returned pose
+            let (rot, t) = (&with.rotation, &with.translation);
+            let eqs = match kernel {
+                IcpKernel::Scalar => accumulate_level(s0, t0, rot, t, &gates, None),
+                _ => {
+                    let mut soa = simd::SourceSoa::default();
+                    soa.fill(s0, &gates.depth_noise);
+                    simd::accumulate(&soa, s0, t0, rot, t, &gates, None)
+                }
+            };
+            let split = split_degenerate(&eqs.a, with.median_depth_m, criteria.degeneracy_rtol)?;
+            assert_eq!(split.num_degenerate, with.num_degenerate);
+            assert_eq!(with.information, split.observed(&eqs.a));
+            let (rot_cond, trans_cond) = block_conditioning(&eqs.a);
+            assert_eq!(
+                (with.rotation_conditioning, with.translation_conditioning),
+                (rot_cond, trans_cond)
+            );
+        }
         Ok(())
     }
 
@@ -2899,18 +2979,204 @@ mod tests {
         let src = pyramid(&scene, &Mat3F64::IDENTITY, &Vec3F64::ZERO)?;
         let rot_wc = SO3F64::exp(Vec3F64::new(0.015, -0.01, 0.02)).matrix();
         let moved = pyramid(&scene, &rot_wc, &Vec3F64::new(0.02, -0.01, 0.015))?;
-        let mut workspace = IcpWorkspace::default();
         // Hybrid runs both samplers
         let criteria = IcpPlaneCriteria {
             association: Association::Hybrid,
             ..Default::default()
         };
-        for tgt in [&moved, &src, &moved] {
-            let fresh = icp_from_identity(&src, tgt, &criteria)?;
-            let (r, t) = (Mat3F64::IDENTITY, Vec3F64::ZERO);
-            let reused = icp_projective_plane_with(&mut workspace, &src, tgt, &r, &t, &criteria)?;
-            assert_bit_identical(&fresh, &reused);
+        let (r, t) = (Mat3F64::IDENTITY, Vec3F64::ZERO);
+        for kernel in [IcpKernel::Scalar, IcpKernel::Simd] {
+            let mut workspace = IcpWorkspace::new(kernel);
+            for tgt in [&moved, &src, &moved] {
+                let mut fresh_ws = IcpWorkspace::new(kernel);
+                let fresh = icp_projective_plane_with(&mut fresh_ws, &src, tgt, &r, &t, &criteria)?;
+                let reused =
+                    icp_projective_plane_with(&mut workspace, &src, tgt, &r, &t, &criteria)?;
+                assert_bit_identical(&fresh, &reused);
+            }
         }
+        // the default workspace is the one `icp_projective_plane` runs
+        let plain = icp_from_identity(&src, &moved, &criteria)?;
+        let with = icp_projective_plane_with(
+            &mut IcpWorkspace::default(),
+            &src,
+            &moved,
+            &r,
+            &t,
+            &criteria,
+        )?;
+        assert_bit_identical(&plain, &with);
+        Ok(())
+    }
+
+    /// Largest `|a - b|` over the larger of `floor` and the largest `|a|`.
+    fn rel_diff(a: &[f64], b: &[f64], floor: f64) -> f64 {
+        let scale = a.iter().fold(floor, |m, x| m.max(x.abs()));
+        let diff = a
+            .iter()
+            .zip(b)
+            .fold(0.0f64, |m, (x, y)| m.max((x - y).abs()));
+        diff / scale
+    }
+
+    /// One SIMD pass gives the scalar pass's sums to `f32` rounding, both samplers, both noise
+    /// models, with and without sigma maps.
+    ///
+    /// 1e-5 relative: `f32` lanes round at ~6e-8 per operation over ~100 operations per row and
+    /// sum 128 rows per block, with no Gauss-Newton amplification in a single pass. Counts may
+    /// differ where an `f32` projection rounds to the neighbouring pixel. The pose is 1 cm and
+    /// 0.5 deg off the truth so that Huber downweights some rows.
+    #[test]
+    fn level_pass_matches_scalar() -> Result<(), Box<dyn std::error::Error>> {
+        let (camera, scene) = (test_camera(), Scene::corner_and_sphere());
+        let rot_wc = SO3F64::exp(Vec3F64::new(0.015, -0.01, 0.02)).matrix();
+        let t_wc = Vec3F64::new(0.02, -0.01, 0.015);
+        let ds = depth_m(&scene, &Mat3F64::IDENTITY, &Vec3F64::ZERO)?;
+        let dt = depth_m(&scene, &rot_wc, &t_wc)?;
+        let sig = |d: &Image<f32, 1>| {
+            let s = d.as_slice().iter();
+            Image::<f32, 1>::new(
+                d.size(),
+                s.map(|&z| 1.5 * TEST_STEREO.depth_sigma(z as f64) as f32)
+                    .collect(),
+            )
+        };
+        let plain = (
+            RgbdPyramid::from_depth_m(&ds, &camera, 1)?,
+            RgbdPyramid::from_depth_m(&dt, &camera, 1)?,
+        );
+        let mapped = (
+            RgbdPyramid::from_depth_m_with_sigma(&ds, &sig(&ds)?, &camera, 1)?,
+            RgbdPyramid::from_depth_m_with_sigma(&dt, &sig(&dt)?, &camera, 1)?,
+        );
+        let (rot_gt, t_gt) = (rot_wc.transpose(), -(rot_wc.transpose() * t_wc));
+        let dr = SO3F64::exp(Vec3F64::new(0.0, 0.5f64.to_radians(), 0.0)).matrix();
+        let (rot, t) = (dr * rot_gt, dr * t_gt + Vec3F64::new(0.01, 0.0, -0.005));
+
+        let mut worst: f64 = 0.0;
+        for (pair, has_map) in [(&plain, false), (&mapped, true)] {
+            let (s0, t0) = (&pair.0.levels[0], &pair.1.levels[0]);
+            for bilinear in [false, true] {
+                for noise in [GATES.depth_noise, TEST_STEREO] {
+                    let gates = PassGates {
+                        bilinear,
+                        depth_noise: noise,
+                        ..GATES
+                    };
+                    let mut soa = simd::SourceSoa::default();
+                    soa.fill(s0, &noise);
+                    let (mut da, mut db) = (Vec::new(), Vec::new());
+                    let a = accumulate_level(s0, t0, &rot, &t, &gates, Some(&mut da));
+                    let b = simd::accumulate(&soa, s0, t0, &rot, &t, &gates, Some(&mut db));
+                    let case = format!("bilinear {bilinear}, {noise:?}, sigma map {has_map}");
+
+                    // some rows past the Huber threshold, so the downweighting is compared too
+                    let mut huber_rows = 0;
+                    for_each_correspondence(s0, t0, &rot, &t, &gates, |c| {
+                        huber_rows += usize::from((c.r / c.sigma).abs() > gates.huber_delta);
+                    });
+                    assert!(huber_rows > 100, "{case}: {huber_rows} rows past Huber");
+
+                    assert_eq!(a.counts.num_valid, b.counts.num_valid, "{case}");
+                    let (na, nb) = (a.counts.num_associated, b.counts.num_associated);
+                    assert!(
+                        na.abs_diff(nb) * 1000 <= na,
+                        "{case}: associated {na} vs {nb}"
+                    );
+                    let (ia, ib) = (a.num_inliers, b.num_inliers);
+                    assert!(ia.abs_diff(ib) * 1000 <= ia, "{case}: inliers {ia} vs {ib}");
+
+                    let d = [
+                        rel_diff(a.a.as_slice(), b.a.as_slice(), 0.0),
+                        rel_diff(a.b.as_slice(), b.b.as_slice(), 0.0),
+                        rel_diff(&[a.sum_sq_residual], &[b.sum_sq_residual], 0.0),
+                        rel_diff(&[a.sum_depth_m], &[b.sum_depth_m], 0.0),
+                    ];
+                    let m = d.iter().fold(0.0f64, |m, v| m.max(*v));
+                    let ds = d.map(|x| format!("{x:.2e}"));
+                    eprintln!("{case}: inliers {ia} vs {ib}, relative differences {ds:?}");
+                    assert!(m < 1e-5, "{case}: passes differ by {d:?}");
+                    worst = worst.max(m);
+
+                    // one depth per inlier, and the median they serve agrees; equal counts can
+                    // still hold a different pixel where an f32 projection rounded across
+                    assert_eq!((da.len(), db.len()), (ia, ib), "{case}");
+                    let (ma, mb) = (median_depth_m(&mut da), median_depth_m(&mut db));
+                    assert!((ma - mb).abs() <= 1e-5 * ma, "{case}: median {ma} vs {mb}");
+                }
+            }
+        }
+        eprintln!("SIMD vs scalar pass: worst relative difference {worst:.2e}");
+        Ok(())
+    }
+
+    /// The SIMD kernel gives the scalar kernel's solve to `f32` rounding: pose and information
+    /// within 1e-4 relative, every association mode, both noise models, with and without a
+    /// prior.
+    ///
+    /// Looser than one pass (`level_pass_matches_scalar`, 1e-5): Gauss-Newton converges to a
+    /// fixed point whose sensitivity to the sums grows with the system's conditioning, and the
+    /// iteration count can differ by one where a step lands on the stopping tolerance. Both stay
+    /// as close to the truth.
+    #[test]
+    fn simd_kernel_matches_scalar() -> Result<(), Box<dyn std::error::Error>> {
+        let scene = Scene::corner_and_sphere();
+        let axis = Vec3F64::new(0.3, 1.0, 0.2).normalize();
+        let rot_wc = SO3F64::exp(axis * 1.5f64.to_radians()).matrix();
+        let t_wc = Vec3F64::new(0.02, -0.01, 0.015);
+        let src = pyramid(&scene, &Mat3F64::IDENTITY, &Vec3F64::ZERO)?;
+        let tgt = pyramid(&scene, &rot_wc, &t_wc)?;
+        let (rot_gt, t_gt) = (rot_wc.transpose(), -(rot_wc.transpose() * t_wc));
+        let mut worst: f64 = 0.0;
+        for association in [
+            Association::Nearest,
+            Association::Bilinear,
+            Association::Hybrid,
+        ] {
+            for noise in [DepthNoise::Constant { sigma_m: 0.01 }, TEST_STEREO] {
+                for prior in [false, true] {
+                    let criteria = IcpPlaneCriteria {
+                        association,
+                        depth_noise: noise,
+                        rotation_prior: prior.then_some(RotationPrior {
+                            rotation: rot_gt,
+                            sigma_rad: 0.2f64.to_radians(),
+                        }),
+                        ..Default::default()
+                    };
+                    let run = |kernel| {
+                        let (r, t) = (Mat3F64::IDENTITY, Vec3F64::ZERO);
+                        let mut ws = IcpWorkspace::new(kernel);
+                        icp_projective_plane_with(&mut ws, &src, &tgt, &r, &t, &criteria)
+                    };
+                    let (a, b) = (run(IcpKernel::Scalar)?, run(IcpKernel::Simd)?);
+                    let d = [
+                        rel_diff(
+                            &a.rotation.to_cols_array(),
+                            &b.rotation.to_cols_array(),
+                            1.0,
+                        ),
+                        rel_diff(&a.translation.to_array(), &b.translation.to_array(), 1e-2),
+                        rel_diff(a.information.as_slice(), b.information.as_slice(), 0.0),
+                        rel_diff(&[a.rmse], &[b.rmse], 0.0),
+                        rel_diff(&[a.median_depth_m], &[b.median_depth_m], 0.0),
+                    ];
+                    let m = d.iter().fold(0.0f64, |m, v| m.max(*v));
+                    let (na, nb) = (a.num_associated, b.num_associated);
+                    let ds = d.map(|x| format!("{x:.2e}"));
+                    eprintln!(
+                        "{association:?} {noise:?} prior {prior}: {ds:?}, associated {na} vs \
+                         {nb}, iterations {} vs {}",
+                        a.iterations, b.iterations
+                    );
+                    assert!(na.abs_diff(nb) * 1000 <= na, "associated {na} vs {nb}");
+                    assert!(m < 1e-4, "{association:?} {noise:?} prior {prior}: {d:?}");
+                    assert!((b.translation - t_gt).length() < 5e-3);
+                    worst = worst.max(m);
+                }
+            }
+        }
+        eprintln!("SIMD vs scalar ICP: worst relative difference {worst:.2e}");
         Ok(())
     }
 }
