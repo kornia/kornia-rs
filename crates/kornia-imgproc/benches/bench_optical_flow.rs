@@ -148,6 +148,31 @@ fn bench_optical_flow(c: &mut Criterion) {
         );
     }
 
+    // Points within 10 px of the border, where the window leaves the image
+    // and LK samples with the border mode instead of the interior kernels.
+    {
+        let size = 256usize;
+        let (img1, img2, _) = make_synthetic_pair(size, 5.0, -3.0, 1);
+        let edge = size as f32 - 1.0;
+        let pts: Vec<[f32; 2]> = (0..50)
+            .flat_map(|i| {
+                let t = i as f32 * edge / 50.0;
+                [[t, 4.0], [t, edge - 4.0], [4.0, t], [edge - 4.0, t]]
+            })
+            .collect();
+        let params = PyrLKParams::default();
+        group.throughput(Throughput::Elements(pts.len() as u64));
+        group.bench_with_input(
+            BenchmarkId::new("kornia_cpu/border", format!("{size}x{size}/{}", pts.len())),
+            &pts,
+            |b, pts| {
+                b.iter(|| {
+                    let _ = calc_optical_flow_pyr_lk(&img1, &img2, pts, None, &params).unwrap();
+                });
+            },
+        );
+    }
+
     // Scale over pyramid levels.
     for max_level in [0usize, 1, 2, 3] {
         let size = 256usize;
