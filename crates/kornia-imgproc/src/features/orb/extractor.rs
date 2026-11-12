@@ -562,6 +562,7 @@ impl OrbDetector {
             .iter()
             .map(|&[r, c]| harris_response_at_u8(octave_image, r, c, self.harris_k))
             .collect();
+        let t_after_harris = std::time::Instant::now();
         let survivor_orientations = corner_orientations_u8(octave_image, &survivor_positions);
         let t_after_ori = std::time::Instant::now();
 
@@ -583,9 +584,10 @@ impl OrbDetector {
 
         if trace {
             eprintln!(
-                "  pyramid[{octave}] octree={:.2} ori_post={:.2} survivors={}",
+                "  pyramid[{octave}] octree={:.2} harris={:.2} ori={:.2} survivors={}",
                 (t_after_octree - t_before_octree).as_secs_f64() * 1000.0,
-                (t_after_ori - t_after_octree).as_secs_f64() * 1000.0,
+                (t_after_harris - t_after_octree).as_secs_f64() * 1000.0,
+                (t_after_ori - t_after_harris).as_secs_f64() * 1000.0,
                 distributed.len(),
             );
         }
@@ -633,7 +635,15 @@ impl OrbDetector {
 
             let base = pyramid_arcs[0].size();
             for octave in 1..self.n_scales {
-                let next = match self.next_level_u8(base, &pyramid_arcs[octave - 1], octave) {
+                let t_resize = std::time::Instant::now();
+                let next = self.next_level_u8(base, &pyramid_arcs[octave - 1], octave);
+                if trace {
+                    eprintln!(
+                        "  resize[{octave}]={:.2}",
+                        t_resize.elapsed().as_secs_f64() * 1000.0
+                    );
+                }
+                let next = match next {
                     Ok(Some(n)) => n,
                     Ok(None) => break,
                     Err(e) => {
@@ -676,6 +686,7 @@ impl OrbDetector {
         octave_image: &Image<u8, 1>,
         keypoints: &[(i32, i32)],
         orientations: &[f32],
+        trace: bool,
     ) -> Result<(Vec<[u8; 32]>, Vec<bool>), ImageError> {
         let mask = mask_border_keypoints_i32(octave_image.size(), keypoints, 20);
         let filtered_keypoints: Vec<_> = keypoints
@@ -692,10 +703,21 @@ impl OrbDetector {
         // Pre-BRIEF blur via the Q8+Q8 u8 NEON path: ≤1 LSB off a float
         // reference, which is well under the bit-flip threshold that would
         // drift the 256-bit Hamming distance.
+        let t_blur = std::time::Instant::now();
         let mut blurred = Image::from_size_val(octave_image.size(), 0u8)?;
         gaussian_blur_u8(octave_image, &mut blurred, (7, 7), (2.0, 2.0))?;
+        let t_brief = std::time::Instant::now();
 
         let descriptors = orb_loop_u8(&blurred, &filtered_keypoints, &filtered_orientations);
+        if trace {
+            eprintln!(
+                "  extract[{}x{}] blur={:.2} brief={:.2}",
+                octave_image.width(),
+                octave_image.height(),
+                (t_brief - t_blur).as_secs_f64() * 1000.0,
+                t_brief.elapsed().as_secs_f64() * 1000.0,
+            );
+        }
         Ok((descriptors, mask))
     }
 
@@ -731,7 +753,7 @@ impl OrbDetector {
             })
             .collect();
 
-        let (descriptors, mask) = self.extract_octave_u8(octave_image, &kps_local, &oris)?;
+        let (descriptors, mask) = self.extract_octave_u8(octave_image, &kps_local, &oris, trace)?;
 
         // Mask-filter kps+oris to align with the (already-filtered) descriptors.
         let oct_u8 = octave as u8;
@@ -1685,6 +1707,27 @@ fn orb_loop_u8(src: &Image<u8, 1>, keypoints: &[(i32, i32)], orientation: &[f32]
 /// Hamming distance on otherwise-matched keypoints.
 #[inline]
 fn rotate_pattern_for_angle(angle: f32, out: &mut [[i8; 4]; 256]) {
+    // Without SSE4.1 each `round_ties_even` is a libm call (1024 per
+    // keypoint); the AVX2 copy rounds in vector registers, same bits.
+    #[cfg(target_arch = "x86_64")]
+    if crate::simd::cpu_features().has_avx2 {
+        // SAFETY: AVX2 is present.
+        unsafe { rotate_pattern_for_angle_avx2(angle, out) };
+        return;
+    }
+    rotate_pattern_for_angle_body(angle, out);
+}
+
+/// [`rotate_pattern_for_angle_body`] compiled for AVX2 (no FMA, so the same
+/// rounding).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn rotate_pattern_for_angle_avx2(angle: f32, out: &mut [[i8; 4]; 256]) {
+    rotate_pattern_for_angle_body(angle, out);
+}
+
+#[inline(always)]
+fn rotate_pattern_for_angle_body(angle: f32, out: &mut [[i8; 4]; 256]) {
     // Banker's rounding: Rust's default ties-away-from-zero `.round()`
     // produces different integer offsets on exact-half coordinates.
     let sin_a = angle.sin();
@@ -2000,6 +2043,17 @@ mod tests {
         let shared = detector.detect_and_extract_u8_from_pyramid(&pyramid)?;
         assert_same_features(&detector.detect_and_extract_u8(&img)?, &shared);
         Ok(())
+    }
+
+    #[test]
+    fn rotate_pattern_isa_paths_agree() {
+        for k in 0..720 {
+            let angle = k as f32 * std::f32::consts::TAU / 720.0 - std::f32::consts::PI;
+            let (mut a, mut b) = ([[0i8; 4]; 256], [[0i8; 4]; 256]);
+            rotate_pattern_for_angle(angle, &mut a);
+            rotate_pattern_for_angle_body(angle, &mut b);
+            assert_eq!(a, b, "angle {angle}");
+        }
     }
 
     /// Candidates on a `cols x rows` grid, 10 px apart from (20, 20), with LCG responses.
