@@ -1096,8 +1096,8 @@ mod tests {
         let count = fundamental_7point_into(&x1[..7], &x2[..7], &mut models).unwrap();
         assert!(models[..count].iter().any(|m| fits(m, x1[7], x2[7])));
 
-        let oriented = fundamental_7point_oriented_into(&x1[..7], &x2[..7], &mut models)
-            .map_or(0, |count| count);
+        let oriented =
+            fundamental_7point_oriented_into(&x1[..7], &x2[..7], &mut models).unwrap_or(0);
         assert!(!models[..oriented].iter().any(|m| fits(m, x1[7], x2[7])));
     }
 
