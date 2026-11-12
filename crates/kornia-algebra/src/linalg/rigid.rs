@@ -11,6 +11,7 @@ pub type UmeyamaOutput = (Mat3AF32, Vec3AF32, f32);
 
 /// Error type for Umeyama rigid alignment operations.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum UmeyamaError {
     /// Source and destination arrays must have the same length
     #[error("Source and destination arrays must have the same length")]
@@ -294,6 +295,13 @@ const MAD_TO_SIGMA: f64 = 1.0 / 0.674_489_750_196_081_7;
 /// than this from the median residual are dropped before the final refit.
 const OUTLIER_SIGMA_MULT: f64 = 3.5;
 
+/// One-sided MAD rejection: a residual is an inlier when it is at or below
+/// `med + 3.5·σ̂`. Residuals are norms, so a residual below the median is a
+/// better fit, never an outlier.
+fn keep_residual(residual: f64, med: f64, sigma: f64) -> bool {
+    residual <= med + OUTLIER_SIGMA_MULT * sigma
+}
+
 /// Median of a mutable slice, selected in place with [`f64::total_cmp`]
 /// (positive NaN sorts above `+∞`, negative NaN below `-∞`). Reorders the
 /// slice; empty input yields `0.0`.
@@ -319,8 +327,9 @@ fn median_in_place(values: &mut [f64]) -> f64 {
 /// Configuration for the robust weighted Umeyama fit.
 #[derive(Debug, Clone, Copy)]
 pub struct RobustUmeyamaConfig {
-    /// Huber threshold in the residual's units: residuals below `delta` keep
-    /// full weight, above it are down-weighted as `delta / residual`.
+    /// Huber threshold as an absolute residual distance, in the units of the
+    /// input coordinates: residuals below `delta` keep full weight, above it
+    /// are down-weighted as `delta / residual`.
     pub delta: f64,
     /// Maximum number of IRLS iterations. The loop stops earlier on
     /// convergence, and on clean data it may exit before performing any
@@ -366,16 +375,16 @@ impl RobustUmeyamaConfig {
 /// the Huber loss, by iteratively reweighted least squares over
 /// [`umeyama_f64`] solves. After convergence, the residual scale is estimated
 /// robustly as `σ̂ = MAD / Φ⁻¹(3/4) ≈ 1.4826 · MAD` of the residuals around
-/// their median, and correspondences whose residual deviates from the median
-/// by more than `3.5 · σ̂` are dropped before a final unweighted fit on the
+/// their median, and correspondences whose residual exceeds
+/// `med + 3.5 · σ̂` are dropped before a final unweighted fit on the
 /// survivors. Returns `(R, t, s)`.
 ///
-/// The rejection window is centered on the median residual: it tracks a
-/// biased intermediate fit and always keeps at least half of the
-/// correspondences for finite inputs, so a heavy outlier cluster cannot
-/// empty the inlier set. When the MAD is exactly zero (noiseless inlier
-/// residuals), the exact-zero-deviation correspondences form the consensus
-/// and are kept, so noise-free data with outliers still recovers exactly.
+/// Rejection is one-sided: residuals are norms, so only residuals above the
+/// consensus are outliers — a residual below the median is a better fit, not a
+/// worse one. At least half of the correspondences satisfy `rᵢ <= med`, so a
+/// heavy outlier cluster cannot empty the inlier set. When the MAD is exactly
+/// zero the consensus is the median itself (`rᵢ <= med`), so noise-free data
+/// with outliers still recovers exactly.
 /// The refit requires at least three survivors; with fewer, the converged
 /// IRLS fit is returned unchanged.
 /// The fit is deterministic (no randomness, no parallelism).
@@ -506,52 +515,37 @@ pub fn umeyama_f64_robust(
     // Residuals under the converged fit.
     write_residuals(&fit, &mut residuals);
 
-    // MAD hard rejection around the median residual:
-    // σ̂ = MAD / Φ⁻¹(3/4) ≈ 1.4826 · MAD.
-    // Outliers: |r_i - med| > 3.5 · σ̂. The centered window (unlike a raw
-    // residual threshold anchored at zero) tracks a biased intermediate
-    // fit, so a heavy outlier cluster cannot empty the inlier set.
-    // Both medians select in place from the dead IRLS weights buffer, so no
-    // allocation or reordering of `residuals` is needed: the inlier filter
-    // below indexes `abs_dev` by correspondence.
+    // Robust residual scale: σ̂ = MAD / Φ⁻¹(3/4) ≈ 1.4826 · MAD, where MAD is
+    // the median of |r_i − med|. Both medians select in place from the dead
+    // IRLS weights buffer, so no allocation is needed; the raw residuals stay
+    // untouched for the one-sided rejection below.
     weights.copy_from_slice(&residuals);
     let med = median_in_place(&mut weights);
-    // Residuals are dead after MAD, and the inlier test needs exactly
-    // |r_i - med|, so overwrite the buffer instead of allocating.
-    for r in &mut residuals {
-        *r = (*r - med).abs();
+    weights.copy_from_slice(&residuals);
+    for w in &mut weights {
+        *w = (*w - med).abs();
     }
-    let abs_dev = &residuals;
-    weights.copy_from_slice(abs_dev);
     let mad = median_in_place(&mut weights);
     let sigma = MAD_TO_SIGMA * mad;
 
-    // Inlier set: centered window |r_i - med| <= 3.5·σ̂. When MAD is exactly
-    // 0, at least half the residuals are exactly equal, so σ̂ is 0 and no
-    // spread-based threshold exists — but the consensus is still identifiable:
-    // exact-zero deviations are the inliers. This makes noise-free data with
-    // outliers recover exactly instead of keeping the Huber bias
-    // (~delta × outlier fraction).
+    // Rejection is one-sided: residuals are norms, so only residuals above the
+    // consensus are outliers — a residual below the median is a better fit,
+    // not a worse one. Keep r_i <= med + 3.5·σ̂; when MAD is exactly 0 the
+    // consensus is the median itself (r_i <= med). At least half of the
+    // residuals satisfy r_i <= med, so the survivors are never empty.
     //
     // The refit masks the (now dead) IRLS weights instead of building inlier
     // subsets: the weighted core skips zero-weight points, so this is
     // arithmetically identical and copy-free.
     if mad == 0.0 || sigma > f64::EPSILON {
-        let thr = OUTLIER_SIGMA_MULT * sigma;
         let mut survivors = 0usize;
         for (i, w) in weights.iter_mut().enumerate() {
-            let keep = if mad == 0.0 {
-                abs_dev[i] == 0.0
-            } else {
-                abs_dev[i] <= thr
-            };
+            let keep = keep_residual(residuals[i], med, sigma);
             *w = if keep { 1.0 } else { 0.0 };
             survivors += usize::from(keep);
         }
-        // Both branches keep at least half the residuals: half of all
-        // |r - med| are <= MAD, and a zero MAD forces at least half of them
-        // to be exactly 0. Require three survivors so the refit is not an
-        // underdetermined one- or two-point fit.
+        // Require three survivors so the refit is not an underdetermined one-
+        // or two-point fit.
         if survivors >= 3 && survivors < n {
             fit = umeyama_f64(src, dst, Some(&weights), with_scale)?;
         }
@@ -1901,5 +1895,17 @@ mod tests {
         let got = umeyama_f64_robust(&src, &dst, &RobustUmeyamaConfig::default(), true)?;
         assert_matches_true(&got, &r_true, &t_true, s_true, 5e-3);
         Ok(())
+    }
+
+    #[test]
+    fn test_keep_residual_is_one_sided() {
+        // A residual below the median is a better fit: a two-sided test
+        // (|r - med|) would reject it whenever med is far from zero.
+        assert!(keep_residual(0.0, 2.0, 0.0));
+        assert!(keep_residual(1.9, 2.0, 0.01));
+        // Above med + 3.5 sigma is rejected.
+        assert!(!keep_residual(2.5, 2.0, 0.1));
+        // Exactly at the bound is kept.
+        assert!(keep_residual(2.35, 2.0, 0.1));
     }
 }
