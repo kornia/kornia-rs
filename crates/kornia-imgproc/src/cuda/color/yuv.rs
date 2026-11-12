@@ -351,6 +351,25 @@ pub fn launch_rgb_from_ycc_f64(
 }
 
 /// Launch RGB8 → YCbCr/YUV u8 (full-range Q14, bit-exact vs CPU).
+///
+/// # Arguments
+///
+/// * `stream` - Stream to launch on.
+/// * `src` - Interleaved RGB bytes, at least `3 * npixels` long.
+/// * `dst` - Interleaved YCbCr/YUV output, at least `3 * npixels` long.
+/// * `npixels` - Pixel count; zero is a no-op.
+/// * `order` - Chroma channel order of the YCbCr/YUV side.
+///
+/// # Returns
+///
+/// `Ok(())` once the kernel is enqueued.
+///
+/// # Errors
+///
+/// [`CudaColorError::TooManyPixels`] if `3 * npixels` exceeds `u32::MAX`,
+/// [`CudaColorError::SliceTooSmall`] if a buffer is short,
+/// [`CudaColorError::Misaligned`] if `src` or `dst` is not 4-byte aligned (an
+/// alias at an odd offset), or a compile or launch error.
 pub fn launch_ycc_from_rgb_u8(
     stream: &Arc<CudaStream>,
     src: &CudaSlice<u8>,
@@ -362,6 +381,25 @@ pub fn launch_ycc_from_rgb_u8(
 }
 
 /// Launch YCbCr/YUV u8 → RGB8 (full-range Q14, bit-exact vs CPU).
+///
+/// # Arguments
+///
+/// * `stream` - Stream to launch on.
+/// * `src` - Interleaved YCbCr/YUV bytes, at least `3 * npixels` long.
+/// * `dst` - Interleaved RGB output, at least `3 * npixels` long.
+/// * `npixels` - Pixel count; zero is a no-op.
+/// * `order` - Chroma channel order of the YCbCr/YUV side.
+///
+/// # Returns
+///
+/// `Ok(())` once the kernel is enqueued.
+///
+/// # Errors
+///
+/// [`CudaColorError::TooManyPixels`] if `3 * npixels` exceeds `u32::MAX`,
+/// [`CudaColorError::SliceTooSmall`] if a buffer is short,
+/// [`CudaColorError::Misaligned`] if `src` or `dst` is not 4-byte aligned (an
+/// alias at an odd offset), or a compile or launch error.
 pub fn launch_rgb_from_ycc_u8(
     stream: &Arc<CudaStream>,
     src: &CudaSlice<u8>,

@@ -353,3 +353,44 @@ def test_fast_descriptor_keeps_the_keypoints_and_the_descriptor_shape():
     # Atomic accumulation makes a borderline orientation peak non-deterministic,
     # so allow a small drift rather than requiring an exact count.
     assert abs(len(kp_fast) - len(kp_exact)) <= max(2, len(kp_exact) // 100)
+
+
+def _integer_descriptors(n, seed):
+    return np.random.default_rng(seed).integers(0, 256, size=(n, 128)).astype(np.float32)
+
+
+def test_match_smnn_host_equals_the_generic_matcher():
+    a, b = _integer_descriptors(90, 1), _integer_descriptors(70, 2)
+    b[:40] = np.clip(a[:40] + np.random.default_rng(3).integers(-9, 10, size=(40, 128)), 0, 255)
+    dists, idxs = K.imgproc.Sift().match_smnn(a, b, 0.8)
+    want_dists, want_idxs = K.features.match_smnn(a, b, 0.8)
+    assert len(idxs) > 0
+    np.testing.assert_array_equal(idxs, want_idxs)
+    np.testing.assert_array_equal(dists, want_dists)
+
+
+def test_match_smnn_on_device_equals_the_host_bits():
+    if _cuda_stream() is None:
+        pytest.skip("no CUDA device")
+    sift = K.imgproc.Sift()
+    _, device_a = sift.detect_and_compute(_device(_image()))
+    _, device_b = sift.detect_and_compute(_device(_image(seed=4242)))
+    dists, idxs = sift.match_smnn(device_a, device_b, 0.95)
+    want_dists, want_idxs = sift.match_smnn(_desc_numpy(device_a), _desc_numpy(device_b), 0.95)
+    assert idxs.dtype == np.int64 and dists.dtype == np.float32
+    np.testing.assert_array_equal(idxs, want_idxs)
+    np.testing.assert_array_equal(dists, want_dists)
+    self_dists, self_idxs = sift.match_smnn(device_a, device_a, 0.95)
+    assert len(self_idxs) > 0
+    assert np.all(self_idxs[:, 0] == self_idxs[:, 1])
+    assert np.all(self_dists == 0)
+
+
+def test_match_smnn_refuses_mixed_residency():
+    if _cuda_stream() is None:
+        pytest.skip("no CUDA device")
+    sift = K.imgproc.Sift()
+    _, device = sift.detect_and_compute(_device(_image()))
+    _, host = sift.detect_and_compute(_image())
+    with pytest.raises(ValueError, match="residency"):
+        sift.match_smnn(device, host)

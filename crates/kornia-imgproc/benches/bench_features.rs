@@ -161,6 +161,42 @@ fn bench_orb_detect_extract(c: &mut Criterion) {
     group.finish();
 }
 
+fn load_mh01_gray_u8(name: &str) -> Image<u8, 1> {
+    let img_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("../../tests/data/{name}"));
+    kornia_io::png::read_image_png_mono8(&img_path)
+        .expect("failed to read test PNG")
+        .0
+}
+
+fn bench_orb_detect_extract_u8(c: &mut Criterion) {
+    let frame = load_mh01_gray_u8("mh01_frame1.png");
+    let mut group = c.benchmark_group("orb_detect_extract_u8");
+    group.sample_size(20);
+
+    for &n_kp in &[500, 1000, 2000] {
+        let orb = OrbDetector {
+            n_keypoints: n_kp,
+            ..Default::default()
+        };
+        group.bench_with_input(BenchmarkId::new("fused", n_kp), &n_kp, |b, _| {
+            b.iter(|| std::hint::black_box(orb.detect_and_extract_u8(&frame).unwrap()));
+        });
+        // Level buffers live across iterations, as in a tracker reusing them
+        // frame to frame.
+        let mut levels = Vec::new();
+        group.bench_with_input(BenchmarkId::new("from_pyramid", n_kp), &n_kp, |b, _| {
+            b.iter(|| {
+                orb.build_pyramid_u8_into(&frame, &mut levels).unwrap();
+                let pyramid: Vec<&Image<u8, 1>> =
+                    std::iter::once(&frame).chain(levels.iter()).collect();
+                std::hint::black_box(orb.detect_and_extract_u8_from_pyramid(&pyramid).unwrap())
+            });
+        });
+    }
+    group.finish();
+}
+
 fn bench_descriptor_matching(c: &mut Criterion) {
     let frame0 = load_mh01_gray_f32("mh01_frame1.png");
     let frame1 = load_mh01_gray_f32("mh01_frame2.png");
@@ -335,7 +371,8 @@ criterion_group!(
     name = benches;
     config = Criterion::default().warm_up_time(std::time::Duration::new(10, 0));
     targets = bench_harris_response, bench_dog_response, bench_fast_corner_detect,
-              bench_orb_detect_extract, bench_descriptor_matching, bench_sift
+              bench_orb_detect_extract, bench_orb_detect_extract_u8, bench_descriptor_matching,
+              bench_sift
 );
 criterion_main!(benches);
 

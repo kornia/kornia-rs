@@ -263,6 +263,42 @@ pub(crate) fn sift_match_device<'py>(
         return crate::pyutils::rows_to_numpy(py, Vec::<i32>::new(), 2);
     }
 
+    let blocks = matchable_blocks(a, b, store, max_keypoints)?;
+    let pairs = store
+        .matcher
+        .as_mut()
+        .expect("just ensured")
+        .match_descriptors(
+            &blocks.ctx,
+            blocks.stream,
+            &blocks.a.slice(0..blocks.na * DESCR_LEN),
+            blocks.na,
+            &blocks.b.slice(0..blocks.nb * DESCR_LEN),
+            blocks.nb,
+            ratio,
+            cross_check,
+        )
+        .map_err(err)?;
+
+    let flat: Vec<i32> = pairs.iter().flat_map(|p| [p[0], p[1]]).collect();
+    crate::pyutils::rows_to_numpy(py, flat, 2)
+}
+
+struct MatchableBlocks<'t> {
+    ctx: Arc<cudarc::driver::CudaContext>,
+    stream: &'t Arc<cudarc::driver::CudaStream>,
+    a: &'t cudarc::driver::CudaSlice<f32>,
+    na: usize,
+    b: &'t cudarc::driver::CudaSlice<f32>,
+    nb: usize,
+}
+
+fn matchable_blocks<'t>(
+    a: &'t PyTensor,
+    b: &'t PyTensor,
+    store: &mut MatchStore,
+    max_keypoints: usize,
+) -> PyResult<MatchableBlocks<'t>> {
     let (na, da, stream) = descriptor_block(a, "descriptors_a")?;
     let (nb, db, stream_b) = descriptor_block(b, "descriptors_b")?;
     // Both blocks and every matcher launch are ordered on A's stream. If B was
@@ -273,28 +309,51 @@ pub(crate) fn sift_match_device<'py>(
             "Sift.match: both descriptor blocks must be on the same CUDA stream",
         ));
     }
-    let ctx = stream.context().clone();
-
     // The matcher's scratch is indexed by keypoint, so it must cover the larger
     // of the two blocks — which `max_keypoints` bounds, but a caller-supplied
     // tensor need not obey.
     store.ensure(stream, na.max(nb).max(max_keypoints))?;
-    let matcher = store.matcher.as_mut().expect("just ensured");
-    let pairs = matcher
-        .match_descriptors(
-            &ctx,
-            stream,
-            &da.slice(0..na * DESCR_LEN),
-            na,
-            &db.slice(0..nb * DESCR_LEN),
-            nb,
-            ratio,
-            cross_check,
-        )
-        .map_err(err)?;
+    Ok(MatchableBlocks {
+        ctx: stream.context().clone(),
+        stream,
+        a: da,
+        na,
+        b: db,
+        nb,
+    })
+}
 
-    let flat: Vec<i32> = pairs.iter().flat_map(|p| [p[0], p[1]]).collect();
-    crate::pyutils::rows_to_numpy(py, flat, 2)
+/// [`SiftMatcher::match_smnn`] on two device descriptor blocks. Only the matches
+/// come back to the host. An empty side has no matches, as in [`sift_match_device`].
+pub(crate) fn sift_match_smnn_device(
+    a: &PyTensor,
+    b: &PyTensor,
+    store: &mut MatchStore,
+    max_keypoints: usize,
+    th: f32,
+) -> PyResult<Vec<kornia_imgproc::features::SmnnMatch>> {
+    let empty = |t: &PyTensor| match &*t.inner {
+        TensorInnerEnum::F32R2(x) => x.shape[0] == 0,
+        _ => false,
+    };
+    if empty(a) || empty(b) {
+        return Ok(Vec::new());
+    }
+    let blocks = matchable_blocks(a, b, store, max_keypoints)?;
+    store
+        .matcher
+        .as_mut()
+        .expect("just ensured")
+        .match_smnn(
+            &blocks.ctx,
+            blocks.stream,
+            &blocks.a.slice(0..blocks.na * DESCR_LEN),
+            blocks.na,
+            &blocks.b.slice(0..blocks.nb * DESCR_LEN),
+            blocks.nb,
+            th,
+        )
+        .map_err(err)
 }
 
 /// Matcher scratch, owned by the Python `Sift` object so it is allocated once
