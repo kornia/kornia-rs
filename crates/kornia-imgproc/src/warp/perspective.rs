@@ -205,8 +205,7 @@ pub fn warp_perspective_u8<const C: usize>(
     let src_slice = src.as_slice();
     let (dnx, dny, dnd) = (inv[0], inv[3], inv[6]);
 
-    dst.as_slice_mut()
-        .par_chunks_exact_mut(dst_stride)
+    crate::parallel::par_rows_exact_mut(dst.as_slice_mut(), dst_stride)
         .enumerate()
         .for_each(|(y, dst_row)| {
             let y_f = y as f32;
@@ -666,6 +665,47 @@ mod tests {
             .map(|&v| v as u32)
             .sum();
         assert!(sum > 0, "middle pixel unexpectedly zero");
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod memory_safety_tests {
+    use kornia_image::{Image, ImageError, ImageSize};
+
+    fn sz(width: usize, height: usize) -> ImageSize {
+        ImageSize { width, height }
+    }
+
+    /// Regression (audit repro): the f32 span admitted a column whose direct
+    /// coordinate fell outside the 7x1 source; the unchecked sampler read
+    /// out of bounds. Out-of-range pixels are now zero-filled.
+    #[test]
+    fn warp_perspective_u8_span_mismatch_stays_in_bounds() -> Result<(), ImageError> {
+        let src = Image::<u8, 3>::new(sz(7, 1), (0..21u8).map(|v| v * 10 + 5).collect())?;
+        let mut dst = Image::<u8, 3>::from_size_val(sz(8, 4), 0)?;
+        let m = [1.0, 1.0, 1.0, -1.0, 0.0, 7.0, -1.0, -1.0, 8.0];
+        super::warp_perspective_u8(&src, &mut dst, &m)?;
+        let max = *src.as_slice().iter().max().unwrap_or(&0);
+        assert!(dst.as_slice().iter().all(|&v| v <= max));
+        Ok(())
+    }
+
+    /// Zero-sized images are a no-op, not a panic.
+    #[test]
+    fn warp_perspective_empty_images() -> Result<(), ImageError> {
+        let identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        let src = Image::<u8, 1>::from_size_val(sz(4, 4), 1)?;
+        let mut dst = Image::<u8, 1>::from_size_val(sz(0, 2), 0)?;
+        super::warp_perspective_u8(&src, &mut dst, &identity)?;
+        let srcf = Image::<f32, 1>::from_size_val(sz(4, 4), 1.0)?;
+        let mut dstf = Image::<f32, 1>::from_size_val(sz(3, 0), 0.0)?;
+        super::warp_perspective(
+            &srcf,
+            &mut dstf,
+            &identity,
+            crate::interpolation::InterpolationMode::Nearest,
+        )?;
         Ok(())
     }
 }

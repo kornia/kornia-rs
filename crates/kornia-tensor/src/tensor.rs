@@ -36,6 +36,166 @@ pub enum TensorError {
     /// Unsupported operation for the given data type or tensor configuration.
     #[error("Unsupported operation: {0}")]
     UnsupportedOperation(String),
+
+    /// The product of the shape dimensions (or its size in bytes) overflows `usize`.
+    #[error("The shape {0:?} overflows usize")]
+    ShapeOverflow(Vec<usize>),
+
+    /// The shape/strides of a tensor address memory outside of its storage, or
+    /// are otherwise invalid (e.g. `permute_axes` with a non-permutation).
+    #[error("Invalid tensor layout: {0}")]
+    InvalidLayout(String),
+}
+
+/// Computes the number of elements described by `shape`, checking for overflow.
+///
+/// # Arguments
+///
+/// * `shape` - The shape of the tensor.
+///
+/// # Returns
+///
+/// The product of all dimensions of `shape`.
+///
+/// # Errors
+///
+/// Returns [`TensorError::ShapeOverflow`] if the product overflows `usize`.
+///
+/// # Example
+///
+/// ```rust
+/// use kornia_tensor::tensor::checked_numel;
+///
+/// assert_eq!(checked_numel(&[2, 3, 4]).unwrap(), 24);
+/// assert!(checked_numel(&[1usize << 40, 1 << 40]).is_err());
+/// ```
+pub fn checked_numel<const N: usize>(shape: &[usize; N]) -> Result<usize, TensorError> {
+    // A zero-sized dimension makes the product exactly 0, regardless of the order.
+    if shape.contains(&0) {
+        return Ok(0);
+    }
+    shape
+        .iter()
+        .try_fold(1usize, |acc, &d| acc.checked_mul(d))
+        .ok_or_else(|| TensorError::ShapeOverflow(shape.to_vec()))
+}
+
+/// Computes the number of bytes needed to store `shape` elements of type `T`,
+/// checking for overflow.
+///
+/// # Arguments
+///
+/// * `shape` - The shape of the tensor.
+///
+/// # Returns
+///
+/// `product(shape) * size_of::<T>()`.
+///
+/// # Errors
+///
+/// Returns [`TensorError::ShapeOverflow`] if the computation overflows `usize`.
+pub fn checked_len_bytes<T, const N: usize>(shape: &[usize; N]) -> Result<usize, TensorError> {
+    checked_numel(shape)?
+        .checked_mul(std::mem::size_of::<T>())
+        .ok_or_else(|| TensorError::ShapeOverflow(shape.to_vec()))
+}
+
+/// Validates that every element addressed by `shape` and `strides` lies inside a
+/// buffer holding `len` elements.
+///
+/// A layout is valid when either one of the dimensions is zero (no element is
+/// addressed) or the largest reachable offset,
+/// `sum((shape[i] - 1) * strides[i])`, is strictly smaller than `len`. All
+/// arithmetic is checked, so an overflowing layout is rejected.
+///
+/// # Arguments
+///
+/// * `shape` - The logical shape.
+/// * `strides` - The strides (in elements) of each dimension.
+/// * `len` - Number of elements available in the backing buffer.
+///
+/// # Returns
+///
+/// `Ok(())` if every index `idx` with `idx[i] < shape[i]` maps to an offset `< len`.
+///
+/// # Errors
+///
+/// Returns [`TensorError::InvalidLayout`] if some element would be out of bounds
+/// or the offset computation overflows.
+///
+/// # Example
+///
+/// ```rust
+/// use kornia_tensor::tensor::validate_layout;
+///
+/// assert!(validate_layout(&[2, 3], &[3, 1], 6).is_ok());
+/// assert!(validate_layout(&[2, 3], &[4, 1], 6).is_err());
+/// assert!(validate_layout(&[0, 3], &[100, 1], 0).is_ok());
+/// ```
+pub fn validate_layout<const N: usize>(
+    shape: &[usize; N],
+    strides: &[usize; N],
+    len: usize,
+) -> Result<(), TensorError> {
+    if shape.contains(&0) {
+        return Ok(());
+    }
+    let max_offset = shape
+        .iter()
+        .zip(strides.iter())
+        .try_fold(0usize, |acc, (&d, &s)| {
+            (d - 1).checked_mul(s).and_then(|o| acc.checked_add(o))
+        })
+        .ok_or_else(|| {
+            TensorError::InvalidLayout(format!(
+                "offset computation overflows for shape {shape:?} and strides {strides:?}"
+            ))
+        })?;
+    if max_offset >= len {
+        return Err(TensorError::InvalidLayout(format!(
+            "shape {shape:?} with strides {strides:?} reaches offset {max_offset}, \
+             but the storage holds only {len} elements"
+        )));
+    }
+    Ok(())
+}
+
+/// Computes the storage offset `sum(index[i] * strides[i])` of an element, checking
+/// bounds and overflow.
+///
+/// # Arguments
+///
+/// * `index` - The multi-dimensional index of the element.
+/// * `shape` - The logical shape.
+/// * `strides` - The strides (in elements) of each dimension.
+///
+/// # Returns
+///
+/// `Some(offset)` if `index[i] < shape[i]` for every dimension and the offset
+/// computation does not overflow, `None` otherwise. The offset is not checked against
+/// the storage length; see [`validate_layout`].
+///
+/// # Example
+///
+/// ```rust
+/// use kornia_tensor::tensor::checked_offset;
+///
+/// assert_eq!(checked_offset(&[1, 2], &[2, 3], &[3, 1]), Some(5));
+/// assert_eq!(checked_offset(&[2, 0], &[2, 3], &[3, 1]), None);
+/// ```
+pub fn checked_offset<const N: usize>(
+    index: &[usize; N],
+    shape: &[usize; N],
+    strides: &[usize; N],
+) -> Option<usize> {
+    let mut offset: usize = 0;
+    for ((&idx, &dim), &stride) in index.iter().zip(shape).zip(strides) {
+        if idx >= dim {
+            return None;
+        }
+        offset = offset.checked_add(idx.checked_mul(stride)?)?;
+    }
+    Some(offset)
 }
 
 /// Computes the strides for a row-major (C-contiguous) tensor layout.
@@ -65,14 +225,30 @@ pub enum TensorError {
 /// let strides = get_strides_from_shape([2, 3, 4]);
 /// assert_eq!(strides, [12, 4, 1]); // 12 = 3*4, 4 = 4*1, 1 = 1
 /// ```
+///
+/// The partial products saturate at `usize::MAX` instead of wrapping. For any shape
+/// whose element count fits in `usize` (which all constructors enforce) this only
+/// affects strides of dimensions preceded by a zero-sized dimension, which are never
+/// used to address an element.
 pub fn get_strides_from_shape<const N: usize>(shape: [usize; N]) -> [usize; N] {
     let mut strides: [usize; N] = [0; N];
-    let mut stride = 1;
+    let mut stride: usize = 1;
     for i in (0..shape.len()).rev() {
         strides[i] = stride;
-        stride *= shape[i];
+        stride = stride.saturating_mul(shape[i]);
     }
     strides
+}
+
+/// Computes `product(shape)` and panics with a descriptive message on overflow.
+///
+/// Used by the infallible constructors (`from_shape_val`, `from_shape_fn`, `zeros`),
+/// whose signatures cannot report an error. Such a shape could never be allocated.
+fn numel_or_panic<const N: usize>(shape: &[usize; N]) -> usize {
+    match checked_numel(shape) {
+        Ok(n) => n,
+        Err(_) => panic!("tensor shape {shape:?} overflows usize"),
+    }
 }
 
 /// A multi-dimensional array (tensor) with owned data.
@@ -223,12 +399,27 @@ impl<T, const N: usize> Tensor<T, N> {
     }
 
     /// Like [`from_shape_vec`](Self::from_shape_vec) but with an explicit allocator handle.
+    ///
+    /// # Arguments
+    ///
+    /// * `shape` - An array containing the shape of the tensor.
+    /// * `data` - A vector containing the data of the tensor.
+    /// * `alloc` - The allocator handle to associate with the tensor.
+    ///
+    /// # Returns
+    ///
+    /// A new `Tensor` instance.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TensorError::ShapeOverflow`] if the shape product overflows, or
+    /// [`TensorError::InvalidShape`] if it does not match `data.len()`.
     pub fn from_shape_vec_in(
         shape: [usize; N],
         data: Vec<T>,
         alloc: AllocHandle,
     ) -> Result<Self, TensorError> {
-        let numel = shape.iter().product::<usize>();
+        let numel = checked_numel(&shape)?;
         if numel != data.len() {
             return Err(TensorError::InvalidShape(numel));
         }
@@ -236,6 +427,53 @@ impl<T, const N: usize> Tensor<T, N> {
         let strides = get_strides_from_shape(shape);
         Ok(Self {
             storage,
+            shape,
+            strides,
+        })
+    }
+
+    /// Creates a new host `Tensor` from a data vector with an explicit shape and strides,
+    /// validating that the layout is consistent with the data.
+    ///
+    /// Used by deserializers, where all three parts come from untrusted input.
+    ///
+    /// # Arguments
+    ///
+    /// * `shape` - The shape of the tensor.
+    /// * `strides` - The strides (in elements) of the tensor.
+    /// * `data` - The tensor data.
+    ///
+    /// # Returns
+    ///
+    /// A new `Tensor` instance.
+    ///
+    /// # Errors
+    ///
+    /// * [`TensorError::ShapeOverflow`] if the shape product overflows.
+    /// * [`TensorError::InvalidShape`] if `product(shape) != data.len()`.
+    /// * [`TensorError::InvalidLayout`] if `strides` address elements outside `data`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_tensor::Tensor;
+    ///
+    /// let t = Tensor::<u8, 2>::from_shape_strides_vec([2, 2], [2, 1], vec![1, 2, 3, 4]).unwrap();
+    /// assert_eq!(t.get([1, 0]), Some(&3));
+    /// assert!(Tensor::<u8, 2>::from_shape_strides_vec([2, 2], [4, 1], vec![1, 2, 3, 4]).is_err());
+    /// ```
+    pub fn from_shape_strides_vec(
+        shape: [usize; N],
+        strides: [usize; N],
+        data: Vec<T>,
+    ) -> Result<Self, TensorError> {
+        let numel = checked_numel(&shape)?;
+        if numel != data.len() {
+            return Err(TensorError::InvalidShape(numel));
+        }
+        validate_layout(&shape, &strides, data.len())?;
+        Ok(Self {
+            storage: TensorStorage::from_vec(data, host_alloc()),
             shape,
             strides,
         })
@@ -276,16 +514,33 @@ impl<T, const N: usize> Tensor<T, N> {
 
     /// Creates a new `Tensor` with the given shape and raw parts.
     ///
+    /// The resulting tensor does not own the memory (see
+    /// [`TensorStorage::from_raw_parts`]).
+    ///
     /// # Arguments
     ///
     /// * `shape` - An array containing the shape of the tensor.
     /// * `data` - A pointer to the data of the tensor.
-    /// * `len` - The length of the data.
+    /// * `len` - The length of the buffer pointed to by `data`, in **bytes** (not elements).
     /// * `alloc` - The allocator handle to use.
+    ///
+    /// # Returns
+    ///
+    /// A new `Tensor` over the buffer.
+    ///
+    /// # Errors
+    ///
+    /// * [`TensorError::StorageError`] if `data` is null.
+    /// * [`TensorError::ShapeOverflow`] if `product(shape) * size_of::<T>()` overflows.
+    /// * [`TensorError::InvalidShape`] if `len` is not a multiple of `size_of::<T>()`
+    ///   or is smaller than `product(shape) * size_of::<T>()` bytes.
     ///
     /// # Safety
     ///
-    /// The pointer must be non-null and the length must be valid.
+    /// * `data` must be properly aligned for `T` and valid for reads and writes of
+    ///   `len` bytes for the whole lifetime of the returned tensor.
+    /// * The memory must not be freed or accessed through another mutable alias
+    ///   while the tensor is alive.
     pub unsafe fn from_raw_parts(
         shape: [usize; N],
         data: *const T,
@@ -295,15 +550,23 @@ impl<T, const N: usize> Tensor<T, N> {
     where
         T: Clone,
     {
-        unsafe {
-            let storage = TensorStorage::from_raw_parts(data, len, alloc);
-            let strides = get_strides_from_shape(shape);
-            Ok(Self {
-                storage,
-                shape,
-                strides,
-            })
+        if data.is_null() {
+            return Err(TensorError::StorageError(TensorAllocatorError::NullPointer));
         }
+        let needed = checked_len_bytes::<T, N>(&shape)?;
+        let elem_size = std::mem::size_of::<T>();
+        if len < needed || (elem_size != 0 && !len.is_multiple_of(elem_size)) {
+            return Err(TensorError::InvalidShape(needed));
+        }
+        // SAFETY: `data` is non-null (checked above); the caller guarantees it is aligned
+        // and valid for `len` bytes for the lifetime of the storage.
+        let storage = unsafe { TensorStorage::from_raw_parts(data, len, alloc) };
+        let strides = get_strides_from_shape(shape);
+        Ok(Self {
+            storage,
+            shape,
+            strides,
+        })
     }
 
     /// Creates a new `Tensor` with the given shape and a default value.
@@ -339,11 +602,26 @@ impl<T, const N: usize> Tensor<T, N> {
     }
 
     /// Like [`from_shape_val`](Self::from_shape_val) but with an explicit allocator handle.
+    ///
+    /// # Arguments
+    ///
+    /// * `shape` - An array containing the shape of the tensor.
+    /// * `value` - The default value to fill the tensor with.
+    /// * `alloc` - The allocator handle to associate with the tensor.
+    ///
+    /// # Returns
+    ///
+    /// A new `Tensor` instance.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the product of `shape` overflows `usize` (such a tensor could never
+    /// be allocated; the allocation itself would fail as well).
     pub fn from_shape_val_in(shape: [usize; N], value: T, alloc: AllocHandle) -> Self
     where
         T: Clone,
     {
-        let numel = shape.iter().product::<usize>();
+        let numel = numel_or_panic(&shape);
         let data = vec![value; numel];
         let storage = TensorStorage::from_vec(data, alloc);
         let strides = get_strides_from_shape(shape);
@@ -386,11 +664,25 @@ impl<T, const N: usize> Tensor<T, N> {
     }
 
     /// Like [`from_shape_fn`](Self::from_shape_fn) but with an explicit allocator handle.
+    ///
+    /// # Arguments
+    ///
+    /// * `shape` - An array containing the shape of the tensor.
+    /// * `alloc` - The allocator handle to associate with the tensor.
+    /// * `f` - The function to generate the data.
+    ///
+    /// # Returns
+    ///
+    /// A new `Tensor` instance.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the product of `shape` overflows `usize`.
     pub fn from_shape_fn_in<F>(shape: [usize; N], alloc: AllocHandle, f: F) -> Self
     where
         F: Fn([usize; N]) -> T,
     {
-        let numel = shape.iter().product::<usize>();
+        let numel = numel_or_panic(&shape);
         let data: Vec<T> = (0..numel)
             .map(|i| {
                 let mut index = [0; N];
@@ -436,12 +728,14 @@ impl<T, const N: usize> Tensor<T, N> {
         domain: MemoryDomain,
         keepalive: Arc<dyn Any + Send + Sync>,
     ) -> Result<Self, TensorError> {
-        let expected_len = shape.iter().product::<usize>();
+        let expected_len = checked_numel(&shape)?;
         if expected_len != len {
             return Err(TensorError::InvalidShape(expected_len));
         }
 
-        let len_bytes = len * std::mem::size_of::<T>();
+        let len_bytes = expected_len
+            .checked_mul(std::mem::size_of::<T>())
+            .ok_or_else(|| TensorError::ShapeOverflow(shape.to_vec()))?;
 
         let storage =
             TensorStorage::from_borrowed(data, len_bytes, host_alloc(), domain, keepalive);
@@ -505,12 +799,14 @@ impl<T, const N: usize> Tensor<T, N> {
         domain: MemoryDomain,
         keepalive: Arc<dyn Any + Send + Sync>,
     ) -> Result<Self, TensorError> {
-        let expected_len = shape.iter().product::<usize>();
+        let expected_len = checked_numel(&shape)?;
         if expected_len != len {
             return Err(TensorError::InvalidShape(expected_len));
         }
 
-        let len_bytes = len * std::mem::size_of::<T>();
+        let len_bytes = expected_len
+            .checked_mul(std::mem::size_of::<T>())
+            .ok_or_else(|| TensorError::ShapeOverflow(shape.to_vec()))?;
 
         let storage =
             TensorStorage::from_borrowed_readonly(data, len_bytes, host_alloc(), domain, keepalive);
@@ -549,14 +845,33 @@ impl<T, const N: usize> Tensor<T, N> {
         Self::from_borrowed_readonly(shape, data, len, MemoryDomain::Host, keepalive)
     }
 
-    /// Returns the number of elements in the tensor.
+    /// Returns the number of elements in the tensor storage.
     ///
     /// # Returns
     ///
-    /// The number of elements in the tensor.
+    /// The number of elements held by the backing storage (0 for zero-sized `T`).
     #[inline]
     pub fn numel(&self) -> usize {
-        self.storage.len() / std::mem::size_of::<T>()
+        self.storage.num_elements()
+    }
+
+    /// Checks that the tensor's `shape` and `strides` only address elements inside
+    /// its storage.
+    ///
+    /// `shape`, `strides` and `storage` are public fields, so a tensor may be put in
+    /// an inconsistent state by safe code. Every unsafe fast path that trusts the
+    /// layout should call this (or an equivalent check) first.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if the layout is in bounds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TensorError::InvalidLayout`] if any element addressed by the
+    /// layout is outside the storage.
+    pub fn check_layout(&self) -> Result<(), TensorError> {
+        validate_layout(&self.shape, &self.strides, self.numel())
     }
 
     /// Get the offset of the element at the given index.
@@ -569,14 +884,7 @@ impl<T, const N: usize> Tensor<T, N> {
     ///
     /// The offset of the element at the given index.
     pub fn get_iter_offset(&self, index: [usize; N]) -> Option<usize> {
-        let mut offset = 0;
-        for ((&idx, dim_size), stride) in index.iter().zip(self.shape).zip(self.strides) {
-            if idx >= dim_size {
-                return None;
-            }
-            offset += idx * stride;
-        }
-        Some(offset)
+        checked_offset(&index, &self.shape, &self.strides)
     }
 
     /// Get the offset of the element at the given index without checking dim sizes.
@@ -589,14 +897,19 @@ impl<T, const N: usize> Tensor<T, N> {
     ///
     /// The offset of the element at the given index.
     pub fn get_iter_offset_unchecked(&self, index: [usize; N]) -> usize {
-        let mut offset = 0;
+        let mut offset: usize = 0;
         for (&idx, stride) in index.iter().zip(self.strides) {
-            offset += idx * stride;
+            offset = offset.wrapping_add(idx.wrapping_mul(stride));
         }
         offset
     }
 
     /// Get the index of the element at the given offset without checking dim sizes. The reverse of `Self::get_iter_offset_unchecked`.
+    ///
+    /// The index is computed greedily from the outermost to the innermost dimension,
+    /// which inverts [`get_iter_offset_unchecked`](Self::get_iter_offset_unchecked) for
+    /// row-major layouts (including padded ones, e.g. strides `[5, 2, 1]`). A zero
+    /// stride (broadcast dimension) always yields index `0` for that dimension.
     ///
     /// # Arguments
     ///
@@ -608,9 +921,12 @@ impl<T, const N: usize> Tensor<T, N> {
     pub fn get_index_unchecked(&self, offset: usize) -> [usize; N] {
         let mut idx = [0; N];
         let mut rem = offset;
-        for (dim_i, s) in self.strides.iter().enumerate() {
+        for (dim_i, &s) in self.strides.iter().enumerate() {
+            if s == 0 {
+                continue;
+            }
             idx[dim_i] = rem / s;
-            rem = offset % s;
+            rem %= s;
         }
 
         idx
@@ -640,6 +956,8 @@ impl<T, const N: usize> Tensor<T, N> {
 
     /// Get the element at the given index without checking if the index is out of bounds.
     ///
+    /// For a checked alternative use [`get`](Self::get).
+    ///
     /// # Arguments
     ///
     /// * `index` - The list of indices to get the element from.
@@ -647,6 +965,14 @@ impl<T, const N: usize> Tensor<T, N> {
     /// # Returns
     ///
     /// A reference to the element at the given index.
+    ///
+    /// # Safety
+    ///
+    /// The offset `sum(index[i] * strides[i])` must be smaller than
+    /// [`numel`](Self::numel) (the number of elements in the storage). This holds when
+    /// `index[i] < shape[i]` for every dimension **and** the tensor layout is valid
+    /// (see [`check_layout`](Self::check_layout)); since `shape`/`strides` are public
+    /// fields the caller is responsible for both.
     ///
     /// # Example
     ///
@@ -656,13 +982,18 @@ impl<T, const N: usize> Tensor<T, N> {
     /// let data: Vec<u8> = vec![1, 2, 3, 4];
     ///
     /// let t = Tensor::<u8, 2>::from_shape_vec([2, 2], data).unwrap();
-    /// assert_eq!(*t.get_unchecked([0, 0]), 1);
-    /// assert_eq!(*t.get_unchecked([0, 1]), 2);
-    /// assert_eq!(*t.get_unchecked([1, 0]), 3);
-    /// assert_eq!(*t.get_unchecked([1, 1]), 4);
+    /// // SAFETY: all indices are within the [2, 2] shape of a freshly built tensor.
+    /// unsafe {
+    ///     assert_eq!(*t.get_unchecked([0, 0]), 1);
+    ///     assert_eq!(*t.get_unchecked([0, 1]), 2);
+    ///     assert_eq!(*t.get_unchecked([1, 0]), 3);
+    ///     assert_eq!(*t.get_unchecked([1, 1]), 4);
+    /// }
     /// ```
-    pub fn get_unchecked(&self, index: [usize; N]) -> &T {
+    #[inline]
+    pub unsafe fn get_unchecked(&self, index: [usize; N]) -> &T {
         let offset = self.get_iter_offset_unchecked(index);
+        // SAFETY: the caller guarantees `offset < self.numel()` (see `# Safety`).
         unsafe { self.storage.as_slice().get_unchecked(offset) }
     }
 
@@ -733,7 +1064,7 @@ impl<T, const N: usize> Tensor<T, N> {
         &self,
         shape: [usize; M],
     ) -> Result<TensorView<'_, T, M>, TensorError> {
-        let numel = shape.iter().product::<usize>();
+        let numel = checked_numel(&shape)?;
         if numel != self.numel() {
             return Err(TensorError::DimensionMismatch(format!(
                 "Cannot reshape tensor of shape {:?} with {} elements to shape {:?} with {} elements",
@@ -765,6 +1096,11 @@ impl<T, const N: usize> Tensor<T, N> {
     ///
     /// A [`TensorView`] with permuted dimensions.
     ///
+    /// # Errors
+    ///
+    /// Returns [`TensorError::InvalidLayout`] if `axes` is not a permutation of
+    /// `0..N` (an axis is out of range or repeated).
+    ///
     /// # Examples
     ///
     /// Transposing a 2D tensor (matrix):
@@ -776,10 +1112,23 @@ impl<T, const N: usize> Tensor<T, N> {
     /// let tensor = Tensor::<i32, 2>::from_shape_vec([2, 3], data).unwrap();
     ///
     /// // Transpose by swapping dimensions
-    /// let transposed = tensor.permute_axes([1, 0]);
+    /// let transposed = tensor.permute_axes([1, 0]).unwrap();
     /// assert_eq!(transposed.shape, [3, 2]);
+    ///
+    /// // Repeated axes are rejected.
+    /// assert!(tensor.permute_axes([0, 0]).is_err());
     /// ```
-    pub fn permute_axes(&self, axes: [usize; N]) -> TensorView<'_, T, N> {
+    pub fn permute_axes(&self, axes: [usize; N]) -> Result<TensorView<'_, T, N>, TensorError> {
+        let mut seen = [false; N];
+        for &axis in axes.iter() {
+            if axis >= N || seen[axis] {
+                return Err(TensorError::InvalidLayout(format!(
+                    "axes {axes:?} are not a permutation of 0..{N}"
+                )));
+            }
+            seen[axis] = true;
+        }
+
         let mut new_shape = [0; N];
         let mut new_strides = [0; N];
         for (i, &axis) in axes.iter().enumerate() {
@@ -787,11 +1136,11 @@ impl<T, const N: usize> Tensor<T, N> {
             new_strides[i] = self.strides[axis];
         }
 
-        TensorView {
+        Ok(TensorView {
             storage: &self.storage,
             shape: new_shape,
             strides: new_strides,
-        }
+        })
     }
 
     /// Return a view of the tensor.
@@ -908,11 +1257,12 @@ impl<T, const N: usize> Tensor<T, N> {
     where
         T: Clone + std::fmt::Debug,
     {
+        self.check_layout()?;
         if self.is_standard_layout() {
             return Ok(self.clone());
         }
 
-        let total_elems: usize = self.shape.iter().product();
+        let total_elems: usize = checked_numel(&self.shape)?;
         let mut flat = Vec::with_capacity(total_elems);
         let mut idx = [0; N];
         let slice = self.storage.as_slice();
@@ -1024,6 +1374,15 @@ impl<T, const N: usize> Tensor<T, N> {
                 "element-wise op on tensors in different memory domains: {:?} vs {:?}",
                 self.storage.domain(),
                 other.storage.domain()
+            )));
+        }
+
+        // The output reuses `self.strides`, so it must hold as many elements as `self`.
+        if self.numel() != other.numel() {
+            return Err(TensorError::DimensionMismatch(format!(
+                "element-wise op on tensors with different storage sizes: {} vs {}",
+                self.numel(),
+                other.numel()
             )));
         }
 
@@ -1309,10 +1668,29 @@ mod tests {
     fn get_checked_1d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4];
         let t = Tensor::<u8, 1>::from_shape_vec([4], data)?;
-        assert_eq!(*t.get_unchecked([0]), 1);
-        assert_eq!(*t.get_unchecked([1]), 2);
-        assert_eq!(*t.get_unchecked([2]), 3);
-        assert_eq!(*t.get_unchecked([3]), 4);
+        assert_eq!(t.get([0]), Some(&1));
+        assert_eq!(t.get([1]), Some(&2));
+        assert_eq!(t.get([2]), Some(&3));
+        assert_eq!(t.get([3]), Some(&4));
+        Ok(())
+    }
+
+    #[test]
+    fn get_unchecked_in_bounds() -> Result<(), TensorError> {
+        let t = Tensor::<u8, 2>::from_shape_vec([2, 2], vec![1, 2, 3, 4])?;
+        t.check_layout()?;
+        // SAFETY: the layout was validated above and every index is < shape.
+        let v = unsafe { *t.get_unchecked([1, 1]) };
+        assert_eq!(v, 4);
+        Ok(())
+    }
+
+    #[test]
+    fn get_out_of_bounds_is_none() -> Result<(), TensorError> {
+        // Regression (F1): `get_unchecked([3, 3])` on a 2x2 tensor was a safe call that
+        // read offset 9 of a 4-element buffer. The safe accessor must refuse.
+        let t = Tensor::<u8, 2>::from_shape_vec([2, 2], vec![1, 2, 3, 4])?;
+        assert!(t.get([3, 3]).is_none());
         Ok(())
     }
 
@@ -1320,10 +1698,10 @@ mod tests {
     fn get_checked_2d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4];
         let t = Tensor::<u8, 2>::from_shape_vec([2, 2], data)?;
-        assert_eq!(*t.get_unchecked([0, 0]), 1);
-        assert_eq!(*t.get_unchecked([0, 1]), 2);
-        assert_eq!(*t.get_unchecked([1, 0]), 3);
-        assert_eq!(*t.get_unchecked([1, 1]), 4);
+        assert_eq!(t.get([0, 0]), Some(&1));
+        assert_eq!(t.get([0, 1]), Some(&2));
+        assert_eq!(t.get([1, 0]), Some(&3));
+        assert_eq!(t.get([1, 1]), Some(&4));
         Ok(())
     }
     #[test]
@@ -1337,7 +1715,7 @@ mod tests {
         assert_eq!(view.as_slice(), vec![1, 2, 3, 4]);
         assert_eq!(view.strides, [2, 1]);
         assert_eq!(view.numel(), 4);
-        assert_eq!(view.as_contiguous().as_slice(), vec![1, 2, 3, 4]);
+        assert_eq!(view.as_contiguous()?.as_slice(), vec![1, 2, 3, 4]);
         Ok(())
     }
 
@@ -1351,7 +1729,7 @@ mod tests {
         assert_eq!(t2.as_slice(), vec![1, 2, 3, 4]);
         assert_eq!(t2.strides, [1]);
         assert_eq!(t2.numel(), 4);
-        assert_eq!(t2.as_contiguous().as_slice(), vec![1, 2, 3, 4]);
+        assert_eq!(t2.as_contiguous()?.as_slice(), vec![1, 2, 3, 4]);
         Ok(())
     }
 
@@ -1360,12 +1738,12 @@ mod tests {
         let data: Vec<u8> = vec![1, 2, 3, 4];
         let t = Tensor::<u8, 1>::from_shape_vec([4], data)?;
         let view = t.reshape([2, 2])?;
-        assert_eq!(*view.get_unchecked([0, 0]), 1);
-        assert_eq!(*view.get_unchecked([0, 1]), 2);
-        assert_eq!(*view.get_unchecked([1, 0]), 3);
-        assert_eq!(*view.get_unchecked([1, 1]), 4);
+        assert_eq!(view.get([0, 0]), Some(&1));
+        assert_eq!(view.get([0, 1]), Some(&2));
+        assert_eq!(view.get([1, 0]), Some(&3));
+        assert_eq!(view.get([1, 1]), Some(&4));
         assert_eq!(view.numel(), 4);
-        assert_eq!(view.as_contiguous().as_slice(), vec![1, 2, 3, 4]);
+        assert_eq!(view.as_contiguous()?.as_slice(), vec![1, 2, 3, 4]);
         Ok(())
     }
 
@@ -1373,11 +1751,11 @@ mod tests {
     fn permute_axes_1d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4];
         let t = Tensor::<u8, 1>::from_shape_vec([4], data)?;
-        let t2 = t.permute_axes([0]);
+        let t2 = t.permute_axes([0])?;
         assert_eq!(t2.shape, [4]);
         assert_eq!(t2.as_slice(), vec![1, 2, 3, 4]);
         assert_eq!(t2.strides, [1]);
-        assert_eq!(t2.as_contiguous().as_slice(), vec![1, 2, 3, 4]);
+        assert_eq!(t2.as_contiguous()?.as_slice(), vec![1, 2, 3, 4]);
         Ok(())
     }
 
@@ -1385,14 +1763,14 @@ mod tests {
     fn permute_axes_2d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4];
         let t = Tensor::<u8, 2>::from_shape_vec([2, 2], data)?;
-        let view = t.permute_axes([1, 0]);
+        let view = t.permute_axes([1, 0])?;
         assert_eq!(view.shape, [2, 2]);
-        assert_eq!(*view.get_unchecked([0, 0]), 1u8);
-        assert_eq!(*view.get_unchecked([1, 0]), 2u8);
-        assert_eq!(*view.get_unchecked([0, 1]), 3u8);
-        assert_eq!(*view.get_unchecked([1, 1]), 4u8);
+        assert_eq!(view.get([0, 0]), Some(&1u8));
+        assert_eq!(view.get([1, 0]), Some(&2u8));
+        assert_eq!(view.get([0, 1]), Some(&3u8));
+        assert_eq!(view.get([1, 1]), Some(&4u8));
         assert_eq!(view.strides, [1, 2]);
-        assert_eq!(view.as_contiguous().as_slice(), vec![1, 3, 2, 4]);
+        assert_eq!(view.as_contiguous()?.as_slice(), vec![1, 3, 2, 4]);
         Ok(())
     }
 
@@ -1401,9 +1779,9 @@ mod tests {
         let data: Vec<u8> = vec![1, 2, 3, 4, 5, 6];
         let t = Tensor::<u8, 2>::from_shape_vec([2, 3], data)?;
 
-        let view = t.permute_axes([1, 0]);
+        let view = t.permute_axes([1, 0])?;
 
-        let contiguous = view.as_contiguous();
+        let contiguous = view.as_contiguous()?;
 
         assert_eq!(contiguous.shape, [3, 2]);
         assert_eq!(contiguous.strides, [2, 1]);
@@ -1805,10 +2183,10 @@ mod tests {
         let t = Tensor::<u8, 2>::from_shape_vec([2, 3], data)?;
 
         // permute_axes returns a TensorView; materialise it before casting.
-        let permuted_view = t.permute_axes([1, 0]);
+        let permuted_view = t.permute_axes([1, 0])?;
         assert_eq!(permuted_view.shape, [3, 2]);
 
-        let contiguous = permuted_view.as_contiguous();
+        let contiguous = permuted_view.as_contiguous()?;
         // as_contiguous() iterates in the view's logical order, so the flat layout
         // of the 3x2 transposed matrix [[1,4],[2,5],[3,6]] is [1,4,2,5,3,6].
         assert_eq!(contiguous.shape, [3, 2]);
@@ -1860,6 +2238,177 @@ mod tests {
         assert!(!t.is_standard_layout());
         let t2 = t.to_standard_layout(host_alloc())?;
         assert!(t2.is_standard_layout());
+        Ok(())
+    }
+
+    #[test]
+    fn to_standard_layout_rejects_out_of_bounds_strides() -> Result<(), TensorError> {
+        let mut t = Tensor::<u8, 2>::from_shape_vec([2, 2], vec![1, 2, 3, 4])?;
+        t.strides = [3, 1];
+        assert!(matches!(
+            t.to_standard_layout(host_alloc()),
+            Err(TensorError::InvalidLayout(_))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn permute_axes_rejects_non_permutation() -> Result<(), TensorError> {
+        // Regression (F2): `permute_axes([0, 0])` produced a [2, 2] view with strides
+        // [3, 3] and `as_contiguous` then read past the 6-element buffer.
+        let t = Tensor::<u32, 2>::from_shape_vec([2, 3], (0..6).collect())?;
+        assert!(matches!(
+            t.permute_axes([0, 0]),
+            Err(TensorError::InvalidLayout(_))
+        ));
+        assert!(matches!(
+            t.permute_axes([0, 2]),
+            Err(TensorError::InvalidLayout(_))
+        ));
+        let t3 = Tensor::<u8, 3>::from_shape_vec([1, 2, 3], vec![0; 6])?;
+        assert!(t3.permute_axes([2, 0, 1]).is_ok());
+        assert!(t3.permute_axes([2, 2, 1]).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn shape_overflow_is_rejected() {
+        // Regression (F3/F6): `1 << 32 * 1 << 32` wrapped to 0 in release builds and an
+        // empty buffer was accepted for a gigantic shape.
+        let big = 1usize << (usize::BITS / 2);
+        assert!(matches!(
+            Tensor::<u8, 2>::from_shape_vec([big, big], vec![]),
+            Err(TensorError::ShapeOverflow(_))
+        ));
+        assert!(matches!(
+            crate::tensor::checked_numel(&[big, big]),
+            Err(TensorError::ShapeOverflow(_))
+        ));
+        // Byte-length overflow is caught as well.
+        assert!(matches!(
+            crate::tensor::checked_len_bytes::<u64, 1>(&[usize::MAX / 2]),
+            Err(TensorError::ShapeOverflow(_))
+        ));
+        // Strides saturate instead of wrapping.
+        assert_eq!(
+            crate::tensor::get_strides_from_shape([0, big, big]),
+            [usize::MAX, big, 1]
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "overflows usize")]
+    fn from_shape_val_overflow_panics() {
+        let big = 1usize << (usize::BITS / 2);
+        let _ = Tensor::<u8, 2>::from_shape_val([big, big], 0);
+    }
+
+    #[test]
+    fn reshape_overflow_is_rejected() -> Result<(), TensorError> {
+        let t = Tensor::<u8, 1>::from_shape_vec([0], vec![])?;
+        let big = 1usize << (usize::BITS / 2);
+        assert!(t.reshape([big, big, 0]).is_ok());
+        assert!(matches!(
+            t.reshape([big, big]),
+            Err(TensorError::ShapeOverflow(_))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn from_shape_strides_vec_validates() -> Result<(), TensorError> {
+        let t = Tensor::<u8, 2>::from_shape_strides_vec([2, 2], [1, 2], vec![1, 2, 3, 4])?;
+        assert_eq!(t.get([0, 1]), Some(&3));
+        assert!(matches!(
+            Tensor::<u8, 3>::from_shape_strides_vec([4, 4, 1], [4, 1, 1], vec![1]),
+            Err(TensorError::InvalidShape(16))
+        ));
+        assert!(matches!(
+            Tensor::<u8, 2>::from_shape_strides_vec([2, 2], [2, 2], vec![1, 2, 3, 4]),
+            Err(TensorError::InvalidLayout(_))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn check_layout_detects_tampered_fields() -> Result<(), TensorError> {
+        let mut t = Tensor::<u32, 2>::from_shape_vec([1, 5], vec![1; 5])?;
+        assert!(t.check_layout().is_ok());
+        // A legit padded layout: 2x2 view with row stride 3 over 5 elements.
+        t.shape = [2, 2];
+        t.strides = [3, 1];
+        assert!(t.check_layout().is_ok());
+        t.shape = [4, 4];
+        assert!(t.check_layout().is_err());
+        assert!(t.get([3, 3]).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn from_raw_parts_validates_len() {
+        let data: Vec<u16> = vec![1, 2, 3, 4];
+        // `len` is in bytes: 4 elements * 2 bytes.
+        // SAFETY: `data` is valid for 8 bytes and outlives the tensor.
+        let ok =
+            unsafe { Tensor::<u16, 2>::from_raw_parts([2, 2], data.as_ptr(), 8, host_alloc()) };
+        assert!(ok.is_ok());
+        // Element count instead of bytes is too small and must be rejected.
+        // SAFETY: the buffer is valid for 4 bytes; the call must fail before use.
+        let short =
+            unsafe { Tensor::<u16, 2>::from_raw_parts([2, 2], data.as_ptr(), 4, host_alloc()) };
+        assert!(matches!(short, Err(TensorError::InvalidShape(8))));
+        // A byte length that is not a multiple of the element size is rejected.
+        // SAFETY: the buffer is valid for 8 bytes.
+        let odd = unsafe { Tensor::<u16, 1>::from_raw_parts([3], data.as_ptr(), 7, host_alloc()) };
+        assert!(odd.is_err());
+        // Null pointers are rejected before any `NonNull` is formed.
+        // SAFETY: the call must fail on the null check.
+        let null =
+            unsafe { Tensor::<u16, 1>::from_raw_parts([0], std::ptr::null(), 0, host_alloc()) };
+        assert!(matches!(null, Err(TensorError::StorageError(_))));
+    }
+
+    #[test]
+    fn get_index_unchecked_padded_strides() -> Result<(), TensorError> {
+        // Regression (F10): `rem = offset % s` must be `rem % s`. With padded strides
+        // [5, 2, 1] (shape [2, 2, 2]) offset 7 = 1*5 + 1*2 + 0*1 must map to [1, 1, 0].
+        let mut t = Tensor::<u8, 3>::from_shape_vec([1, 1, 10], vec![0; 10])?;
+        t.shape = [2, 2, 2];
+        t.strides = [5, 2, 1];
+        assert_eq!(t.get_index_unchecked(7), [1, 1, 0]);
+        for i in 0..2 {
+            for j in 0..2 {
+                for k in 0..2 {
+                    let off = t.get_iter_offset_unchecked([i, j, k]);
+                    assert_eq!(t.get_index_unchecked(off), [i, j, k]);
+                }
+            }
+        }
+        // A zero (broadcast) stride must not divide by zero.
+        t.shape = [2, 3, 1];
+        t.strides = [0, 1, 0];
+        assert_eq!(t.get_index_unchecked(2), [0, 2, 0]);
+        Ok(())
+    }
+
+    #[test]
+    fn zero_sized_type_does_not_divide_by_zero() -> Result<(), TensorError> {
+        // Regression (F10): `numel`/`as_slice`/`into_vec` divided by `size_of::<T>() == 0`.
+        let t = Tensor::<(), 1>::from_shape_vec([3], vec![(); 3])?;
+        assert_eq!(t.numel(), 0);
+        assert!(t.as_slice().is_empty());
+        assert!(t.get([0]).is_none());
+        let v = t.into_vec();
+        assert!(v.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn element_wise_op_rejects_storage_size_mismatch() -> Result<(), TensorError> {
+        let a = Tensor::<u8, 1>::from_shape_vec([2], vec![1, 2])?;
+        let mut b = Tensor::<u8, 1>::from_shape_vec([4], vec![1, 2, 3, 4])?;
+        b.shape = [2];
+        assert!(a.element_wise_op(&b, |x, y| x + y).is_err());
         Ok(())
     }
 }

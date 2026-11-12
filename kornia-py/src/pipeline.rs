@@ -4,12 +4,12 @@
 //! `kornia_imgproc::resize` as the `kornia_rs.pipeline` submodule.
 
 use numpy::{PyArray, PyArray3, PyArrayMethods, PyUntypedArrayMethods};
-use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use kornia_imgproc::resize::{resize_normalize_to_tensor_u8_to_f32_bilinear, NormalizeParams};
 
 use crate::image::{to_pyerr, PyImage};
+use crate::pyutils::{c_slice, checked_numel, validate_out, value_err};
 
 /// Fused resize (general bilinear, any target size) + per-channel normalize +
 /// HWC→CHW layout convert, all in one pass. Exact 2× downscale takes a faster
@@ -39,12 +39,14 @@ pub fn resize_normalize_to_tensor(
 ) -> PyResult<Py<PyArray3<f32>>> {
     let (src_h, src_w, src_slice) = validate_and_borrow_src(py, &image)?;
     let (dst_h, dst_w) = new_size;
-    validate_shapes(src_h, src_w, dst_h, dst_w)?;
+    let out_len = validate_shapes(src_h, src_w, dst_h, dst_w)?;
     let params = NormalizeParams::<3>::from_mean_std(mean, std);
 
+    // SAFETY: the dimensions were validated by `validate_shapes`; the fused kernel
+    // writes every one of the `out_len` elements before the array is returned.
     let out_arr = unsafe { PyArray::<f32, _>::new(py, [3, dst_h, dst_w], false) };
-    let out_len = 3 * dst_h * dst_w;
-    // SAFETY: out_arr is a freshly-allocated C-contiguous f32 PyArray3.
+    // SAFETY: out_arr is a freshly-allocated C-contiguous f32 PyArray3 of
+    // exactly `out_len` elements, not yet shared with Python.
     let out_slice = unsafe { std::slice::from_raw_parts_mut(out_arr.data(), out_len) };
 
     let result = py.detach(|| {
@@ -77,15 +79,18 @@ pub fn resize_normalize_to_tensor_batch(
 
     // Borrow every source and allocate every output under the GIL…
     let mut srcs = Vec::with_capacity(images.len());
+    // Only read when `images` is non-empty, i.e. after `validate_shapes` ran.
+    let mut out_len = 0;
     for image in &images {
         let (src_h, src_w, src_slice) = validate_and_borrow_src(py, image)?;
-        validate_shapes(src_h, src_w, dst_h, dst_w)?;
+        out_len = validate_shapes(src_h, src_w, dst_h, dst_w)?;
         srcs.push((src_h, src_w, src_slice));
     }
-    let out_len = 3 * dst_h * dst_w;
     let mut outs = Vec::with_capacity(images.len());
     let mut out_slices: Vec<&mut [f32]> = Vec::with_capacity(images.len());
     for _ in &images {
+        // SAFETY: the fused kernel writes every element before the arrays are
+        // returned; on error they are dropped without reaching Python.
         let arr = unsafe { PyArray::<f32, _>::new(py, [3, dst_h, dst_w], false) };
         // SAFETY: freshly-allocated C-contiguous f32 PyArray3, kept alive by `outs`.
         out_slices.push(unsafe { std::slice::from_raw_parts_mut(arr.data(), out_len) });
@@ -162,7 +167,7 @@ impl Preprocessor {
         let (dst_h, dst_w) = dst_size;
         validate_shapes(src_h, src_w, dst_h, dst_w)?;
         let params = NormalizeParams::<3>::from_mean_std(mean, std);
-        let out = unsafe { PyArray::<f32, _>::new(py, [3, dst_h, dst_w], false) };
+        let out = PyArray::<f32, _>::zeros(py, [3, dst_h, dst_w], false);
         Ok(Self {
             src_h,
             src_w,
@@ -179,26 +184,41 @@ impl Preprocessor {
     /// internal `(3, dst_h, dst_w)` f32 buffer (shared — see class doc).
     fn __call__(&mut self, py: Python<'_>, image: PyImage) -> PyResult<Py<PyArray3<f32>>> {
         let arr = image.bind(py);
-        if !arr.is_c_contiguous() {
-            return Err(PyErr::new::<PyValueError, _>(
-                "input numpy array must be C-contiguous",
-            ));
-        }
         let shape = arr.shape();
         let (h, w, c) = (shape[0], shape[1], shape[2]);
         if h != self.src_h || w != self.src_w || c != 3 {
-            return Err(PyErr::new::<PyValueError, _>(format!(
+            return Err(value_err(format!(
                 "expected image shape ({}, {}, 3), got ({}, {}, {})",
                 self.src_h, self.src_w, h, w, c
             )));
         }
-        // SAFETY: PyImage is a u8 PyArray3; shape validated above.
-        let src_slice = unsafe { std::slice::from_raw_parts(arr.data(), h * w * 3) };
+        let src_slice = c_slice(arr, "input numpy array")?;
 
+        // The internal buffer is handed out to Python on every call, so Python
+        // can change it behind our back (`out.resize(..., refcheck=False)`
+        // reallocates it smaller, `out.setflags(write=False)` freezes it).
+        // Re-validate it on EVERY call and fall back to a fresh buffer if it is
+        // no longer exactly the (3, dst_h, dst_w) contiguous writeable array we
+        // allocated — never trust the construction-time shape.
+        let expected = [3, self.dst_h, self.dst_w];
+        let reusable = validate_out(
+            self.out.bind(py),
+            &expected,
+            src_slice.as_ptr(),
+            src_slice.len(),
+            "Preprocessor",
+        )
+        .is_ok();
+        if !reusable {
+            self.out = PyArray::<f32, _>::zeros(py, expected, false).unbind();
+        }
         let out_bound = self.out.bind(py);
-        let out_len = 3 * self.dst_h * self.dst_w;
-        // SAFETY: out buffer was allocated at construction at this exact shape;
-        // `&mut self` on __call__ prevents concurrent Python-level aliasing.
+        // Length comes from the live array (validated == 3*dst_h*dst_w above).
+        let out_len = out_bound.len();
+        // SAFETY: `out_bound` is C-contiguous, aligned, writeable and exactly
+        // (3, dst_h, dst_w) (re-validated just above, or freshly allocated), and
+        // does not overlap `src_slice`. `&mut self` prevents re-entrant use of
+        // the buffer from this object while the kernel runs.
         let out_slice = unsafe { std::slice::from_raw_parts_mut(out_bound.data(), out_len) };
 
         let result = py.detach(|| {
@@ -235,30 +255,25 @@ fn validate_and_borrow_src<'py>(
     image: &'py PyImage,
 ) -> PyResult<(usize, usize, &'py [u8])> {
     let arr = image.bind(py);
-    if !arr.is_c_contiguous() {
-        return Err(PyErr::new::<PyValueError, _>(
-            "input numpy array must be C-contiguous",
-        ));
-    }
     let shape = arr.shape();
     let (h, w, c) = (shape[0], shape[1], shape[2]);
     if c != 3 {
-        return Err(PyErr::new::<PyValueError, _>(format!(
-            "expected 3 channels, got {c}"
-        )));
+        return Err(value_err(format!("expected 3 channels, got {c}")));
     }
-    // SAFETY: PyImage is a u8 PyArray3; shape validated above.
-    let slice = unsafe { std::slice::from_raw_parts(arr.data(), h * w * 3) };
+    let slice = c_slice(arr, "input numpy array")?;
     Ok((h, w, slice))
 }
 
-fn validate_shapes(src_h: usize, src_w: usize, dst_h: usize, dst_w: usize) -> PyResult<()> {
+/// Validate the source/destination shapes and return the element count of
+/// the `(3, dst_h, dst_w)` f32 output.
+///
+/// Rejects zero extents and sizes whose byte count overflows (`OverflowError`).
+fn validate_shapes(src_h: usize, src_w: usize, dst_h: usize, dst_w: usize) -> PyResult<usize> {
     if src_h == 0 || src_w == 0 || dst_h == 0 || dst_w == 0 {
-        return Err(PyErr::new::<PyValueError, _>(
-            "source/destination shape has zero extent",
-        ));
+        return Err(value_err("source/destination shape has zero extent"));
     }
     // Any src→dst ratio is supported (general bilinear); exact 2× downscale takes
     // a faster fused box path internally.
-    Ok(())
+    checked_numel(&[src_h, src_w, 3], 1)?;
+    checked_numel(&[3, dst_h, dst_w], std::mem::size_of::<f32>())
 }

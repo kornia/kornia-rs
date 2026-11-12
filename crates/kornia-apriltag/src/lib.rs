@@ -12,7 +12,7 @@ use crate::{
     errors::AprilTagError,
     family::{TagFamily, TagFamilyKind},
     quad::{fit_quads, FitQuadConfig},
-    rle_cc::RleCC,
+    rle_cc::{check_rle_width, RleCC},
     segmentation::{find_gradient_clusters_with_cache, GradientInfo},
     threshold::{adaptive_threshold_with_split, TileMinMax},
     utils::Pixel,
@@ -156,8 +156,33 @@ impl DecodeTagsConfig {
     }
 }
 
+/// Returns the decimated size matching C's `image_u8_decimate`: `1 + (w - 1) / factor`.
+fn decimated_size(size: ImageSize, factor: usize) -> ImageSize {
+    ImageSize {
+        width: 1 + size.width.saturating_sub(1) / factor,
+        height: 1 + size.height.saturating_sub(1) / factor,
+    }
+}
+
 /// Stride-based decimation matching C's `image_u8_decimate` (top-left pixel of each factor×factor block).
-fn stride_decimate(src: &Image<u8, 1>, dst: &mut Image<u8, 1>, factor: usize) {
+///
+/// Returns an error if `dst` is not exactly the decimated size of `src`; the SIMD
+/// path below reads `src` through raw pointers and relies on that invariant.
+fn stride_decimate(
+    src: &Image<u8, 1>,
+    dst: &mut Image<u8, 1>,
+    factor: usize,
+) -> Result<(), AprilTagError> {
+    let expected = decimated_size(src.size(), factor);
+    if src.width() == 0 || src.height() == 0 || dst.size() != expected {
+        return Err(kornia_image::error::ImageError::InvalidImageSize(
+            expected.width,
+            expected.height,
+            dst.width(),
+            dst.height(),
+        )
+        .into());
+    }
     let src_w = src.width();
     let dst_w = dst.width();
     let dst_h = dst.height();
@@ -186,7 +211,7 @@ fn stride_decimate(src: &Image<u8, 1>, dst: &mut Image<u8, 1>, factor: usize) {
                 sx += 1;
             }
         }
-        return;
+        return Ok(());
     }
 
     for sy in 0..dst_h {
@@ -194,6 +219,7 @@ fn stride_decimate(src: &Image<u8, 1>, dst: &mut Image<u8, 1>, factor: usize) {
             dst_data[sy * dst_w + sx] = src_data[(sy * factor) * src_w + sx * factor];
         }
     }
+    Ok(())
 }
 
 /// Decoder for AprilTag detection and decoding.
@@ -236,18 +262,30 @@ impl AprilTagDecoder {
     /// # Returns
     ///
     /// Returns a `Result` containing the new `AprilTagDecoder` or an `AprilTagError`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AprilTagError::ImageTooSmall`] if `img_size` has a zero dimension, and
+    /// [`AprilTagError::ImageTooLarge`] if the (downscaled) width exceeds `u16::MAX`.
     pub fn new(config: DecodeTagsConfig, img_size: ImageSize) -> Result<Self, AprilTagError> {
+        if img_size.width == 0 || img_size.height == 0 {
+            return Err(AprilTagError::ImageTooSmall {
+                width: img_size.width,
+                height: img_size.height,
+                min_width: 1,
+                min_height: 1,
+            });
+        }
         let (img_size, downscale_img) = if config.downscale_factor <= 1 {
             (img_size, None)
         } else {
             // Match C's image_u8_decimate: swidth = 1 + (w-1)/factor (ceiling division).
-            let new_size = ImageSize {
-                width: 1 + (img_size.width - 1) / config.downscale_factor,
-                height: 1 + (img_size.height - 1) / config.downscale_factor,
-            };
+            let new_size = decimated_size(img_size, config.downscale_factor);
 
             (new_size, Some(Image::from_size_val(new_size, 0)?))
         };
+        // The run-length connected-components stage stores columns as u16.
+        check_rle_width(img_size.width, img_size.height)?;
 
         // Build the tag family cache once
         let cached_families: Vec<(TagFamilyKind, TagFamily)> = config
@@ -292,37 +330,73 @@ impl AprilTagDecoder {
     /// If you are running this method multiple times on the same decoder instance,
     /// you should call [`AprilTagDecoder::clear`] between runs to reset internal state.
     pub fn decode(&mut self, src: &Image<u8, 1>) -> Result<Vec<Detection>, AprilTagError> {
-        if let Some(downscale_img) = self.downscale_img.as_mut() {
-            // Stride-based subsample matching C's image_u8_decimate: dst[sy][sx] = src[sy*f][sx*f].
-            stride_decimate(src, downscale_img, self.config.downscale_factor);
+        let (all, _) = self.detect(src)?;
+        Ok(dedup_detections(all))
+    }
 
-            // Step 1: Adaptive Threshold
-            adaptive_threshold_with_split(
-                downscale_img,
-                &mut self.bin_img,
-                &mut self.tile_min_max,
-                self.config.min_white_black_difference,
-                self.config.threshold_split,
-            )?;
-        } else {
-            // Step 1: Adaptive Threshold
-            adaptive_threshold_with_split(
-                src,
-                &mut self.bin_img,
-                &mut self.tile_min_max,
-                self.config.min_white_black_difference,
-                self.config.threshold_split,
-            )?;
-        }
+    /// Decodes all valid tags in the image without deduplication.
+    ///
+    /// Returns every detection (including multiple copies of the same id if several quads
+    /// decode to it). Use this when you need the full candidate set — e.g. for parity
+    /// testing where you want to find the detection closest to a known reference.
+    pub fn decode_all(&mut self, src: &Image<u8, 1>) -> Result<Vec<Detection>, AprilTagError> {
+        Ok(self.detect(src)?.0)
+    }
+
+    /// Decodes tags and returns per-stage timing (µs) for profiling.
+    /// Returns `(detections, [decimate, threshold, conn_comp, gradient, fit_quads, decode_tags])`.
+    pub fn decode_timed(
+        &mut self,
+        src: &Image<u8, 1>,
+    ) -> Result<(Vec<Detection>, [u64; 6]), AprilTagError> {
+        let (all, us) = self.detect(src)?;
+        Ok((dedup_detections(all), us))
+    }
+
+    // Runs the full pipeline once, returning every (non-deduplicated) detection and the
+    // per-stage timings in µs: [decimate, threshold, conn_comp, gradient, fit_quads,
+    // decode_tags]. The decimate stage is ~0 when no downscaling is configured.
+    fn detect(&mut self, src: &Image<u8, 1>) -> Result<(Vec<Detection>, [u64; 6]), AprilTagError> {
+        let mut us = [0u64; 6];
+        let mut t = std::time::Instant::now();
+        let mut lap = |us: &mut u64| {
+            *us = t.elapsed().as_micros() as u64;
+            t = std::time::Instant::now();
+        };
+
+        // Stride-based subsample matching C's image_u8_decimate: dst[sy][sx] = src[sy*f][sx*f].
+        // `stride_decimate` validates `src` against the size the decoder was built for.
+        let threshold_src = match self.downscale_img.as_mut() {
+            Some(downscale_img) => {
+                stride_decimate(src, downscale_img, self.config.downscale_factor)?;
+                &*downscale_img
+            }
+            None => src,
+        };
+        lap(&mut us[0]);
+
+        // Step 1: Adaptive Threshold
+        adaptive_threshold_with_split(
+            threshold_src,
+            &mut self.bin_img,
+            &mut self.tile_min_max,
+            self.config.min_white_black_difference,
+            self.config.threshold_split,
+        )?;
+        lap(&mut us[1]);
 
         // Step 2(a): Find Connected Components + path-compress + build rep_cache (one fused pass).
-        self.rle_cc.process(&self.bin_img, &mut self.rep_cache, 25);
+        self.rle_cc
+            .process(&self.bin_img, &mut self.rep_cache, 25)?;
+        lap(&mut us[2]);
 
         // Step 2(b): Find Clusters (NEON fast-path on aarch64)
         self.clusters = find_gradient_clusters_with_cache(&self.bin_img, &self.rep_cache);
+        lap(&mut us[3]);
 
         // Step 3: Quad Fitting
         let mut quads = fit_quads(&self.bin_img, &self.clusters, &self.config);
+        lap(&mut us[4]);
 
         // Step 4: Tag Decoding
         // D4 fix: refine_edges search range matches C's (quad_decimate + 1).
@@ -335,100 +409,8 @@ impl AprilTagDecoder {
             self.config.decode_sharpening,
             refine_edges_range,
         );
-        Ok(dedup_detections(all))
-    }
-
-    /// Decodes all valid tags in the image without deduplication.
-    ///
-    /// Returns every detection (including multiple copies of the same id if several quads
-    /// decode to it). Use this when you need the full candidate set — e.g. for parity
-    /// testing where you want to find the detection closest to a known reference.
-    pub fn decode_all(&mut self, src: &Image<u8, 1>) -> Result<Vec<Detection>, AprilTagError> {
-        if let Some(downscale_img) = self.downscale_img.as_mut() {
-            stride_decimate(src, downscale_img, self.config.downscale_factor);
-            adaptive_threshold_with_split(
-                downscale_img,
-                &mut self.bin_img,
-                &mut self.tile_min_max,
-                self.config.min_white_black_difference,
-                self.config.threshold_split,
-            )?;
-        } else {
-            adaptive_threshold_with_split(
-                src,
-                &mut self.bin_img,
-                &mut self.tile_min_max,
-                self.config.min_white_black_difference,
-                self.config.threshold_split,
-            )?;
-        }
-        self.rle_cc.process(&self.bin_img, &mut self.rep_cache, 25);
-        self.clusters = find_gradient_clusters_with_cache(&self.bin_img, &self.rep_cache);
-        let mut quads = fit_quads(&self.bin_img, &self.clusters, &self.config);
-        let refine_edges_range = self.config.downscale_factor as f32 + 1.0;
-        Ok(decode_tags(
-            src,
-            &mut quads,
-            &self.cached_families,
-            self.config.refine_edges_enabled,
-            self.config.decode_sharpening,
-            refine_edges_range,
-        ))
-    }
-
-    /// Decodes tags and returns per-stage timing (µs) for profiling.
-    /// Returns `(detections, [decimate, threshold, conn_comp, gradient, fit_quads, decode_tags])`.
-    pub fn decode_timed(
-        &mut self,
-        src: &Image<u8, 1>,
-    ) -> Result<(Vec<Detection>, [u64; 6]), AprilTagError> {
-        let mut us = [0u64; 6];
-        let t = std::time::Instant::now();
-        if let Some(downscale_img) = self.downscale_img.as_mut() {
-            stride_decimate(src, downscale_img, self.config.downscale_factor);
-            us[0] = t.elapsed().as_micros() as u64;
-            let t = std::time::Instant::now();
-            adaptive_threshold_with_split(
-                downscale_img,
-                &mut self.bin_img,
-                &mut self.tile_min_max,
-                self.config.min_white_black_difference,
-                self.config.threshold_split,
-            )?;
-            us[1] = t.elapsed().as_micros() as u64;
-        } else {
-            us[0] = 0;
-            let t = std::time::Instant::now();
-            adaptive_threshold_with_split(
-                src,
-                &mut self.bin_img,
-                &mut self.tile_min_max,
-                self.config.min_white_black_difference,
-                self.config.threshold_split,
-            )?;
-            us[1] = t.elapsed().as_micros() as u64;
-        }
-        let t = std::time::Instant::now();
-        self.rle_cc.process(&self.bin_img, &mut self.rep_cache, 25);
-        us[2] = t.elapsed().as_micros() as u64;
-        let t = std::time::Instant::now();
-        self.clusters = find_gradient_clusters_with_cache(&self.bin_img, &self.rep_cache);
-        us[3] = t.elapsed().as_micros() as u64;
-        let t = std::time::Instant::now();
-        let mut quads = fit_quads(&self.bin_img, &self.clusters, &self.config);
-        us[4] = t.elapsed().as_micros() as u64;
-        let refine_edges_range = self.config.downscale_factor as f32 + 1.0;
-        let t = std::time::Instant::now();
-        let all = decode_tags(
-            src,
-            &mut quads,
-            &self.cached_families,
-            self.config.refine_edges_enabled,
-            self.config.decode_sharpening,
-            refine_edges_range,
-        );
-        us[5] = t.elapsed().as_micros() as u64;
-        Ok((dedup_detections(all), us))
+        lap(&mut us[5]);
+        Ok((all, us))
     }
 
     /// Clears the internal state of the decoder for reuse.
@@ -519,6 +501,46 @@ mod tests {
             }
         }
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_decode_one_pixel_stripes() -> Result<(), Box<dyn std::error::Error>> {
+        // Regression: 1-px vertical stripes produce one run per pixel, which used
+        // to overflow the RLE connected-components run buffer.
+        let (width, height) = (256, 128);
+        let mut config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag36H11])?;
+        config.downscale_factor = 1;
+        let size = kornia_image::ImageSize { width, height };
+        let data = (0..width * height)
+            .map(|i| if (i % width) & 1 == 0 { 0 } else { 255 })
+            .collect();
+        let img = kornia_image::Image::<u8, 1>::new(size, data)?;
+        let mut decoder = AprilTagDecoder::new(config, size)?;
+        let detections = decoder.decode(&img)?;
+        assert!(detections.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_decoder_rejects_unsupported_sizes() -> Result<(), Box<dyn std::error::Error>> {
+        let config = || DecodeTagsConfig::new(vec![TagFamilyKind::Tag36H11]);
+        // Run columns are u16: wider images must be rejected up front.
+        let mut cfg = config()?;
+        cfg.downscale_factor = 1;
+        let res = AprilTagDecoder::new(cfg, [65_600, 4].into());
+        assert!(matches!(res, Err(AprilTagError::ImageTooLarge { .. })));
+        // Zero-sized images used to underflow the downscale arithmetic.
+        let res = AprilTagDecoder::new(config()?, [0, 10].into());
+        assert!(matches!(res, Err(AprilTagError::ImageTooSmall { .. })));
+
+        // A source image that does not match the decoder size must be rejected
+        // before the (SIMD) decimation reads from it.
+        let mut cfg = config()?;
+        cfg.downscale_factor = 2;
+        let mut decoder = AprilTagDecoder::new(cfg, [64, 64].into())?;
+        let small = kornia_image::Image::<u8, 1>::from_size_val([64, 8].into(), 0)?;
+        assert!(decoder.decode(&small).is_err());
         Ok(())
     }
 

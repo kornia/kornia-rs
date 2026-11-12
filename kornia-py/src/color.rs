@@ -1,11 +1,11 @@
-use numpy::{PyArray, PyArray1, PyArrayMethods, PyUntypedArrayMethods};
+use numpy::{PyArray, PyArray1, PyArrayMethods};
 use pyo3::prelude::*;
 
 use crate::dispatch::{cpu_op, try_dispatch_device};
 
 use crate::image::{
-    alloc_output_pyarray, alloc_output_pyarray_f32, numpy_as_image, numpy_as_image_f32, to_pyerr,
-    PyImage, PyImageF32,
+    alloc_output_pyarray, alloc_output_pyarray_t, numpy_as_image, numpy_as_image_t, to_pyerr,
+    PyImage, PyImageF32, UNINIT,
 };
 use kornia_image::ImageSize;
 use kornia_imgproc::color;
@@ -40,8 +40,12 @@ pub fn bgr_from_rgb(py: Python<'_>, image: &Bound<'_, PyAny>) -> PyResult<Py<PyA
 /// GIL is released for the NEON/AVX2/scalar kernel invocation.
 #[pyfunction]
 pub fn gray_from_rgb_f32(py: Python<'_>, image: PyImageF32) -> PyResult<PyImageF32> {
-    let src = unsafe { numpy_as_image_f32::<3>(py, &image)? };
-    let (mut dst, out) = unsafe { alloc_output_pyarray_f32::<1>(py, src.size())? };
+    // SAFETY: the view borrows the numpy array, which the caller keeps alive and does not mutate
+    // for the duration of this call.
+    let src = unsafe { numpy_as_image_t::<f32, 3>(py, &image)? };
+    // SAFETY: `dst` aliases the fresh array `out`, which stays alive and is only handed to Python
+    // after the kernel has written every element through `dst`.
+    let (mut dst, out) = unsafe { alloc_output_pyarray_t::<f32, 1, UNINIT>(py, src.size())? };
     py.detach(|| color::gray_from_rgb_f32(&src, &mut dst))
         .map_err(to_pyerr)?;
     Ok(out)
@@ -150,8 +154,13 @@ macro_rules! py_f32_3to3 {
         pub fn $name(py: Python<'_>, image: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
             crate::dispatch::require_f32_host(image, stringify!($name))?;
             cpu_op(py, image, |py, image| {
-                let src = unsafe { numpy_as_image_f32::<3>(py, &image)? };
-                let (mut dst, out) = unsafe { alloc_output_pyarray_f32::<3>(py, src.size())? };
+                // SAFETY: the view borrows the numpy array, which the caller keeps alive and does
+                // not mutate for the duration of this call.
+                let src = unsafe { numpy_as_image_t::<f32, 3>(py, &image)? };
+                // SAFETY: `dst` aliases the fresh array `out`, which stays alive and is only
+                // handed to Python after the kernel has written every element through `dst`.
+                let (mut dst, out) =
+                    unsafe { alloc_output_pyarray_t::<f32, 3, UNINIT>(py, src.size())? };
                 py.detach(|| $func(&src, &mut dst)).map_err(to_pyerr)?;
                 Ok(out)
             })
@@ -164,8 +173,13 @@ macro_rules! py_f32_3to3 {
             try_dispatch_device!(py, image, $dev);
             crate::dispatch::require_f32_host(image, stringify!($name))?;
             cpu_op(py, image, |py, image| {
-                let src = unsafe { numpy_as_image_f32::<3>(py, &image)? };
-                let (mut dst, out) = unsafe { alloc_output_pyarray_f32::<3>(py, src.size())? };
+                // SAFETY: the view borrows the numpy array, which the caller keeps alive and does
+                // not mutate for the duration of this call.
+                let src = unsafe { numpy_as_image_t::<f32, 3>(py, &image)? };
+                // SAFETY: `dst` aliases the fresh array `out`, which stays alive and is only
+                // handed to Python after the kernel has written every element through `dst`.
+                let (mut dst, out) =
+                    unsafe { alloc_output_pyarray_t::<f32, 3, UNINIT>(py, src.size())? };
                 py.detach(|| $func(&src, &mut dst)).map_err(to_pyerr)?;
                 Ok(out)
             })
@@ -194,8 +208,13 @@ macro_rules! py_ycbcr_family {
                 }
                 "float32" => {
                     let arr: Py<numpy::PyArray3<f32>> = view.extract()?;
-                    let src = unsafe { numpy_as_image_f32::<3>(py, &arr)? };
-                    let (mut dst, out) = unsafe { alloc_output_pyarray_f32::<3>(py, src.size())? };
+                    // SAFETY: the view borrows the numpy array, which the caller keeps alive and
+                    // does not mutate for the duration of this call.
+                    let src = unsafe { numpy_as_image_t::<f32, 3>(py, &arr)? };
+                    // SAFETY: `dst` aliases the fresh array `out`, which stays alive and is only
+                    // handed to Python after the kernel has written every element through `dst`.
+                    let (mut dst, out) =
+                        unsafe { alloc_output_pyarray_t::<f32, 3, UNINIT>(py, src.size())? };
                     py.detach(|| $func(&src, &mut dst)).map_err(to_pyerr)?;
                     out.into_any()
                 }
@@ -371,7 +390,7 @@ pub fn rgb_from_bayer(
 /// (`nv12`/`nv21`/`i420`/`yv12`) needs `W*H*3/2` bytes (Y plane followed by chroma).
 /// BT.601 limited range, matching OpenCV's `COLOR_YUV2RGB_*`.
 macro_rules! py_video_decode {
-    ($name:ident, $func:path, $doc:expr) => {
+    ($name:ident, $func:path, $even_height:expr, $doc:expr) => {
         #[doc = $doc]
         #[pyfunction]
         pub fn $name(
@@ -381,16 +400,31 @@ macro_rules! py_video_decode {
             height: usize,
         ) -> PyResult<PyImage> {
             let arr = data.bind(py);
-            if !arr.is_c_contiguous() {
-                return Err(pyo3::exceptions::PyValueError::new_err(
-                    "YUV buffer must be a C-contiguous 1-D uint8 array",
-                ));
+            // The decoders work on 2-pixel groups (4:2:2, row by row) or 2x2
+            // blocks (4:2:0); an odd width (or, for 4:2:0, an odd height) would
+            // leave the last column/row of the output unwritten. Packed 4:2:2 has
+            // no vertical subsampling, so odd heights are valid there.
+            let even_height: bool = $even_height;
+            if !width.is_multiple_of(2) || (even_height && !height.is_multiple_of(2)) {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "{}: {} must be even, got {width}x{height}",
+                    stringify!($name),
+                    if even_height {
+                        "width and height"
+                    } else {
+                        "width"
+                    }
+                )));
             }
-            // SAFETY: `data` is owned for the call, keeping the buffer alive; the slice is
+            // `data` is owned for the call, keeping the buffer alive; the slice is
             // only read inside `py.detach` while `arr` remains valid.
-            let src = unsafe { std::slice::from_raw_parts(arr.data(), arr.len()) };
-            let (mut dst, out) =
-                unsafe { alloc_output_pyarray::<3>(py, ImageSize { width, height })? };
+            let src = crate::pyutils::c_slice(arr, "YUV buffer")?;
+            // SAFETY: with the even-size checks above (repeated by the kernel)
+            // the decoder writes every output pixel; on any kernel error the
+            // array is dropped without reaching Python.
+            let (mut dst, out) = unsafe {
+                alloc_output_pyarray_t::<u8, 3, UNINIT>(py, ImageSize { width, height })?
+            };
             // Length validation happens inside the kernel (returns InvalidImageSize).
             py.detach(|| $func(src, &mut dst)).map_err(to_pyerr)?;
             Ok(out)
@@ -401,36 +435,43 @@ macro_rules! py_video_decode {
 py_video_decode!(
     rgb_from_yuyv,
     color::rgb_from_yuyv,
+    false,
     "Decode packed 4:2:2 YUYV to RGB."
 );
 py_video_decode!(
     rgb_from_uyvy,
     color::rgb_from_uyvy,
+    false,
     "Decode packed 4:2:2 UYVY to RGB."
 );
 py_video_decode!(
     rgb_from_yvyu,
     color::rgb_from_yvyu,
+    false,
     "Decode packed 4:2:2 YVYU to RGB."
 );
 py_video_decode!(
     rgb_from_nv12,
     color::rgb_from_nv12,
+    true,
     "Decode planar 4:2:0 NV12 to RGB."
 );
 py_video_decode!(
     rgb_from_nv21,
     color::rgb_from_nv21,
+    true,
     "Decode planar 4:2:0 NV21 to RGB."
 );
 py_video_decode!(
     rgb_from_i420,
     color::rgb_from_i420,
+    true,
     "Decode planar 4:2:0 I420 to RGB."
 );
 py_video_decode!(
     rgb_from_yv12,
     color::rgb_from_yv12,
+    true,
     "Decode planar 4:2:0 YV12 to RGB."
 );
 
@@ -442,9 +483,13 @@ macro_rules! py_video_encode {
             let src = unsafe { numpy_as_image::<3>(py, &image)? };
             let (w, h) = (src.width(), src.height());
             let len = $len_expr(w, h);
+            // SAFETY: the encoder writes every one of the `len` bytes (it
+            // rejects any size it cannot fill exactly); on error the array is
+            // dropped without reaching Python.
             let out = unsafe { PyArray::<u8, _>::new(py, [len], false) };
-            // SAFETY: freshly-allocated 1-D uint8 array, not yet shared.
-            let out_slice = unsafe { std::slice::from_raw_parts_mut(out.data(), len) };
+            // SAFETY: freshly-allocated, contiguous 1-D uint8 array of `len`
+            // elements, not yet shared with Python.
+            let out_slice = unsafe { out.as_slice_mut() }.map_err(to_pyerr)?;
             py.detach(|| $func(&src, out_slice)).map_err(to_pyerr)?;
             Ok(out.unbind())
         }

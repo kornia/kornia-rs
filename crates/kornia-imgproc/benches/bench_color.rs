@@ -7,14 +7,21 @@ fn gray_vanilla_get_unchecked(
     src: &Image<f32, 3>,
     dst: &mut Image<f32, 1>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    src.check_layout()?;
     let data = dst.as_slice_mut();
     let (cols, _rows) = (src.cols(), src.rows());
 
     for y in 0..src.rows() {
         for x in 0..src.cols() {
-            let r = src.get_unchecked([y, x, 0]);
-            let g = src.get_unchecked([y, x, 1]);
-            let b = src.get_unchecked([y, x, 2]);
+            // SAFETY: `y < rows`, `x < cols`, channels 0..3 < C, and the layout of
+            // `src` was validated by `check_layout` above.
+            let (r, g, b) = unsafe {
+                (
+                    src.get_unchecked([y, x, 0]),
+                    src.get_unchecked([y, x, 1]),
+                    src.get_unchecked([y, x, 2]),
+                )
+            };
             let gray_pixel = (76. * r + 150. * g + 29. * b) / 255.;
             data[y * cols + x] = gray_pixel;
         }

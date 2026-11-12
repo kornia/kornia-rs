@@ -10,6 +10,10 @@ on:
       - "examples/**"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "pixi.toml"
+      - ".cargo/config.toml"
+      - "scripts/cuda-oxide/**"
+      - ".github/actions/cuda-oxide-ptx/**"
       - ".github/workflows/rust_lint.yml"
   pull_request:
     branches:
@@ -19,7 +23,14 @@ on:
       - "examples/**"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "pixi.toml"
+      - ".cargo/config.toml"
+      - "scripts/cuda-oxide/**"
+      - ".github/actions/cuda-oxide-ptx/**"
       - ".github/workflows/rust_lint.yml"
+
+permissions:
+  contents: read
 
 jobs:
   lint:
@@ -40,13 +51,13 @@ jobs:
             needs-sccache: true
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: ./.github/actions/setup-rust-cache
         with:
           with-sccache: ${{ matrix.needs-sccache }}
 
-      - uses: prefix-dev/setup-pixi@v0.10.0
+      - uses: prefix-dev/setup-pixi@a09b6247153796b190642a2b53fac4241043cf6f # v0.10.0
         with:
           pixi-version: v0.73.0
           cache: true
@@ -57,36 +68,47 @@ jobs:
       - name: Show sccache stats
         if: always() && matrix.needs-sccache
         run: |
-          sccache --show-stats 2>&1 || echo "::warning::sccache stats unavailable - server may have exited"
+          "$SCCACHE_PATH" --show-stats 2>&1 || echo "::warning::sccache stats unavailable - server may have exited"
 
   cuda-feature-check:
     name: Check - CUDA features
     # Compile + clippy coverage for the CUDA-gated code on a GPU-less runner.
     # kornia's cudarc is built with `fallback-dynamic-loading`: libcuda.so is
-    # dlopen'd at RUNTIME only, so nothing here needs a GPU or the CUDA toolkit.
+    # dlopen'd at RUNTIME only, so nothing here needs a GPU. `cuda` reads the
+    # prebuilt kornia-oxide-kernels PTX, built here with cuda-oxide.
     # Kernel-execution tests run on real hardware (Jetson) outside CI.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          # Builds third-party code (the cuda-oxide backend) and never pushes.
+          persist-credentials: false
+
+      - name: No committed PTX/cubin
+        run: test -z "$(git ls-files ':(icase)*.ptx' ':(icase)*.cubin')"
 
       # Pinned to match the toolchain pixi provides for the `Clippy` job above
       # (`rust = ">=1.76"` currently resolves to 1.96). Tracking `stable` meant a
       # compiler release could introduce a lint and fail this job on every open
       # PR without any source change - Rust 1.98's `chunks_exact_to_as_chunks`
       # did exactly that. Bump this deliberately, together with pixi's rust pin.
-      - uses: dtolnay/rust-toolchain@1.96.0
+      - uses: dtolnay/rust-toolchain@ebb3d1676050bfd0971c36c1e215b5751473994d # 1.96.0
         with:
           components: clippy
+
+      - uses: ./.github/actions/cuda-oxide-ptx
 
       - name: Clippy CUDA-gated crates (deny warnings)
         # `--tests` also compiles + lints the `#[cfg(test)]` cuda code. The tests
         # need a GPU to RUN (Jetson, outside CI), but compiling them here catches
         # API/signature rot in the device paths on a GPU-less runner.
         run: |
+          cargo clippy --all-targets -p kornia-oxide-kernels --features ptx -- -D warnings
           cargo clippy --tests -p kornia-tensor --features cuda -- -D warnings
           cargo clippy --tests -p kornia-image --features cuda -- -D warnings
-          cargo clippy --tests -p kornia-imgproc --features cuda -- -D warnings
+          cargo clippy --all-targets -p kornia-imgproc --features cuda -- -D warnings
           cargo clippy --tests -p kornia-3d --features cuda -- -D warnings
+          cargo clippy -p cuda-fusion -p cuda-camera-sift -p cuda-camera-preprocess --features cuda -- -D warnings
 
   cross-platform-check-macos:
     name: Check - macOS
@@ -96,9 +118,9 @@ jobs:
     # promotes Tahoe to a stable runner and conda-forge catches up, revisit this pin.
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: prefix-dev/setup-pixi@v0.10.0
+      - uses: prefix-dev/setup-pixi@a09b6247153796b190642a2b53fac4241043cf6f # v0.10.0
         with:
           pixi-version: v0.73.0
           cache: true
@@ -117,9 +139,9 @@ jobs:
     name: Check - Windows
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
 
       - name: Run cargo check (core crates)
         run: cargo check

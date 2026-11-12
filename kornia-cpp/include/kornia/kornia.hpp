@@ -27,7 +27,9 @@ namespace kornia {
 
 /// @brief Get kornia-cpp library version string
 ///
-/// @return Version string in format "MAJOR.MINOR.PATCH" (e.g., "0.1.0")
+/// @return Version string "MAJOR.MINOR.PATCH[-PRERELEASE]" (e.g., "0.1.0", "0.1.16-rc.1").
+///         For numeric checks use the KORNIA_VERSION_MAJOR/MINOR/PATCH and
+///         KORNIA_VERSION_IS_PRERELEASE macros instead of parsing this string.
 ///
 /// The version is automatically generated from Cargo.toml during build.
 inline const char* version() {

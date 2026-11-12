@@ -7,11 +7,219 @@ changed and why it matters, not a raw commit dump.
 Pre-releases (`-rc.N`) are cut before a stable tag so the community can try
 changes early: `cargo add kornia-imgproc@0.1.15-rc.1` or `pip install --pre kornia-rs`.
 
-<!-- When cutting a release, move the curated items from [Unreleased] into a new
-     dated section and reset [Unreleased]. Reference the diff range and prior tag
-     so the changelog stays navigable (see the "Full changelog" links below). -->
+<!-- Do not edit [Unreleased] in feature PRs: add changelog.d/<PR>.<type>.md instead
+     (see changelog.d/README.md). Releases assemble it with scripts/changelog.py build
+     and add the compare link to the prior tag (see the "Full changelog" links below). -->
 
 ## [Unreleased]
+
+**Breaking: `kornia_3d::pnp::solve_pnp_ransac` rejects an invalid `confidence`** (#1169).
+`RansacParams::confidence` must be finite and strictly between 0 and 1. Any other value now returns
+the new `PnPRansacError::InvalidConfidence { confidence }`, as the two-view solvers return
+`TwoViewError::InvalidConfidence`. Before, NaN and values of one or more silently behaved like a
+confidence of 1 − 10⁻¹², and zero or less never tightened the iteration cap. `PnPRansacError` is not `#[non_exhaustive]`, so
+exhaustive `match`es need a new arm. Python `kornia_rs.k3d.solve_pnp_ransac` likewise raises
+`ValueError` for such a confidence, as `kornia_rs.ransac.fundamental` does.
+
+Also:
+- PnP RANSAC stops after the draw that makes every correspondence an inlier; it used to keep
+  drawing up to `max_iterations`. The returned pose and inliers are unchanged.
+- The generic driver (`kornia_3d::ransac::run`, `run_with_rng`, `run_parallel`) no longer stops
+  after one draw at full support when `RansacConfig::confidence` is NaN; it draws all `max_iters`,
+  as the field's docs state for any confidence outside (0, 1).
+- Added `kornia_3d::ransac::is_valid_confidence`, the check the RANSAC entry points and the Python
+  bindings now share.
+**Weighted Umeyama alignment (`kornia-algebra`).** `umeyama_f64` now takes an
+optional per-point `weights` slice: `None` gives the unweighted Umeyama/Kabsch
+solution, while `Some(&weights)` minimizes `Σ wᵢ ‖dstᵢ − (s·R·srcᵢ + t)‖²` for
+robust similarity fitting. Weights need not be normalized (only their relative
+values matter), and a weight of `0` ignores that point. **Breaking:**
+`umeyama_f64`'s signature changed from `(src, dst, with_scale)` to
+`(src, dst, weights, with_scale)`, and its unweighted result is no longer
+bit-identical to previous releases — it now uses the crate's own `svd3_f64`, and
+agrees to within floating-point rounding.
+`UmeyamaError` gained the variants `MismatchedWeightsLength`, `InvalidWeights`,
+and `EmptyInput`, so exhaustive downstream `match`es need new arms.
+
+**Breaking: fundamental-matrix RANSAC now samples seven points by default.** A seven-point
+hypothesis needs one correspondence fewer than an eight-point one, so RANSAC reaches the same
+confidence with fewer draws; every real root of a sample (up to three) is scored. Estimated
+matrices and inlier masks change, even with a fixed seed. The eight-point path remains available:
+
+| Entry point | Default now | Previous behaviour |
+|---|---|---|
+| `kornia_3d::pose::ransac_fundamental` | seven-point; accepts 7+ matches | `ransac_fundamental_8point` |
+| `kornia_3d::ransac::estimators::FundamentalEstimator` | seven-point (`SAMPLE_SIZE = 7`) | `Fundamental8PointEstimator` |
+| Python `kornia_rs.ransac.fundamental` | `solver="7point"` | `solver="8point"` |
+| Python `kornia_rs.k3d.find_fundamental(method=8)` | `solver="7point"` | `solver="8point"` |
+
+`TwoViewEstimator` keeps `Fundamental8ptSolver` as its default; opt in to seven-point with
+`.epipolar_solver(Fundamental7ptSolver::default())`.
+
+Seven-point RANSAC also applies the oriented epipolar constraint, as DEGENSAC does: a minimal
+solution that orients its own seven correspondences inconsistently cannot come from points in
+front of both cameras and is skipped before scoring. On 1000 St Peter's Square pairs this made
+seven-point RANSAC about 1.3× faster at a cost of about 0.01 pose mAA.
+
+Also breaking for Rust code:
+- `pose::RansacParams` has a new public field, `confidence: Option<f64>`, which overrides the
+  adaptive-stopping target. `None` keeps the previous targets (0.9999 for fundamental and
+  essential, 0.99 for homography). Struct literals that name every field must add it or end with
+  `..Default::default()`.
+- New error variants: `TwoViewError::InvalidConfidence { confidence }` for a confidence outside
+  (0, 1), and `FundamentalError::DegenerateConfiguration`, returned by `fundamental_7point` and by
+  `fundamental_8point` when exactly eight matches are rank-deficient or when a larger set is
+  repeated, collinear or otherwise underdetermined. Exhaustive `match`es need a new arm.
+- A `ransac::RansacConfig::confidence` of one or more now disables adaptive stopping, so
+  `ransac::run` draws all `max_iters` samples; it was clamped just below one before.
+
+Also breaking for Python: `kornia_rs.ransac.fundamental`, `.essential` and `.homography` raise
+`ValueError` for a confidence that is not finite and strictly between 0 and 1, as
+`kornia_rs.k3d.find_fundamental` does; one or more was clamped just below one before.
+
+Fixed:
+- `fundamental_8point` with more than eight correspondences did not reliably return the
+  least-squares solution: 9–64 matches used only eight of the constraints, and larger sets relied
+  on three fixed inverse iterations that need a large eigengap. Every set above eight now uses the
+  full design matrix and an exact symmetric eigensolver, which affects local-optimization and
+  final refits; results for those inputs change.
+- Adaptive stopping uses the exact probability of drawing an all-inlier sample without
+  replacement instead of `inlier_ratio^k`, so runs can take slightly more iterations.
+
+Added:
+- `kornia_3d::pose::fundamental_7point` minimal solver, and `Fundamental7ptSolver` for
+  `TwoViewEstimator`.
+- Opt-in fused threshold scoring for custom generic-driver components:
+  `Estimator::threshold_inliers`, `Consensus::threshold` and `ThresholdInlierResult`. The default
+  implementations keep the existing scoring path.
+
+**Sparse stereo matching in `kornia-3d`** (`kornia_3d::stereo::StereoMatcher`), the step after
+`StereoRectifier`: per-left-keypoint disparity and metric depth for a rectified pair, with a CUDA
+twin behind the `cuda` feature.
+- ORB-SLAM3's `ComputeStereoMatches`, generalised over the descriptor: binary (Hamming, e.g. ORB)
+  or `f32` (dot product, e.g. XFeat). Optional pyramid octaves with the per-octave row band and
+  ±1 octave gate; centred-SAD sub-pixel refinement; median outlier reject.
+- Sub-pixel fit defaults to `SubPixelFit::Equiangular`, which cut the mean disparity error from
+  0.065 to 0.042 px against ORB-SLAM3's parabola on a synthetic pair; `Parabola` is kept for parity.
+- The right search window is bounds-checked on both sides (ORB-SLAM3 checks one, which a detector
+  firing near the image border turns into an out-of-bounds read).
+- The median reject keeps zero-SAD matches; ORB-SLAM3's `sad >= 2.1 * median` drops every match
+  when the median is 0 (byte-identical patches). The octave gate applies whenever either side
+  carries octaves.
+- `StereoMatcher::to_cuda` → `CudaStereoMatcher::match_device`: device keypoints in, device
+  matches out, no host sync; the keypoint count may live on the device. Output is bit-identical to
+  the CPU path (tested), including the median reject.
+- 752x480, 2048 keypoints, Orin Nano MAXN: CUDA 287 µs (binary) / 410 µs (f32); CPU 3.0 / 3.8 ms on
+  6 threads, 10.5 / 13.8 ms on one. `cargo bench -p kornia-3d --bench bench_stereo_match --features cuda`.
+
+**`kornia-io` `VideoWriter::close` no longer hangs waiting for end-of-stream, and reports pipeline
+errors.** It set the pipeline to null before end-of-stream reached the file, so the end-of-stream
+message it then waited for was never posted and `close` never returned. It now waits for
+end-of-stream first (for at most 30 s), then checks what the pipeline posted while stopping, so
+`Ok` means the file was finished. A file sink stuck inside a blocking write (e.g. a pipe nobody
+reads) can still block stopping the pipeline; GStreamer cannot interrupt that. Behaviour changes:
+- `write` and `close` return `StreamCaptureError::GStreamerError` once the pipeline has failed
+  (e.g. caps the encoder cannot accept); `write` used to keep queueing frames in memory and
+  `close` returned `Ok`, leaving an empty file. The error now includes the failing element and
+  GStreamer's debug details (e.g. `not-negotiated`).
+- `write` and `close` before `start`, and a second `close`, return
+  `StreamCaptureError::PipelineNotRunning`. An early `close` used to leave the writer unable to
+  write after `start`.
+- A failed `start` returns the pipeline's own error (e.g. `Could not open file`) instead of a bare
+  state-change error, and the writer can be started again afterwards.
+- `push_buffer` failures are `StreamCaptureError::GstreamerFlowError` (was `InvalidConfig`).
+- `VideoWriter::new` rejects sizes the H.264/MP4 pipeline cannot encode (below 16 or odd) with
+  `StreamCaptureError::InvalidConfig`.
+- `start` no longer spawns a bus thread; calling it twice before `close` is harmless.
+  `StreamCaptureError::JoinThreadError` is no longer returned.
+
+**`kornia-io` GStreamer frames are no longer sheared at widths like 854** (#1160). When `width * 3`
+is not a multiple of 4 (854, 426, 1366, ...), GStreamer adds 1–3 padding bytes per RGB row;
+`StreamCapture::grab_rgb8` and `VideoReader::grab_rgb8` now read the row stride and offset from
+the buffer's `VideoMeta` or the caps' default layout instead of assuming tightly packed rows.
+
+Changed:
+- `grab_rgb8` returns `StreamCaptureError::InvalidImageFormat` for pipelines that do not produce
+  `RGB` frames (`BGR`/`RGBx` frames were returned as `Ok` with wrong pixels, `GRAY8` and encoded
+  frames failed with `BufferSizeMismatch`), and for zero-sized caps, negative strides or a
+  `VideoMeta` that does not match the caps.
+- For padded widths `grab_rgb8` returns an owned, writable image; tightly packed frames are still
+  borrowed zero-copy and read-only. Call `.clone()` for a writable copy.
+- A missing `framerate` in the caps no longer ends a `StreamCapture` stream silently; frames are
+  delivered and `get_fps()` reports `0.0`.
+
+## [0.2.0] — 2026-09-26
+
+**0.2.0 is 0.1.15 re-released under the right version.** 0.1.15 shipped breaking API changes as a
+patch-level bump, so every crate depending on `kornia-* = "0.1"` picked them up on its next
+`cargo update` and stopped compiling (Copper among them). 0.1.15 is yanked on crates.io; `^0.1`
+now resolves to 0.1.14 again. To get the 0.1.15 work, depend on `"0.2"`.
+
+The breaking changes, all described under 0.1.15 and its release candidates below:
+- `Image`/`Tensor` lost the compile-time allocator type parameter:
+  `Image<f32, 3, CpuAllocator>` → `Image<f32, 3>`.
+- `Tensor::get_unchecked` / `TensorView::get_unchecked` are `unsafe fn`; `permute_axes`,
+  `as_contiguous`, `TensorStorage::layout` and the GStreamer `*_pipeline_description` helpers return
+  `Result`; several error enums gained variants.
+- f32 `resize_native` samples on the half-pixel grid (pixel values change); f32 `remap` zero-fills
+  out-of-range samples.
+- `StereoRectifier::rectify_left/right` are into-style; `left_map()/right_map()` became
+  `left_maps()/right_maps()`.
+- `ReconstructionConfig` is split out of `CalibConfig`.
+
+Also since 0.1.15:
+
+- **C++:** `KORNIA_VERSION_PATCH` in the generated `kornia/version.hpp` is now always an integer.
+  On a pre-release it used to expand to `16-rc`, which broke any C++ code using it as a number.
+  The pre-release tag is exposed separately as `KORNIA_VERSION_PRERELEASE` (`"rc.1"`, empty on a
+  release), with `KORNIA_VERSION_IS_PRERELEASE` (0/1) for `#if` checks.
+
+**Full changelog:** https://github.com/kornia/kornia-rs/compare/v0.1.15...v0.2.0
+
+## [0.1.15] — 2026-09-25
+
+First stable 0.1.15. Everything in the `0.1.15-rc.*` entries below ships here,
+plus the following changes since rc.5.
+
+**Security hardening across the workspace.** A repo-wide audit fixed
+memory-safety bugs that untrusted input could reach, each with a regression
+test; upgrading is recommended for anyone decoding untrusted images or files.
+- AprilTag detection: heap overflow in the RLE run buffer on images with
+  1-pixel stripes.
+- `kornia-bow`: out-of-bounds read and unbounded allocation from crafted
+  vocabulary files; cyclic vocabularies no longer hang traversal.
+- `kornia-tensor` / `kornia-image`: shape and size arithmetic is checked
+  everywhere; serde/bincode and Arrow imports validate layouts;
+  `permute_axes` rejects non-permutations; `sum_elements` no longer writes out
+  of bounds on strided tensors.
+- `kornia-imgproc`: out-of-bounds reads/writes in `normalize_rgb_u8`,
+  `warp_affine_u8`/`warp_perspective_u8` (CPU and the CUDA affine kernel),
+  f32 `remap`/`interpolate_pixel`, and the nearest/bicubic resize row
+  kernels; a data race in Canny's parallel hysteresis; panics on empty images
+  and oversized kernels.
+- `kornia-io`: decoders cap declared images at 2^30 pixels and allocate
+  fallibly (decompression bombs no longer abort the process); PNG/TIFF reject
+  mismatched bit depth / channel counts; GStreamer URLs, device paths and file
+  paths can no longer inject pipeline elements (file locations are set as
+  element properties, so Windows paths work); V4L2 never re-queues a buffer a
+  live frame still references.
+- Python bindings: non-contiguous or misaligned numpy arrays, size overflow in
+  `resize_normalize_to_tensor`, uninitialised YUV decoder output, read-only or
+  aliased `out=` arrays, and a DLPack import leak are fixed.
+- C++ bindings: overflow-checked dimensions and null-pointer checks at the FFI
+  boundary.
+- CI and supply chain: actions pinned to commit SHAs, read-only default
+  workflow token, release jobs gated behind `pypi` / `crates-io` environments,
+  a weekly `cargo audit` job, and `SECURITY.md` with a private reporting
+  channel.
+
+**Breaking (security-related):** `Tensor::get_unchecked` /
+`TensorView::get_unchecked` are now `unsafe fn`; `permute_axes`,
+`as_contiguous` and `TensorStorage::layout` return `Result`; `from_raw_parts`
+and `TryFrom<Tensor3> for Image` reject mismatched layouts; Arrow imports are
+read-only; the GStreamer `*_pipeline_description` helpers return `Result`;
+several error enums gained variants; f32 `remap` zero-fills out-of-range
+samples.
 
 **Stereo rectification runs on CUDA, byte-exact with the CPU path.**
 `StereoRectifier` now resamples through the residency-dispatched `remap_u8`, and
@@ -28,6 +236,43 @@ both), and blending is Q10 fixed point.
 `(&self, src, &mut dst) -> Result<(), StereoError>` — matching imgproc's into-style convention;
 `left_map()/right_map()` became `left_maps()/right_maps()` returning the x/y
 planes `remap_u8` consumes directly.
+
+**CUDA and NEON SIFT, bit-exact with `cv::SIFT`.** Scale space, detection,
+orientation and descriptors reproduce OpenCV bit-for-bit on CPU (NEON) and
+CUDA, with deterministic keypoint and matcher output order; the vertical blur
+is register-tiled and descriptor atomics are warp-aggregated.
+
+**`kornia-calib`: multi-camera extrinsic calibration.** New crate calibrating a
+rig from an AprilTag grid plus optional natural-feature tracks via bundle
+adjustment, now publishable (planar pose moved to
+`kornia_3d::pose::planar`). It returns the full reconstruction, bundle-adjusts
+during incremental growth, picks the bootstrap pair on geometry, filters
+outlier observations, and supports depth/orientation/motion priors and a
+`sequential()` preset for video capture. **Breaking:**
+`ReconstructionConfig` is split out of `CalibConfig`.
+
+**Bundle adjustment and pose.** The Schur BA gains intrinsics (radial term,
+free focal and k1), a block-sparse reduced camera system, orientation and
+constant-velocity priors, and per-phase instrumentation; PnP refinement
+supports robust (Huber) losses, and RANSAC gains SPRT early rejection
+(`use_sprt` in Python). `Sim3::exp`/`log` are now true inverses.
+
+**CUDA remap and new filters.** `remap` (f32 and u8) dispatches to CUDA when
+images and maps are device-resident; Laplacian and integral-image filters run
+on CPU and GPU; OpenCV parity checks now cover resize, warp-affine and
+morphology on CUDA.
+
+**Tensors and memory.** Element-wise and reduction ops dispatch on
+`MemoryDomain` (CPU/GPU); `UnifiedResource` / `CudaUnifiedAllocator` add CUDA
+managed memory and `PinnedWcAllocator` write-combined pinned host memory for
+CPU→GPU streaming; tensors and images can borrow host buffers zero-copy.
+
+**I/O.** RVL gains its run-length phase (5.7× instead of 3.0× compression on
+live depth), a temporal-delta variant (`RVLD`) and a slice encoder; zero-copy
+slice encoders for turbojpeg RGB and gray16 PNG.
+
+**Python.** Windows ARM64 wheels; histogram, colour-check and pyramid APIs
+filled in.
 
 ## [0.1.15-rc.5] — 2026-07-19 (pre-release)
 
@@ -472,6 +717,7 @@ linear layer / kornia-nn, kornia-apriltag, zero-copy gstreamer images. See the
 [GitHub release](https://github.com/kornia/kornia-rs/releases/tag/v0.1.10) for
 the full per-PR list.
 
+[0.1.15]: https://github.com/kornia/kornia-rs/compare/v0.1.15-rc.5...v0.1.15
 [0.1.15-rc.5]: https://github.com/kornia/kornia-rs/compare/v0.1.15-rc.4...v0.1.15-rc.5
 [0.1.15-rc.4]: https://github.com/kornia/kornia-rs/compare/v0.1.15-rc.3...v0.1.15-rc.4
 [0.1.15-rc.3]: https://github.com/kornia/kornia-rs/compare/v0.1.15-rc.2...v0.1.15-rc.3

@@ -1,11 +1,11 @@
-use crate::error::IoError;
+use crate::{error::IoError, limits::check_image_dimensions};
 use kornia_image::{
     color_spaces::{Gray16, Gray8, Grayf32, Rgb16, Rgb8, Rgbf32},
     Image, ImageLayout, ImageSize, PixelFormat,
 };
 use std::{fs, io::Cursor, path::Path};
 use tiff::{
-    decoder::DecodingResult,
+    decoder::{DecodingBuffer, DecodingResult, DecodingSampleType},
     encoder::{colortype, TiffEncoder},
 };
 
@@ -183,8 +183,10 @@ fn read_image_tiff_impl(
     let tiff_data = fs::File::open(file_path)?;
     let mut decoder = tiff::decoder::Decoder::new(tiff_data)?;
 
-    let result = decoder.read_image()?;
+    // Reject decompression bombs before the decoder allocates the pixel buffer.
     let (width, height) = decoder.dimensions()?;
+    check_image_dimensions(width as usize, height as usize)?;
+    let result = decoder.read_image()?;
 
     Ok((result, [width as usize, height as usize]))
 }
@@ -238,6 +240,7 @@ pub fn decode_image_tiff_layout(src: &[u8]) -> Result<ImageLayout, IoError> {
         width: width as usize,
         height: height as usize,
     };
+    check_image_dimensions(size.width, size.height)?;
 
     let colortype = decoder.colortype()?;
     let num_channels =
@@ -258,10 +261,9 @@ pub fn decode_image_tiff_layout(src: &[u8]) -> Result<ImageLayout, IoError> {
 /// # Arguments
 ///
 /// - `src` - Raw bytes of the TIFF file
-/// - `dst` - A mutabl+e reference to your `Rgb8` image
+/// - `dst` - A mutable reference to your `Rgb8` image
 pub fn decode_image_tiff_rgb8(src: &[u8], dst: &mut Rgb8) -> Result<(), IoError> {
-    let size = dst.size();
-    decode_tiff_impl_u8(src, dst.as_slice_mut(), size, 3)
+    decode_tiff_impl(src, &mut dst.0)
 }
 
 /// Decodes a TIFF image with as grayscale (Gray8) from Raw Bytes.
@@ -271,8 +273,7 @@ pub fn decode_image_tiff_rgb8(src: &[u8], dst: &mut Rgb8) -> Result<(), IoError>
 /// - `src` - Raw bytes of the TIFF file
 /// - `dst` - A mutable reference to your `Gray8` image
 pub fn decode_image_tiff_mono8(src: &[u8], dst: &mut Gray8) -> Result<(), IoError> {
-    let size = dst.size();
-    decode_tiff_impl_u8(src, dst.as_slice_mut(), size, 1)
+    decode_tiff_impl(src, &mut dst.0)
 }
 
 /// Decodes a TIFF (16 Bit) image with a three channel (rgb16) from Raw Bytes.
@@ -282,8 +283,7 @@ pub fn decode_image_tiff_mono8(src: &[u8], dst: &mut Gray8) -> Result<(), IoErro
 /// - `src` - Raw bytes of the TIFF file
 /// - `dst` - A mutable reference to your `Rgb16` image
 pub fn decode_image_tiff_rgb16(src: &[u8], dst: &mut Rgb16) -> Result<(), IoError> {
-    let size = dst.size();
-    decode_tiff_impl_u16(src, dst.as_slice_mut(), size, 3)
+    decode_tiff_impl(src, &mut dst.0)
 }
 
 /// Decodes a TIFF (16 Bit) image as grayscale (Gray16) from Raw Bytes.
@@ -293,8 +293,7 @@ pub fn decode_image_tiff_rgb16(src: &[u8], dst: &mut Rgb16) -> Result<(), IoErro
 /// - `src` - Raw bytes of the TIFF file
 /// - `dst` - A mutable reference to your `Gray16` image
 pub fn decode_image_tiff_mono16(src: &[u8], dst: &mut Gray16) -> Result<(), IoError> {
-    let size = dst.size();
-    decode_tiff_impl_u16(src, dst.as_slice_mut(), size, 1)
+    decode_tiff_impl(src, &mut dst.0)
 }
 
 /// Decodes a TIFF (32 Bit Float) image as grayscale (Grayf32) from Raw Bytes.
@@ -304,8 +303,7 @@ pub fn decode_image_tiff_mono16(src: &[u8], dst: &mut Gray16) -> Result<(), IoEr
 /// - `src` - Raw bytes of the TIFF file
 /// - `dst` - A mutable reference to your `Grayf32` image
 pub fn decode_image_tiff_mono32f(src: &[u8], dst: &mut Grayf32) -> Result<(), IoError> {
-    let size = dst.size();
-    decode_tiff_impl_f32(src, dst.as_slice_mut(), size, 1)
+    decode_tiff_impl(src, &mut dst.0)
 }
 
 /// Decodes a TIFF (32 Bit Float) image with a three channel (rgbf32) from Raw Bytes.
@@ -315,105 +313,76 @@ pub fn decode_image_tiff_mono32f(src: &[u8], dst: &mut Grayf32) -> Result<(), Io
 /// - `src` - Raw bytes of the TIFF file
 /// - `dst` - A mutable reference to your `Rgbf32` image
 pub fn decode_image_tiff_rgb32f(src: &[u8], dst: &mut Rgbf32) -> Result<(), IoError> {
-    let size = dst.size();
-    decode_tiff_impl_f32(src, dst.as_slice_mut(), size, 3)
+    decode_tiff_impl(src, &mut dst.0)
 }
 
-fn decode_tiff_impl_u8(
-    src: &[u8],
-    dst: &mut [u8],
-    image_size: ImageSize,
+// Verifies that the TIFF's channel count and sample type match what the caller requested, so
+// that e.g. a grayscale or integer TIFF is not silently reinterpreted as RGB or float data.
+fn check_tiff_format<R: std::io::Read + std::io::Seek>(
+    decoder: &mut tiff::decoder::Decoder<R>,
     expected_channels: u8,
+    expected_type: DecodingSampleType,
 ) -> Result<(), IoError> {
-    let cursor = Cursor::new(src);
-    let mut decoder = tiff::decoder::Decoder::new(cursor)?;
-
-    let (width, height) = decoder.dimensions()?;
-    if width as usize != image_size.width || height as usize != image_size.height {
-        return Err(IoError::DecodeMismatchResolution(
-            height as usize,
-            width as usize,
-            image_size.height,
-            image_size.width,
-        ));
+    let colortype = decoder.colortype()?;
+    let channels = extract_channels_from_tiff_colortype(&colortype);
+    let sample_type = decoder.image_buffer_layout()?.sample_type;
+    if channels != Some(expected_channels) || sample_type != Some(expected_type) {
+        return Err(IoError::FormatMismatch(format!(
+            "TIFF is {colortype:?} ({sample_type:?}), expected {expected_channels} channel(s) of {expected_type:?}"
+        )));
     }
-
-    let expected_len = image_size.width * image_size.height * expected_channels as usize;
-    if dst.len() != expected_len {
-        return Err(IoError::InvalidBufferSize(dst.len(), expected_len));
-    }
-
-    decoder.read_image_bytes(dst)?;
     Ok(())
 }
 
-fn decode_tiff_impl_u16(
-    src: &[u8],
-    dst: &mut [u16],
-    image_size: ImageSize,
-    expected_channels: u8,
-) -> Result<(), IoError> {
-    let cursor = Cursor::new(src);
-    let mut decoder = tiff::decoder::Decoder::new(cursor)?;
-
-    let (width, height) = decoder.dimensions()?;
-    if width as usize != image_size.width || height as usize != image_size.height {
-        return Err(IoError::DecodeMismatchResolution(
-            height as usize,
-            width as usize,
-            image_size.height,
-            image_size.width,
-        ));
-    }
-
-    let expected_len = image_size.width * image_size.height * expected_channels as usize;
-    if dst.len() != expected_len {
-        return Err(IoError::InvalidBufferSize(dst.len(), expected_len));
-    }
-
-    let bytes_needed = expected_len * 2;
-    let mut temp_buffer = vec![0u8; bytes_needed];
-    decoder.read_image_bytes(&mut temp_buffer)?;
-
-    for (i, chunk) in temp_buffer.chunks_exact(2).enumerate() {
-        dst[i] = u16::from_ne_bytes([chunk[0], chunk[1]]);
-    }
-
-    Ok(())
+// A TIFF sample type that can be decoded directly into a typed pixel buffer.
+trait TiffSample: Sized {
+    const SAMPLE_TYPE: DecodingSampleType;
+    fn as_buffer(buf: &mut [Self]) -> DecodingBuffer<'_>;
 }
 
-fn decode_tiff_impl_f32(
+macro_rules! impl_tiff_sample {
+    ($ty:ty, $variant:ident) => {
+        impl TiffSample for $ty {
+            const SAMPLE_TYPE: DecodingSampleType = DecodingSampleType::$variant;
+            fn as_buffer(buf: &mut [Self]) -> DecodingBuffer<'_> {
+                DecodingBuffer::$variant(buf)
+            }
+        }
+    };
+}
+
+impl_tiff_sample!(u8, U8);
+impl_tiff_sample!(u16, U16);
+impl_tiff_sample!(f32, F32);
+
+// Decodes a TIFF into `dst`, checking its size, channel count and sample type first.
+// The typed samples are exposed to tiff as native-endian bytes (exactly what its own
+// `read_image` does), so no temporary byte buffer or per-sample conversion is needed.
+fn decode_tiff_impl<T: TiffSample, const C: usize>(
     src: &[u8],
-    dst: &mut [f32],
-    image_size: ImageSize,
-    expected_channels: u8,
+    dst: &mut Image<T, C>,
 ) -> Result<(), IoError> {
-    let cursor = Cursor::new(src);
-    let mut decoder = tiff::decoder::Decoder::new(cursor)?;
+    let mut decoder = tiff::decoder::Decoder::new(Cursor::new(src))?;
 
     let (width, height) = decoder.dimensions()?;
-    if width as usize != image_size.width || height as usize != image_size.height {
+    if width as usize != dst.width() || height as usize != dst.height() {
         return Err(IoError::DecodeMismatchResolution(
             height as usize,
             width as usize,
-            image_size.height,
-            image_size.width,
+            dst.height(),
+            dst.width(),
         ));
     }
 
-    let expected_len = image_size.width * image_size.height * expected_channels as usize;
+    check_tiff_format(&mut decoder, C as u8, T::SAMPLE_TYPE)?;
+
+    let expected_len = dst.size().checked_len(C)?;
+    let dst = dst.as_slice_mut();
     if dst.len() != expected_len {
         return Err(IoError::InvalidBufferSize(dst.len(), expected_len));
     }
 
-    let bytes_needed = expected_len * 4;
-    let mut temp_buffer = vec![0u8; bytes_needed];
-    decoder.read_image_bytes(&mut temp_buffer)?;
-
-    for (i, chunk) in temp_buffer.chunks_exact(4).enumerate() {
-        dst[i] = f32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-    }
-
+    decoder.read_image_bytes(T::as_buffer(dst).as_bytes_mut())?;
     Ok(())
 }
 
@@ -592,6 +561,82 @@ mod tests {
     use super::*;
     use crate::error::IoError;
     use std::fs::{create_dir_all, read};
+
+    // A minimal little-endian TIFF whose header declares a 100000x100000 8-bit
+    // grayscale image backed by a single byte of pixel data.
+    fn tiff_bomb() -> Vec<u8> {
+        let entries: [(u16, u16, u32, u32); 7] = [
+            (256, 4, 1, 100_000), // ImageWidth (LONG)
+            (257, 4, 1, 100_000), // ImageLength (LONG)
+            (258, 3, 1, 8),       // BitsPerSample
+            (262, 3, 1, 1),       // PhotometricInterpretation = BlackIsZero
+            (273, 4, 1, 8),       // StripOffsets
+            (277, 3, 1, 1),       // SamplesPerPixel
+            (279, 4, 1, 1),       // StripByteCounts
+        ];
+        let ifd_offset = 16u32;
+        let mut b = Vec::new();
+        b.extend_from_slice(b"II");
+        b.extend_from_slice(&42u16.to_le_bytes());
+        b.extend_from_slice(&ifd_offset.to_le_bytes());
+        b.resize(ifd_offset as usize, 0);
+        b.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+        for (tag, ty, count, value) in entries {
+            b.extend_from_slice(&tag.to_le_bytes());
+            b.extend_from_slice(&ty.to_le_bytes());
+            b.extend_from_slice(&count.to_le_bytes());
+            if ty == 3 {
+                b.extend_from_slice(&(value as u16).to_le_bytes());
+                b.extend_from_slice(&[0, 0]);
+            } else {
+                b.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        b.extend_from_slice(&0u32.to_le_bytes());
+        b
+    }
+
+    #[test]
+    fn read_rejects_decompression_bomb_before_decoding() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("bomb.tiff");
+        std::fs::write(&path, tiff_bomb())?;
+        assert!(matches!(
+            read_image_tiff_mono8(&path),
+            Err(IoError::ImageTooLarge { .. })
+        ));
+        assert!(matches!(
+            decode_image_tiff_layout(&tiff_bomb()),
+            Err(IoError::ImageTooLarge { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn decode_rejects_mismatched_pixel_format() -> Result<(), Box<dyn std::error::Error>> {
+        let size = ImageSize {
+            width: 4,
+            height: 4,
+        };
+        let gray = Gray8::from_size_val(size, 200)?;
+        let mut encoded = Vec::new();
+        encode_image_tiff_mono8(&gray, &mut encoded)?;
+
+        let mut rgb = Rgb8::from_size_val(size, 0)?;
+        assert!(matches!(
+            decode_image_tiff_rgb8(&encoded, &mut rgb),
+            Err(IoError::FormatMismatch(_))
+        ));
+        let mut mono16 = Gray16::from_size_val(size, 0)?;
+        assert!(matches!(
+            decode_image_tiff_mono16(&encoded, &mut mono16),
+            Err(IoError::FormatMismatch(_))
+        ));
+        let mut back = Gray8::from_size_val(size, 0)?;
+        decode_image_tiff_mono8(&encoded, &mut back)?;
+        assert_eq!(back.as_slice(), gray.as_slice());
+        Ok(())
+    }
 
     #[test]
     fn synthetic_write_tiff_rgb8() -> Result<(), IoError> {

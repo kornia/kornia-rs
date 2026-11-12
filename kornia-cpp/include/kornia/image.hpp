@@ -3,6 +3,8 @@
 #include "kornia/detail/lib.rs.h"
 #include <cstddef>
 #include <cstdint>
+#include <limits>
+#include <stdexcept>
 #include <vector>
 
 // Check for C++20 std::span support
@@ -183,29 +185,42 @@ template <typename T, size_t C> class Image {
     /// @note The data is copied during construction. The caller retains ownership of the input
     /// data.
     /// @note explicit to avoid ambiguity with value constructor when passing 0/nullptr
+    /// @throws std::length_error if width * height * channels overflows size_t
+    /// @throws std::invalid_argument if data is null for a non-empty image
     explicit Image(size_t width, size_t height, const T* data)
-        : img_(Traits::from_data(width, height, rust::Slice<const T>(data, width * height * C))) {
+        : img_(Traits::from_data(width, height, checked_slice(width, height, data))) {
     }
 
     Image(const Image&) = delete;
     Image& operator=(const Image&) = delete;
-    Image(Image&&) = default;
-    Image& operator=(Image&&) = default;
+
+    /// Move construction/assignment. Using a moved-from Image throws std::logic_error.
+    Image(Image&& other) noexcept : img_(std::move(other.img_)), valid_(other.valid_) {
+        other.valid_ = false;
+    }
+    Image& operator=(Image&& other) noexcept {
+        img_ = std::move(other.img_);
+        valid_ = other.valid_;
+        other.valid_ = false;
+        return *this;
+    }
 
     size_t width() const {
-        return Traits::width(*img_);
+        return Traits::width(get());
     }
     size_t height() const {
-        return Traits::height(*img_);
+        return Traits::height(get());
     }
     size_t channels() const {
-        return Traits::channels(*img_);
+        return Traits::channels(get());
     }
     ImageSize size() const {
-        return Traits::size(*img_);
+        return Traits::size(get());
     }
+    /// Borrowed view of the pixel data.
+    /// @note The returned slice is only valid while this Image is alive and not moved from.
     rust::Slice<const T> data() const {
-        return Traits::data(*img_);
+        return Traits::data(get());
     }
     std::vector<T> to_vec() const {
         auto slice = data();
@@ -213,11 +228,35 @@ template <typename T, size_t C> class Image {
     }
 
     const RustType& inner() const {
-        return *img_;
+        return get();
     }
 
   private:
+    const RustType& get() const {
+        if (!valid_) {
+            throw std::logic_error("kornia::image::Image used after being moved from");
+        }
+        return *img_;
+    }
+
+    static rust::Slice<const T> checked_slice(size_t width, size_t height, const T* data) {
+        const size_t max = std::numeric_limits<size_t>::max();
+        if (width != 0 && height > max / width) {
+            throw std::length_error("kornia::image::Image dimensions overflow");
+        }
+        const size_t pixels = width * height;
+        if (pixels > max / C) {
+            throw std::length_error("kornia::image::Image dimensions overflow");
+        }
+        const size_t len = pixels * C;
+        if (data == nullptr && len != 0) {
+            throw std::invalid_argument("kornia::image::Image data pointer is null");
+        }
+        return rust::Slice<const T>(data, len);
+    }
+
     rust::Box<RustType> img_;
+    bool valid_ = true;
 };
 
 // Type aliases for convenience

@@ -84,6 +84,12 @@ impl Attention {
     fn forward(&mut self, x: &Tensor, index_pos: usize) -> Result<Tensor> {
         let (seq_len, hidden_size) = x.dims2()?;
 
+        let cache_seq_len = self.cache.current_seq_len();
+        if cache_seq_len != index_pos {
+            candle_core::bail!(
+                "index_pos ({index_pos}) does not match KV-cache sequence length ({cache_seq_len})"
+            );
+        }
         let q = self.q_proj.forward(x)?;
         let k = self.k_proj.forward(x)?;
         let v = self.v_proj.forward(x)?;
@@ -108,11 +114,9 @@ impl Attention {
         let v = v.to_dtype(self.attn_dtype)?;
 
         let (k_cache, v_cache) = self.cache.append(&k, &v)?;
-        // use cache (always assumes new tokens are an extension of the previous sequence)
-        // TODO: handle context length
+
         let in_dtype = q.dtype();
 
-        // flash attn: CUDA only, prefill only (seq_len > 1), BF16/F16 only
         #[cfg(feature = "cuda")]
         if x.device().is_cuda()
             && seq_len > 1
@@ -121,14 +125,20 @@ impl Attention {
         {
             let softmax_scale = 1f32 / (HEAD_DIM as f32).sqrt();
 
-            let q = q.unsqueeze(0)?.to_dtype(self.attn_dtype)?;
-            let k = k_cache.unsqueeze(0)?;
-            let v = v_cache.unsqueeze(0)?;
+            // Candle FlashAttention expects [B, S, H, D].
+            let q = q
+                .transpose(0, 1)?
+                .unsqueeze(0)?
+                .to_dtype(self.attn_dtype)?
+                .contiguous()?;
+
+            let k = k_cache.transpose(0, 1)?.unsqueeze(0)?.contiguous()?;
+
+            let v = v_cache.transpose(0, 1)?.unsqueeze(0)?.contiguous()?;
 
             let y = candle_flash_attn::flash_attn(&q, &k, &v, softmax_scale, true)?
                 .squeeze(0)?
                 .to_dtype(in_dtype)?
-                .transpose(0, 1)?
                 .reshape(&[seq_len, hidden_size])?;
 
             return self.o_proj.forward(&y);

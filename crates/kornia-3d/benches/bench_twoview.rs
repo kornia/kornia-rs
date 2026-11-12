@@ -110,6 +110,7 @@ fn bench_ransac_fundamental(c: &mut Criterion) {
             min_inliers: 10,
             random_seed: Some(42),
             refit: false,
+            ..Default::default()
         };
         group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
             b.iter(|| {
@@ -130,6 +131,7 @@ fn bench_ransac_homography(c: &mut Criterion) {
             min_inliers: 10,
             random_seed: Some(42),
             refit: false,
+            ..Default::default()
         };
         group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
             b.iter(|| {

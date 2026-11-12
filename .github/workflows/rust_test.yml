@@ -10,6 +10,7 @@ on:
       - "examples/**"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "pixi.toml"
       - ".github/workflows/rust_test.yml"
   pull_request:
     branches:
@@ -19,7 +20,11 @@ on:
       - "examples/**"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "pixi.toml"
       - ".github/workflows/rust_test.yml"
+
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -32,25 +37,27 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # x86_64 pinned to 24.04: on ubuntu-26.04 the frozen BA digest test
+        # (ba_schur defaults_are_bit_identical_to_the_frozen_solver) differs.
         include:
           - name: Test Debug - x86_64
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
             command: rust-test
           - name: Test Release - x86_64
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
             command: rust-test-release
           - name: Test Debug - aarch64
             runner: ubuntu-24.04-arm
             command: rust-test
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: recursive
 
       - uses: ./.github/actions/setup-rust-cache
 
-      - uses: prefix-dev/setup-pixi@v0.10.0
+      - uses: prefix-dev/setup-pixi@a09b6247153796b190642a2b53fac4241043cf6f # v0.10.0
         with:
           pixi-version: v0.73.0
           cache: true
@@ -61,4 +68,4 @@ jobs:
       - name: Show sccache stats
         if: always()
         run: |
-          sccache --show-stats 2>&1 || echo "::warning::sccache stats unavailable - server may have exited"
+          "$SCCACHE_PATH" --show-stats 2>&1 || echo "::warning::sccache stats unavailable - server may have exited"

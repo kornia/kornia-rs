@@ -2,9 +2,11 @@
 pub(crate) mod backing;
 pub(crate) mod numpy_view;
 // Feature modules (alphabetical)
+mod algebra;
 mod apriltag;
 mod augmentations;
 mod ba;
+mod ba_affine;
 mod blur;
 mod brightness;
 mod canny;
@@ -356,6 +358,11 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let py = m.py();
     m.add("__version__", get_version())?;
 
+    let algebra_mod = PyModule::new(py, "algebra")?;
+    algebra_mod.add_class::<algebra::PyVec3F32>()?;
+    algebra_mod.add_class::<algebra::PyVec3F64>()?;
+    m.add_submodule(&algebra_mod)?;
+
     // Deprecated root-level functions
     m.add_function(wrap_pyfunction!(rgb_from_gray_deprecated, m)?)?;
     m.add_function(wrap_pyfunction!(rgb_from_rgba_deprecated, m)?)?;
@@ -547,6 +554,10 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
         feature_match::match_descriptors_py,
         &features_mod
     )?)?;
+    features_mod.add_function(wrap_pyfunction!(
+        feature_match::match_smnn_py,
+        &features_mod
+    )?)?;
     m.add_submodule(&features_mod)?;
 
     // Augmentations submodule
@@ -580,7 +591,12 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     k3d_mod.add_function(wrap_pyfunction!(homography::find_homography_py, &k3d_mod)?)?;
     k3d_mod.add_function(wrap_pyfunction!(homography::find_fundamental_py, &k3d_mod)?)?;
     k3d_mod.add_function(wrap_pyfunction!(pnp::solve_pnp_ransac_py, &k3d_mod)?)?;
+    k3d_mod.add_class::<ba_affine::PyAffineBaResult>()?;
     k3d_mod.add_function(wrap_pyfunction!(ba::bundle_adjust_py, &k3d_mod)?)?;
+    k3d_mod.add_function(wrap_pyfunction!(
+        ba_affine::bundle_adjust_affine_py,
+        &k3d_mod
+    )?)?;
     k3d_mod.add_function(wrap_pyfunction!(pgo::pose_graph_optimize_py, &k3d_mod)?)?;
     m.add_submodule(&k3d_mod)?;
 

@@ -16,7 +16,44 @@
 *   **Geometric Transforms:** Apply rigid body transformations (rotation + translation) to point clouds.
 *   **Lie Algebra Integration:** Built on `kornia-algebra` for robust SE(3) and SO(3) manipulations.
 *   **Registration:** Algorithms like Iterative Closest Point (ICP) for aligning point clouds.
+*   **Fundamental RANSAC:** Seven-point minimal hypotheses (every real solution that satisfies the oriented epipolar constraint on its sample, as in DEGENSAC), with eight-point inlier refinement. `pose::fundamental_7point` exposes the minimal solver; `ransac::estimators::Fundamental8PointEstimator` and `pose::ransac_fundamental_8point` retain the original sampling path for comparisons. The two-view builder also accepts `Fundamental7ptSolver`; its existing `Fundamental8ptSolver` default is preserved.
+    `pose::RansacParams::confidence` accepts an explicit sampling target; `None` preserves each model family's default. Exhaustive struct literals must add `confidence: None` or use `..Default::default()`. Adaptive caps use the all-inlier probability for distinct sampling without replacement.
 *   **PnP Solvers:** Solve for camera pose given 3D-2D point correspondences.
+*   **Depth Images:** `depth::DepthImage` (a `u16` / `f32` depth image with its `meter`, units per metre) with `to_pointcloud`, which unprojects it into a point cloud, and `register` / `register_into`, which reproject it into a second pinhole camera with a z-buffer and an optional splat. CUDA twins (`depth::CudaDepthProjector`, feature `cuda`) give identical results on device-resident depth images.
+*   **Voxel Grids and Outlier Filters:** `voxel::VoxelGrid` is a sparse hash voxel grid with 6/18/26-neighbour iteration; `voxel::VoxelView` groups a cloud by voxel without copying it and reduces it to one point per voxel (`first` / `nearest` as a zero-copy `pointcloud::PointCloudView`, `centroids` as a new cloud) in a deterministic key order, `voxel::voxel_downsample` is the one-call owned form; `voxel::remove_sparse_voxels` drops points in voxels with few occupied neighbours. `PointCloud::select` gives a `PointCloudView` of the points at given indices. `pointcloud::filter` has radius and statistical outlier removal, which drop non-finite points (as PCL does), with a reusable `OutlierFilter` scratch for repeated calls. With the `cuda` feature, `voxel::CudaVoxelFilter` downsamples and counts voxel neighbours on the device with results identical to the CPU, in the same order; it needs a GPU of compute capability 7.0 (sm_70) or newer and reports `VoxelError::UnsupportedComputeCapability` on older ones, where the host `VoxelDownsampler` is the fallback.
+
+### Affine cameras
+
+`camera::AffineCamera` stores a float64 2×4 world-to-pixel matrix, with
+analytical Jacobians for its eight additive coefficients and the 3D point.
+It supports affine reconstruction and weak-perspective approximations without
+imposing orthogonality or metric scale. Extrinsics are included in the matrix;
+there is no unique optical centre or inverse projection.
+
+### Affine bundle adjustment
+
+`ba_affine::bundle_adjust_affine` jointly refines affine camera matrices and 3D
+points in float64. It uses analytical Jacobians, vector-norm Cauchy loss and
+Levenberg–Marquardt with Schur elimination of point blocks. Four noncoplanar
+fixed points define the affine frame; when any point is free, each of the four
+must be seen in at least two views with non-parallel viewing directions (the
+directions cannot be checked before solving). Extra fixed points add geometric
+constraints. Inputs must form one connected observation graph, with at least
+four observations per camera and two views per free point. These visibility
+checks are necessary, but do not guarantee local geometric identifiability.
+
+The solver normalizes world coordinates internally and returns the original
+coordinate frame, exact fixed points, costs and convergence statistics.
+It targets few-camera, many-point problems: the reduced camera matrix is dense
+(O(C²) storage and O(C³) factorization). It does not impose metric camera
+constraints, optimize shared intrinsics, or mix camera types. Exhausting the
+iteration budget, or the damping trials after some progress, returns the last
+accepted state with `converged = false`. Reaching the numerical floor of the
+cost counts as converged. Only exhausting the damping trials before any accepted
+step, away from that floor, returns an error.
+
+Run the deterministic four-camera, 10,000-point benchmark with:
+`cargo bench -p kornia-3d --bench bench_affine_ba`.
 
 ## 📦 Installation
 

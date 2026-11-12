@@ -324,13 +324,12 @@ where
     let new_stride = new_width * C;
     let old_stride = old_width * C;
 
-    let row_offset = padding.top * new_stride + padding.left * C;
-
     for (src_row, dst_row) in old_data
         .chunks_exact(old_stride)
-        .zip(new_data[row_offset..].chunks_exact_mut(new_stride))
+        .zip(new_data.chunks_exact_mut(new_stride).skip(padding.top))
     {
-        dst_row[..old_stride].copy_from_slice(src_row);
+        let start = padding.left * C;
+        dst_row[start..start + old_stride].copy_from_slice(src_row);
     }
 
     padding_mode.apply_padding::<T, C>(
@@ -393,6 +392,236 @@ mod tests {
         assert_eq!(&d[15..18], &[1, 1, 1]);
         assert_eq!(&d[30..33], &[4, 4, 4]);
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_spatial_padding_one_row_without_bottom_padding() -> Result<(), ImageError> {
+        let src = Image::<u8, 1>::new(
+            ImageSize {
+                width: 1,
+                height: 1,
+            },
+            vec![3],
+        )?;
+        let mut dst = Image::<u8, 1>::new(
+            ImageSize {
+                width: 3,
+                height: 1,
+            },
+            vec![0; 3],
+        )?;
+
+        spatial_padding(
+            &src,
+            &mut dst,
+            Padding2D {
+                top: 0,
+                bottom: 0,
+                left: 1,
+                right: 1,
+            },
+            PaddingMode::Constant,
+            [7],
+        )?;
+
+        assert_eq!(dst.as_slice(), &[7, 3, 7]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_spatial_padding_multi_row_without_bottom_padding() -> Result<(), ImageError> {
+        let src = Image::<u8, 1>::new(
+            ImageSize {
+                width: 2,
+                height: 2,
+            },
+            vec![1, 2, 3, 4],
+        )?;
+        let mut dst = Image::<u8, 1>::new(
+            ImageSize {
+                width: 4,
+                height: 2,
+            },
+            vec![0; 8],
+        )?;
+
+        spatial_padding(
+            &src,
+            &mut dst,
+            Padding2D {
+                top: 0,
+                bottom: 0,
+                left: 1,
+                right: 1,
+            },
+            PaddingMode::Constant,
+            [9],
+        )?;
+
+        assert_eq!(dst.as_slice(), &[9, 1, 2, 9, 9, 3, 4, 9]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_spatial_padding_top_without_bottom_padding() -> Result<(), ImageError> {
+        let src = Image::<u8, 1>::new(
+            ImageSize {
+                width: 1,
+                height: 1,
+            },
+            vec![3],
+        )?;
+        let mut dst = Image::<u8, 1>::new(
+            ImageSize {
+                width: 3,
+                height: 2,
+            },
+            vec![0; 6],
+        )?;
+
+        spatial_padding(
+            &src,
+            &mut dst,
+            Padding2D {
+                top: 1,
+                bottom: 0,
+                left: 1,
+                right: 1,
+            },
+            PaddingMode::Constant,
+            [7],
+        )?;
+
+        assert_eq!(dst.as_slice(), &[7, 7, 7, 7, 3, 7]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_spatial_padding_rgb_without_bottom_padding() -> Result<(), ImageError> {
+        let src = Image::<u8, 3>::new(
+            ImageSize {
+                width: 2,
+                height: 1,
+            },
+            vec![1, 2, 3, 4, 5, 6],
+        )?;
+        let mut dst = Image::<u8, 3>::new(
+            ImageSize {
+                width: 4,
+                height: 1,
+            },
+            vec![0; 12],
+        )?;
+
+        spatial_padding(
+            &src,
+            &mut dst,
+            Padding2D {
+                top: 0,
+                bottom: 0,
+                left: 1,
+                right: 1,
+            },
+            PaddingMode::Constant,
+            [9, 8, 7],
+        )?;
+
+        assert_eq!(dst.as_slice(), &[9, 8, 7, 1, 2, 3, 4, 5, 6, 9, 8, 7]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_spatial_padding_modes_without_bottom_padding() -> Result<(), ImageError> {
+        let src = Image::<u8, 1>::new(
+            ImageSize {
+                width: 2,
+                height: 1,
+            },
+            vec![3, 5],
+        )?;
+        for (mode, expected) in [
+            (PaddingMode::Constant, [7, 3, 5, 7]),
+            (PaddingMode::Replicate, [3, 3, 5, 5]),
+            (PaddingMode::Reflect, [3, 3, 5, 5]),
+            (PaddingMode::Reflect101, [5, 3, 5, 3]),
+            (PaddingMode::Wrap, [5, 3, 5, 3]),
+        ] {
+            let mut dst = Image::<u8, 1>::new(
+                ImageSize {
+                    width: 4,
+                    height: 1,
+                },
+                vec![0; 4],
+            )?;
+            spatial_padding(
+                &src,
+                &mut dst,
+                Padding2D {
+                    top: 0,
+                    bottom: 0,
+                    left: 1,
+                    right: 1,
+                },
+                mode,
+                [7],
+            )?;
+            assert_eq!(dst.as_slice(), expected);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_spatial_padding_right_only_and_no_padding() -> Result<(), ImageError> {
+        let src = Image::<u8, 1>::new(
+            ImageSize {
+                width: 2,
+                height: 1,
+            },
+            vec![3, 5],
+        )?;
+        let mut right_only = Image::<u8, 1>::new(
+            ImageSize {
+                width: 3,
+                height: 1,
+            },
+            vec![0; 3],
+        )?;
+        spatial_padding(
+            &src,
+            &mut right_only,
+            Padding2D {
+                top: 0,
+                bottom: 0,
+                left: 0,
+                right: 1,
+            },
+            PaddingMode::Constant,
+            [7],
+        )?;
+        assert_eq!(right_only.as_slice(), &[3, 5, 7]);
+
+        let mut no_padding = Image::<u8, 1>::new(
+            ImageSize {
+                width: 2,
+                height: 1,
+            },
+            vec![0; 2],
+        )?;
+        spatial_padding(
+            &src,
+            &mut no_padding,
+            Padding2D {
+                top: 0,
+                bottom: 0,
+                left: 0,
+                right: 0,
+            },
+            PaddingMode::Constant,
+            [7],
+        )?;
+        assert_eq!(no_padding.as_slice(), &[3, 5]);
         Ok(())
     }
 

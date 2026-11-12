@@ -101,8 +101,8 @@ fn unpack_two_view_inputs(
             s1[0], s1[1], s2[0], s2[1]
         )));
     }
-    let x1 = unpack_pts(pts1);
-    let x2 = unpack_pts(pts2);
+    let x1 = unpack_pts(pts1)?;
+    let x2 = unpack_pts(pts2)?;
     let k1_mat = unpack_mat3(k1)?;
     let k2_mat = match k2 {
         Some(k) => unpack_mat3(k)?,
@@ -140,7 +140,7 @@ fn result_to_py(py: Python<'_>, result: TwoViewResult) -> PyTwoViewPose {
     // Triangulated inlier indices → int64, 3D points → (M, 3) float64.
     let m = result.inlier_indices.len();
     let inlier_indices = unsafe {
-        let arr = PyArray::<i64, _>::new(py, [m], false);
+        let arr = PyArray::<i64, _>::zeros(py, [m], false);
         let slice = std::slice::from_raw_parts_mut(arr.data(), m);
         for (dst, src) in slice.iter_mut().zip(result.inlier_indices.iter()) {
             *dst = *src as i64;
@@ -149,7 +149,7 @@ fn result_to_py(py: Python<'_>, result: TwoViewResult) -> PyTwoViewPose {
     };
 
     let points3d = unsafe {
-        let arr = PyArray::<f64, _>::new(py, [m, 3], false);
+        let arr = PyArray::<f64, _>::zeros(py, [m, 3], false);
         let slice = std::slice::from_raw_parts_mut(arr.data(), m * 3);
         for (i, p) in result.points3d.iter().enumerate() {
             slice[i * 3] = p.x;
@@ -231,6 +231,7 @@ impl PyFundamental8ptSolver {
                     threshold,
                     min_inliers,
                     random_seed: seed,
+                    confidence: None,
                     refit,
                 },
             },
@@ -304,6 +305,7 @@ impl PyEssentialNister5ptSolver {
                     threshold,
                     min_inliers,
                     random_seed: seed,
+                    confidence: None,
                     refit,
                 },
             },
@@ -487,6 +489,7 @@ impl PyTwoViewEstimator {
             threshold: homography_threshold,
             min_inliers: homography_min_inliers,
             random_seed: seed,
+            confidence: None,
             refit: true,
         };
         let triangulation = TriangulationConfig {
@@ -629,6 +632,7 @@ pub fn two_view_estimate_py(
         threshold: ransac_threshold,
         min_inliers: min_inliers_f,
         random_seed: seed,
+        confidence: None,
         refit: true,
     };
     let ransac_h = RansacParams {
@@ -636,6 +640,7 @@ pub fn two_view_estimate_py(
         threshold: ransac_threshold,
         min_inliers: min_inliers_h,
         random_seed: seed,
+        confidence: None,
         refit: true,
     };
     let triangulation = TriangulationConfig {

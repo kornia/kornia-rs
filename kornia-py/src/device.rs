@@ -146,7 +146,7 @@ where
     // equals `dt.itemsize()` for every supported (dtype, T) pair.
     let nbytes = crate::backing::byte_len(h, w, C, dt)?;
     let numel = nbytes / std::mem::size_of::<T>();
-    let mut bytes = AlignedBytes::uninit(nbytes);
+    let mut bytes = AlignedBytes::uninit(nbytes)?;
     // SAFETY: `bytes` owns `numel * size_of::<T>()` bytes, 64-byte aligned (>=
     // align_of::<T>() for u8/f32); reinterpret as a `&mut [T]` of exactly `numel`
     // elements. `to_host_into` writes every element (a full D2H copy) before any

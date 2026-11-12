@@ -138,6 +138,10 @@ pub fn canny(
         ));
     }
     let (w, h) = (src.cols(), src.rows());
+    // Empty image: no edges (zero-sized row chunks would panic below).
+    if w == 0 || h == 0 {
+        return Ok(());
+    }
 
     // cv2's threshold preparation: swap if reversed; L2 clamps to 32767 and
     // squares; floor to int.
@@ -300,25 +304,25 @@ pub fn canny(
 const TILE_W: usize = 256;
 const TILE_H: usize = 64;
 
-/// Shared-map handle for the tile flood: tiles write only their own
-/// cells; halo reads may race with a neighbor's monotonic 0→2 writes,
-/// which is benign (see call site).
-struct MapPtr(*mut u8);
-unsafe impl Send for MapPtr {}
-unsafe impl Sync for MapPtr {}
-impl MapPtr {
-    /// Accessor (rather than direct field use) so closures capture the
-    /// Sync wrapper, not the raw pointer (edition-2021 disjoint capture).
-    fn get(&self) -> *mut u8 {
-        self.0
-    }
-}
-
 fn hysteresis_parallel(map: &mut [u8], w: usize, h: usize, mstep: usize, seeds: &[usize]) {
+    use std::sync::atomic::{AtomicU8, Ordering::Relaxed};
+
     let tiles_x = w.div_ceil(TILE_W);
     let tiles_y = h.div_ceil(TILE_H);
     let ntiles = tiles_x * tiles_y;
-    let ptr = MapPtr(map.as_mut_ptr());
+    // Tiles write only their own cells, but read the 1-pixel halo owned by
+    // neighbouring tiles while those may be writing it concurrently. Plain
+    // `u8` accesses there are a data race (UB) even though the writes are
+    // monotonic 0->2 single bytes, so the map is viewed as `AtomicU8` and
+    // accessed with `Relaxed` ordering -- on every mainstream target that
+    // compiles to the same plain byte loads/stores.
+    //
+    // SAFETY: `AtomicU8` has the same size, alignment and bit validity as
+    // `u8`, and we hold the unique `&mut` borrow of `map` for the whole
+    // lifetime of `cells`, so no non-atomic access can alias it.
+    let cells: &[AtomicU8] = unsafe { &*(map as *mut [u8] as *const [AtomicU8]) };
+    let get = |p: usize| cells[p].load(Relaxed);
+    let set_edge = |p: usize| cells[p].store(EDGE, Relaxed);
 
     // Round 1 floods each tile from its own strong seeds; later rounds
     // only need the tile's 1-pixel boundary ring (the interior is already
@@ -348,41 +352,40 @@ fn hysteresis_parallel(map: &mut [u8], w: usize, h: usize, mstep: usize, seeds: 
         let y0 = ty * TILE_H + 1;
         let x1 = (x0 + TILE_W).min(w + 1);
         let y1 = (y0 + TILE_H).min(h + 1);
-        // SAFETY: this tile writes only cells in [x0,x1)×[y0,y1); halo
-        // reads race only with monotonic single-byte 0→2 writes.
-        let m = ptr.get();
+        // This tile writes only cells in [x0,x1)×[y0,y1); halo reads may
+        // observe a neighbour's concurrent monotonic 0->2 writes, which is
+        // benign for the fixpoint (a conversion missed here is picked up by
+        // the next boundary-scan round, since the writer's tile wakes us).
         let mut stack: Vec<usize> = init.to_vec();
         let mut changed = false;
-        unsafe {
-            if boundary_scan {
-                // Candidates on the boundary ring adjacent to an edge
-                // (halo or own).
-                let mut check = |p: usize| {
-                    if *m.add(p) == CANDIDATE && neighbors(p).iter().any(|&q| *m.add(q) == EDGE) {
-                        *m.add(p) = EDGE;
-                        stack.push(p);
-                        changed = true;
-                    }
-                };
-                for x in x0..x1 {
-                    check(y0 * mstep + x);
-                    check((y1 - 1) * mstep + x);
+        if boundary_scan {
+            // Candidates on the boundary ring adjacent to an edge
+            // (halo or own).
+            let mut check = |p: usize| {
+                if get(p) == CANDIDATE && neighbors(p).iter().any(|&q| get(q) == EDGE) {
+                    set_edge(p);
+                    stack.push(p);
+                    changed = true;
                 }
-                for y in y0..y1 {
-                    check(y * mstep + x0);
-                    check(y * mstep + (x1 - 1));
-                }
+            };
+            for x in x0..x1 {
+                check(y0 * mstep + x);
+                check((y1 - 1) * mstep + x);
             }
-            while let Some(p) = stack.pop() {
-                for q in neighbors(p) {
-                    if *m.add(q) == CANDIDATE {
-                        let qx = q % mstep;
-                        let qy = q / mstep;
-                        if qx >= x0 && qx < x1 && qy >= y0 && qy < y1 {
-                            *m.add(q) = EDGE;
-                            stack.push(q);
-                            changed = true;
-                        }
+            for y in y0..y1 {
+                check(y * mstep + x0);
+                check(y * mstep + (x1 - 1));
+            }
+        }
+        while let Some(p) = stack.pop() {
+            for q in neighbors(p) {
+                if get(q) == CANDIDATE {
+                    let qx = q % mstep;
+                    let qy = q / mstep;
+                    if qx >= x0 && qx < x1 && qy >= y0 && qy < y1 {
+                        set_edge(q);
+                        stack.push(q);
+                        changed = true;
                     }
                 }
             }
@@ -405,14 +408,16 @@ fn hysteresis_parallel(map: &mut [u8], w: usize, h: usize, mstep: usize, seeds: 
         }
     };
 
-    // Round 1: seed-driven.
-    let changed_tiles: Vec<usize> = (0..ntiles)
-        .into_par_iter()
-        .filter(|&t| !tile_seeds[t].is_empty())
-        .filter(|&t| flood_tile(t, &tile_seeds[t], false))
-        .collect();
+    // Round 1: seed-driven. Every seeded tile wakes its neighbours, not only
+    // the ones that converted something: a seed on a tile's boundary ring can
+    // reach a candidate in the neighbouring tile, and `flood_tile` never writes
+    // outside its own tile, so only that neighbour's boundary scan converts it.
+    let seeded_tiles: Vec<usize> = (0..ntiles).filter(|&t| !tile_seeds[t].is_empty()).collect();
+    seeded_tiles.par_iter().for_each(|&t| {
+        flood_tile(t, &tile_seeds[t], false);
+    });
     let mut active = vec![false; ntiles];
-    for t in changed_tiles {
+    for &t in &seeded_tiles {
         wake_neighbors(t, &mut active);
     }
 
@@ -814,5 +819,109 @@ mod probe_tests {
             }
             println!("{name}: {:.3} ms", best * 1e3);
         }
+    }
+}
+
+#[cfg(test)]
+mod hysteresis_tests {
+    use super::*;
+    use kornia_image::ImageSize;
+
+    /// Serial stack flood — the reference for the tiled parallel version.
+    fn hysteresis_serial(map: &mut [u8], mstep: usize, seeds: &[usize]) {
+        let mut stack: Vec<usize> = seeds.to_vec();
+        while let Some(p) = stack.pop() {
+            for q in [
+                p - mstep - 1,
+                p - mstep,
+                p - mstep + 1,
+                p - 1,
+                p + 1,
+                p + mstep - 1,
+                p + mstep,
+                p + mstep + 1,
+            ] {
+                if map[q] == CANDIDATE {
+                    map[q] = EDGE;
+                    stack.push(q);
+                }
+            }
+        }
+    }
+
+    /// The tiled flood (now on `AtomicU8` cells, previously racy raw-pointer
+    /// reads/writes across tile halos) must reach exactly the serial fixpoint
+    /// on maps spanning many tiles, with chains crossing tile borders.
+    #[test]
+    fn parallel_hysteresis_matches_serial_across_tiles() {
+        let (w, h) = (3 * TILE_W + 17, 3 * TILE_H + 9);
+        let mstep = w + 2;
+        let mut rng: u64 = 0x2545_f491_4f6c_dd1d;
+        for round in 0..4 {
+            let mut map = vec![NON_EDGE; mstep * (h + 2)];
+            let mut seeds = Vec::new();
+            for y in 1..=h {
+                for x in 1..=w {
+                    rng ^= rng << 13;
+                    rng ^= rng >> 7;
+                    rng ^= rng << 17;
+                    let r = rng % 100;
+                    let p = y * mstep + x;
+                    // Dense candidates so chains percolate across tiles.
+                    if r < 55 + round * 5 {
+                        map[p] = CANDIDATE;
+                    } else if r < 56 + round * 5 {
+                        map[p] = EDGE;
+                        seeds.push(p);
+                    }
+                }
+            }
+            let mut expect = map.clone();
+            hysteresis_serial(&mut expect, mstep, &seeds);
+            hysteresis_parallel(&mut map, w, h, mstep, &seeds);
+            assert!(map == expect, "round {round}: parallel != serial");
+        }
+    }
+
+    /// Regression: a seed on a tile's boundary ring whose own tile converts
+    /// nothing must still reach a candidate in the neighbouring tile. Round 1
+    /// used to wake only tiles that changed, so the neighbour was never scanned
+    /// (e.g. a contour that is strong up to column 256 and weak from 257).
+    #[test]
+    fn parallel_hysteresis_seed_on_tile_border() {
+        let (w, h) = (2 * TILE_W, 2 * TILE_H);
+        let mstep = w + 2;
+        // Last column of tile 0 -> first column of tile 1, and last row of
+        // tile 0 -> first row of the tile below (diagonal neighbour too).
+        let right_seed = 2 * mstep + TILE_W;
+        let down_seed = TILE_H * mstep + 5;
+        let corner_seed = TILE_H * mstep + TILE_W;
+        for (seed, cand) in [
+            (right_seed, right_seed + 1),
+            (down_seed, down_seed + mstep),
+            (corner_seed, corner_seed + mstep + 1),
+        ] {
+            let mut map = vec![NON_EDGE; mstep * (h + 2)];
+            map[seed] = EDGE;
+            map[cand] = CANDIDATE;
+            let mut expect = map.clone();
+            hysteresis_serial(&mut expect, mstep, &[seed]);
+            hysteresis_parallel(&mut map, w, h, mstep, &[seed]);
+            assert_eq!(map[cand], EDGE, "seed {seed}: cross-tile candidate missed");
+            assert!(map == expect, "seed {seed}: parallel != serial");
+        }
+    }
+
+    /// Zero-sized images are a no-op, not a panic.
+    #[test]
+    fn canny_empty_image() -> Result<(), ImageError> {
+        let size = ImageSize {
+            width: 0,
+            height: 5,
+        };
+        let src = Image::<u8, 1>::from_size_val(size, 0)?;
+        let mut dst = Image::<u8, 1>::from_size_val(size, 0)?;
+        canny(&src, &mut dst, 10.0, 20.0, false)?;
+        Ok(())
     }
 }

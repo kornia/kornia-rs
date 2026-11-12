@@ -248,12 +248,10 @@ pub(super) fn resize_separable_u8<const C: usize>(
 
             // Local hbuf: exactly the rows this strip consumes. Unlike the
             // global version, this stays in L1/L2 across H and V.
-            let mut temp: Vec<i16> = Vec::with_capacity(band_rows * hbuf_row_len);
-            // SAFETY: horizontal pass writes every element before any read.
-            #[allow(clippy::uninit_vec)]
-            unsafe {
-                temp.set_len(band_rows * hbuf_row_len)
-            };
+            // Zero-initialised (`alloc_zeroed`, typically fresh zero pages for
+            // large bands) rather than `set_len` over uninit memory; the
+            // horizontal pass overwrites every element before any read.
+            let mut temp: Vec<i16> = vec![0i16; band_rows * hbuf_row_len];
 
             // Horizontal pass over the needed src rows only. Processes rows
             // in groups of 4 to share coefficient (xsrc/xw) loads and fill

@@ -1,5 +1,6 @@
 """Tests for the Python-exposed feature & geometry utilities:
 - `kornia_rs.features.match_descriptors` — brute-force Hamming matcher.
+- `kornia_rs.features.match_smnn` — Hamming matcher with kornia's SMNN contract.
 - `kornia_rs.k3d.find_homography` — DLT / RANSAC+refit homography solver.
 - `kornia_rs.k3d.ransac_homography` — legacy 4-point RANSAC (kept for back-compat).
 
@@ -13,6 +14,107 @@ import numpy as np
 import pytest
 
 import kornia_rs as K
+
+
+# ---------- match_smnn ----------
+
+
+def _hamming_table(desc_a, desc_b):
+    return np.unpackbits(desc_a[:, None] ^ desc_b[None], axis=2).sum(2).astype(np.float32)
+
+
+def _reference_smnn(desc_a, desc_b, th):
+    """The `kornia.feature.match_smnn` rule on an explicit Hamming table."""
+    table = _hamming_table(desc_a, desc_b)
+    order_a = np.argsort(table, axis=1, kind="stable")[:, :2]
+    order_b = np.argsort(table, axis=0, kind="stable")[:2].T
+    rows = np.arange(len(desc_a))
+    nearest = order_a[:, 0]
+    forward = table[rows, nearest] / table[rows, order_a[:, 1]]
+    backward = table[order_b[nearest, 0], nearest] / table[order_b[nearest, 1], nearest]
+    keep = (order_b[nearest, 0] == rows) & (forward <= th) & (backward <= th)
+    return np.maximum(forward, backward)[keep], np.column_stack((rows[keep], nearest[keep]))
+
+
+def test_match_smnn_returns_kornia_shapes_and_values():
+    desc_a, desc_b = _make_descriptor_pair(n=64, seed=3)
+    desc_b = desc_b[:40]
+    for th in (0.5, 0.8, 0.95):
+        dists, idxs = K.features.match_smnn(desc_a, desc_b, th)
+        assert dists.dtype == np.float32 and idxs.dtype == np.int64
+        assert dists.shape == (len(idxs), 1) and idxs.shape[1] == 2
+        want_dists, want_idxs = _reference_smnn(desc_a, desc_b, th)
+        assert len(want_idxs) > 0
+        np.testing.assert_array_equal(idxs, want_idxs)
+        np.testing.assert_array_equal(dists[:, 0], want_dists)
+
+
+def test_match_smnn_applies_the_ratio_in_both_directions():
+    """Train row 0 is 20 bits from query 0 and 21 from query 1. Forward, query 0
+    passes (20/236). Backward, 20/21 > 0.95, so cross-checking with a forward
+    ratio keeps the pair and `match_smnn` must not."""
+    query = np.zeros((2, 32), dtype=np.uint8)
+    query[:, :2] = 255
+    query[0, 2], query[1, 2] = 0x0F, 0x1F
+    train = np.zeros((2, 32), dtype=np.uint8)
+    train[1] = 255
+    forward_only = K.features.match_descriptors(query, train, cross_check=True, max_ratio=0.95)
+    np.testing.assert_array_equal(forward_only, [[0, 0]])
+    dists, idxs = K.features.match_smnn(query, train, 0.95)
+    assert dists.shape == (0, 1) and idxs.shape == (0, 2)
+    dists, idxs = K.features.match_smnn(query, train, 0.96)
+    np.testing.assert_array_equal(idxs, [[0, 0]])
+    np.testing.assert_array_equal(dists, [[np.float32(20) / np.float32(21)]])
+
+
+def test_match_smnn_default_threshold_is_kornias():
+    desc_a, desc_b = _make_descriptor_pair(n=32, seed=4)
+    for got, want in zip(K.features.match_smnn(desc_a, desc_b), K.features.match_smnn(desc_a, desc_b, 0.95)):
+        np.testing.assert_array_equal(got, want)
+
+
+def test_match_smnn_needs_two_descriptors_per_side():
+    desc_a, desc_b = _make_descriptor_pair(n=8, seed=5)
+    dists, idxs = K.features.match_smnn(desc_a[:1], desc_b)
+    assert dists.shape == (0, 1) and idxs.shape == (0, 2)
+
+
+def _reference_smnn_l2(desc_a, desc_b, th):
+    table = ((desc_a[:, None] - desc_b[None]) ** 2).sum(2)
+    order_a = np.argsort(table, axis=1, kind="stable")[:, :2]
+    order_b = np.argsort(table, axis=0, kind="stable")[:2].T
+    rows = np.arange(len(desc_a))
+    nearest = order_a[:, 0]
+    forward = np.sqrt(table[rows, nearest]) / np.sqrt(table[rows, order_a[:, 1]])
+    backward = np.sqrt(table[order_b[nearest, 0], nearest]) / np.sqrt(table[order_b[nearest, 1], nearest])
+    keep = (order_b[nearest, 0] == rows) & (forward <= th) & (backward <= th)
+    return np.maximum(forward, backward)[keep], np.column_stack((rows[keep], nearest[keep]))
+
+
+@pytest.mark.parametrize("dim", [8, 31, 64, 128])
+def test_match_smnn_float32_uses_l2(dim):
+    rng = np.random.default_rng(dim)
+    desc_a = rng.integers(0, 256, size=(90, dim)).astype(np.float32)
+    desc_b = np.clip(desc_a[:70] + rng.integers(-9, 10, size=(70, dim)), 0, 255).astype(np.float32)
+    dists, idxs = K.features.match_smnn(desc_a, desc_b, 0.8)
+    want_dists, want_idxs = _reference_smnn_l2(desc_a, desc_b, 0.8)
+    assert len(want_idxs) > 0
+    np.testing.assert_array_equal(idxs, want_idxs)
+    np.testing.assert_array_equal(dists[:, 0], want_dists)
+
+
+def test_match_smnn_rejects_other_dtypes_and_mismatched_dimensions():
+    with pytest.raises(TypeError, match="float32"):
+        K.features.match_smnn(np.zeros((4, 32), np.float64), np.zeros((4, 32), np.float64))
+    with pytest.raises(TypeError, match="float32"):
+        K.features.match_smnn(np.zeros((4, 32), np.uint8), np.zeros((4, 32), np.float32))
+    with pytest.raises(ValueError, match="dimension"):
+        K.features.match_smnn(np.zeros((4, 8), np.float32), np.zeros((4, 9), np.float32))
+
+
+def test_match_smnn_rejects_other_shapes():
+    with pytest.raises(ValueError, match="32"):
+        K.features.match_smnn(np.zeros((4, 16), np.uint8), np.zeros((4, 16), np.uint8))
 
 
 # ---------- match_descriptors ----------
@@ -69,6 +171,20 @@ def test_match_descriptors_max_ratio():
     assert len(accepted) == 4
     rejected = K.features.match_descriptors(query, candidates, max_ratio=0.04)
     assert len(rejected) == 0
+
+
+@pytest.mark.parametrize("cross_check", [False, True])
+@pytest.mark.parametrize("max_ratio,accepted", [(0.8, False), (1.0, True), (float("nan"), True)])
+def test_match_descriptors_zero_tie_ratio(cross_check, max_ratio, accepted):
+    query = np.zeros((1, 32), dtype=np.uint8)
+    candidates = np.zeros((2, 32), dtype=np.uint8)
+    matches = K.features.match_descriptors(
+        query, candidates, cross_check=cross_check, max_ratio=max_ratio
+    )
+    if accepted:
+        np.testing.assert_array_equal(matches, [[0, 0]])
+    else:
+        assert matches.shape == (0, 2)
 
 
 def test_match_descriptors_rejects_wrong_descriptor_size():

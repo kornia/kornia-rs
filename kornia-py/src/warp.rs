@@ -2,7 +2,10 @@ use numpy::PyUntypedArrayMethods;
 use pyo3::prelude::*;
 
 use crate::dispatch::cpu_op;
-use crate::image::{alloc_output_pyarray, numpy_as_image, parse_interpolation, to_pyerr, PyImage};
+use crate::image::{
+    alloc_output_pyarray, numpy_as_image, numpy_as_out_image, parse_interpolation, to_pyerr,
+    PyImage,
+};
 use kornia_image::{Image, ImageError, ImageSize};
 use kornia_imgproc::warp;
 
@@ -25,14 +28,17 @@ where
     let src_u8 = unsafe { numpy_as_image::<C>(py, &image)? };
     let (mut dst_u8, out_arr) = match out {
         Some(out_pyarr) => {
-            let shape = out_pyarr.bind(py).shape();
-            if shape[0] != new_size.height || shape[1] != new_size.width || shape[2] != C {
-                return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-                    "out shape ({}, {}, {}) must match new_size ({}, {}, {})",
-                    shape[0], shape[1], shape[2], new_size.height, new_size.width, C
-                )));
-            }
-            let img = unsafe { numpy_as_image::<C>(py, &out_pyarr)? };
+            // Validates shape, writeability, contiguity and no aliasing with `src`.
+            // SAFETY: `out_pyarr` is kept alive (returned) for the Image's lifetime.
+            let img = unsafe {
+                numpy_as_out_image::<C>(
+                    py,
+                    "warp",
+                    &out_pyarr,
+                    [new_size.height, new_size.width, C],
+                    src_u8.as_slice(),
+                )?
+            };
             (img, out_pyarr)
         }
         None => unsafe { alloc_output_pyarray::<C>(py, new_size)? },

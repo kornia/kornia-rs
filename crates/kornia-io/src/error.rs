@@ -74,4 +74,35 @@ pub enum IoError {
     /// Error to encode the WEBP image.
     #[error(transparent)]
     WebpEncodingError(#[from] image_webp::EncodingError),
+
+    /// The declared image dimensions exceed the decoder limit.
+    #[error("Image of {width}x{height} exceeds the maximum of {max_pixels} pixels")]
+    ImageTooLarge {
+        /// Declared width in pixels.
+        width: usize,
+        /// Declared height in pixels.
+        height: usize,
+        /// Maximum number of pixels allowed.
+        max_pixels: usize,
+    },
+
+    /// A dimension exceeds the largest side length supported by the format
+    /// (e.g. JPEG stores width and height as 16-bit integers).
+    #[error("Image of {width}x{height} exceeds the maximum side length of {max_side} pixels")]
+    DimensionTooLarge {
+        /// Image width in pixels.
+        width: usize,
+        /// Image height in pixels.
+        height: usize,
+        /// Maximum width or height supported by the format.
+        max_side: usize,
+    },
+
+    /// Failed to allocate the output buffer.
+    #[error("Failed to allocate {0} bytes for the decoded image")]
+    AllocationFailed(usize),
+
+    /// The encoded image does not match the requested pixel format.
+    #[error("Image format mismatch: {0}")]
+    FormatMismatch(String),
 }

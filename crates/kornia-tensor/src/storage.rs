@@ -106,7 +106,10 @@ impl<T> TensorStorage<T> {
             "as_slice on non-host-accessible memory (domain={:?})",
             domain
         );
-        unsafe { std::slice::from_raw_parts(self.as_ptr(), self.len / std::mem::size_of::<T>()) }
+        // SAFETY: `ptr` is non-null, aligned and valid for `len` bytes of host-accessible
+        // memory (storage invariant, domain checked above); `num_elements()` elements
+        // of `T` fit in those bytes.
+        unsafe { std::slice::from_raw_parts(self.as_ptr(), self.num_elements()) }
     }
 
     /// Returns the storage data as a mutable slice.
@@ -127,9 +130,11 @@ impl<T> TensorStorage<T> {
             !self.owner.is_readonly(),
             "as_mut_slice on read-only memory"
         );
-        unsafe {
-            std::slice::from_raw_parts_mut(self.as_mut_ptr(), self.len / std::mem::size_of::<T>())
-        }
+        let n = self.num_elements();
+        // SAFETY: `ptr` is non-null, aligned and valid for `len` bytes of writable,
+        // host-accessible memory (storage invariant, domain/readonly checked above);
+        // `&mut self` guarantees exclusive access.
+        unsafe { std::slice::from_raw_parts_mut(self.as_mut_ptr(), n) }
     }
 
     /// Returns the number of bytes in this storage.
@@ -141,21 +146,40 @@ impl<T> TensorStorage<T> {
         self.len
     }
 
+    /// Returns the number of `T` elements in this storage.
+    ///
+    /// This is `len() / size_of::<T>()`, or `0` for zero-sized `T` (whose storage
+    /// never holds any bytes).
+    ///
+    /// # Returns
+    ///
+    /// The number of elements.
+    #[inline]
+    pub fn num_elements(&self) -> usize {
+        self.len.checked_div(std::mem::size_of::<T>()).unwrap_or(0)
+    }
+
     /// Returns true if the storage has a length of 0.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
-    /// Returns the memory layout of the storage (reconstructed from `len` and type alignment).
+    /// Returns the memory layout of the storage (reconstructed from the owner's byte
+    /// length and the alignment of `T`).
+    ///
+    /// # Returns
+    ///
+    /// The reconstructed [`Layout`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`std::alloc::LayoutError`] if the byte length rounded up to the
+    /// alignment of `T` overflows `isize::MAX` (possible only for a foreign resource
+    /// reporting a bogus length).
     #[inline]
-    pub fn layout(&self) -> Layout {
-        // Reconstruct from the owner's byte count and T's alignment requirement.
-        Layout::from_size_align(self.owner.len_bytes(), std::mem::align_of::<T>()).unwrap_or_else(
-            |_| unsafe {
-                Layout::from_size_align_unchecked(self.owner.len_bytes(), std::mem::align_of::<T>())
-            },
-        )
+    pub fn layout(&self) -> Result<Layout, std::alloc::LayoutError> {
+        Layout::from_size_align(self.owner.len_bytes(), std::mem::align_of::<T>())
     }
 
     /// Returns a reference to the allocator handle used by this storage.
@@ -208,6 +232,20 @@ impl<T> TensorStorage<T> {
     /// with no keep-alive, meaning the caller is responsible for ensuring the memory
     /// outlives this storage.
     ///
+    /// # Arguments
+    ///
+    /// * `data` - Pointer to the first element of the buffer.
+    /// * `len` - Length of the buffer in **bytes** (not elements).
+    /// * `alloc` - Allocator handle.
+    ///
+    /// # Returns
+    ///
+    /// A new `TensorStorage` viewing the buffer.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `data` is null (checked before any `NonNull` is formed).
+    ///
     /// # Safety
     ///
     /// The caller must ensure that:
@@ -215,19 +253,20 @@ impl<T> TensorStorage<T> {
     /// - The memory region is valid for `len` bytes for the entire lifetime of this storage.
     /// - No other code will free this memory while this storage exists.
     pub unsafe fn from_raw_parts(data: *const T, len: usize, alloc: AllocHandle) -> Self {
-        unsafe {
-            let ptr = NonNull::new_unchecked(data as *mut T);
-            let owner: Box<dyn MemoryResource> = Box::new(
-                ForeignResource::new(data as *mut u8, len, MemoryDomain::Host, None)
-                    .expect("non-null pointer required"),
-            );
-            Self {
-                ptr,
-                len,
-                owner,
-                alloc,
-                _marker: PhantomData,
-            }
+        // Null check before caching the pointer: `NonNull::new_unchecked(null)` is UB.
+        let ptr = NonNull::new(data as *mut T).expect("from_raw_parts: null data pointer");
+        // SAFETY: `data` is non-null (checked above); validity for `len` bytes is the
+        // caller's contract. The ForeignResource does not free the memory.
+        let resource =
+            unsafe { ForeignResource::new(data as *mut u8, len, MemoryDomain::Host, None) };
+        let owner: Box<dyn MemoryResource> =
+            Box::new(resource.expect("from_raw_parts: non-null pointer required"));
+        Self {
+            ptr,
+            len,
+            owner,
+            alloc,
+            _marker: PhantomData,
         }
     }
 
@@ -402,7 +441,7 @@ impl<T> TensorStorage<T> {
             std::mem::align_of::<T>(),
         );
 
-        let vec_len = self.len / std::mem::size_of::<T>();
+        let vec_len = self.num_elements();
         let ptr = self.ptr;
 
         // Deconstruct `self` without running Drop on any field.
@@ -433,7 +472,12 @@ impl<T> TensorStorage<T> {
             // Consume the HostResource without running its Drop (which would dealloc the buffer).
             // The returned pointer is the same as `ptr` above; we just need the layout.
             let (_buf_ptr, layout) = HostResource::into_raw_parts(host);
-            layout.size() / std::mem::size_of::<T>()
+            // Zero-sized `T` never owns bytes: capacity 0 with a dangling pointer is a
+            // valid empty Vec.
+            layout
+                .size()
+                .checked_div(std::mem::size_of::<T>())
+                .unwrap_or(0)
         };
 
         // SAFETY: ptr is valid for vec_capacity elements of T; vec_len <= vec_capacity;
@@ -528,6 +572,32 @@ mod tests {
             alloc: host_alloc(),
             _marker: PhantomData,
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "null data pointer")]
+    fn test_from_raw_parts_null_panics_before_nonnull() {
+        // Regression (F8): `NonNull::new_unchecked(null)` was formed before the null check.
+        // SAFETY: the call must fail on the null check before anything is dereferenced.
+        let _ = unsafe { TensorStorage::<u8>::from_raw_parts(std::ptr::null(), 0, host_alloc()) };
+    }
+
+    #[test]
+    fn test_layout_is_fallible() {
+        // Regression (F8): `layout()` fell back to `from_size_align_unchecked` exactly
+        // when the layout was invalid (UB). It now returns the error instead.
+        let storage = TensorStorage::from_vec(vec![1u32, 2, 3], host_alloc());
+        let layout = storage.layout();
+        assert!(matches!(layout, Ok(l) if l.size() == 12 && l.align() == 4));
+    }
+
+    #[test]
+    fn test_zero_sized_type_storage() {
+        // Regression (F10): element count divided by `size_of::<T>() == 0`.
+        let storage = TensorStorage::from_vec(vec![(); 5], host_alloc());
+        assert_eq!(storage.num_elements(), 0);
+        assert!(storage.as_slice().is_empty());
+        assert!(storage.into_vec().is_empty());
     }
 
     // ── Original tests (migrated to new struct fields) ────────────────────────

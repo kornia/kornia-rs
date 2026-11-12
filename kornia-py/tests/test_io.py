@@ -3,6 +3,7 @@ import tempfile
 from pathlib import Path
 from typing import Callable
 import kornia_rs as K
+import pytest
 
 import torch
 import numpy as np
@@ -95,14 +96,19 @@ def test_decode_image_png_u8():
     img_path: Path = DATA_DIR / "dog.png"
     with open(img_path, "rb") as f:
         img_data = f.read()
-    img: np.ndarray = K.io.decode_image_png_u8(bytes(img_data), (195, 258), "rgb")
+    # dog.png is 8-bit grayscale
+    img: np.ndarray = K.io.decode_image_png_u8(bytes(img_data), (195, 258), "mono")
 
     # check the image properties
-    assert img.shape == (195, 258, 3)
+    assert img.shape == (195, 258, 1)
     assert img.dtype == np.uint8
 
     img_t = torch.from_numpy(img)
-    assert img_t.shape == (195, 258, 3)
+    assert img_t.shape == (195, 258, 1)
+
+    # decoding into a mismatched pixel format must fail instead of returning garbage
+    with pytest.raises(Exception, match="format mismatch"):
+        K.io.decode_image_png_u8(bytes(img_data), (195, 258), "rgb")
 
 
 def test_decode_image_png_u16():

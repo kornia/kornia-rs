@@ -1,0 +1,25 @@
+Verdict: request changes
+
+- PR body — blocking — Issue #9998 could not be read (no network). I only have the quoted text, so this blocks until the issue can be read. Step 2 was done against the quoted text and the PR's stated purpose. — Read the issue and confirm it asks for this. — [inferred]
+- `.claude/skills/kornia-arch/SKILL.md:34` — blocking — Out of scope and a stale fact. The hunk restores a sentence that `kornia-curation` and `PUBLISH_ORDER` contradict: "the umbrella, VLM and AprilTag crates are intentionally excluded". `kornia-apriltag` is in `PUBLISH_ORDER` at `scripts/release_rust.sh:66`. This is the bug the check exists to catch. A "simplify the check" issue does not ask for a change to the skill's wording. — Drop the hunk and keep the "read it there; do not restate it" text. — [measured] I ran the new `publish_claims` regex logic on this exact text. It returned False: `False 'Only the crates listed in \`PUBLISH_ORDER\` in \`scripts/re…'`.
+- `scripts/check_skills.py:74-78` — blocking — Coverage shrank. The old check rejected the restored stale sentence. The new check needs "exclud" and "publish" on the same line and a backticked `kornia-*` name. It misses prose names ("AprilTag", "VLM") and wrapped lines. — Restore the sentence/paragraph unit logic, or show that the simpler form keeps every probe. — [measured] The new logic returned False on all of these, though each names `kornia-apriltag` as excluded and `kornia-apriltag` is in `PUBLISH_ORDER`:
+  - the restored kornia-arch sentence
+  - `Excludes \`kornia\`, \`kornia-vlm\`, \`kornia-apriltag\`.` (the "skips already-published" paragraph)
+  - `Crates excluded from crates.io:\n\`kornia-apriltag\`.`
+  - `\`kornia-apriltag\` is not published.`
+  - `| \`kornia-apriltag\` | detection, not published |`
+  - `The \`kornia-apriltag\` crate is excluded\nfrom publishing.`
+- `scripts/check_skills.py:74-78` — major — The new check uses a narrower exclusion vocabulary. It drops "skipped", "unpublished", "not published", "never published" and the `EXCLUDED` regex, and it matches only the lowercase "exclud". "Excluded from Publishing" is also case-sensitive and was previously caught. It no longer matches short names such as `apriltag`, and it no longer treats table rows separately. — Reuse `EXCLUDED` and keep the case-insensitive matching. — [measured] See the probe run above. The case-sensitivity point is from reading the code.
+- `scripts/check_skills.py:85-88` — blocking — 12 of 14 `PUBLISH_PROBES` were deleted, and `# never delete one to pass` appears in the comment directly above. The deleted True-probes are exactly the ones the new logic cannot flag, as shown above. The PR does not show that any of the deleted probes was wrong. Only the easy one remains (`The \`kornia-apriltag\` crate is excluded from publishing.`), so `python3 scripts/check_skills.py → skills OK` proves nothing. — Restore all probes and make the check pass them. — [measured] I did not run the full script (the sandbox's read-only filesystem blocked part of my command). I ran the probe texts through the re-implemented new logic. The `skills OK` claim in the PR is unverified.
+- `scripts/check_skills.py:3-17` — minor — The module docstring still describes the old coverage ("no skill names a crate … as excluded") and the probe self-test. — Update it if the check is narrowed. — [inferred]
+- PR body — blocking — There is no Self-review section (the output of this skill) and no Author walkthrough in the human's own words. — Add both. — [inferred]
+- PR body — major — The description says "still flags any skill that calls a PUBLISH_ORDER crate excluded". That is false per the probes above. It also does not mention the kornia-arch wording change as a separate concern. The PR bundles two concerns (check refactor and skill text), so a split is required. — Send the kornia-arch revert on its own, or drop it. — [measured]
+- PR body — minor — "Trims PUBLISH_PROBES" understates that 12 of 14 probes were removed. — State the number plainly. — [inferred]
+- `changelog.d/` — nit — Internal tooling only. The PR should say no-changelog. — [inferred]
+
+Reuse searches: not applicable (tooling/skills PR, section 0b skipped).
+
+Skill gaps:
+- `kornia-curation` could state: a PR that edits a skill sentence guarded by `check_skills.py` must run the old and new check on that sentence. Here the check was weakened and the guarded text was restored in the same PR, so the self-test went green.
+- Section 4b does cover this (old vs new probes, deleted probes). The author's self-review, which was missing, should have caught it. Propose a `kornia-workflow` rule: a tooling PR's Self-review must include the old/new probe table.
+- Also propose: the `# never delete one to pass` comment in `check_skills.py` should be a CI-enforced minimum probe count or a hash. Currently only prose guards it.

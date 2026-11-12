@@ -15,7 +15,9 @@
 //! lifetimes leak across the FFI boundary.
 
 use kornia_3d::ransac::{
-    estimators::{EssentialEstimator, FundamentalEstimator, HomographyEstimator},
+    estimators::{
+        EssentialEstimator, Fundamental8PointEstimator, FundamentalEstimator, HomographyEstimator,
+    },
     run, Match2d2d, RansacConfig, ThresholdConsensus, UniformSampler,
 };
 use kornia_algebra::Vec2F64;
@@ -47,6 +49,7 @@ fn parse_two_view_matches(arr: PyReadonlyArray2<'_, f64>) -> PyResult<Vec<Match2
             "expected (N, 4) float64 array of [x1.x, x1.y, x2.x, x2.y] rows",
         ));
     }
+    crate::pyutils::require_aligned(&arr, "matches")?;
     let view = arr.as_array();
     Ok((0..shape[0])
         .map(|i| {
@@ -58,13 +61,16 @@ fn parse_two_view_matches(arr: PyReadonlyArray2<'_, f64>) -> PyResult<Vec<Match2
         .collect())
 }
 
-fn make_cfg(threshold: f64, max_iters: u32, confidence: f64) -> RansacConfig {
-    RansacConfig {
+/// Rejects a confidence outside (0, 1), which the driver would otherwise
+/// treat as "never stop early".
+fn make_cfg(threshold: f64, max_iters: u32, confidence: f64) -> PyResult<RansacConfig> {
+    crate::pyutils::require_valid_confidence(confidence)?;
+    Ok(RansacConfig {
         max_iters,
         confidence,
         inlier_threshold: threshold,
         ..Default::default()
-    }
+    })
 }
 
 fn mat3_to_row_major_vec(m: &kornia_algebra::Mat3F64) -> Vec<f64> {
@@ -74,27 +80,69 @@ fn mat3_to_row_major_vec(m: &kornia_algebra::Mat3F64) -> Vec<f64> {
     ]
 }
 
-/// `cv2.findFundamentalMat` analog. Returns a `RansacTwoViewResult`.
+/// Estimate a fundamental matrix with seven-point RANSAC and Sampson scoring.
+///
+/// # Arguments
+///
+/// * `matches` - `(N, 4)` float64 pixel correspondences.
+/// * `threshold` - Squared-pixel Sampson cutoff.
+/// * `max_iters` - Maximum number of minimal samples drawn.
+/// * `confidence` - Target probability of drawing an all-inlier sample,
+///   strictly between zero and one.
+/// * `seed` - Optional deterministic RNG seed (defaults to zero).
+/// * `solver` - `"7point"` (default; minimal solutions violating the oriented
+///   epipolar constraint are skipped) or `"8point"` for the original solver.
+///
+/// # Returns
+///
+/// A `RansacTwoViewResult` with the best matrix and its inlier mask.
+///
+/// # Errors
+///
+/// Returns `ValueError` for invalid input arrays, a confidence outside (0, 1)
+/// or an unknown solver.
+/// Insufficient or degenerate matches yield a result with no model.
+///
+/// # Example
+///
+/// ```python
+/// result = kornia_rs.ransac.fundamental(matches, solver="7point", seed=0)
+/// ```
 #[pyfunction]
-#[pyo3(signature = (matches, threshold=1.0, max_iters=1000, confidence=0.999, seed=None))]
+#[pyo3(signature = (matches, threshold=1.0, max_iters=1000, confidence=0.999, seed=None, *, solver="7point"))]
 pub fn fundamental(
     matches: PyReadonlyArray2<'_, f64>,
     threshold: f64,
     max_iters: u32,
     confidence: f64,
     seed: Option<u64>,
+    solver: &str,
 ) -> PyResult<PyRansacTwoViewResult> {
     let samples = parse_two_view_matches(matches)?;
     let mut sampler = UniformSampler::new(StdRng::seed_from_u64(seed.unwrap_or(0)));
     let consensus = ThresholdConsensus { threshold };
-    let cfg = make_cfg(threshold, max_iters, confidence);
-    let result = run(
-        &FundamentalEstimator,
-        &consensus,
-        &mut sampler,
-        &samples,
-        &cfg,
-    );
+    let cfg = make_cfg(threshold, max_iters, confidence)?;
+    let result = match solver {
+        "7point" => run(
+            &FundamentalEstimator,
+            &consensus,
+            &mut sampler,
+            &samples,
+            &cfg,
+        ),
+        "8point" => run(
+            &Fundamental8PointEstimator,
+            &consensus,
+            &mut sampler,
+            &samples,
+            &cfg,
+        ),
+        _ => {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "solver must be '7point' or '8point'",
+            ))
+        }
+    };
     Ok(PyRansacTwoViewResult {
         model: result.model.as_ref().map(mat3_to_row_major_vec),
         inliers: result.inliers,
@@ -105,6 +153,7 @@ pub fn fundamental(
 
 /// `cv2.findEssentialMat` analog. Inputs are **normalised** correspondences
 /// (apply `K⁻¹` before calling). Threshold is in normalised units.
+/// Raises `ValueError` for invalid input arrays or a confidence outside (0, 1).
 #[pyfunction]
 #[pyo3(signature = (matches, threshold=1e-4, max_iters=1000, confidence=0.999, seed=None))]
 pub fn essential(
@@ -117,7 +166,7 @@ pub fn essential(
     let samples = parse_two_view_matches(matches)?;
     let mut sampler = UniformSampler::new(StdRng::seed_from_u64(seed.unwrap_or(0)));
     let consensus = ThresholdConsensus { threshold };
-    let cfg = make_cfg(threshold, max_iters, confidence);
+    let cfg = make_cfg(threshold, max_iters, confidence)?;
     let result = run(
         &EssentialEstimator,
         &consensus,
@@ -133,7 +182,8 @@ pub fn essential(
     })
 }
 
-/// `cv2.findHomography` analog.
+/// `cv2.findHomography` analog. Raises `ValueError` for invalid input arrays
+/// or a confidence outside (0, 1).
 #[pyfunction]
 #[pyo3(signature = (matches, threshold=4.0, max_iters=1000, confidence=0.999, seed=None))]
 pub fn homography(
@@ -146,7 +196,7 @@ pub fn homography(
     let samples = parse_two_view_matches(matches)?;
     let mut sampler = UniformSampler::new(StdRng::seed_from_u64(seed.unwrap_or(0)));
     let consensus = ThresholdConsensus { threshold };
-    let cfg = make_cfg(threshold, max_iters, confidence);
+    let cfg = make_cfg(threshold, max_iters, confidence)?;
     let result = run(
         &HomographyEstimator,
         &consensus,

@@ -63,7 +63,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     kornia::image::ops::cast_and_scale(&image, &mut image_hwc_f32, 1.0 / 255.0)?;
 
     // convert to HWC -> CHW
-    let image_chw = image_hwc_f32.permute_axes([2, 0, 1]).as_contiguous();
+    let image_chw = image_hwc_f32.permute_axes([2, 0, 1])?.as_contiguous()?;
 
     // TODO: create a Tensor::insert_axis in kornia-rs
     let image_nchw = Tensor::from_shape_vec(

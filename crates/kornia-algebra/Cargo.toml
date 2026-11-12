@@ -19,6 +19,14 @@ name = "bench_linalg"
 harness = false
 name = "bench_l2_line"
 
+[[bench]]
+harness = false
+name = "bench_umeyama"
+
+[[bench]]
+harness = false
+name = "bench_simd_lanes"
+
 [dependencies]
 approx = { workspace = true, optional = true }
 glam = { workspace = true }
@@ -30,6 +38,7 @@ thiserror = { workspace = true }
 approx = { workspace = true }
 criterion = { workspace = true }
 faer = { workspace = true }
+wide = { workspace = true }
 
 [features]
 approx = ["dep:approx"]

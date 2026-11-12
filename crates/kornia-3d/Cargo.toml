@@ -19,6 +19,30 @@ name = "bench_linalg"
 harness = false
 name = "bench_twoview"
 
+[[bench]]
+harness = false
+name = "bench_fundamental"
+
+[[bench]]
+harness = false
+name = "bench_stereo_match"
+
+[[bench]]
+harness = false
+name = "bench_depth"
+
+[[bench]]
+harness = false
+name = "bench_voxel"
+
+[[bench]]
+harness = false
+name = "bench_affine_camera"
+
+[[bench]]
+harness = false
+name = "bench_affine_ba"
+
 [dependencies]
 bincode = { workspace = true }
 cudarc = { workspace = true, optional = true }
@@ -27,6 +51,7 @@ kiddo = { workspace = true }
 kornia-algebra = { workspace = true }
 kornia-image = { workspace = true }
 kornia-imgproc = { workspace = true }
+kornia-tensor = { workspace = true, optional = true }
 log = { workspace = true }
 nalgebra = { workspace = true }
 rand = { workspace = true }
@@ -39,9 +64,17 @@ approx = { workspace = true }
 criterion = { workspace = true }
 kornia-io = { workspace = true }
 kornia-tensor = { workspace = true }
+tempfile = { workspace = true }
 
 [features]
-# CUDA-resident rectification: uploads the remap tables once and serves device frames through
+# CUDA-resident rectification and stereo matching. Rectification uploads the remap tables once and serves device frames through
 # kornia-imgproc's residency-dispatched remap — see CudaStereoRectifier's doc for the
-# CPU<->CUDA byte-exact contract
-cuda = ["dep:cudarc", "kornia-image/cuda", "kornia-imgproc/cuda"]
+# CPU<->CUDA byte-exact contract. Also enables depth::CudaDepthProjector (device depth unprojection and
+# registration, bit-identical to the CPU).
+cuda = [
+  "dep:cudarc",
+  "dep:kornia-tensor",
+  "kornia-image/cuda",
+  "kornia-imgproc/cuda",
+  "kornia-tensor/cuda",
+]

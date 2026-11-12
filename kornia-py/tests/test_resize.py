@@ -16,3 +16,25 @@ def test_resize():
 
     img_resized: np.ndarray = K.imgproc.resize(img, (43, 34), "bilinear")
     assert img_resized.shape == (43, 34, 3)
+
+
+def test_image_resize_nearest_non_rgb_matches_reference():
+    """`Image.resize` on non-3-channel u8 images uses the generic nearest path;
+    it must match `src[min(y*src_h//dst_h, src_h-1), min(x*src_w//dst_w, src_w-1)]`."""
+    from kornia_rs.image import Image
+
+    rng = np.random.default_rng(0)
+    for (sh, sw, c), (dh, dw) in [
+        ((5, 7, 1), (13, 3)),
+        ((7, 5, 4), (2, 11)),
+        ((1, 1, 2), (3, 5)),
+        ((9, 17, 4), (9, 16)),
+        ((16, 9, 1), (33, 31)),
+    ]:
+        src = rng.integers(0, 256, (sh, sw, c), dtype=np.uint8)
+        got = Image(src).resize(dw, dh).numpy()
+        ys = np.minimum(np.arange(dh) * sh // dh, sh - 1)
+        xs = np.minimum(np.arange(dw) * sw // dw, sw - 1)
+        want = src[ys][:, xs]
+        assert got.shape == (dh, dw, c)
+        np.testing.assert_array_equal(got, want)

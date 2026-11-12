@@ -10,21 +10,26 @@ the publish step without explicit human confirmation of version + scope.
 
 ## CUDA — always in scope (unless the human opts out)
 
-**Every release must include the CUDA/GPU path.** The default `python_release.yml`
-builds wheels **without** `--features cuda`, so `pip install kornia-rs` ships a
-**CPU-only** wheel (no `kornia_rs.cuda`). Do NOT ship a release calling out GPU
-features from a wheel that lacks them.
+**Every release must include the CUDA/GPU path.** The linux wheels in
+`python_wheels.yml` build with `--features cuda`; keep it that way. Do NOT ship
+a release calling out GPU features from a wheel that lacks them.
 
 Before publishing wheels, confirm the GPU story:
 - kornia-py's `cuda` feature uses cudarc **dynamic loading** — a `--features cuda`
   wheel still imports on machines without CUDA and should fall back to CPU; the
   GPU path activates at runtime when `libcuda` + `libnvrtc` are present. So a
   single cuda-built wheel is the goal (universal), not a separate variant.
-- Add `--features cuda` to the linux wheel `args:` in `python_release.yml` (and
-  verify import still works with no CUDA present) so pip users get GPU.
+- The validation smoke test (below) checks the linux wheels import with no CUDA
+  present and that `kornia_rs.cuda.is_available()` returns False there.
 - Runtime requirements to put in the release notes: NVIDIA driver (`libcuda.so`)
-  **and** `nvrtc` (kernels are JIT-compiled), matching arch (x86_64 / aarch64 /
-  Jetson Tegra). Without nvrtc the GPU path can't compile kernels.
+  **and** `nvrtc` (most kernels are JIT-compiled; the cuda-oxide ones, e.g.
+  `gray_from_rgb_u8`, ship as PTX for sm_75+ GPUs and fall back to NVRTC on
+  older ones), matching arch
+  (x86_64 / aarch64 / Jetson Tegra). Without nvrtc the NVRTC kernels can't
+  compile.
+- `--features cuda` needs kornia-oxide-kernels' PTX: the wheel and Rust
+  release workflows build it first (`.github/actions/cuda-oxide-ptx`), and
+  the published kornia-oxide-kernels crate ships it.
 - Verify on a GPU box before announcing: `bench_cuda_warp_affine --features
   gpu-cuda` (Rust) and `import kornia_rs; kornia_rs.cuda...` (Python).
 
@@ -33,9 +38,14 @@ Before publishing wheels, confirm the GPU story:
 - Workspace version: single source in root `Cargo.toml` (`version = "..."`, all
   crates inherit via `version.workspace = true`).
 - Publish script: `scripts/release_rust.sh` — topological, idempotent, skips
-  already-published versions. Excludes `kornia`, `kornia-vlm`, `kornia-apriltag`.
+  already-published versions. The publish set is its `PUBLISH_ORDER` /
+  `NOT_PUBLISHED` arrays; `--check` fails if a publishable crate is in neither.
+  For the cuda-oxide kernel crate's publish, see `docs/cuda-oxide.md`.
 - CI publish: `.github/workflows/rust_release.yml` (`workflow_dispatch`, guarded
   by typing `publish`) and `.github/workflows/python_release.yml` (wheels).
+- Wheel build matrix lives in `.github/workflows/python_wheels.yml`, shared by
+  `Python Release` and `Python Release Validation` (builds + smoke-tests, never
+  publishes). Change the build only there.
 - Tag convention: `vX.Y.Z`, pre-releases `vX.Y.Z-rc.N`.
 - User-facing notes live in **`CHANGELOG.md`** (newest first) AND the GitHub
   release body. Keep them consistent.
@@ -49,23 +59,26 @@ Create one todo per step.
 2. **Gather what changed.** `git log <last-tag>..main --oneline --no-merges`.
    Group by theme (not per-commit). Read the previous CHANGELOG.md entries first
    to match tone and altitude — user-impact prose, not a commit dump.
-3. **Update `CHANGELOG.md`:**
-   - Move the curated items from `## [Unreleased]` into a new dated section
-     `## [X.Y.Z] — YYYY-MM-DD` (for an rc, keep it labelled `(pre-release)`).
-   - Reset `## [Unreleased]` to empty.
+3. **Update `CHANGELOG.md`** from the fragments in `changelog.d/`:
+   - `pixi run changelog-preview`, curate the fragments (merge duplicates,
+     fix wording) in the release PR, then
+     `python3 scripts/changelog.py build --version X.Y.Z --date YYYY-MM-DD`
+     (rc: `--version "X.Y.Z-rc.N"` and add ` (pre-release)` to the heading).
+     It moves `[Unreleased]` into the dated section, resets it and deletes the
+     fragments. The release PR carries the `no-changelog` label.
    - Add/refresh the compare link at the bottom **referencing the previous
      release tag**: `[X.Y.Z]: https://github.com/kornia/kornia-rs/compare/<prev-tag>...vX.Y.Z`.
      This is what keeps the changelog navigable across releases.
    - Dates: ask the human or read from the environment; never invent one.
 4. **Bump version** in root `Cargo.toml` — BOTH places: `workspace.package.version`
-   AND every kornia-* pin in `[workspace.dependencies]` (11 lines; Cargo cannot
+   AND every kornia-* pin in `[workspace.dependencies]` (one per kornia-* crate; Cargo cannot
    inherit those, and locally `path` wins so a stale pin builds fine and only
    ships a wrong requirement at publish — this bit the rc.5 cut).
    `sed -i 's/version = "<old>"/version = "<new>"/g' Cargo.toml` covers both;
    `python3 scripts/check_version_pins.py` (also a pre-commit hook on
    Cargo.toml) verifies. Then `cargo check` so `Cargo.lock` reflects the bump.
-   Sanity: the release commit's Cargo.toml diff should touch ~12 version lines,
-   not 1 — compare against the previous release commit's diff shape.
+   Sanity: the release commit's Cargo.toml diff should touch every kornia-* pin
+   plus the workspace version, not 1 — compare against the previous release commit's diff shape.
    kornia-cpp/version.hpp is gitignored + regenerated by build.rs (run
    `cargo check -p kornia-cpp` if doing by-hand CMake builds); kornia-py
    needs nothing (workspace-inherited version, pyproject dynamic).
@@ -73,13 +86,23 @@ Create one todo per step.
    with the version bump + CHANGELOG. Open PR, let CI pass, get it merged. Never
    force-push a contributor's fork branch — release commits go on a repo branch.
 6. **Tag** the merged commit `vX.Y.Z` and push the tag.
-7. **Publish** (only after human types the go-ahead):
+7. **Validate before publishing** (blocking, no exceptions):
+   - Python: dispatch `Python Release Validation` on the tag with the FULL
+     matrix and wait for every job to pass:
+     `gh workflow run python_release_validate.yml -R kornia/kornia-rs --ref vX.Y.Z -f subset=full`
+     then `gh run watch`. `minimal` (py3.12 only) is NOT enough for a release:
+     free-threaded (3.13t/3.14t), py3.8 and cross-built wheels only build in
+     `full`. Any red job = do not publish.
+   - Rust: `scripts/release_rust.sh --check` and the plan run (no `--execute`)
+     must list exactly the crates/versions expected.
+   - Report the validation run URL to the human with the go-ahead request.
+8. **Publish** (only after validation is green AND the human types the go-ahead):
    - Rust: run `rust_release.yml` (`workflow_dispatch`, confirm field `publish`),
      or locally `scripts/release_rust.sh` (plan) → `--execute`.
    - Python: run `python_release.yml`.
-8. **GitHub release:** `gh release create vX.Y.Z` (add `--prerelease` for rc)
+9. **GitHub release:** `gh release create vX.Y.Z` (add `--prerelease` for rc)
    with the body copied from the new CHANGELOG section.
-9. **Verify:** crate versions on crates.io, `pip install --pre kornia-rs==X.Y.Z`,
+10. **Verify:** crate versions on crates.io, `pip install --pre kornia-rs==X.Y.Z`,
    release marked pre-release if rc.
 
 ## Red flags
@@ -88,3 +111,6 @@ Create one todo per step.
 - CHANGELOG untouched → a release without a changelog entry is incomplete.
 - No compare link / wrong previous tag → changelog history breaks.
 - Pushing to a fork branch → release work belongs on a repo `release/*` branch.
+- Dispatching `python_release.yml` without a green FULL `Python Release
+  Validation` run on the same ref → stop; a failed matrix job mid-publish
+  leaves PyPI with a partial release.

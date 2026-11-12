@@ -1,4 +1,4 @@
-use crate::{allocator::host_alloc, storage::TensorStorage, Tensor};
+use crate::Tensor;
 
 impl<T, const N: usize> bincode::enc::Encode for Tensor<T, N>
 where
@@ -22,14 +22,12 @@ where
     fn decode<D: bincode::de::Decoder<Context = C>>(
         decoder: &mut D,
     ) -> Result<Self, bincode::error::DecodeError> {
-        let shape = bincode::Decode::decode(decoder)?;
-        let strides = bincode::Decode::decode(decoder)?;
-        let data = bincode::Decode::decode(decoder)?;
-        Ok(Self {
-            shape,
-            strides,
-            storage: TensorStorage::from_vec(data, host_alloc()),
-        })
+        let shape: [usize; N] = bincode::Decode::decode(decoder)?;
+        let strides: [usize; N] = bincode::Decode::decode(decoder)?;
+        let data: Vec<T> = bincode::Decode::decode(decoder)?;
+        // The input is untrusted: reject any shape/strides that disagree with `data`.
+        Tensor::from_shape_strides_vec(shape, strides, data)
+            .map_err(|e| bincode::error::DecodeError::OtherString(e.to_string()))
     }
 }
 
@@ -46,6 +44,23 @@ mod tests {
         let deserialized: (Tensor<u8, 2>, usize) =
             bincode::decode_from_slice(&serialized[..length], config)?;
         assert_eq!(tensor.as_slice(), deserialized.0.as_slice());
+        Ok(())
+    }
+
+    #[test]
+    fn test_bincode_rejects_inconsistent_layout() -> Result<(), Box<dyn std::error::Error>> {
+        // Regression: a crafted payload whose shape claims more elements than `data`.
+        let config = bincode::config::standard();
+        let payload = ([4usize, 4], [4usize, 1], vec![1u8]);
+        let bytes = bincode::encode_to_vec(&payload, config)?;
+        let res: Result<(Tensor<u8, 2>, usize), _> = bincode::decode_from_slice(&bytes, config);
+        assert!(res.is_err());
+
+        // Strides that reach past the data are rejected too.
+        let payload = ([2usize, 2], [100usize, 1], vec![1u8, 2, 3, 4]);
+        let bytes = bincode::encode_to_vec(&payload, config)?;
+        let res: Result<(Tensor<u8, 2>, usize), _> = bincode::decode_from_slice(&bytes, config);
+        assert!(res.is_err());
         Ok(())
     }
 }

@@ -170,7 +170,7 @@ fn image_to_gray_u8(
         }
         let shape = arr.shape();
         let (h, w) = (shape[0], shape[1]);
-        let slice = unsafe { std::slice::from_raw_parts(arr.data(), h * w) };
+        let slice = crate::pyutils::c_slice(arr, "gray array")?;
         let size = ImageSize {
             width: w,
             height: h,
@@ -196,7 +196,7 @@ fn image_to_gray_u8(
             width: w,
             height: h,
         };
-        let rgb_slice = unsafe { std::slice::from_raw_parts(arr.data(), h * w * 3) };
+        let rgb_slice = crate::pyutils::c_slice(arr, "rgb array")?;
         let rgb_img = Image::<u8, 3>::from_size_slice(size, rgb_slice).map_err(to_pyerr)?;
         let mut gray = Image::from_size_val(size, 0u8).map_err(to_pyerr)?;
         py.detach(|| gray_from_rgb_u8(&rgb_img, &mut gray))

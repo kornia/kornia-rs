@@ -161,6 +161,42 @@ fn bench_orb_detect_extract(c: &mut Criterion) {
     group.finish();
 }
 
+fn load_mh01_gray_u8(name: &str) -> Image<u8, 1> {
+    let img_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("../../tests/data/{name}"));
+    kornia_io::png::read_image_png_mono8(&img_path)
+        .expect("failed to read test PNG")
+        .0
+}
+
+fn bench_orb_detect_extract_u8(c: &mut Criterion) {
+    let frame = load_mh01_gray_u8("mh01_frame1.png");
+    let mut group = c.benchmark_group("orb_detect_extract_u8");
+    group.sample_size(20);
+
+    for &n_kp in &[500, 1000, 2000] {
+        let orb = OrbDetector {
+            n_keypoints: n_kp,
+            ..Default::default()
+        };
+        group.bench_with_input(BenchmarkId::new("fused", n_kp), &n_kp, |b, _| {
+            b.iter(|| std::hint::black_box(orb.detect_and_extract_u8(&frame).unwrap()));
+        });
+        // Level buffers live across iterations, as in a tracker reusing them
+        // frame to frame.
+        let mut levels = Vec::new();
+        group.bench_with_input(BenchmarkId::new("from_pyramid", n_kp), &n_kp, |b, _| {
+            b.iter(|| {
+                orb.build_pyramid_u8_into(&frame, &mut levels).unwrap();
+                let pyramid: Vec<&Image<u8, 1>> =
+                    std::iter::once(&frame).chain(levels.iter()).collect();
+                std::hint::black_box(orb.detect_and_extract_u8_from_pyramid(&pyramid).unwrap())
+            });
+        });
+    }
+    group.finish();
+}
+
 fn bench_descriptor_matching(c: &mut Criterion) {
     let frame0 = load_mh01_gray_f32("mh01_frame1.png");
     let frame1 = load_mh01_gray_f32("mh01_frame2.png");
@@ -168,30 +204,80 @@ fn bench_descriptor_matching(c: &mut Criterion) {
     let mut group = c.benchmark_group("descriptor_matching");
     group.sample_size(20);
 
-    for &n_kp in &[500, 1000, 2000] {
-        group.bench_with_input(BenchmarkId::new("n_keypoints", n_kp), &n_kp, |b, &n_kp| {
-            let orb = OrbDetector {
-                n_keypoints: n_kp,
-                ..Default::default()
-            };
-            let feat0 = orb.detect_and_extract(&frame0).unwrap();
-            let feat1 = orb.detect_and_extract(&frame1).unwrap();
-            let config = OrbMatchConfig {
-                nn_ratio: 0.6,
-                th_low: 50,
-                check_orientation: true,
-                histo_length: 30,
-            };
+    for &n_kp in &[500, 1000, 2000, 4096] {
+        let orb = OrbDetector {
+            n_keypoints: n_kp,
+            ..Default::default()
+        };
+        let feat0 = orb.detect_and_extract(&frame0).unwrap();
+        let feat1 = orb.detect_and_extract(&frame1).unwrap();
+        let config = OrbMatchConfig::default();
+        group.bench_with_input(BenchmarkId::new("n_keypoints", n_kp), &n_kp, |b, _| {
             b.iter(|| {
                 std::hint::black_box(match_orb_descriptors(
-                    &feat0.orientations,
-                    &feat0.descriptors,
-                    &feat1.orientations,
-                    &feat1.descriptors,
+                    std::hint::black_box(&feat0.orientations),
+                    std::hint::black_box(&feat0.descriptors),
+                    std::hint::black_box(&feat1.orientations),
+                    std::hint::black_box(&feat1.descriptors),
                     config,
                 ))
             });
         });
+        for threads in [1, 4] {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            for cross_check in [false, true] {
+                let direction = if cross_check { "mutual" } else { "forward" };
+                group.bench_with_input(
+                    BenchmarkId::new(format!("hamming_{direction}_{threads}_threads"), n_kp),
+                    &n_kp,
+                    |b, _| {
+                        // Include entry into the pool in each timed call, as real
+                        // callers do. Feature extraction stays outside the timing.
+                        b.iter(|| {
+                            pool.install(|| {
+                                std::hint::black_box(match_descriptors(
+                                    std::hint::black_box(&feat0.descriptors),
+                                    std::hint::black_box(&feat1.descriptors),
+                                    None,
+                                    cross_check,
+                                    None,
+                                ))
+                            })
+                        });
+                    },
+                );
+            }
+            let predicted = OrbFeaturesView {
+                descriptors: &feat0.descriptors,
+                keypoints_xy: &feat0.keypoints_xy,
+                octaves: &feat0.octaves,
+            };
+            let observed = OrbFeaturesView {
+                descriptors: &feat1.descriptors,
+                keypoints_xy: &feat1.keypoints_xy,
+                octaves: &feat1.octaves,
+            };
+            let cfg = ByProjectionConfig {
+                scale_factors: (0..orb.n_scales)
+                    .map(|o| orb.downscale.powi(o as i32))
+                    .collect(),
+                ..Default::default()
+            };
+            group.bench_with_input(
+                BenchmarkId::new(format!("projection_{threads}_threads"), n_kp),
+                &n_kp,
+                |b, _| {
+                    b.iter(|| {
+                        pool.install(|| {
+                            std::hint::black_box(match_orb_by_projection(predicted, observed, &cfg))
+                        })
+                    });
+                },
+            );
+        }
     }
     group.finish();
 }
@@ -285,7 +371,8 @@ criterion_group!(
     name = benches;
     config = Criterion::default().warm_up_time(std::time::Duration::new(10, 0));
     targets = bench_harris_response, bench_dog_response, bench_fast_corner_detect,
-              bench_orb_detect_extract, bench_descriptor_matching, bench_sift
+              bench_orb_detect_extract, bench_orb_detect_extract_u8, bench_descriptor_matching,
+              bench_sift
 );
 criterion_main!(benches);
 

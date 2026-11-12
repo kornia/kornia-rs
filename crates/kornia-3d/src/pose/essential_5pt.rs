@@ -308,6 +308,10 @@ fn givens_row_pair_10(
     s: f64,
 ) {
     debug_assert!(row_k + 1 < 10 && end <= 10 && start <= end);
+    // The NEON path below indexes the rows through raw pointers up to `end`, so
+    // clamp in release builds too (no-op for valid inputs).
+    let end = end.min(10);
+    let start = start.min(end);
     // Safely disjoint-borrow the two rows.
     let (top, bot) = {
         let (hi, lo) = h.split_at_mut(row_k + 1);

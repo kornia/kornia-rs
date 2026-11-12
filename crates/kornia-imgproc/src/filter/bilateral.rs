@@ -106,17 +106,35 @@ pub(crate) fn simd_region_end(width: usize) -> usize {
     }
 }
 
+/// Largest window radius accepted by [`bilateral_filter`]. A radius-`r`
+/// circular window has ~`3.14 r^2` taps per pixel, so this is already far
+/// beyond any practical use (~3.3M taps); it bounds the tap-table allocation
+/// and keeps `dy*dy + dx*dx` well inside `i32`.
+pub const BILATERAL_MAX_RADIUS: i32 = 1024;
+
+/// cv2's radius rule (`d/2`, or `round(1.5 * sigma_space)` for `d <= 0`,
+/// floored at 1), computed without overflow. May exceed
+/// [`BILATERAL_MAX_RADIUS`]; callers validate.
+fn bilateral_radius(d: i32, sigma_space: f64) -> i64 {
+    let r = if d <= 0 {
+        // Saturating float->int cast; NaN maps to 0 (then floored to 1).
+        (sigma_space * 1.5).round_ties_even() as i64
+    } else {
+        (d / 2) as i64
+    };
+    r.max(1)
+}
+
 /// Build cv2-identical bilateral tables (see module docs).
+///
+/// The radius is clamped to [`BILATERAL_MAX_RADIUS`] so that huge `d` /
+/// `sigma_space` values cannot overflow the tap arithmetic or exhaust
+/// memory; [`bilateral_filter`] rejects such parameters up front.
 pub fn build_tables(d: i32, sigma_color: f64, sigma_space: f64) -> BilateralTables {
     let gauss_color_coeff = (-0.5 / (sigma_color * sigma_color)) as f32;
     let gauss_space_coeff = (-0.5 / (sigma_space * sigma_space)) as f32;
 
-    let radius = if d <= 0 {
-        (sigma_space * 1.5).round_ties_even() as i32
-    } else {
-        d / 2
-    }
-    .max(1);
+    let radius = bilateral_radius(d, sigma_space).min(BILATERAL_MAX_RADIUS as i64) as i32;
 
     // Color table: cv2 fills 0..(256 - nlanes) with its SIMD exp polynomial
     // and the tail with scalar expf; NEON nlanes = 4.
@@ -195,6 +213,21 @@ pub fn bilateral_filter(
             ));
         }
         dst.as_slice_mut().copy_from_slice(src.as_slice());
+        return Ok(());
+    }
+
+    // Reject absurd windows instead of overflowing / exhausting memory
+    // while building the tap table.
+    let radius = bilateral_radius(d, sigma_space);
+    if radius > BILATERAL_MAX_RADIUS as i64 {
+        return Err(ImageError::InvalidKernelLength(
+            usize::try_from(radius).unwrap_or(usize::MAX),
+            BILATERAL_MAX_RADIUS as usize,
+        ));
+    }
+
+    // Empty image: nothing to filter (a zero row length would panic below).
+    if src.cols() == 0 || src.rows() == 0 {
         return Ok(());
     }
 
@@ -464,5 +497,40 @@ mod cuda_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod parameter_validation_tests {
+    use super::*;
+    use kornia_image::ImageSize;
+
+    /// Regression: huge `d` / `sigma_space` overflowed the i32 tap arithmetic
+    /// (and tried to allocate an enormous tap table); empty images panicked.
+    #[test]
+    fn bilateral_rejects_huge_windows_and_handles_empty() -> Result<(), ImageError> {
+        let size = ImageSize {
+            width: 8,
+            height: 8,
+        };
+        let src = Image::<u8, 1>::from_size_val(size, 5)?;
+        let mut dst = Image::<u8, 1>::from_size_val(size, 0)?;
+        assert!(bilateral_filter(&src, &mut dst, 0, 30.0, 1.0e12).is_err());
+        assert!(bilateral_filter(&src, &mut dst, i32::MAX, 30.0, 3.0).is_err());
+        assert!(bilateral_filter(&src, &mut dst, 0, 30.0, f64::INFINITY).is_err());
+        // Tables stay bounded even when called directly.
+        assert!(build_tables(i32::MAX, 30.0, 3.0).radius <= BILATERAL_MAX_RADIUS);
+        // Normal parameters still work.
+        bilateral_filter(&src, &mut dst, 5, 30.0, 3.0)?;
+        assert!(dst.as_slice().iter().all(|&v| v == 5));
+
+        let empty = ImageSize {
+            width: 0,
+            height: 3,
+        };
+        let src = Image::<u8, 1>::from_size_val(empty, 5)?;
+        let mut dst = Image::<u8, 1>::from_size_val(empty, 0)?;
+        bilateral_filter(&src, &mut dst, 5, 30.0, 3.0)?;
+        Ok(())
     }
 }

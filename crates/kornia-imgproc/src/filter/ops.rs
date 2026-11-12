@@ -1,3 +1,4 @@
+use kornia_algebra::simd::F32x8;
 use kornia_image::{Image, ImageError, ImageSize};
 use rayon::{
     iter::{IndexedParallelIterator, ParallelIterator},
@@ -501,6 +502,86 @@ pub fn spatial_gradient_float_parallel<const C: usize>(
     Ok(())
 }
 
+/// Vectors per step of [`scharr_row_interior_c1`]: a wide step whose
+/// independent add chains overlap on the add ports, then single vectors.
+const SCHARR_VECTORS_PER_STEP: [usize; 2] = [4, 1];
+
+/// Interior columns of one single-channel row of
+/// [`scharr_spatial_gradient_float`], [`F32x8::LANES`] outputs per vector.
+///
+/// Each lane runs the scalar kernel's exact sequence (nine products added in
+/// `dy`-major order, separate `*` and `+`, no FMA), so the output is
+/// bit-identical to the per-pixel loop.
+///
+/// # Returns
+///
+/// The first column not written: columns `1..` it are done, the caller's
+/// per-pixel loop covers the rest of the row.
+fn scharr_row_interior_c1(
+    src: &[f32],
+    cols: usize,
+    r: usize,
+    kx: &[[f32; 3]; 3],
+    ky: &[[f32; 3]; 3],
+    dx_row: &mut [f32],
+    dy_row: &mut [f32],
+) -> usize {
+    const LANES: usize = F32x8::LANES;
+    let wx = kx.map(|row| row.map(F32x8::splat));
+    let wy = ky.map(|row| row.map(F32x8::splat));
+    let end = cols - 1;
+    let mut c = 1usize;
+    for width in SCHARR_VECTORS_PER_STEP {
+        while c + LANES * width <= end {
+            let Some((sum_x, sum_y)) = scharr_lanes(src, cols, r, c, width, &wx, &wy) else {
+                return c;
+            };
+            for v in 0..width {
+                let cv = c + LANES * v;
+                let stored = dx_row
+                    .get_mut(cv..)
+                    .and_then(|d| sum_x[v].write_to_slice(d))
+                    .and_then(|_| dy_row.get_mut(cv..))
+                    .and_then(|d| sum_y[v].write_to_slice(d));
+                if stored.is_none() {
+                    return c;
+                }
+            }
+            c += LANES * width;
+        }
+    }
+    c
+}
+
+type ScharrSums = [F32x8; SCHARR_VECTORS_PER_STEP[0]];
+
+/// `width` vectors of [`scharr_row_interior_c1`] sums starting at column `c`
+/// of row `r`; `None` if a load runs past `src`.
+#[inline(always)]
+fn scharr_lanes(
+    src: &[f32],
+    cols: usize,
+    r: usize,
+    c: usize,
+    width: usize,
+    wx: &[[F32x8; 3]; 3],
+    wy: &[[F32x8; 3]; 3],
+) -> Option<(ScharrSums, ScharrSums)> {
+    let mut sum_x = [F32x8::ZERO; SCHARR_VECTORS_PER_STEP[0]];
+    let mut sum_y = [F32x8::ZERO; SCHARR_VECTORS_PER_STEP[0]];
+    for (dy, (wx_row, wy_row)) in wx.iter().zip(wy).enumerate() {
+        let row = (r + dy - 1) * cols + c - 1;
+        for (dx, (&wx, &wy)) in wx_row.iter().zip(wy_row).enumerate() {
+            for v in 0..width {
+                let val = F32x8::from_slice(src.get(row + dx + F32x8::LANES * v..)?)?;
+                sum_x[v] += val * wx;
+                sum_y[v] += val * wy;
+            }
+        }
+    }
+    Some((sum_x, sum_y))
+}
+
 /// Compute the first order image derivative in both x and y using a Scharr operator.
 ///
 /// # Arguments
@@ -541,11 +622,23 @@ pub fn scharr_spatial_gradient_float<const C: usize>(
         .zip(dy.as_slice_mut().par_chunks_mut(cols * C))
         .enumerate()
         .for_each(|(r, (dx_row, dy_row))| {
-            dx_row
+            // Single-channel interior rows: vectors cover columns 1..vector_end,
+            // so the per-pixel loop visits column 0 and vector_end.. only.
+            let vector_end =
+                if C == 1 && src.rows() >= 2 && src.cols() >= 2 && r > 0 && r < src.rows() - 1 {
+                    scharr_row_interior_c1(src_data, cols, r, &scharr_x, &scharr_y, dx_row, dy_row)
+                } else {
+                    1
+                };
+            let (dx_head, dx_tail) = dx_row.split_at_mut(vector_end * C);
+            let (dy_head, dy_tail) = dy_row.split_at_mut(vector_end * C);
+            dx_head
                 .chunks_mut(C)
-                .zip(dy_row.chunks_mut(C))
-                .enumerate()
-                .for_each(|(c, (dx_c, dy_c))| {
+                .zip(dy_head.chunks_mut(C))
+                .take(1)
+                .chain(dx_tail.chunks_mut(C).zip(dy_tail.chunks_mut(C)))
+                .zip((0..1).chain(vector_end..cols))
+                .for_each(|((dx_c, dy_c), c)| {
                     let mut sum_x = [0.0; C];
                     let mut sum_y = [0.0; C];
                     if src.rows() >= 2
@@ -653,6 +746,11 @@ pub fn gaussian_blur_u8<const C: usize>(
 
     let ((kx, ky), (sx, sy)) = resolve_gaussian_params(kernel_size, sigma)?;
     let path = blur_u8_path(kx, ky, sx, sy);
+
+    // Empty image: nothing to blur.
+    if src.cols() == 0 || src.rows() == 0 {
+        return Ok(());
+    }
 
     try_device!(src, dst, |stream| match path {
         BlurU8Path::Binomial3 => super::cuda::binomial3_u8_cuda(src, dst, stream),
@@ -884,14 +982,16 @@ fn separable_blur_u8_striped(
             // u8 ring buffer: `ksize_y` H-passed-and-shifted rows. Source row
             // with absolute index `r` lives at slot `r.rem_euclid(ksize_y)`.
             let ring_len = ksize_y * stride;
-            let mut ring: Vec<u8> = Vec::with_capacity(ring_len);
-            // Safety: every slot is written by an H-pass before any V-pass read.
-            #[allow(clippy::uninit_vec)]
-            unsafe {
-                ring.set_len(ring_len)
-            };
+            // Zero-initialised (not `set_len` on uninit memory): every slot is
+            // written by an H-pass before any V-pass read anyway, and the
+            // one-per-strip memset is negligible next to the strip's work.
+            let mut ring: Vec<u8> = vec![0u8; ring_len];
 
             let mut padded = vec![0u8; padded_stride];
+            // Tap pointer table sized to the kernel (a fixed `[_; 32]` used to
+            // panic for 33+ taps); one small allocation per strip, like the
+            // ring buffers above.
+            let mut tap_ptrs = vec![std::ptr::null::<u8>(); ksize_y];
 
             #[cfg(target_arch = "aarch64")]
             let kvecs_x: Vec<_> = kernel_x
@@ -949,13 +1049,16 @@ fn separable_blur_u8_striped(
                 }
 
                 // Tap pointers: tap k = src row (out_start + oi - half_y + k),
-                // at ring slot `that.rem_euclid(ksize_y)`.
-                let mut tap_ptrs: [*const u8; 32] = [std::ptr::null(); 32];
+                // at ring slot `that.rem_euclid(ksize_y)`. The table is sized
+                // to the kernel (it used to be a fixed `[_; 32]`, which
+                // panicked for kernels of 33+ taps).
                 let ring_ptr = ring.as_ptr();
-                for k in 0..ksize_y {
+                for (k, tap) in tap_ptrs.iter_mut().enumerate() {
                     let r_abs = out_start as isize + oi as isize - half_y as isize + k as isize;
                     let slot = r_abs.rem_euclid(ksize_y as isize) as usize;
-                    tap_ptrs[k] = unsafe { ring_ptr.add(slot * stride) };
+                    // SAFETY: `slot < ksize_y`, so `slot * stride + stride <=
+                    // ring.len()`; the pointer stays inside `ring`.
+                    *tap = unsafe { ring_ptr.add(slot * stride) };
                 }
 
                 let out_row = &mut strip_dst[oi * stride..(oi + 1) * stride];
@@ -1078,12 +1181,14 @@ fn separable_blur_u8_striped(
 
                 #[cfg(not(target_arch = "aarch64"))]
                 {
-                    for j in 0..stride {
+                    for (j, out) in out_row.iter_mut().enumerate() {
                         let mut acc = 0u32;
-                        for ki in 0..ksize_y {
-                            acc += unsafe { *tap_ptrs[ki].add(j) } as u32 * kernel_y[ki] as u32;
+                        for (&tp, &kw) in tap_ptrs.iter().zip(kernel_y) {
+                            // SAFETY: each tap points at a `stride`-byte ring
+                            // row and `j < stride`.
+                            acc += unsafe { *tp.add(j) } as u32 * kw as u32;
                         }
-                        out_row[j] = ((acc + 128) >> 8) as u8;
+                        *out = ((acc + 128) >> 8) as u8;
                     }
                 }
             }
@@ -1324,11 +1429,8 @@ fn gaussian_blur_7x7_sym_u8<const C: usize>(
         |(strip_dst, &(out_start, out_end))| {
             let out_rows = out_end - out_start;
             let ring_len = KSIZE * stride;
-            let mut ring: Vec<u8> = Vec::with_capacity(ring_len);
-            #[allow(clippy::uninit_vec)]
-            unsafe {
-                ring.set_len(ring_len)
-            };
+            // Zero-initialised: see `separable_blur_u8_striped`.
+            let mut ring: Vec<u8> = vec![0u8; ring_len];
             let mut padded = vec![0u8; padded_stride];
 
             // Prime: H-pass rows [out_start - HALF, out_start + HALF] into the ring.
@@ -1719,11 +1821,8 @@ fn gaussian_blur_7x7_sym_u8_avx2<const C: usize>(
         |(strip_dst, &(out_start, out_end))| {
             let out_rows = out_end - out_start;
             let ring_len = KSIZE * stride;
-            let mut ring: Vec<u8> = Vec::with_capacity(ring_len);
-            #[allow(clippy::uninit_vec)]
-            unsafe {
-                ring.set_len(ring_len)
-            };
+            // Zero-initialised: see `separable_blur_u8_striped`.
+            let mut ring: Vec<u8> = vec![0u8; ring_len];
             let mut padded = vec![0u8; padded_stride];
 
             for k in 0..KSIZE {
@@ -1979,6 +2078,59 @@ unsafe fn hpass_sym7_row_avx2<const C: usize>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Independent per-pixel Scharr for one channel: every output reads its
+    /// nine taps with replicated borders and adds the products in `dy`-major
+    /// order, the order of the library kernel, so the two agree bit for bit.
+    fn scharr_c1_reference(src: &[f32], width: usize, height: usize) -> (Vec<f32>, Vec<f32>) {
+        let (kx, ky) = kernels::normalized_scharr_kernel3();
+        let mut dx = vec![0.0f32; width * height];
+        let mut dy = vec![0.0f32; width * height];
+        for (i, (out_x, out_y)) in dx.iter_mut().zip(dy.iter_mut()).enumerate() {
+            let (x, y) = (i % width, i / width);
+            let (mut sum_x, mut sum_y) = (0.0f32, 0.0f32);
+            for j in 0..3 {
+                let sy = (y + j).clamp(1, height) - 1;
+                for k in 0..3 {
+                    let sx = (x + k).clamp(1, width) - 1;
+                    let val = src[sy * width + sx];
+                    sum_x += val * kx[j][k];
+                    sum_y += val * ky[j][k];
+                }
+            }
+            (*out_x, *out_y) = (sum_x, sum_y);
+        }
+        (dx, dy)
+    }
+
+    /// The single-channel vector rows, the per-pixel tail and the borders
+    /// must match the per-pixel reference bit for bit (no FMA anywhere).
+    #[test]
+    fn test_scharr_float_vector_matches_scalar_bits() -> Result<(), ImageError> {
+        let mut state = 0x2545_f491_u32;
+        for (width, height) in [(2, 2), (3, 5), (9, 4), (17, 9), (94, 60), (752, 480)] {
+            let size = ImageSize { width, height };
+            let plane: Vec<f32> = (0..width * height)
+                .map(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 17;
+                    state ^= state << 5;
+                    (state % 25_500) as f32 / 100.0
+                })
+                .collect();
+            let (expected_dx, expected_dy) = scharr_c1_reference(&plane, width, height);
+            let src = Image::<f32, 1>::new(size, plane)?;
+            let mut dx = Image::<f32, 1>::from_size_val(size, 0.0)?;
+            let mut dy = Image::<f32, 1>::from_size_val(size, 0.0)?;
+            scharr_spatial_gradient_float(&src, &mut dx, &mut dy)?;
+            for i in 0..width * height {
+                let at = format!("{width}x{height} at {i}");
+                assert_eq!(dx.as_slice()[i].to_bits(), expected_dx[i].to_bits(), "{at}");
+                assert_eq!(dy.as_slice()[i].to_bits(), expected_dy[i].to_bits(), "{at}");
+            }
+        }
+        Ok(())
+    }
 
     #[cfg(target_arch = "aarch64")]
     #[test]
@@ -2373,6 +2525,56 @@ mod tests {
         assert_eq!(dx.channel(0)?.as_slice()[12], 1.0000); // 1.0 change per x-pixel
         assert_eq!(dy.channel(0)?.as_slice()[12], 5.0000); // 5.0 change per y-pixel (width=5)
 
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod gaussian_u8_regression_tests {
+    use kornia_image::{Image, ImageError, ImageSize};
+
+    /// Regression: kernels of 33+ taps indexed past a fixed `[_; 32]` tap
+    /// table (panic); empty images panicked on `step_by(0)`.
+    #[test]
+    fn gaussian_blur_u8_large_kernels_and_empty() -> Result<(), ImageError> {
+        let size = ImageSize {
+            width: 64,
+            height: 48,
+        };
+        let src = Image::<u8, 1>::from_size_val(size, 7)?;
+        for (k, sigma) in [
+            ((0, 0), (4.0, 4.0)),
+            ((35, 41), (0.0, 0.0)),
+            ((33, 3), (5.0, 0.8)),
+        ] {
+            let mut dst = Image::<u8, 1>::from_size_val(size, 0)?;
+            super::gaussian_blur_u8(&src, &mut dst, k, sigma)?;
+            assert!(
+                dst.as_slice().iter().all(|&v| v == 7),
+                "constant image must stay constant for k={k:?}"
+            );
+        }
+        let src3 = Image::<u8, 3>::from_size_val(size, 9)?;
+        let mut dst3 = Image::<u8, 3>::from_size_val(size, 0)?;
+        super::gaussian_blur_u8(&src3, &mut dst3, (37, 37), (0.0, 0.0))?;
+        assert!(dst3.as_slice().iter().all(|&v| v == 9));
+
+        for size in [
+            ImageSize {
+                width: 0,
+                height: 5,
+            },
+            ImageSize {
+                width: 5,
+                height: 0,
+            },
+        ] {
+            let src = Image::<u8, 1>::from_size_val(size, 7)?;
+            let mut dst = Image::<u8, 1>::from_size_val(size, 0)?;
+            for k in [3, 5, 7] {
+                super::gaussian_blur_u8(&src, &mut dst, (k, k), (1.0, 1.0))?;
+            }
+        }
         Ok(())
     }
 }

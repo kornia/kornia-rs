@@ -67,6 +67,7 @@ pub(crate) fn default_stream_for(ordinal: i32) -> PyResult<Arc<CudaStream>> {
             "invalid CUDA device ordinal {ordinal}"
         )));
     }
+    driver_init().map_err(PyRuntimeError::new_err)?;
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let mut map = cache.lock().expect("stream cache poisoned");
     map.entry(ordinal)
@@ -77,6 +78,23 @@ pub(crate) fn default_stream_for(ordinal: i32) -> PyResult<Arc<CudaStream>> {
         })
         .clone()
         .map_err(PyRuntimeError::new_err)
+}
+
+/// Load libcuda and run `cuInit` once. cudarc's dynamic loading panics, rather
+/// than erroring, when libcuda is absent (any GPU-less machine running the cuda
+/// wheel), so a panic means "not found" and an `Err` is a real init failure.
+#[cfg(feature = "cuda")]
+fn driver_init() -> Result<(), String> {
+    use std::sync::OnceLock;
+    static RES: OnceLock<Result<(), String>> = OnceLock::new();
+    RES.get_or_init(
+        || match std::panic::catch_unwind(cudarc::driver::result::init) {
+            Err(_) => Err("CUDA driver library (libcuda) not found".to_string()),
+            Ok(Err(e)) => Err(format!("CUDA driver initialization failed: {e}")),
+            Ok(Ok(())) => Ok(()),
+        },
+    )
+    .clone()
 }
 
 /// Default-stream handle for device 0.
@@ -819,7 +837,7 @@ impl PyPreprocessor {
                 self.format
             )));
         }
-        self.run_cpu(py, img.u8_elems(), width, height, out_height, out_width)
+        self.run_cpu(py, img.u8_elems()?, width, height, out_height, out_width)
     }
 
     /// CPU branch of [`run`](Self::run): interleaved formats only
@@ -1603,7 +1621,7 @@ impl PyPreprocessor {
                         "run: host Image must be uint8 for the fused preprocessor input",
                     ));
                 }
-                let bytes = img.u8_elems();
+                let bytes = img.u8_elems()?;
                 let Some(cuda) = &self.cuda else {
                     if consumer_stream.is_some() {
                         return Err(PyValueError::new_err(

@@ -1,3 +1,4 @@
+use crate::parallel::{par_row_chunks, par_rows_exact_mut};
 use kornia_image::{Image, ImageError, ImageSize};
 use rayon::prelude::*;
 
@@ -57,6 +58,25 @@ impl DistanceTransformExecutor {
     }
 
     /// Computes the Euclidean Distance Transform of a binary image.
+    ///
+    /// # Arguments
+    ///
+    /// * `image` - Input image. Pixels with a value greater than zero are foreground.
+    ///
+    /// # Returns
+    ///
+    /// An image of the same size holding the distance from each pixel to the
+    /// nearest foreground pixel. An image with zero width or height returns an
+    /// empty image of the same size.
+    ///
+    /// If the image has no foreground pixels, every output value is `1e10`
+    /// (not `f32::MAX` as in [`distance_transform_vanilla`]). Distances are
+    /// computed in `f32`, so they are inexact when the width or height exceeds
+    /// 4096 pixels.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the output image cannot be created.
     pub fn execute(&mut self, image: &Image<f32, 1>) -> Result<Image<f32, 1>, ImageError> {
         let width = image.width();
         let height = image.height();
@@ -71,9 +91,8 @@ impl DistanceTransformExecutor {
         let src_slice = image.as_slice();
 
         // Parallelize over rows and fuse binary-to-INF conversion with the transform.
-        self.grid
-            .par_chunks_mut(width)
-            .zip(src_slice.par_chunks(width))
+        par_rows_exact_mut(&mut self.grid, width)
+            .zip(par_row_chunks(src_slice, width, 1))
             .for_each_init(
                 || (vec![0.0; width], vec![0usize; width], vec![0.0; width + 1]),
                 |(f, v, z), (grid_row, src_row)| {
@@ -86,7 +105,7 @@ impl DistanceTransformExecutor {
 
         transpose_map(&self.grid, &mut self.scratch, width, height, |x| x);
 
-        self.scratch.par_chunks_mut(height).for_each_init(
+        par_rows_exact_mut(&mut self.scratch, height).for_each_init(
             || {
                 (
                     vec![0.0; height],
@@ -158,7 +177,7 @@ fn transpose_map<F>(src: &[f32], dst: &mut [f32], width: usize, height: usize, o
 where
     F: Fn(f32) -> f32 + Sync + Send,
 {
-    dst.par_chunks_mut(height)
+    par_rows_exact_mut(dst, height)
         .enumerate()
         .for_each(|(x, dst_row)| {
             for y in 0..height {
@@ -212,6 +231,27 @@ mod tests {
         assert_eq!(output.size().width, 3);
         assert_eq!(output.size().height, 4);
         assert_eq!(output.as_slice()[2], 0.0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn distance_transform_empty_image() -> Result<(), ImageError> {
+        let mut executor = DistanceTransformExecutor::new();
+
+        for (width, height) in [(0, 5), (5, 0), (0, 0)] {
+            let image = Image::<f32, 1>::new(ImageSize { width, height }, vec![])?;
+            let result = executor.execute(&image);
+            assert!(
+                result.is_ok(),
+                "case {width}x{height}: got {:?}",
+                result.as_ref().err()
+            );
+            let output = result?;
+            assert_eq!(output.width(), width, "case {width}x{height}");
+            assert_eq!(output.height(), height, "case {width}x{height}");
+            assert!(output.as_slice().is_empty(), "case {width}x{height}");
+        }
 
         Ok(())
     }

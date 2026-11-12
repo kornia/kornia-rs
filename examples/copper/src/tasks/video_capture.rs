@@ -3,6 +3,7 @@ use kornia::io::stream::{CameraCapture, RTSPCameraConfig, V4L2CameraConfig};
 
 use super::cu_image::ImageRgb8Msg;
 
+#[derive(Reflect)]
 pub struct VideoCapture(pub CameraCapture);
 
 impl Freezable for VideoCapture {}

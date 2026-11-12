@@ -1,0 +1,3 @@
+# With "Require review from Code Owners" enabled on main, only a human
+# owner can satisfy the review gate: GitHub Apps cannot be code owners.
+* @kornia/core-contributors

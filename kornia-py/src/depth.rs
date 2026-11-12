@@ -1,6 +1,8 @@
-use numpy::{PyArray2, PyArrayMethods, PyUntypedArrayMethods};
+use numpy::{PyArray2, PyArrayMethods, PyReadonlyArray2, PyUntypedArrayMethods};
 use pyo3::prelude::*;
 use pyo3::types::PyList;
+
+use crate::pyutils::{require_c_contig_aligned, value_err};
 use rayon::prelude::*;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -16,26 +18,25 @@ fn is_valid(m: u8, d: u16) -> bool {
     m != 0 && d > 0
 }
 
-#[inline]
-fn ensure_c_contiguous(ok: bool, name: &str) -> PyResult<()> {
-    if ok {
-        Ok(())
-    } else {
-        Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-            "{name} must be C-contiguous"
-        )))
-    }
-}
-
-fn extract_mask_info(item: &Bound<'_, PyAny>) -> PyResult<(usize, usize, usize)> {
+/// Take an owning, borrow-tracked read handle on one mask.
+///
+/// The returned `PyReadonlyArray2` holds a strong reference to the array, so
+/// the mask stays alive even if the Python list is mutated (e.g. from another
+/// thread while the GIL is released) during sampling.
+fn extract_mask<'py>(item: &Bound<'py, PyAny>) -> PyResult<PyReadonlyArray2<'py, u8>> {
     let mask = item.cast::<PyArray2<u8>>().map_err(|_| {
         PyErr::new::<pyo3::exceptions::PyTypeError, _>(
             "each mask must be a 2D uint8 numpy array (use segmentation.rle_to_mask)",
         )
     })?;
-    ensure_c_contiguous(mask.is_c_contiguous(), "each mask")?;
+    require_c_contig_aligned(mask, "each mask")?;
     let mshape = mask.shape();
-    Ok((mask.data() as usize, mshape[0], mshape[1]))
+    if mshape[0] == 0 || mshape[1] == 0 {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "each mask must have non-zero height and width",
+        ));
+    }
+    mask.try_readonly().map_err(value_err)
 }
 
 // ── NEON: mean (fully vectorised, same resolution) ────────────────────────────
@@ -242,7 +243,7 @@ pub fn sample_depth(
     masks: &Bound<'_, PyList>,
     method: &str,
 ) -> PyResult<Vec<(u32, bool)>> {
-    ensure_c_contiguous(depth.is_c_contiguous(), "depth")?;
+    require_c_contig_aligned(depth, "depth")?;
     let method = match method {
         "mean" => SampleMethod::Mean,
         "median" => SampleMethod::Median,
@@ -256,25 +257,41 @@ pub fn sample_depth(
     let dshape = depth.shape();
     let dh = dshape[0];
     let dw = dshape[1];
-    let depth_ptr = depth.data() as usize;
 
-    let mask_infos = masks
+    // Keep owning, borrow-tracked handles on the depth map and on every mask
+    // alive across `py.detach`: the previous version collected raw pointers and
+    // dropped the references, so a concurrent `masks.clear()` could free a mask
+    // while rayon workers were still reading it (use-after-free).
+    let depth_ro = depth.try_readonly().map_err(value_err)?;
+    let mask_handles = masks
         .iter()
-        .map(|item| extract_mask_info(&item))
+        .map(|item| extract_mask(&item))
         .collect::<PyResult<Vec<_>>>()?;
 
+    // `as_slice` re-validates contiguity/alignment and uses the real lengths.
+    let slice_err = |e: numpy::AsSliceError| {
+        PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("{e} (must be C-contiguous)"))
+    };
+    let depth_slice: &[u16] = depth_ro.as_slice().map_err(slice_err)?;
+    let mask_views: Vec<(&[u8], usize, usize)> = mask_handles
+        .iter()
+        .map(|m| {
+            let s = m.shape();
+            Ok((m.as_slice().map_err(slice_err)?, s[0], s[1]))
+        })
+        .collect::<PyResult<_>>()?;
+
     let results = py.detach(|| {
-        mask_infos
+        mask_views
             .par_iter()
-            .map(|&(mask_ptr, mh, mw)| {
-                let depth_slice =
-                    unsafe { std::slice::from_raw_parts(depth_ptr as *const u16, dh * dw) };
-                let mask_slice =
-                    unsafe { std::slice::from_raw_parts(mask_ptr as *const u8, mh * mw) };
+            .map(|&(mask_slice, mh, mw)| {
                 sample_one(depth_slice, dh, dw, mask_slice, mh, mw, method)
             })
             .collect::<Vec<_>>()
     });
+    drop(mask_views);
+    drop(mask_handles);
+    drop(depth_ro);
 
     Ok(results)
 }

@@ -88,6 +88,13 @@ pub fn remap<const C: usize>(
         }
     }
 
+    // Out-of-range (or NaN) source coordinates produce BORDER_CONSTANT = 0,
+    // matching `remap_u8` and the CUDA remap kernels. The samplers are only
+    // ever called with coordinates inside `[0, w) x [0, h)` — never for an
+    // empty `src`, where no coordinate passes the range test.
+    let src_w_f = src.cols() as f32;
+    let src_h_f = src.rows() as f32;
+
     // One monomorphic pixel loop per mode — see the note in `resize`.
     macro_rules! run {
         ($sampler:path) => {
@@ -96,6 +103,11 @@ pub fn remap<const C: usize>(
                 map_x.as_slice(),
                 map_y.as_slice(),
                 |&x, &y, dst_pixel| {
+                    // Negated conjunction also rejects NaN.
+                    if !(x >= 0.0 && x < src_w_f && y >= 0.0 && y < src_h_f) {
+                        dst_pixel.fill(0.0);
+                        return;
+                    }
                     for (c, pixel) in dst_pixel.iter_mut().enumerate() {
                         *pixel = $sampler(src, x, y, c);
                     }
@@ -230,10 +242,6 @@ pub fn remap_u8<const C: usize>(
     let dst_w = dst.cols();
     let dst_stride = dst_w * C;
 
-    if dst_stride == 0 {
-        return Ok(());
-    }
-
     let zero_pixel = |dst_pixel: &mut [u8]| {
         for pixel in dst_pixel.iter_mut().take(C) {
             *pixel = 0;
@@ -242,11 +250,17 @@ pub fn remap_u8<const C: usize>(
 
     match interpolation {
         InterpolationMode::Bilinear => {
+            // The unchecked samplers need a packed `src_h x src_w x C` buffer
+            // (always the case for an `Image`); checked once per call. Every
+            // pixel below rejects out-of-range taps before sampling, so with
+            // `packed` each sample is in bounds.
+            let packed = crate::warp::is_packed::<C>(src_slice, src_w, src_h, src_stride);
+
             #[cfg(target_arch = "x86_64")]
-            if C == 3 && crate::simd::cpu_features().has_avx2 {
-                // SAFETY: the helper is only compiled on x86_64, we have
-                // already checked AVX2 at runtime, and the helper keeps the
-                // same bounds checks as the scalar path.
+            if C == 3 && packed && crate::simd::cpu_features().has_avx2 {
+                // SAFETY: the helper is only compiled on x86_64, AVX2 was
+                // checked at runtime, and `packed` establishes its buffer-layout
+                // precondition (it range-checks every tap itself).
                 unsafe {
                     remap_u8_bilinear_c3_avx2(
                         src_slice,
@@ -263,8 +277,7 @@ pub fn remap_u8<const C: usize>(
                 return Ok(());
             }
 
-            dst.as_slice_mut()
-                .par_chunks_exact_mut(dst_stride)
+            parallel::par_rows_exact_mut(dst.as_slice_mut(), dst_stride)
                 .enumerate()
                 .for_each(|(y, dst_row)| {
                     let row_base = y * dst_w;
@@ -285,15 +298,27 @@ pub fn remap_u8<const C: usize>(
                         }
                         let fx_q10 = ((xf - xi as f32) * 1024.0) as u32;
                         let fy_q10 = ((yf - yi as f32) * 1024.0) as u32;
-                        crate::warp::bilinear_sample_u8_valid::<C>(
-                            src_slice, src_w, src_h, src_stride, xi, yi, fx_q10, fy_q10, dst_pixel,
-                        );
+                        if packed {
+                            // SAFETY: `0 <= xi < src_w` and `0 <= yi < src_h`
+                            // (checked above), `packed` certifies the buffer
+                            // layout, and `dst_pixel` is a `C`-byte slice.
+                            unsafe {
+                                crate::warp::bilinear_sample_u8_valid_unchecked::<C>(
+                                    src_slice, src_w, src_h, src_stride, xi, yi, fx_q10, fy_q10,
+                                    dst_pixel,
+                                );
+                            }
+                        } else {
+                            crate::warp::bilinear_sample_u8_valid::<C>(
+                                src_slice, src_w, src_h, src_stride, xi, yi, fx_q10, fy_q10,
+                                dst_pixel,
+                            );
+                        }
                     }
                 });
         }
         InterpolationMode::Nearest => {
-            dst.as_slice_mut()
-                .par_chunks_exact_mut(dst_stride)
+            parallel::par_rows_exact_mut(dst.as_slice_mut(), dst_stride)
                 .enumerate()
                 .for_each(|(y, dst_row)| {
                     let row_base = y * dst_w;
@@ -319,6 +344,13 @@ pub fn remap_u8<const C: usize>(
     Ok(())
 }
 
+/// AVX2 C=3 bilinear body of [`remap_u8`].
+///
+/// # Safety
+///
+/// - AVX2 must be available;
+/// - `src_slice` must be a packed `src_h x src_w x C` buffer
+///   (`crate::warp::is_packed`).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 #[allow(clippy::too_many_arguments)]
@@ -341,8 +373,7 @@ unsafe fn remap_u8_bilinear_c3_avx2<const C: usize>(
         }
     };
 
-    dst.as_slice_mut()
-        .par_chunks_exact_mut(dst_stride)
+    parallel::par_rows_exact_mut(dst.as_slice_mut(), dst_stride)
         .enumerate()
         .for_each(|(y, dst_row)| {
             let row_base = y * dst_w;
@@ -364,8 +395,11 @@ unsafe fn remap_u8_bilinear_c3_avx2<const C: usize>(
                 let fy_q10 = ((yf - yi as f32) * 1024.0) as u32;
 
                 if xi < src_w - 2 || yi < src_h - 2 {
-                    // SAFETY: x86_64 + AVX2 were checked by the caller, and
-                    // the bounds condition mirrors the helper's preconditions.
+                    // SAFETY: x86_64 + AVX2 were checked by the caller; the tap
+                    // is in range (checked above) and, with the packed layout
+                    // the caller guarantees, the 4-byte corner reads stay in
+                    // bounds away from the last two columns of the last two
+                    // rows (this condition).
                     unsafe {
                         crate::warp::bilinear_sample_u8_valid_c3_avx2(
                             src_slice.as_ptr(),
@@ -380,9 +414,13 @@ unsafe fn remap_u8_bilinear_c3_avx2<const C: usize>(
                         );
                     }
                 } else {
-                    crate::warp::bilinear_sample_u8_valid::<C>(
-                        src_slice, src_w, src_h, src_stride, xi, yi, fx_q10, fy_q10, dst_pixel,
-                    );
+                    // SAFETY: tap in range (checked above), packed layout per
+                    // this function's contract, `C`-byte `dst_pixel`.
+                    unsafe {
+                        crate::warp::bilinear_sample_u8_valid_unchecked::<C>(
+                            src_slice, src_w, src_h, src_stride, xi, yi, fx_q10, fy_q10, dst_pixel,
+                        );
+                    }
                 }
             }
         });
@@ -507,6 +545,48 @@ mod tests {
             &map_y,
             super::InterpolationMode::Lanczos,
         )?;
+        Ok(())
+    }
+
+    /// Regression: out-of-range / NaN / huge map values used to be passed
+    /// straight to the samplers, which indexed out of bounds. They must now
+    /// zero-fill (BORDER_CONSTANT), for every interpolation mode.
+    #[test]
+    fn remap_out_of_range_maps_zero_fill() -> Result<(), ImageError> {
+        let image = Image::<f32, 2>::from_size_val(
+            ImageSize {
+                width: 4,
+                height: 4,
+            },
+            1.0,
+        )?;
+        let xs = vec![20.0, 1.0e9, -1.0, f32::NAN, 4.0, 0.0, 1.5, f32::INFINITY];
+        let ys = vec![0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 1.5, 0.0];
+        let expected = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+        let map_x = make_map(8, 1, xs)?;
+        let map_y = make_map(8, 1, ys)?;
+        for mode in [
+            super::InterpolationMode::Bilinear,
+            super::InterpolationMode::Nearest,
+            super::InterpolationMode::Bicubic,
+            super::InterpolationMode::Lanczos,
+        ] {
+            let mut dst = Image::<f32, 2>::from_size_val(
+                ImageSize {
+                    width: 8,
+                    height: 1,
+                },
+                -5.0,
+            )?;
+            super::remap(&image, &mut dst, &map_x, &map_y, mode)?;
+            for (i, e) in expected.iter().enumerate() {
+                let px = &dst.as_slice()[i * 2..i * 2 + 2];
+                assert!(
+                    px.iter().all(|v| (v - e).abs() < 1e-5),
+                    "{mode:?} pixel {i}: {px:?} expected {e}"
+                );
+            }
+        }
         Ok(())
     }
 

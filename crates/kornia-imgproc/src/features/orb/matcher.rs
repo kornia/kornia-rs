@@ -1,4 +1,4 @@
-use crate::features::hamming_distance;
+use crate::features::r#match::hamming_row;
 
 /// Configuration for ORB-style descriptor matching.
 #[derive(Clone, Copy, Debug)]
@@ -26,6 +26,38 @@ impl Default for OrbMatchConfig {
 
 /// Match ORB descriptors using ORB-SLAM3-style logic (ratio test + optional orientation histogram).
 /// Descriptors must be packed 32-byte arrays (256 bits).
+///
+/// # Arguments
+///
+/// * `angles1` - Query orientations in radians, one per descriptor.
+/// * `desc1` - Query descriptors.
+/// * `angles2` - Candidate orientations in radians, one per descriptor.
+/// * `desc2` - Candidate descriptors.
+/// * `config` - Distance, ratio and orientation histogram thresholds.
+///
+/// # Returns
+///
+/// `(query_index, candidate_index)` pairs in query order, keeping the earliest
+/// candidate on a distance tie. The strict ratio test rejects zero-distance ties.
+///
+/// # Errors
+///
+/// This function does not return errors.
+///
+/// # Panics
+///
+/// Panics if either orientation slice does not match its descriptor count, or
+/// if orientation filtering is enabled and `histo_length` is zero.
+///
+/// # Example
+///
+/// ```
+/// use kornia_imgproc::features::{match_orb_descriptors, OrbMatchConfig};
+/// let queries = [[0u8; 32]];
+/// let candidates = [[0u8; 32], [255u8; 32]];
+/// assert_eq!(match_orb_descriptors(&[0.0], &queries, &[0.0, 0.0], &candidates,
+///     OrbMatchConfig::default()), vec![(0, 0)]);
+/// ```
 pub fn match_orb_descriptors(
     angles1: &[f32],
     desc1: &[[u8; 32]],
@@ -45,20 +77,7 @@ pub fn match_orb_descriptors(
     let factor = 1.0f32 / config.histo_length as f32;
 
     for i in 0..desc1.len() {
-        let mut best = u32::MAX;
-        let mut second = u32::MAX;
-        let mut best_j = 0usize;
-
-        for (j, d2) in desc2.iter().enumerate() {
-            let d = hamming_distance(&desc1[i], d2);
-            if d < best {
-                second = best;
-                best = d;
-                best_j = j;
-            } else if d < second {
-                second = d;
-            }
-        }
+        let (best_j, best, second) = hamming_row::<32, true>(&desc1[i], desc2);
 
         if best <= config.th_low && (best as f32) < config.nn_ratio * (second as f32) {
             let j = best_j;
@@ -142,6 +161,7 @@ fn three_maxima(histo: &[Vec<usize>]) -> (Option<usize>, Option<usize>, Option<u
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::features::hamming_distance;
 
     #[test]
     fn test_orb_match_orientation_histogram() {

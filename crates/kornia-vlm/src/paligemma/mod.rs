@@ -157,6 +157,9 @@ impl Paligemma {
         let tokenizer = Tokenizer::from_file(tokenizer_filename)?;
 
         let config = Config::paligemma_3b_224();
+        // SAFETY: the safetensors files live in the local HF hub cache and are memory-mapped
+        // read-only. Soundness requires that no other process truncates or modifies them while
+        // the model is loaded; the cache is not expected to be mutated concurrently.
         let vb = unsafe { VarBuilder::from_mmaped_safetensors(&filenames, dtype, device)? };
 
         let model = Model::new(&config, vb)?;

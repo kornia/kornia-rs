@@ -18,7 +18,7 @@
 //! cargo bench -p kornia-imgproc --bench bench_sift_instr
 //! ```
 //!
-//! Needs `valgrind` and `cargo install iai-callgrind-runner --version 0.14.0`.
+//! Needs `valgrind` and `cargo install iai-callgrind-runner --version 0.16.1`.
 
 use std::hint::black_box;
 

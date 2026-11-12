@@ -13,17 +13,22 @@
 //! - [`Sampler`] draws minimal subsets. [`UniformSampler`] is the default;
 //!   PROSAC-style guided sampling can plug in later.
 //!
-//! The driver loop (`core::run`, landing in a follow-up) consumes one of each
-//! and emits a [`RansacResult`].
+//! [`run`](crate::ransac::run) / [`run_with_rng`](crate::ransac::run_with_rng)
+//! consume one of each and emit a [`RansacResult`](crate::ransac::RansacResult).
 //!
-//! # Why the split?
-//! Existing estimators in [`crate::pose`] each carry their own copy of the
-//! RANSAC loop. Centralising the loop here lets us add LO-RANSAC, adaptive
-//! iteration caps, and σ-consensus once instead of per-estimator, and keeps
-//! the public surface small enough to bind cleanly from `kornia-py`.
+//! # One loop
+//! Every robust estimator in this crate runs on the same crate-private
+//! staged loop: [`run`](crate::ransac::run) here, the two-view entry points in [`crate::pose`]
+//! (`ransac_fundamental`, `ransac_essential_5pt`, `ransac_homography`) and
+//! [`crate::pnp::solve_pnp_ransac`]. Each plugs its own sampling, scoring,
+//! termination and refinement components into that loop, so improvements
+//! such as LO-RANSAC, SPRT or σ-consensus land once instead of per
+//! estimator. [`run_parallel`](crate::ransac::run_parallel) is still a
+//! separate loop.
 
 mod config;
 mod driver;
+pub(crate) mod engine;
 pub mod estimators;
 pub mod kernels;
 pub mod magsac;
@@ -31,7 +36,7 @@ mod result;
 pub mod samples;
 pub mod sprt;
 
-pub use config::{ConsensusKind, RansacConfig};
+pub use config::{is_valid_confidence, ConsensusKind, RansacConfig};
 pub use driver::{run, run_parallel, run_with_rng};
 pub use kernels::{
     CauchyKernel, HuberKernel, IdentityKernel, RobustKernel, RobustKernelKind, TukeyKernel,
@@ -41,7 +46,7 @@ pub use result::RansacResult;
 pub use samples::{Match2d2d, Match2d3d};
 pub use sprt::{SPRTConfig, SPRTState};
 
-use rand::Rng;
+use rand::{Rng, RngExt};
 
 /// A minimal-sample model fitter and residual evaluator.
 ///
@@ -57,14 +62,14 @@ pub trait Estimator {
     /// two-view geometry, a 2D-3D pair for PnP).
     type Sample;
 
-    /// Number of samples a minimal solver needs (8 for F8pt, 5 for E5pt,
+    /// Number of samples a minimal solver needs (7 for F7pt, 8 for F8pt, 5 for E5pt,
     /// 4 for H, 3 for P3P).
     const SAMPLE_SIZE: usize;
 
     /// Fit candidate models from exactly `SAMPLE_SIZE` samples.
     ///
     /// Pushes 0 or more candidate models into `out`. Most solvers produce
-    /// at most one (F-8pt, H-4pt, EPnP); multi-solution kernels like
+    /// at most one (F-8pt, H-4pt, EPnP); F-7pt returns up to three, while
     /// Nistér's 5-point essential or P3P may produce up to ~10. The driver
     /// clears `out` before each call and scores every candidate it returns.
     ///
@@ -102,14 +107,66 @@ pub trait Estimator {
     /// driver calls this once per scored model, so any setup amortises across
     /// all `samples.len()` evaluations.
     ///
-    /// `out.len() == samples.len()` must hold; the driver pre-sizes the
-    /// scratch buffer.
+    /// `out.len() == samples.len()` is expected (the driver pre-sizes the
+    /// scratch buffer). If the lengths differ, only the first
+    /// `min(out.len(), samples.len())` residuals are written; implementations
+    /// must never write past either slice.
     fn residual_batch(&self, model: &Self::Model, samples: &[Self::Sample], out: &mut [f64]) {
-        debug_assert_eq!(out.len(), samples.len());
-        for (i, s) in samples.iter().enumerate() {
-            out[i] = self.residual(model, s);
+        for (o, s) in out.iter_mut().zip(samples) {
+            *o = self.residual(model, s);
         }
     }
+
+    /// Evaluate a hard inlier threshold while producing its mask.
+    ///
+    /// Estimators with a vectorized residual kernel can override this hook to
+    /// fuse residual evaluation and thresholding, and may stop once the
+    /// remaining observations cannot beat `best_inlier_count`. Returning
+    /// `None` requests the portable `residual_batch` plus [`Consensus`]
+    /// path. This hook is only used with [`ThresholdConsensus`] and without
+    /// SPRT, so custom consensus strategies retain their exact behavior.
+    ///
+    /// `residuals` is reusable driver scratch and is provided so an override
+    /// can batch residual evaluation without allocating. On
+    /// [`ThresholdInlierResult::Complete`], `inliers_out` must contain one
+    /// entry per sample. Its contents are ignored after `Pruned`.
+    ///
+    /// # Arguments
+    ///
+    /// * `model` - Hypothesis being evaluated.
+    /// * `samples` - All observations, in their original scoring order.
+    /// * `threshold` - Strict residual cutoff, in the estimator's units.
+    /// * `best_inlier_count` - Support of the incumbent hypothesis.
+    /// * `residuals` - Reusable scratch with one entry per observation.
+    /// * `inliers_out` - Reusable mask, complete only on `Complete`.
+    ///
+    /// # Returns
+    ///
+    /// `None` to use the generic path, or a completed count or exact rejection.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible; unsupported inputs should return `None`.
+    fn threshold_inliers(
+        &self,
+        _model: &Self::Model,
+        _samples: &[Self::Sample],
+        _threshold: f64,
+        _best_inlier_count: usize,
+        _residuals: &mut [f64],
+        _inliers_out: &mut Vec<bool>,
+    ) -> Option<ThresholdInlierResult> {
+        None
+    }
+}
+
+/// Result of an estimator-specific hard-threshold scoring pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThresholdInlierResult {
+    /// All samples were evaluated and this many satisfy the strict threshold.
+    Complete(usize),
+    /// The unevaluated suffix cannot beat the current best inlier count.
+    Pruned,
 }
 
 /// Reduces a vector of residuals to a scalar score plus an inlier mask.
@@ -122,6 +179,35 @@ pub trait Consensus {
     /// across hypotheses; impls must clear and refill it without keeping
     /// references after the call.
     fn consensus(&self, residuals: &[f64], inliers_out: &mut Vec<bool>) -> ConsensusOutcome;
+
+    /// Return the strict hard threshold when this consensus is plain RANSAC.
+    ///
+    /// The default keeps arbitrary consensus implementations on the generic
+    /// residual-vector path. [`ThresholdConsensus`] exposes its threshold so
+    /// estimators with an opt-in fused kernel can avoid a second pass.
+    ///
+    /// # Arguments
+    ///
+    /// This method takes no arguments beyond the consensus strategy.
+    ///
+    /// # Returns
+    ///
+    /// A strict residual cutoff, or `None` for any other scoring strategy.
+    /// Returning `Some` promises a score equal to the strict inlier count.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_3d::ransac::{Consensus, ThresholdConsensus};
+    /// assert_eq!(ThresholdConsensus { threshold: 1.0 }.threshold(), Some(1.0));
+    /// ```
+    fn threshold(&self) -> Option<f64> {
+        None
+    }
 }
 
 /// Outcome of one consensus evaluation.
@@ -169,13 +255,18 @@ impl Consensus for ThresholdConsensus {
             inlier_count: count,
         }
     }
+
+    #[inline]
+    fn threshold(&self) -> Option<f64> {
+        Some(self.threshold)
+    }
 }
 
 /// Uniform-without-replacement sampler.
 ///
-/// Wraps `rand::seq::index::sample`, matching the pattern used elsewhere in
-/// this crate (see `pose::twoview`). Carries its own RNG so the driver stays
-/// deterministic when seeded.
+/// Draws the same indices as `rand::seq::index::sample`, matching the pattern
+/// used elsewhere in this crate (see `pose::twoview`), without allocating per
+/// sample. Carries its own RNG so the driver stays deterministic when seeded.
 pub struct UniformSampler<R: Rng> {
     rng: R,
 }
@@ -191,9 +282,107 @@ impl<R: Rng> Sampler for UniformSampler<R> {
     fn sample(&mut self, n: usize, out: &mut [usize]) {
         let k = out.len();
         debug_assert!(k <= n, "sample size {k} exceeds population {n}");
-        let drawn = rand::seq::index::sample(&mut self.rng, n, k);
+        sample_distinct_indices(&mut self.rng, n, out);
+    }
+}
+
+/// Fill `out` with `out.len()` distinct uniform indices from `0..n`.
+///
+/// Minimal RANSAC samples are small, where `rand::seq::index::sample` uses
+/// Floyd's combination algorithm. This is that algorithm on the caller's
+/// buffer: it draws the same random values in the same order and returns
+/// the same indices, without allocating an index vector per draw. Other
+/// sizes delegate to `rand`.
+#[inline]
+pub(crate) fn sample_distinct_indices<R: Rng + ?Sized>(rng: &mut R, n: usize, out: &mut [usize]) {
+    let k = out.len();
+    if k >= FLOYD_MAX_AMOUNT || n > u32::MAX as usize || k > n {
+        let drawn = rand::seq::index::sample(rng, n, k);
         for (slot, idx) in out.iter_mut().zip(drawn.iter()) {
             *slot = idx;
         }
+        return;
+    }
+    let (length, amount) = (n as u32, k as u32);
+    for (filled, j) in (length - amount..length).enumerate() {
+        let t = rng.random_range(..=j) as usize;
+        if let Some(pos) = out[..filled].iter().position(|&x| x == t) {
+            out[pos] = j as usize;
+        }
+        out[filled] = t;
+    }
+}
+
+/// `rand::seq::index::sample` always uses Floyd's algorithm below this size.
+const FLOYD_MAX_AMOUNT: usize = 12;
+
+/// Clamps `samples` and `out` to their common length, so a batch residual kernel
+/// that walks both slices in lockstep (e.g. through raw SIMD pointers) can never
+/// write past either of them.
+pub(crate) fn clamp_pair<'s, 'o, S>(
+    samples: &'s [S],
+    out: &'o mut [f64],
+) -> (&'s [S], &'o mut [f64]) {
+    let n = samples.len().min(out.len());
+    (&samples[..n], &mut out[..n])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kornia_algebra::{Mat3F64, Vec2F64};
+
+    /// The allocation-free sampler must reproduce `rand::seq::index::sample`
+    /// exactly, including the RNG state it leaves behind, so seeded RANSAC
+    /// results do not change.
+    #[test]
+    fn distinct_index_sampler_matches_rand() {
+        use rand::{rngs::StdRng, SeedableRng};
+        for (n, k) in [
+            (7, 7),
+            (8, 7),
+            (10, 8),
+            (300, 7),
+            (5000, 8),
+            (40, 11),
+            (40, 12),
+            (9, 0),
+        ] {
+            let seed = n as u64 * 31 + k as u64;
+            let mut ours_rng = StdRng::seed_from_u64(seed);
+            let mut rand_rng = StdRng::seed_from_u64(seed);
+            for _ in 0..200 {
+                let mut ours = vec![usize::MAX; k];
+                sample_distinct_indices(&mut ours_rng, n, &mut ours);
+                let expected = rand::seq::index::sample(&mut rand_rng, n, k).into_vec();
+                assert_eq!(ours, expected, "n={n} k={k}");
+            }
+            assert_eq!(ours_rng.random::<u64>(), rand_rng.random::<u64>());
+        }
+    }
+
+    /// Regression: `out.len() == samples.len()` was only a debug_assert, so in
+    /// release builds the SIMD kernels wrote past a short `out` slice.
+    fn check_residual_batch_stays_in_bounds<E>(est: &E)
+    where
+        E: Estimator<Sample = Match2d2d, Model = Mat3F64>,
+    {
+        let samples = vec![Match2d2d::new(Vec2F64::new(1.0, 2.0), Vec2F64::new(3.0, 4.0)); 64];
+        let sentinel = -12345.0;
+        let mut buf = vec![sentinel; 68];
+        est.residual_batch(&Mat3F64::IDENTITY, &samples, &mut buf[..4]);
+        assert!(buf[..4].iter().all(|&r| r != sentinel));
+        assert!(buf[4..].iter().all(|&r| r == sentinel), "wrote past `out`");
+
+        // Longer `out` than `samples`: only the prefix is written.
+        let mut buf = vec![sentinel; 8];
+        est.residual_batch(&Mat3F64::IDENTITY, &samples[..3], &mut buf);
+        assert!(buf[3..].iter().all(|&r| r == sentinel));
+    }
+
+    #[test]
+    fn residual_batch_short_out_stays_in_bounds() {
+        check_residual_batch_stays_in_bounds(&estimators::FundamentalEstimator);
+        check_residual_batch_stays_in_bounds(&estimators::HomographyEstimator);
     }
 }

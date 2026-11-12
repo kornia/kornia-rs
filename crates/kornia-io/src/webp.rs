@@ -1,4 +1,7 @@
-use crate::error::IoError;
+use crate::{
+    error::IoError,
+    limits::{alloc_image, check_image_dimensions},
+};
 use image_webp::{ColorType, WebPDecoder, WebPEncoder};
 use kornia_image::{
     color_spaces::{Gray8, Rgb8, Rgba8},
@@ -29,9 +32,14 @@ const GRAY_B: u32 = 29;
 ///
 /// A grayscale image (Gray8).
 pub fn read_image_webp_gray8(file_path: impl AsRef<Path>) -> Result<Gray8, IoError> {
-    let (rgb, size, has_alpha) = read_webp_rgb_or_rgba(file_path)?;
-    let gray = rgb_or_rgba_to_gray(&rgb, has_alpha);
-    Ok(Gray8::from_size_vec(size, gray)?)
+    let mut decoder = open_webp(file_path)?;
+    let (width, height) = decoder.dimensions();
+    let mut gray = alloc_image(ImageSize {
+        width: width as usize,
+        height: height as usize,
+    })?;
+    decode_webp_gray_into(&mut decoder, &mut gray)?;
+    Ok(Gray8(gray))
 }
 
 /// Read a WEBP image as RGB8.
@@ -46,15 +54,15 @@ pub fn read_image_webp_gray8(file_path: impl AsRef<Path>) -> Result<Gray8, IoErr
 ///
 /// A RGB8 typed image.
 pub fn read_image_webp_rgb8(file_path: impl AsRef<Path>) -> Result<Rgb8, IoError> {
-    let (buf, size, has_alpha) = read_webp_rgb_or_rgba(file_path)?;
-    if has_alpha {
+    let mut decoder = open_webp(file_path)?;
+    if decoder.has_alpha() {
         return Err(IoError::WebpDecodingError(
             image_webp::DecodingError::InvalidParameter(
                 "file has alpha channel; use read_image_webp_rgba8".to_string(),
             ),
         ));
     }
-    Ok(Rgb8::from_size_vec(size, buf)?)
+    Ok(Rgb8(decode_webp_new(&mut decoder)?))
 }
 
 /// Read a WEBP image as RGBA8.
@@ -69,15 +77,15 @@ pub fn read_image_webp_rgb8(file_path: impl AsRef<Path>) -> Result<Rgb8, IoError
 ///
 /// A RGBA8 typed image.
 pub fn read_image_webp_rgba8(file_path: impl AsRef<Path>) -> Result<Rgba8, IoError> {
-    let (buf, size, has_alpha) = read_webp_rgb_or_rgba(file_path)?;
-    if !has_alpha {
+    let mut decoder = open_webp(file_path)?;
+    if !decoder.has_alpha() {
         return Err(IoError::WebpDecodingError(
             image_webp::DecodingError::InvalidParameter(
                 "file has no alpha channel; use read_image_webp_rgb8".to_string(),
             ),
         ));
     }
-    Ok(Rgba8::from_size_vec(size, buf)?)
+    Ok(Rgba8(decode_webp_new(&mut decoder)?))
 }
 
 /// Decodes a WEBP image as RGB8 from raw bytes.
@@ -125,26 +133,7 @@ pub fn decode_image_webp_gray8(src: &[u8], dst: &mut Image<u8, 1>) -> Result<(),
         ));
     }
 
-    let buf_size = decoder
-        .output_buffer_size()
-        .ok_or(IoError::WebpDecodingError(
-            image_webp::DecodingError::ImageTooLarge,
-        ))?;
-    let mut temp_buf = vec![0u8; buf_size];
-    decoder.read_image(&mut temp_buf)?;
-
-    let has_alpha = decoder.has_alpha();
-    let dst_slice = dst.as_slice_mut();
-    let expected_len = (width as usize) * (height as usize);
-    if dst_slice.len() != expected_len {
-        return Err(IoError::InvalidBufferSize(dst_slice.len(), expected_len));
-    }
-
-    let stride = if has_alpha { 4 } else { 3 };
-    for (i, chunk) in temp_buf.chunks_exact(stride).enumerate() {
-        dst_slice[i] = luma_from_rgb(chunk[0], chunk[1], chunk[2]);
-    }
-    Ok(())
+    decode_webp_gray_into(&mut decoder, dst)
 }
 
 /// Decodes WEBP image metadata from raw bytes without decoding pixel data.
@@ -160,6 +149,7 @@ pub fn decode_image_webp_gray8(src: &[u8], dst: &mut Image<u8, 1>) -> Result<(),
 pub fn decode_image_webp_layout(src: &[u8]) -> Result<ImageLayout, IoError> {
     let decoder = WebPDecoder::new(Cursor::new(src))?;
     let (width, height) = decoder.dimensions();
+    check_image_dimensions(width as usize, height as usize)?;
     let channels: u8 = if decoder.has_alpha() { 4 } else { 3 };
     Ok(ImageLayout::new(
         ImageSize {
@@ -209,10 +199,8 @@ fn decode_webp_impl<const C: usize>(
     Ok(())
 }
 
-// Reads a WebP file and returns the raw RGB(A) buffer along with size and alpha flag.
-fn read_webp_rgb_or_rgba(
-    file_path: impl AsRef<Path>,
-) -> Result<(Vec<u8>, ImageSize, bool), IoError> {
+// Opens a WebP file after validating that it exists and has a `.webp` extension.
+fn open_webp(file_path: impl AsRef<Path>) -> Result<WebPDecoder<BufReader<fs::File>>, IoError> {
     let file_path = file_path.as_ref();
     if !file_path.exists() {
         return Err(IoError::FileDoesNotExist(file_path.to_path_buf()));
@@ -223,22 +211,21 @@ fn read_webp_rgb_or_rgba(
     }
 
     let file = fs::File::open(file_path)?;
-    let reader = BufReader::new(file);
-    let mut decoder = WebPDecoder::new(reader)?;
-    let buf_size = decoder
-        .output_buffer_size()
-        .ok_or(IoError::WebpDecodingError(
-            image_webp::DecodingError::ImageTooLarge,
-        ))?;
-    let mut buf = vec![0u8; buf_size];
-    decoder.read_image(&mut buf)?;
+    Ok(WebPDecoder::new(BufReader::new(file))?)
+}
 
+// Decodes into a newly allocated `C`-channel image. `C` must be 4 if the file has an
+// alpha channel and 3 otherwise; the decoder rejects a mismatched buffer length.
+fn decode_webp_new<R: std::io::BufRead + std::io::Seek, const C: usize>(
+    decoder: &mut WebPDecoder<R>,
+) -> Result<Image<u8, C>, IoError> {
     let (width, height) = decoder.dimensions();
-    let size = ImageSize {
+    let mut img = alloc_image::<u8, C>(ImageSize {
         width: width as usize,
         height: height as usize,
-    };
-    Ok((buf, size, decoder.has_alpha()))
+    })?;
+    decoder.read_image(img.as_slice_mut())?;
+    Ok(img)
 }
 
 #[inline]
@@ -246,11 +233,27 @@ fn luma_from_rgb(r: u8, g: u8, b: u8) -> u8 {
     ((r as u32 * GRAY_R + g as u32 * GRAY_G + b as u32 * GRAY_B) >> 8) as u8
 }
 
-fn rgb_or_rgba_to_gray(buf: &[u8], has_alpha: bool) -> Vec<u8> {
-    let stride = if has_alpha { 4 } else { 3 };
-    buf.chunks_exact(stride)
-        .map(|c| luma_from_rgb(c[0], c[1], c[2]))
-        .collect()
+// Decodes as RGB(A) and converts to luma. `dst` must match the decoded size, so
+// each RGB(A) pixel maps to exactly one luma sample.
+fn decode_webp_gray_into<R: std::io::BufRead + std::io::Seek>(
+    decoder: &mut WebPDecoder<R>,
+    dst: &mut Image<u8, 1>,
+) -> Result<(), IoError> {
+    fn convert<const C: usize>(src: &Image<u8, C>, dst: &mut Image<u8, 1>) {
+        for (d, c) in dst
+            .as_slice_mut()
+            .iter_mut()
+            .zip(src.as_slice().chunks_exact(C))
+        {
+            *d = luma_from_rgb(c[0], c[1], c[2]);
+        }
+    }
+    if decoder.has_alpha() {
+        convert(&decode_webp_new::<_, 4>(decoder)?, dst);
+    } else {
+        convert(&decode_webp_new::<_, 3>(decoder)?, dst);
+    }
+    Ok(())
 }
 
 /// Encodes the given RGB8 image to WEBP bytes (VP8L lossless).
@@ -363,6 +366,44 @@ fn write_image_webp_impl<const N: usize>(
 mod tests {
     use super::*;
     use std::fs::read;
+
+    // A 44-byte WebP whose VP8X header declares a 65535x65535 canvas.
+    fn webp_bomb() -> Vec<u8> {
+        let mut vp8x = [0u8; 10];
+        vp8x[4..7].copy_from_slice(&65534u32.to_le_bytes()[..3]);
+        vp8x[7..10].copy_from_slice(&65534u32.to_le_bytes()[..3]);
+        let mut body = Vec::new();
+        body.extend_from_slice(b"VP8X");
+        body.extend_from_slice(&10u32.to_le_bytes());
+        body.extend_from_slice(&vp8x);
+        let vp8l = [0x2fu8, 0, 0, 0, 0];
+        body.extend_from_slice(b"VP8L");
+        body.extend_from_slice(&(vp8l.len() as u32).to_le_bytes());
+        body.extend_from_slice(&vp8l);
+        body.push(0);
+        let mut out = b"RIFF".to_vec();
+        out.extend_from_slice(&((body.len() + 4) as u32).to_le_bytes());
+        out.extend_from_slice(b"WEBP");
+        out.extend_from_slice(&body);
+        out
+    }
+
+    #[test]
+    fn rejects_decompression_bomb() -> Result<(), Box<dyn std::error::Error>> {
+        let bomb = webp_bomb();
+        assert!(matches!(
+            decode_image_webp_layout(&bomb),
+            Err(IoError::ImageTooLarge { .. })
+        ));
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("bomb.webp");
+        std::fs::write(&path, &bomb)?;
+        assert!(matches!(
+            read_image_webp_rgb8(&path),
+            Err(IoError::ImageTooLarge { .. })
+        ));
+        Ok(())
+    }
 
     #[test]
     fn test_read_webp_rgb8() -> Result<(), IoError> {

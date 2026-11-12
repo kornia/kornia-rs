@@ -1,7 +1,7 @@
 use kornia_image::ImageSize;
 use pyo3::prelude::*;
 
-use crate::image::{alloc_output_pyarray_u16, numpy_as_image_u16, to_pyerr, PyImageU16};
+use crate::image::{alloc_output_pyarray_t, numpy_as_image_t, to_pyerr, PyImageU16, ZEROED};
 use kornia_io::rvl as R;
 
 /// Encodes a single-channel 16-bit depth image to RVL-compressed bytes.
@@ -23,7 +23,9 @@ use kornia_io::rvl as R;
 ///     assert (recovered == depth).all()
 #[pyfunction]
 pub fn encode_image_rvl(py: Python<'_>, image: PyImageU16) -> PyResult<Vec<u8>> {
-    let img = unsafe { numpy_as_image_u16::<1>(py, &image)? };
+    // SAFETY: the view borrows the numpy array, which the caller keeps alive and does not mutate
+    // for the duration of this call.
+    let img = unsafe { numpy_as_image_t::<u16, 1>(py, &image)? };
     R::encode_image_rvl(&img).map_err(to_pyerr)
 }
 
@@ -42,7 +44,9 @@ pub fn decode_image_rvl(py: Python<'_>, src: &[u8]) -> PyResult<PyImageU16> {
         width: img.width(),
         height: img.height(),
     };
-    let (mut dst, out) = unsafe { alloc_output_pyarray_u16::<1>(py, size)? };
+    // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only handed to
+    // Python after the last write through `dst`.
+    let (mut dst, out) = unsafe { alloc_output_pyarray_t::<u16, 1, ZEROED>(py, size)? };
     dst.as_slice_mut().copy_from_slice(img.as_slice());
     Ok(out)
 }
@@ -54,7 +58,9 @@ pub fn decode_image_rvl(py: Python<'_>, src: &[u8]) -> PyResult<PyImageU16> {
 ///     image:     numpy array of shape ``(H, W, 1)`` and dtype ``uint16``.
 #[pyfunction]
 pub fn write_image_rvl(py: Python<'_>, file_path: &str, image: PyImageU16) -> PyResult<()> {
-    let img = unsafe { numpy_as_image_u16::<1>(py, &image)? };
+    // SAFETY: the view borrows the numpy array, which the caller keeps alive and does not mutate
+    // for the duration of this call.
+    let img = unsafe { numpy_as_image_t::<u16, 1>(py, &image)? };
     R::write_image_rvl(file_path, &img).map_err(to_pyerr)
 }
 
@@ -72,7 +78,9 @@ pub fn read_image_rvl(py: Python<'_>, file_path: &str) -> PyResult<PyImageU16> {
         width: img.width(),
         height: img.height(),
     };
-    let (mut dst, out) = unsafe { alloc_output_pyarray_u16::<1>(py, size)? };
+    // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only handed to
+    // Python after the last write through `dst`.
+    let (mut dst, out) = unsafe { alloc_output_pyarray_t::<u16, 1, ZEROED>(py, size)? };
     dst.as_slice_mut().copy_from_slice(img.as_slice());
     Ok(out)
 }

@@ -426,6 +426,9 @@ impl<const N: usize> SmolVlm2<N> {
         let vb = if let Some(weights_paths) = &config.weights_path {
             // Convert PathBuf to actual paths for mmap loading
             let paths: Vec<_> = weights_paths.iter().map(|p| p.as_path()).collect();
+            // SAFETY: the caller-provided weight files are memory-mapped read-only. Soundness
+            // requires that they are not truncated or modified while the model is loaded; callers
+            // must not point `weights_path` at files another process may rewrite.
             unsafe { VarBuilder::from_mmaped_safetensors(&paths, dtype, device)? }
         } else {
             debug!(
@@ -439,6 +442,8 @@ impl<const N: usize> SmolVlm2<N> {
             let w1 = repo.get("model-00001-of-00002.safetensors")?;
             let w2 = repo.get("model-00002-of-00002.safetensors")?;
 
+            // SAFETY: the files live in the local HF hub cache and are memory-mapped read-only.
+            // Soundness requires that no other process truncates or modifies them while loaded.
             unsafe { VarBuilder::from_mmaped_safetensors(&[w1, w2], dtype, device)? }
         };
 

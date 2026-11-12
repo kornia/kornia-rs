@@ -17,6 +17,15 @@ pub fn hub_load_safetensors(repo: &ApiRepo, json_file: &str) -> candle_core::Res
     let mut safetensors_files = HashSet::new();
     for value in weight_map.values() {
         if let Some(file) = value.as_str() {
+            // The index file is remote content: only accept plain `.safetensors` file names so a
+            // tampered index cannot make us resolve paths outside the repo snapshot.
+            let is_plain_name = !file.is_empty()
+                && !file.contains(['/', '\\'])
+                && file != ".."
+                && file.ends_with(".safetensors");
+            if !is_plain_name {
+                candle_core::bail!("invalid safetensors file name in weight map: {file:?}");
+            }
             safetensors_files.insert(file.to_string());
         }
     }

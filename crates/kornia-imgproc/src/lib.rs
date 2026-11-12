@@ -40,6 +40,9 @@ pub mod core;
 /// image cropping module.
 pub mod crop;
 
+/// depth-image filtering: flying-pixel detection and removal.
+pub mod depth;
+
 /// image padding module.
 pub mod padding;
 
@@ -75,6 +78,8 @@ pub mod parallel;
 
 /// runtime CPU feature probe shared by SIMD-dispatching kernels.
 pub mod simd;
+
+mod scratch;
 
 /// image processing metrics module.
 pub mod metrics;

@@ -8,6 +8,29 @@ Guidance for AI AGENTS and human contributors working in this repository.
 
 ---
 
+## Required Skills
+
+Skills live in `.claude/skills/` (also exposed at `.agents/skills/`). **Read the
+relevant skill before starting a task; this is mandatory for contributors and
+agents.** `pixi run skills-check` (CI: `skills_check.yml`) validates their
+structure and the facts they restate (MSRV, pixi tasks, crates, publish set,
+cited paths); it cannot check that a skill was applied — review does that.
+`pixi run pr-check` is the pre-PR gate.
+
+| Skill | Read when |
+|---|---|
+| `kornia-arch` | navigating crates, features, core types |
+| `kornia-workflow` | before committing/PR; build, lint, test, PR rules |
+| `kornia-coding-style` | any Rust edit |
+| `kornia-api-flavor` | designing new public API |
+| `kornia-code-review` | mandatory self-review before every PR; reviewing a PR: scope, copies, latency, benchmarks |
+| `kornia-curation` | changing a fact the guidance describes; editing skills |
+| `kornia-simd` | SIMD / performance work in `kornia-imgproc` |
+| `kornia-bindings` | Python / C++ binding changes |
+| `release` | cutting a release |
+
+---
+
 ## Build & Development Commands
 
 The project uses [pixi](https://pixi.sh) for environment management.
@@ -23,7 +46,7 @@ pixi run rust-fmt                     # Format with rustfmt
 pixi run rust-check                   # Check compilation
 
 # Without pixi (direct cargo)
-cargo test --features ci
+cargo test --features ci,kornia-algebra/approx
 cargo test -p kornia-imgproc
 cargo clippy --workspace --no-deps --all-targets --features ci -- -D warnings
 ```
@@ -70,6 +93,7 @@ kornia-cpp/         ← C++ bindings
 | `kornia-apriltag` | (standalone) | AprilTag detection |
 | `kornia-calib` | (standalone) | Multi-camera extrinsic calibration (AprilTag BA) |
 | `kornia-bow` | (standalone) | Bag of words |
+| `kornia-oxide-kernels` | (not re-exported; dependency of `kornia-imgproc` `cuda`) | CUDA kernels written in Rust (cuda-oxide), shipped as PTX, with its loader behind `cuda` |
 
 ### Feature Flags
 
@@ -78,7 +102,7 @@ kornia-cpp/         ← C++ bindings
 | `turbojpeg` | libjpeg-turbo I/O | Requires `nasm` |
 | `gstreamer` | GStreamer video | — |
 | `v4l` | Video4Linux camera | Requires `clang` |
-| `cuda` | CUDA for VLM + kornia-3d (stereo rectifier, via imgproc remap) | — |
+| `cuda` | CUDA for VLM + kornia-3d (stereo rectifier, via imgproc remap; depth projector) | In a checkout, `cargo run -p kornia-oxide-kernels --example build_ptx` builds the cuda-oxide PTX; without it the build warns and those kernels run their NVRTC fallback (`docs/cuda-oxide.md`) |
 | `ci` | All CI-compatible features | Excludes `cuda` |
 | `serde`, `bincode`, `arrow` | Serialization formats | — |
 
@@ -97,7 +121,7 @@ kornia-cpp/         ← C++ bindings
 
 ### General
 
-- Rust edition **2021**, MSRV **1.82**
+- Rust edition **2021**, MSRV **1.89**
 - Run `rustfmt` and `clippy` before every commit — **warnings are denied**
 - Prefer **borrowing over cloning**, especially for images and tensors
 - No `unwrap()` or `expect()` in library code — always propagate errors with `?`
@@ -182,6 +206,8 @@ Err(KorniaError::SizeMismatch {
 })
 ```
 
+- Public **error enums** should be `#[non_exhaustive]`. A new failure mode then becomes a new variant of the existing enum without a breaking change; downstream `match`es on the enum need a `_` arm. Adding `#[non_exhaustive]` to an enum that is already published is itself a breaking change: record it in a `changelog.d/<PR>.breaking.md` fragment. Public data structs where future field additions are expected can use `#[non_exhaustive]` too.
+
 ### Performance
 
 - Avoid allocations in hot paths — use pre-allocated `&mut` output buffers (established pattern)
@@ -196,24 +222,28 @@ Err(KorniaError::SizeMismatch {
 
 ### Pull Requests
 
-1. **Keep PRs focused** — one concern per PR. Multiple features → multiple PRs.
-2. **Test locally first** — all of the following must pass before opening a PR:
+1. **Keep PRs small and in scope** — one concern per PR, only what the linked issue asks. Out-of-scope hunks are a blocking review finding (`kornia-code-review`).
+2. **Test locally first** — `pixi run pr-check` must pass, plus:
 
    ```bash
-   pixi run rust-lint   # formatting + clippy
-   pixi run rust-test   # full test suite
    pixi run py-test     # Python binding tests (if py code changed)
    pixi run cpp-test    # C++ binding tests (if C++ code changed)
    ```
+
+   Agents posting comments or reviews for someone end them with `Posted on behalf of @<handle> by <Agent> (<actual model>).`
+
+   Then self-review with `kornia-code-review` and paste its output in the PR's Self-review section (required; the PR check fails without it).
 
 3. **Update documentation** — any new or changed public API must have updated doc comments. New features need an entry in the relevant crate's `README.md` or module-level doc.
 
 4. **Write tests** — new functionality requires unit tests. Bug fixes require a regression test that would have caught the bug.
 
-5. **PR description** — include:
+5. **PR description** — fill in `.github/pull_request_template.md` (`gh pr create --body-file <filled copy>`; `--body` skips the template). It covers:
    - What changed and why
    - Any breaking changes
-   - Benchmarks or profiling data for performance-sensitive changes
+   - Benchmarks or profiling data for performance-sensitive changes (before/after, see `kornia-code-review`)
+   - AI disclosure: agent + version, model, effort level, skills applied, human vs AI part
+   - A `changelog.d/<PR>.<type>.md` fragment for user-visible changes (see `changelog.d/README.md`); never edit `CHANGELOG.md` outside a release PR
    - What use case does this pr address which you use yourself
 
 ### Contributing to Documentation

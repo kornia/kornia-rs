@@ -9,7 +9,7 @@ This project is part of the Kornia ecosystem. Join the community on [Discord](ht
 - **AI Policy & Authorship**: See [AI_POLICY.md](AI_POLICY.md) for the complete policy. Summary:
     - Kornia-rs accepts AI-assisted code but strictly rejects AI-generated contributions where the submitter acts as a proxy.
     - **Proof of Verification**: PRs must include local test logs proving execution (e.g., `pixi run rust-test` or `cargo test`).
-    - **Pre-Discussion**: All PRs must be discussed in Discord or via a GitHub issue before implementation.
+    - **Linked issue**: Every PR links a GitHub issue opened before implementation (Discord can lead to one, not replace it).
     - **Library References**: Implementations must be based on existing library references (Rust crates, OpenCV, etc.).
     - **Hallucination & Redundancy Ban**: Use existing `kornia-rs` utilities and never reinvent the wheel, except when the utility is not available.
     - **The "Explain It" Standard**: You must be able to explain any code you submit.
@@ -121,7 +121,11 @@ We're all volunteers. These policies help us focus on high-impact work.
    pixi run cpp-fmt           # Format C++ code
    pixi run cpp-clean         # Clean C++ build artifacts
 
-   # CUDA development (requires cuda environment)
+   # CUDA development (requires cuda environment). `cuda` also needs the Rust
+   # CUDA kernels' PTX; build it once, and after each kernel edit, with the
+   # cuda-oxide toolchain (docs/cuda-oxide.md):
+   scripts/cuda-oxide/install-toolchain.sh && . ~/.cargo/cuda-oxide/env.sh
+   cargo run -p kornia-oxide-kernels --example build_ptx
    pixi run -e cuda rust-build-cuda  # Build Rust with CUDA support
    pixi run -e cuda rust-test-cuda   # Run Rust tests with CUDA support
 
@@ -191,7 +195,7 @@ We're all volunteers. These policies help us focus on high-impact work.
 
 - **Edition and MSRV:**
   - Rust edition 2021
-  - Minimum supported Rust version (MSRV): 1.76 (as declared in the workspace `Cargo.toml`)
+  - Minimum supported Rust version (MSRV): 1.89 (as declared in the workspace `Cargo.toml`)
 
 - **Error handling:**
   - Prefer `Result<T, E>` with descriptive error types (e.g., via `thiserror`)
@@ -205,7 +209,7 @@ This section provides comprehensive guidance for contributing to kornia-rs, with
 
 ## Before You Start
 
-1. **Discuss First**: Always discuss your proposed changes in Discord or via a GitHub issue before starting implementation (see [Policies and Guidelines](#policies-and-guidelines)). This ensures your work aligns with project goals and avoids duplicate effort.
+1. **Open an issue first**: Every PR needs a linked GitHub issue opened before implementation (discuss in Discord first if you like) (see [Policies and Guidelines](#policies-and-guidelines)). This ensures your work aligns with project goals and avoids duplicate effort.
 
 2. **Start Small**: If you're new to the project, start with small bug fixes or documentation improvements to familiarize yourself with the codebase and contribution process.
 
@@ -215,18 +219,21 @@ This section provides comprehensive guidance for contributing to kornia-rs, with
 
 ## Development Workflow
 
+0. **Read the Skills First**: Project skills in [`.claude/skills/`](.claude/skills) (architecture, workflow, coding style, API design, code review, curation, SIMD, bindings) are mandatory reading for contributors and AI agents. Start with `kornia-arch` and `kornia-workflow`; see [AGENTS.md](AGENTS.md#required-skills). `skills_check.yml` checks their structure and the facts they restate; it does not check that they were applied.
+
 1. **Keep PRs Focused**: Each PR should address a single concern. If you're working on multiple features, create separate PRs for each.
 
 2. **Test Locally First**: Always run all relevant tests locally before submitting (see [Pull Request](#pull-request) for requirements):
    ```bash
-   pixi run rust-lint    # Check formatting and linting
-   pixi run rust-test    # Run all tests
-   pixi run rust-check   # Verify compilation
+   pixi run pr-check     # Gate: skills + fmt-check + clippy + check + tests
    ```
+   Then run the `kornia-code-review` skill on your diff (`git diff main...HEAD`) and paste its output in the PR's **Self-review** section (required: the PR check fails without it). Reviewers may ask you about specific lines.
 
-3. **Update Documentation**: When adding new features or changing behavior, update rustdoc comments for public APIs (see [Coding Standards](#coding-standards) and [Rust-Specific Best Practices](#rust-specific-best-practices) for documentation guidelines).
+3. **Add a Changelog Fragment**: For a user-visible change, add `changelog.d/<PR>.<type>.md` (`breaking`, `added`, `perf`, `fixed`) as described in [`changelog.d/README.md`](changelog.d/README.md). Do not edit `CHANGELOG.md`; releases assemble it. Internal-only PRs say so and get the `no-changelog` label.
 
-4. **Follow Rust Idioms**:
+4. **Update Documentation**: When adding new features or changing behavior, update rustdoc comments for public APIs (see [Coding Standards](#coding-standards) and [Rust-Specific Best Practices](#rust-specific-best-practices) for documentation guidelines).
+
+5. **Follow Rust Idioms**:
    - Use pattern matching effectively (`match`, `if let`, `while let`)
    - Prefer composition over inheritance
    - Use `Option` and `Result` types appropriately
@@ -309,25 +316,16 @@ This section provides comprehensive guidance for contributing to kornia-rs, with
 
 # Pull Request
 
-## Issue Approval and Assignment Workflow
+## Issue Workflow
 
-**Before submitting a PR, you must:**
+**Before submitting a PR:**
 
-1. **Open an issue first**: All PRs must be linked to an existing issue. If no issue exists for your work, create one using the appropriate template (bug report or feature request).
+1. **Open or find an issue**: Every PR links an issue. If none exists, open one with the bug report or feature request template.
+2. **Say you are working on it**: Comment on the issue so others do not duplicate the work. You do not need to wait for approval or assignment; maintainers may still close a PR that does not fit the project's direction.
 
-2. **Wait for maintainer approval**: A maintainer must review and approve the issue before you start working on it. New issues are automatically labeled with `triage` and will receive a welcome message explaining this process.
-
-3. **Wait for assignment**: You must be assigned to the issue by a maintainer before submitting a PR. This ensures:
-   - The issue aligns with project goals
-   - No duplicate work is being done
-   - Proper coordination of contributions
-
-4. **Do not start work until assigned**: PRs submitted without prior issue approval and assignment may be closed or receive warnings during automated validation.
-
-This workflow helps maintain quality, avoid conflicts, and ensure contributions align with the project's direction. The automated PR validation workflow will check these requirements and post warnings if they're not met.
+The automated PR validation checks that an issue is linked and that the Self-review is a real `kornia-code-review` run.
 
 **Requirements:**
-- **Issue approval and assignment**: The linked issue must be approved by a maintainer and you must be assigned to it (see workflow above)
 - Link PR to an issue (use "Closes #123" or "Fixes #123")
 - Pass all local tests before submission
 - For first time contributors, provide proof of local test execution in the PR description
@@ -440,7 +438,7 @@ CARGO_REGISTRY_TOKEN=cio_xxx ./scripts/release_rust.sh --execute
 
 #### Crates currently published
 
-`kornia-algebra`, `kornia-bow`, `kornia-tensor`, `kornia-tensor-ops`, `kornia-image`, `kornia-io`, `kornia-imgproc`, `kornia-3d` — in that order.
+`kornia-algebra`, `kornia-bow`, `kornia-oxide-kernels`, `kornia-tensor`, `kornia-tensor-ops`, `kornia-image`, `kornia-io`, `kornia-imgproc`, `kornia-3d` — in that order.
 
 #### Crates intentionally skipped
 
@@ -452,7 +450,10 @@ To add them back, append the crate to `PUBLISH_ORDER` in `scripts/release_rust.s
 
 ### Publishing the Python wheel
 
-Trigger the `Python Release` workflow (`.github/workflows/python_release.yml`) from the Actions tab. It builds wheels for Linux / macOS / Windows × Python 3.8–3.14t and uploads to PyPI using the `PYPI_PASSWORD` secret.
+1. **Run `Python Release Validation` first** (`.github/workflows/python_release_validate.yml`, Actions tab → Run workflow, on the commit you will release). It builds wheels with the exact build definition the release uses (`.github/workflows/python_wheels.yml`), installs the py3.12 wheel of each platform in a clean venv, smoke-tests it and checks its tags — and has no publish job. `minimal` (default) builds py3.12 per platform; `full` builds the whole release matrix but still smoke-tests only the py3.12 wheels. It also runs automatically on PRs that touch the wheel build (workflows, `.cargo/config.toml`, `kornia-py/`, `scripts/cuda-oxide/`, `crates/kornia-oxide-kernels/`, `.github/actions/cuda-oxide-ptx/`, the imgproc and tensor `Cargo.toml`). On a PR, add the `ci:wheels-full` label to build the full matrix.
+2. When it is green, trigger the `Python Release` workflow (`.github/workflows/python_release.yml`) from the Actions tab. It builds wheels for Linux / macOS / Windows × Python 3.8–3.14t and uploads to PyPI using the `PYPI_PASSWORD` secret.
+
+Build changes go in `python_wheels.yml`, never in the release or validation workflow, so the validation keeps testing what ships.
 
 ## Python bindings (`kornia-py`)
 

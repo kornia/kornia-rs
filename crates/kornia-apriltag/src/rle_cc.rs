@@ -1,7 +1,32 @@
 use rayon::prelude::*;
 
-use crate::utils::Pixel;
+use crate::{errors::AprilTagError, utils::Pixel};
 use kornia_image::Image;
+
+/// Maximum image width supported by the run encoding (`Run::col_*` are `u16`).
+pub(crate) const MAX_RLE_WIDTH: usize = u16::MAX as usize;
+
+/// The error returned for images the run encoding cannot represent.
+fn image_too_large(width: usize, height: usize) -> AprilTagError {
+    AprilTagError::ImageTooLarge {
+        width,
+        height,
+        max_width: MAX_RLE_WIDTH,
+        max_pixels: u32::MAX as usize,
+    }
+}
+
+/// Checks that an image of `width` columns fits the `u16` run columns.
+///
+/// # Errors
+///
+/// Returns [`AprilTagError::ImageTooLarge`] if `width` exceeds [`MAX_RLE_WIDTH`].
+pub(crate) fn check_rle_width(width: usize, height: usize) -> Result<(), AprilTagError> {
+    if width > MAX_RLE_WIDTH {
+        return Err(image_too_large(width, height));
+    }
+    Ok(())
+}
 
 /// A single horizontal run of non-Skip pixels.
 #[derive(Clone, Copy)]
@@ -71,20 +96,48 @@ impl RleCC {
     ///
     /// After this call, `rep_cache[i]` = canonical run-index for pixel i if its
     /// component has ≥ `min_size` pixels, or `u32::MAX` otherwise.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AprilTagError::ImageTooLarge`] if the image is wider than
+    /// [`MAX_RLE_WIDTH`] or its run buffer cannot be indexed with `u32`.
     pub(crate) fn process(
         &mut self,
         src: &Image<Pixel, 1>,
         rep_cache: &mut Vec<u32>,
         min_size: usize,
-    ) {
+    ) -> Result<(), AprilTagError> {
         let height = src.height();
         let width = src.width();
-        self.reset(height, width);
-
         let n_threads = rayon::current_num_threads().max(1);
         let strip_h = height.div_ceil(n_threads);
 
-        self.scan_runs(src.as_slice(), height, width, n_threads, strip_h);
+        // Worst-case runs per thread: runs start at x >= 1, end at x <= width - 1 and
+        // each covers at least one pixel, so a row holds at most `width - 2` runs.
+        let max_per_thread = width.saturating_sub(2).saturating_mul(strip_h).max(1);
+        // `Run` columns are u16, and run indices (plus the `u32::MAX` sentinel) are u32.
+        check_rle_width(width, height)?;
+        match max_per_thread.checked_mul(n_threads) {
+            Some(total) if total < u32::MAX as usize => {}
+            _ => return Err(image_too_large(width, height)),
+        }
+
+        self.reset(height, width);
+        self.max_per_thread = max_per_thread;
+
+        if width < 3 || height == 0 {
+            // No interior pixels → no runs; every pixel is "skip".
+            let n = height * width;
+            if rep_cache.len() < n {
+                rep_cache.resize(n, u32::MAX);
+            }
+            rep_cache[..n].fill(u32::MAX);
+            return Ok(());
+        }
+
+        if !self.scan_runs(src.as_slice(), height, width, n_threads, strip_h) {
+            return Err(image_too_large(width, height));
+        }
 
         for t in 1..n_threads {
             let y = t * strip_h;
@@ -110,8 +163,14 @@ impl RleCC {
             &self.thread_counts,
             rep_cache,
         );
+        Ok(())
     }
 
+    /// Scans every row into runs and performs intra-strip union-find.
+    ///
+    /// Returns `false` if a thread would have exceeded its `self.max_per_thread` run
+    /// slots (never expected given the caller's sizing; checked defensively so a
+    /// sizing mistake can never turn into an out-of-bounds write).
     fn scan_runs(
         &mut self,
         src: &[Pixel],
@@ -119,10 +178,9 @@ impl RleCC {
         width: usize,
         n_threads: usize,
         strip_h: usize,
-    ) {
-        // Worst-case runs per thread: one run every 2 pixels × strip height.
-        let max_per_thread = ((width / 2 + 1) * strip_h).max(1);
-        self.max_per_thread = max_per_thread;
+    ) -> bool {
+        debug_assert!(width >= 3 && src.len() == width * height);
+        let max_per_thread = self.max_per_thread;
         let total_capacity = max_per_thread * n_threads;
 
         // Grow the shared runs buffer to accommodate all threads' worst-case output.
@@ -144,15 +202,18 @@ impl RleCC {
         let runs_ptr = RunsPtr(self.runs.as_mut_ptr());
         let src_ptr = PixelPtr(src.as_ptr() as *const u8);
 
-        // Each thread returns (local_row_start: Vec<u32>, actual_count: u32).
-        // local_row_start[iy] is already a GLOBAL index (base + local_offset).
-        let per_thread: Vec<(Vec<u32>, u32)> = (0..n_threads)
+        // Each thread returns (local_row_start: Vec<u32>, actual_count: u32), or `None`
+        // if it ran out of slots. local_row_start[iy] is already a GLOBAL index
+        // (base + local_offset).
+        let per_thread: Option<Vec<(Vec<u32>, u32)>> = (0..n_threads)
             .into_par_iter()
             .map(move |t| {
                 let y_start = t * strip_h;
                 let y_end = (y_start + strip_h).min(height);
                 let strip_rows = y_end.saturating_sub(y_start);
                 let base = (t * max_per_thread) as u32;
+                // Exclusive end of this thread's slot region in `runs`.
+                let thread_end = (t + 1) * max_per_thread;
 
                 let mut local_row_start = vec![base; strip_rows + 1];
                 let mut run_idx = base;
@@ -209,8 +270,16 @@ impl RleCC {
                             x += 1;
                         }
                         let col_end = x as u16;
+                        // Bounds check (once per run, not per pixel): never write past
+                        // this thread's region of the shared buffer.
+                        if run_idx as usize >= thread_end {
+                            return None;
+                        }
                         // Write directly to global slot; parent is the global run index
                         // (self-pointing root). No rebase required later.
+                        // SAFETY: `run_idx < thread_end <= total_capacity == runs.len()`
+                        // (checked just above), and slots [base, thread_end) are owned
+                        // exclusively by this thread.
                         unsafe {
                             *runs_ptr.add(run_idx as usize) = Run {
                                 parent: run_idx,
@@ -236,12 +305,16 @@ impl RleCC {
                 }
 
                 let count = run_idx - base;
-                (local_row_start, count)
+                Some((local_row_start, count))
             })
             .collect();
 
-        // Sequential: update row_start from the per-thread global row indices.
         self.thread_counts.clear();
+        let Some(per_thread) = per_thread else {
+            return false;
+        };
+
+        // Sequential: update row_start from the per-thread global row indices.
         for (t, (local_row_start, count)) in per_thread.into_iter().enumerate() {
             let y_start = t * strip_h;
             let strip_rows = (y_start + strip_h).min(height).saturating_sub(y_start);
@@ -257,6 +330,7 @@ impl RleCC {
             }
             self.thread_counts.push(count);
         }
+        true
     }
 }
 
@@ -512,5 +586,83 @@ fn uf_find_const(runs_ptr: *const Run, mut id: usize) -> usize {
             return id;
         }
         id = p;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kornia_image::ImageSize;
+
+    fn stripes(width: usize, height: usize) -> Result<Image<Pixel, 1>, Box<dyn std::error::Error>> {
+        // 1-px vertical stripes: every interior pixel starts a new run.
+        let data = (0..width * height)
+            .map(|i| {
+                if (i % width) & 1 == 0 {
+                    Pixel::Black
+                } else {
+                    Pixel::White
+                }
+            })
+            .collect();
+        Ok(Image::new(ImageSize { width, height }, data)?)
+    }
+
+    #[test]
+    fn test_one_pixel_stripes_fit_run_buffer() -> Result<(), Box<dyn std::error::Error>> {
+        // Regression: the run buffer used to be sized for one run every 2 pixels,
+        // so 1-px stripes wrote past the end of each thread's region.
+        let (width, height) = (64, 48);
+        let src = stripes(width, height)?;
+        let mut rle = RleCC::new(height, width);
+        let mut rep_cache = Vec::new();
+        rle.process(&src, &mut rep_cache, 1)?;
+
+        for (t, &count) in rle.thread_counts.iter().enumerate() {
+            assert!(
+                count as usize <= rle.max_per_thread,
+                "thread {t} wrote {count} runs into {} slots",
+                rle.max_per_thread
+            );
+        }
+        let total: u32 = rle.thread_counts.iter().sum();
+        assert_eq!(total as usize, (width - 2) * height);
+
+        // Each interior column is one vertical component; borders are skipped.
+        for y in 0..height {
+            assert_eq!(rep_cache[y * width], u32::MAX);
+            assert_eq!(rep_cache[y * width + width - 1], u32::MAX);
+            for x in 1..width - 1 {
+                assert_eq!(rep_cache[y * width + x], rep_cache[x]);
+                assert_ne!(rep_cache[x], u32::MAX);
+            }
+        }
+        for x in 2..width - 1 {
+            assert_ne!(rep_cache[x], rep_cache[x - 1]);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_rejects_width_above_u16() -> Result<(), Box<dyn std::error::Error>> {
+        let (width, height) = (MAX_RLE_WIDTH + 1, 2);
+        let src = Image::from_size_val(ImageSize { width, height }, Pixel::White)?;
+        let mut rle = RleCC::new(height, width);
+        let mut rep_cache = Vec::new();
+        let res = rle.process(&src, &mut rep_cache, 1);
+        assert!(matches!(res, Err(AprilTagError::ImageTooLarge { .. })));
+        Ok(())
+    }
+
+    #[test]
+    fn test_tiny_images() -> Result<(), Box<dyn std::error::Error>> {
+        for (width, height) in [(1, 5), (2, 5), (5, 1), (3, 3)] {
+            let src = Image::from_size_val(ImageSize { width, height }, Pixel::White)?;
+            let mut rle = RleCC::new(height, width);
+            let mut rep_cache = Vec::new();
+            rle.process(&src, &mut rep_cache, 100)?;
+            assert!(rep_cache[..width * height].iter().all(|&v| v == u32::MAX));
+        }
+        Ok(())
     }
 }
