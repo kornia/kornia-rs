@@ -9,7 +9,7 @@ use kornia_imgproc::filter::{
 fn bench_gradient(c: &mut Criterion) {
     let mut group = c.benchmark_group("Spatial Gradient Float");
 
-    for (width, height) in [(512, 512), (1024, 1024), (2048, 2048)].iter() {
+    for (width, height) in [(752, 480), (512, 512), (1024, 1024), (2048, 2048)].iter() {
         group.throughput(criterion::Throughput::Elements((*width * *height) as u64));
 
         let parameter_string = format!("{width}x{height}");
@@ -51,6 +51,25 @@ fn bench_gradient(c: &mut Criterion) {
                 let (src, mut dx, mut dy) = (i.0, i.1.clone(), i.2.clone());
                 b.iter(|| {
                     std::hint::black_box(spatial_gradient_float_parallel(src, &mut dx, &mut dy))
+                })
+            },
+        );
+
+        // single-channel Scharr, as optical flow uses it
+        let gray = Image::<f32, 1>::new(
+            image_size,
+            (0..width * height).map(|i| (i % 251) as f32).collect(),
+        )
+        .unwrap();
+        let gray_dx = Image::<f32, 1>::from_size_val(image_size, 0.0).unwrap();
+        let gray_dy = gray_dx.clone();
+        group.bench_with_input(
+            BenchmarkId::new("scharr_spatial_gradient_float_1c", &parameter_string),
+            &(&gray, &gray_dx, &gray_dy),
+            |b, i| {
+                let (src, mut dx, mut dy) = (i.0, i.1.clone(), i.2.clone());
+                b.iter(|| {
+                    std::hint::black_box(scharr_spatial_gradient_float(src, &mut dx, &mut dy))
                 })
             },
         );

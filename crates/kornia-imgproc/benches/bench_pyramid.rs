@@ -8,7 +8,9 @@ use kornia_imgproc::pyramid::{
 fn bench_pyramid(c: &mut Criterion) {
     let mut group = c.benchmark_group("Pyramid Operations");
 
-    for (width, height) in [(256, 224), (512, 448), (1024, 896)].iter() {
+    // 752x480 is a common VGA-class camera size (EuRoC); its rows are not a multiple of 8
+    // outputs after halving, so the vector kernels' scalar tails run too.
+    for (width, height) in [(256, 224), (512, 448), (752, 480), (1024, 896)].iter() {
         group.throughput(criterion::Throughput::Elements((*width * *height) as u64));
 
         let parameter_string = format!("{width}x{height}");
