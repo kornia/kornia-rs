@@ -15,7 +15,12 @@ description: Use when changing Python (kornia-py, PyO3/Maturin) or C++ (kornia-c
   changes. Read `kornia-py/CONTRIBUTING.md`.
 - Release wheels are built with `--features cuda` (dynamic loading, CPU
   fallback); do not break import on machines without CUDA.
+- In a checkout, run `cargo run -p kornia-oxide-kernels --example build_ptx`
+  before `maturin ... --features cuda`; the build fails without the PTX.
 - Errors map to Python exceptions; never `unwrap()` in binding code.
+- A Python-visible docstring uses the `Args:` / `Returns:` format of
+  `kornia-py/src/ba.rs`; rustdoc sections and the `py` token do not belong in
+  `__doc__`.
 
 ## C++ (`kornia-cpp/`)
 
