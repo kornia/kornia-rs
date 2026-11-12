@@ -6,6 +6,9 @@ use kornia_image::{Image, ImageError, ImageSize};
 use rayon::prelude::*;
 use thiserror::Error;
 
+mod fixed_point;
+pub use fixed_point::{calc_optical_flow_pyr_lk_u8, LkPyramidU8, PyrLkU8Error};
+
 /// Termination criteria for LK iterations
 #[derive(Debug, Clone)]
 /// Terminate after a fixed number of iterations.

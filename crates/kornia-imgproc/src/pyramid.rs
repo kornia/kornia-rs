@@ -2,6 +2,7 @@ use kornia_image::{Image, ImageError, ImageSize};
 use rayon::prelude::*;
 
 mod kernels;
+pub(crate) use kernels::pyrdown_c1_u8 as pyrdown_c1_u8_strided;
 
 // Gaussian kernel weights
 
