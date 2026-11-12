@@ -75,6 +75,7 @@ pr-check = { depends-on = [
   "rust-test"
 ], description = "Pre-PR gate: skills, fmt check, clippy, check, tests (CI also runs release and cross-arch)" }
 rust-test-release = { cmd = "cargo test --release --features ci", description = "Run Rust tests (release)" }
+rust-test-algebra-avx2 = { cmd = "cargo test --release -p kornia-algebra", env = { RUSTFLAGS = "-Ctarget-feature=+avx2,+fma" }, description = "Run kornia-algebra tests (release) with AVX2 and FMA enabled at compile time, the only build that compiles its AVX2 lane backend" }
 rust-test-package = { cmd = "cargo test -p", description = "Run tests for a specific package (usage: pixi run rust-test-package <package>)" }
 rust-build-examples = { cmd = "cargo build --workspace --exclude kornia-py --exclude kornia-cpp", description = "Build examples (excluding bindings)" }
 rust-clean = { cmd = "cargo clean", description = "Clean Rust build artifacts" }

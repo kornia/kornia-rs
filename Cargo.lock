@@ -8091,6 +8091,7 @@ dependencies = [
  "kornia-io",
  "kornia-oxide-kernels",
  "kornia-tensor",
+ "libc",
  "ndarray 0.17.2",
  "num-traits",
  "opencv",
