@@ -158,6 +158,14 @@ pub(crate) fn render_depth_mm(
     Ok(depth)
 }
 
+/// A millimetre depth image in metres, `0` staying `0` (invalid). Each depth is rounded to
+/// `f32` from the same `f64` metres [`super::rgbd::vertex_map_from_depth_mm`] uses, so both
+/// paths see bit-identical `z`.
+pub(crate) fn depth_m_from_mm(depth: &Image<u16, 1>) -> Result<Image<f32, 1>, ImageError> {
+    let metres = depth.as_slice().iter().map(|&d| (d as f64 * 1e-3) as f32);
+    Image::new(depth.size(), metres.collect())
+}
+
 /// Renders an exact `f32` camera-frame vertex map (no millimetre quantization), `[0, 0, 0]` =
 /// miss. Same conventions as [`super::rgbd::vertex_map_from_depth_mm`].
 pub(crate) fn render_vertex_map(

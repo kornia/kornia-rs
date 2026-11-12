@@ -473,44 +473,14 @@ fn reconstruct_inner(
         ..Default::default()
     };
 
-    // Per track: normalized observation per camera (undistort + K⁻¹). Raw pixels stay in `tracks`.
-    // MUTABLE because `refine_intrinsics` rewrites these in place once it has fitted a correction.
-    let mut norm: Vec<Vec<(usize, Vec2F64)>> = tracks
-        .iter()
-        .map(|t| {
-            t.obs
-                .iter()
-                .map(|(c, uv)| (*c, cameras[*c].normalize(*uv)))
-                .collect()
-        })
-        .collect();
-    // Parallel to `norm`: metric depth per observation, or `None`. All-`None` when the feature is
-    // off, so downstream sites index it unconditionally; a wrong-shaped caller array yields `None`.
-    //
-    // Built by walking `norm`, NOT `obs_depth`, so that promise is structural rather than a hope
-    // about the caller. Reading `obs_depth` directly made the shape whatever the caller passed:
-    // every reader here goes through `.get().and_then(.get())` and so merely saw `None` on a short
-    // row — but a row of the WRONG length silently pairs each depth with the wrong observation, and
-    // `filter_points` now mutates the two in lockstep, where a length mismatch would desynchronise
-    // them outright.
-    let mut norm_depth: Vec<Vec<Option<f32>>> = match obs_depth {
-        Some(d) if config.depth_prior_rel_sigma > 0.0 => norm
-            .iter()
-            .enumerate()
-            .map(|(ti, obs)| {
-                let row = d.get(ti);
-                (0..obs.len())
-                    .map(|j| {
-                        row.and_then(|r| r.get(j))
-                            .copied()
-                            .flatten()
-                            .map(|v| v as f32)
-                    })
-                    .collect()
-            })
-            .collect(),
-        _ => norm.iter().map(|t| vec![None; t.len()]).collect(),
-    };
+    // Per track: normalized observation per camera (undistort + K⁻¹), and its depth. Raw pixels
+    // stay in `tracks`. MUTABLE because `refine_intrinsics` rewrites `norm` in place once it has
+    // fitted a correction, and `filter_points` prunes both in lockstep.
+    let (mut norm, mut norm_depth) = normalize_tracks(
+        cameras,
+        tracks,
+        obs_depth.filter(|_| config.depth_prior_rel_sigma > 0.0),
+    );
 
     // Pristine copy of every observation, kept so `filter_points`' deletions are RECOVERABLE.
     //
@@ -1446,6 +1416,47 @@ fn select_bootstrap_pair(
     Ok((a0, b0, pose))
 }
 
+/// Normalized observations (undistort + K⁻¹) per track, and the metric depth of each.
+///
+/// `norm_depth[ti]` is parallel to `norm[ti]`: depth per observation, or `None`. All-`None` when
+/// `obs_depth` is `None`, so downstream sites index it unconditionally; a wrong-shaped caller array
+/// yields `None`. An observation its camera cannot undistort (past its distortion fold) is dropped
+/// from both.
+///
+/// Both are built in ONE pass over `tracks[ti].obs`, keyed by the observation's index `j` there
+/// (which is what `obs_depth[ti][j]` refers to), so a dropped observation drops its depth too.
+/// Pairing by position in `norm` instead would shift every later depth onto the wrong observation.
+/// The shape is structural rather than a hope about the caller: every reader goes through
+/// `.get().and_then(.get())` and so merely sees `None` on a short row, and `filter_points` mutates
+/// the two in lockstep, where a length mismatch would desynchronise them.
+#[allow(clippy::type_complexity)]
+fn normalize_tracks(
+    cameras: &[PinholeCamera],
+    tracks: &[FeatureTrack],
+    obs_depth: Option<&[Vec<Option<f64>>]>,
+) -> (Vec<Vec<(usize, Vec2F64)>>, Vec<Vec<Option<f32>>>) {
+    tracks
+        .iter()
+        .enumerate()
+        .map(|(ti, t)| {
+            let row = obs_depth.and_then(|d| d.get(ti));
+            t.obs
+                .iter()
+                .enumerate()
+                .filter_map(|(j, (c, uv))| {
+                    let n = cameras[*c].normalize(*uv)?;
+                    let depth = row
+                        .and_then(|r| r.get(j))
+                        .copied()
+                        .flatten()
+                        .map(|v| v as f32);
+                    Some(((*c, n), depth))
+                })
+                .unzip()
+        })
+        .unzip()
+}
+
 /// Solve one candidate bootstrap pair.
 ///
 /// Returns `(T_a_to_b with unit translation, cheirality-valid count, median triangulation angle in
@@ -1465,30 +1476,46 @@ fn try_bootstrap_pair(
     cameras: &[PinholeCamera],
     idcam: &PinholeCamera,
 ) -> Option<(Pose3d, usize, f64, Option<f64>)> {
-    let (mut x1, mut x2) = (Vec::new(), Vec::new());
+    // Undistorted pixels and normalized coords, pushed together so the four stay index-paired;
+    // a pair either camera cannot undistort is skipped.
+    let (mut x1u, mut x2u) = (Vec::new(), Vec::new());
+    let (mut n1, mut n2) = (Vec::new(), Vec::new());
     for t in tracks {
         let pa = t.obs.iter().find(|(c, _)| *c == a0);
         let pb = t.obs.iter().find(|(c, _)| *c == b0);
-        if let (Some((_, ua)), Some((_, ub))) = (pa, pb) {
-            x1.push(*ua);
-            x2.push(*ub);
-        }
+        let (Some((_, ua)), Some((_, ub))) = (pa, pb) else {
+            continue;
+        };
+        let (Some(ua_u), Some(ub_u)) = (
+            cameras[a0].undistort(ua.x, ua.y),
+            cameras[b0].undistort(ub.x, ub.y),
+        ) else {
+            continue;
+        };
+        // K⁻¹·undistort(px) == normalize(px), without inverting the distortion a second time.
+        let (ka, kb) = (&cameras[a0], &cameras[b0]);
+        n1.push(Vec2F64::new(
+            (ua_u.x - ka.cx) / ka.fx,
+            (ua_u.y - ka.cy) / ka.fy,
+        ));
+        n2.push(Vec2F64::new(
+            (ub_u.x - kb.cx) / kb.fx,
+            (ub_u.y - kb.cy) / kb.fy,
+        ));
+        x1u.push(ua_u);
+        x2u.push(ub_u);
     }
-    if x1.len() < 8 {
+    if x1u.len() < 8 {
         return None;
     }
 
     // Calibrated 5-point Nistér essential + explicit cheirality vote. We drive the essential arm
     // directly (not the full `TwoViewEstimator`, whose F/H model selection can pick a degenerate
     // homography on a converging rig): a calibrated rig always wants the essential.
-    let n1: Vec<Vec2F64> = x1.iter().map(|p| cameras[a0].normalize(*p)).collect();
-    let n2: Vec<Vec2F64> = x2.iter().map(|p| cameras[b0].normalize(*p)).collect();
     // `ransac_essential_5pt` only normalizes with K⁻¹ — it does NOT undistort. Feed UNDISTORTED
     // pixels so the essential arm matches the undistorted-normalized coords every other stage uses
     // (cheirality vote, triangulation, BA); K⁻¹·undistort(px) == normalize(px). The 2.0 px threshold
     // stays valid in undistorted pixel space. (Raw pixels here would bias R/t on a distorted lens.)
-    let x1u: Vec<Vec2F64> = x1.iter().map(|p| cameras[a0].undistort(p.x, p.y)).collect();
-    let x2u: Vec<Vec2F64> = x2.iter().map(|p| cameras[b0].undistort(p.x, p.y)).collect();
 
     // Model-selection score: DIAGNOSTIC ONLY, and computed only when someone is looking.
     //
@@ -1798,8 +1825,10 @@ fn tag_scale(
     let ccb = tag.per_camera.iter().find(|(c, _)| *c == cb).unwrap().1;
     let mut world: [Option<Vec3F64>; 4] = [None; 4];
     for k in 0..4 {
-        let na = cameras[ca].normalize(cca[k]);
-        let nb = cameras[cb].normalize(ccb[k]);
+        let (Some(na), Some(nb)) = (cameras[ca].normalize(cca[k]), cameras[cb].normalize(ccb[k]))
+        else {
+            continue;
+        };
         if let Ok(pts) =
             triangulate_matched_points(&[na], &[nb], &poses_w2c[ca], &poses_w2c[cb], idcam, tcfg)
         {
@@ -1922,6 +1951,41 @@ mod tests {
     fn project(pw: Vec3F64, pose_w2c: &Pose3d, k: &PinholeCamera) -> Vec2F64 {
         let pc = pose_w2c.transform_point(&pw);
         Vec2F64::new(k.fx * pc.x / pc.z + k.cx, k.fy * pc.y / pc.z + k.cy)
+    }
+
+    #[test]
+    fn normalize_tracks_drops_an_unundistortable_observation_with_its_depth() {
+        // With k1 = -0.28 the distorted radius peaks at about 364 px, so pixel (0, 0) has no
+        // preimage; camera 1 sees the track there, between two observations that do undistort.
+        let cam = PinholeCamera {
+            fx: 500.0,
+            fy: 500.0,
+            cx: 376.0,
+            cy: 240.0,
+            k1: -0.28,
+            k2: 0.0,
+            p1: 0.0,
+            p2: 0.0,
+        };
+        let cameras = [cam.clone(), cam.clone(), cam];
+        let tracks = [FeatureTrack {
+            obs: vec![
+                (0, Vec2F64::new(376.0, 240.0)),
+                (1, Vec2F64::new(0.0, 0.0)),
+                (2, Vec2F64::new(426.0, 240.0)),
+            ],
+        }];
+        let depth = [vec![Some(1.0), Some(2.0), Some(3.0)]];
+
+        let (norm, norm_depth) = normalize_tracks(&cameras, &tracks, Some(&depth));
+
+        let cams: Vec<usize> = norm[0].iter().map(|(c, _)| *c).collect();
+        assert_eq!(cams, [0, 2]);
+        assert_eq!(norm_depth[0], [Some(1.0), Some(3.0)]);
+
+        let (norm, norm_depth) = normalize_tracks(&cameras, &tracks, None);
+        assert_eq!(norm[0].len(), 2);
+        assert_eq!(norm_depth[0], [None, None]);
     }
 
     #[test]
@@ -2465,8 +2529,8 @@ mod tests {
                 let (c0, uv0) = t.obs[0];
                 let (c1, uv1) = t.obs[1];
                 let pts = triangulate_matched_points(
-                    &[cams[c0].normalize(uv0)],
-                    &[cams[c1].normalize(uv1)],
+                    &[cams[c0].normalize(uv0).unwrap()],
+                    &[cams[c1].normalize(uv1).unwrap()],
                     &gt[c0],
                     &gt[c1],
                     &PinholeCamera::IDENTITY,
