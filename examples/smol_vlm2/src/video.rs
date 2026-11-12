@@ -26,7 +26,7 @@
 /// # }
 /// ```
 #[cfg(feature = "gstreamer")]
-use kornia_io::gstreamer::{video::ImageFormat as IoImageFormat, video::VideoReader};
+use kornia_io::gstreamer::{video::ImageFormat as IoImageFormat, video::VideoReader, Grab};
 use kornia_vlm::video::VideoError;
 use kornia_vlm::video::VideoSample;
 
@@ -64,6 +64,7 @@ pub enum VideoSamplingMethod {
 
 #[cfg(not(feature = "gstreamer"))]
 #[allow(dead_code)]
+/// Fallback that panics when the `gstreamer` feature is disabled.
 pub fn from_video_path<P: AsRef<std::path::Path>>(
     _path: P,
     _sampling: VideoSamplingMethod,
@@ -72,6 +73,7 @@ pub fn from_video_path<P: AsRef<std::path::Path>>(
 }
 
 #[cfg(feature = "gstreamer")]
+/// Loads a video file and samples frames according to `sampling`.
 pub fn from_video_path<const N: usize, P: AsRef<std::path::Path>>(
     path: P,
     sampling: VideoSamplingMethod,
@@ -111,20 +113,11 @@ pub fn from_video_path<const N: usize, P: AsRef<std::path::Path>>(
     // Always collect all frames for Uniform, otherwise sample as we go
     let collect_all = matches!(sampling, VideoSamplingMethod::Uniform(_));
 
-    // Give the pipeline time to start up and begin buffering frames
-    std::thread::sleep(std::time::Duration::from_millis(100));
-
-    // Read frames from the video, tolerating gaps while the stream fills.
-    let mut consecutive_no_frames = 0;
-    let max_consecutive_no_frames = 50;
-    let frame_wait_ms = 33; // ~30fps equivalent wait time
-
+    // Read frames until the reader reports end-of-stream or a pipeline error.
     loop {
-        match video_reader.grab_rgb8() {
-            Ok(Some(gst_image)) => {
+        match video_reader.try_grab_rgb8() {
+            Ok(Grab::Frame(gst_image)) => {
                 use kornia_image::Image;
-
-                consecutive_no_frames = 0; // Reset counter when we get a frame
 
                 // Convert kornia_image::allocator::host_alloc() image to target allocator
                 let size = gst_image.size();
@@ -232,27 +225,10 @@ pub fn from_video_path<const N: usize, P: AsRef<std::path::Path>>(
                 }
                 frame_idx += 1;
             }
-            Ok(None) => {
-                consecutive_no_frames += 1;
-
-                // Wait a bit for more frames
-                std::thread::sleep(std::time::Duration::from_millis(frame_wait_ms));
-
-                // Check if we've reached the end of the video
-                if let Some(duration) = video_reader.get_duration() {
-                    if let Some(current_pos) = video_reader.get_pos() {
-                        // Add some tolerance for the end detection
-                        if current_pos.as_millis() + 100 >= duration.as_millis() {
-                            break;
-                        }
-                    }
-                }
-
-                // If we haven't gotten frames for a while, break
-                if consecutive_no_frames > max_consecutive_no_frames {
-                    break;
-                }
-            }
+            // The video ended normally: every decoded frame has been read.
+            Ok(Grab::Eos) => break,
+            // No frame is buffered yet; the decoder is still working, so back off briefly.
+            Ok(Grab::Pending) => std::thread::sleep(std::time::Duration::from_millis(5)),
             Err(_) => {
                 return Err(VideoError::FrameGrabbing);
             }

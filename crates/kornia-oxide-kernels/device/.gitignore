@@ -1,0 +1,5 @@
+target/
+# Stray outputs of a manual build; examples/build_ptx.rs builds a staged copy
+# under target/ instead.
+*.ll
+*.ptx

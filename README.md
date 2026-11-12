@@ -380,6 +380,42 @@ Full pipelines: [`examples/cuda_camera_preprocess`](examples/cuda_camera_preproc
 [`kornia-py/examples/preprocess_to_inference.py`](kornia-py/examples/preprocess_to_inference.py)
 (NV12 → fused preprocess → ResNet-18 / TensorRT, GPU-resident end to end).
 
+### Affine bundle adjustment
+
+`kornia_rs.k3d.bundle_adjust_affine` jointly optimizes float64 affine camera
+matrices and 3D points with Cauchy loss and Schur LM. Pass C-contiguous, aligned
+NumPy arrays: cameras `(C, 2, 4)`, points `(N, 3)`, pixels `(O, 2)`, and int64
+camera/point indices `(O,)`. Fixed-point indices must include four noncoplanar
+anchors, each seen in at least two views when any point is free. Coordinates use
+the world frame and pixels described by each camera's 2×4 matrix; no metric camera
+constraints are imposed.
+
+The function copies inputs into owned Rust buffers, releases the GIL for the
+solve, and returns an `AffineBaResult` with new `cameras`/`points` arrays plus
+`initial_cost`, `cost`, `iterations`, `accepted_steps`, and `converged`. It never
+modifies the inputs.
+Costs are `0.5 * scale**2 * sum(log1p(||residual||**2 / scale**2))`, summed per
+2D observation. Check `converged`: exhausting the iteration budget returns the last
+accepted state with `converged=False`. When the damping trials run out, a numerically
+stationary cost returns `converged=True`, with or without earlier accepted steps.
+Otherwise, the last accepted state returns with `converged=False` after some progress,
+and `ValueError` is raised before any accepted step. Invalid values also raise
+`ValueError`. A wrong array dtype raises `TypeError`, and a negative fixed-point
+index or integer option raises `OverflowError`.
+
+Run a deterministic example that generates all its geometry and observations:
+
+```bash
+pixi run -e default py-build-release
+pixi run -e default python kornia-py/examples/affine_bundle_adjustment.py --points 10000
+# Independent dense finite-difference reference on a small scene:
+OPENBLAS_NUM_THREADS=1 pixi run -e default python kornia-py/examples/affine_bundle_adjustment.py --points 24 --scipy
+```
+
+The dense reduced camera solve targets few-camera, many-point scenes. The
+SciPy comparison uses the same objective but different linear algebra and
+stopping rules; its timing is specific to this generated example.
+
 ## 🧑‍💻 Development
 
 ### Prerequisites
