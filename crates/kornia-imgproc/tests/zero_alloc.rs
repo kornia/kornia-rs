@@ -4,6 +4,7 @@
 //! one `#[test]` so no other test allocates concurrently.
 
 use kornia_image::{Image, ImageSize};
+use kornia_imgproc::features::{OrbDetector, OrbFeatures, OrbScratch};
 use kornia_imgproc::filter::scharr_spatial_gradient_separable_f32;
 use kornia_imgproc::optical_flow_pyr_lk::LkPyramidU8;
 use kornia_imgproc::pyramid::{pyrdown_separable_f32, pyrdown_u8};
@@ -95,5 +96,30 @@ fn frontend_kernels_do_not_allocate_in_steady_state() -> Result<(), Box<dyn std:
         next.rebuild(&src_u8, 21, 3, false).unwrap();
     });
     assert_eq!(n, 0, "LkPyramidU8::rebuild");
+
+    // ORB on a real frame (every level keeps keypoints). The allocation-free
+    // blur needs AVX2 on x86-64.
+    #[cfg(target_arch = "x86_64")]
+    let simd_blur = std::is_x86_feature_detected!("avx2");
+    #[cfg(not(target_arch = "x86_64"))]
+    let simd_blur = cfg!(target_arch = "aarch64");
+    if simd_blur {
+        let png = kornia_io::png::read_image_png_mono8(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/data/mh01_frame1.png"),
+        )?;
+        let frame = Image::<u8, 1>::new(png.size(), png.as_slice().to_vec())?;
+        let orb = OrbDetector {
+            n_keypoints: 1000,
+            ..OrbDetector::default()
+        };
+        let (mut scratch, mut feats) = (OrbScratch::default(), OrbFeatures::default());
+        let n = steady_allocs(|| {
+            orb.detect_and_extract_u8_into(&frame, &mut scratch, &mut feats)
+                .unwrap()
+        });
+        assert!(feats.len() > 900, "{} ORB features", feats.len());
+        assert_eq!(n, 0, "OrbDetector::detect_and_extract_u8_into");
+    }
     Ok(())
 }

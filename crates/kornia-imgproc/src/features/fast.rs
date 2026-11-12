@@ -488,6 +488,20 @@ pub fn fast_detect_rows_u8_serial(
     fast_detect_rows_u8_impl(src, threshold, arc_length, border, rows, false)
 }
 
+/// [`fast_detect_rows_u8_serial`] into the caller's `out` (cleared first),
+/// so a reused `out` makes the call allocation-free once it has grown.
+pub(crate) fn fast_detect_rows_u8_serial_into(
+    src: &Image<u8, 1>,
+    threshold: f32,
+    arc_length: usize,
+    border: usize,
+    rows: std::ops::Range<usize>,
+    out: &mut Vec<([usize; 2], f32)>,
+) {
+    out.clear();
+    fast_detect_rows_u8_core(src, threshold, arc_length, border, rows, Some(out));
+}
+
 fn fast_detect_rows_u8_impl(
     src: &Image<u8, 1>,
     threshold: f32,
@@ -495,6 +509,25 @@ fn fast_detect_rows_u8_impl(
     border: usize,
     rows: std::ops::Range<usize>,
     parallel: bool,
+) -> Vec<([usize; 2], f32)> {
+    if parallel {
+        return fast_detect_rows_u8_core(src, threshold, arc_length, border, rows, None);
+    }
+    let mut out = Vec::new();
+    fast_detect_rows_u8_core(src, threshold, arc_length, border, rows, Some(&mut out));
+    out
+}
+
+/// Row loop shared by the FAST entry points: appends to `serial_out` row by
+/// row when given, else runs row chunks in parallel and returns their
+/// concatenation (same order).
+fn fast_detect_rows_u8_core(
+    src: &Image<u8, 1>,
+    threshold: f32,
+    arc_length: usize,
+    border: usize,
+    rows: std::ops::Range<usize>,
+    serial_out: Option<&mut Vec<([usize; 2], f32)>>,
 ) -> Vec<([usize; 2], f32)> {
     let src_slice = src.as_slice();
     let width = src.width();
@@ -534,9 +567,8 @@ fn fast_detect_rows_u8_impl(
 
     let row_cap = (col_end.saturating_sub(margin) / 6).max(64);
 
-    let row_work = |y: usize| -> Vec<([usize; 2], f32)> {
+    let row_work = |y: usize, local: &mut Vec<([usize; 2], f32)>| {
         let row_base = y * width;
-        let mut local: Vec<([usize; 2], f32)> = Vec::with_capacity(row_cap);
         let mut x = margin;
 
         #[cfg(target_arch = "aarch64")]
@@ -624,10 +656,14 @@ fn fast_detect_rows_u8_impl(
             }
             x += 1;
         }
-        local
     };
 
-    if parallel {
+    if let Some(out) = serial_out {
+        for y in row_start..row_end_y {
+            row_work(y, out);
+        }
+        Vec::new()
+    } else {
         // Group rows into chunks so each rayon task does enough work to amortize
         // spawn/join overhead. At 1080p one row is ~1920 px ≈ 30 us NEON work;
         // 1080 single-row tasks bury the scheduler. Target ~2-3 ms tasks
@@ -641,19 +677,13 @@ fn fast_detect_rows_u8_impl(
             .flat_map_iter(|c| {
                 let y0 = row_start + c * chunk;
                 let y1 = (y0 + chunk).min(row_end_y);
-                let mut out: Vec<([usize; 2], f32)> = Vec::new();
+                let mut out: Vec<([usize; 2], f32)> = Vec::with_capacity(row_cap);
                 for y in y0..y1 {
-                    out.extend(row_work(y));
+                    row_work(y, &mut out);
                 }
                 out
             })
             .collect()
-    } else {
-        let mut out: Vec<([usize; 2], f32)> = Vec::new();
-        for y in row_start..row_end_y {
-            out.extend(row_work(y));
-        }
-        out
     }
 }
 

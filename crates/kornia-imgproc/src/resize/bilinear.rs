@@ -102,3 +102,49 @@ pub(super) fn resize_bilinear_u8_nch<const C: usize>(
                 });
         });
 }
+
+/// Caller-owned x tables of [`resize_bilinear_u8_c1_serial`].
+#[derive(Debug, Default, Clone)]
+pub(crate) struct BilinearLutScratch {
+    ofs: Vec<u32>,
+    fx: Vec<u32>,
+    fx1: Vec<u32>,
+}
+
+/// Single-threaded single-channel bilinear u8 resize with caller-owned x
+/// tables: the same bytes as [`super::resize_fast_u8`] (`Bilinear`, `C = 1`,
+/// source at least 2x2), without allocating once `lut` has grown to the
+/// widest destination.
+pub(crate) fn resize_bilinear_u8_c1_serial(
+    src: &[u8],
+    src_w: usize,
+    src_h: usize,
+    dst: &mut [u8],
+    dst_w: usize,
+    dst_h: usize,
+    lut: &mut BilinearLutScratch,
+) {
+    let scale_x = src_w as f64 / dst_w as f64;
+    lut.ofs.clear();
+    lut.fx.clear();
+    lut.fx1.clear();
+    for i in 0..dst_w {
+        let (o, fq) = bilinear_tap(i, scale_x, src_w);
+        lut.ofs.push(o);
+        lut.fx.push(fq);
+        lut.fx1.push(Q14_SCALE - fq);
+    }
+    let x_taps = BilinearXTaps {
+        ofs: &lut.ofs,
+        fx: &lut.fx,
+        fx1: &lut.fx1,
+    };
+    let scale_y = src_h as f64 / dst_h as f64;
+    for (y, dst_row) in dst.chunks_exact_mut(dst_w).take(dst_h).enumerate() {
+        let (yi, fy) = bilinear_tap(y, scale_y, src_h);
+        let yi = yi as usize;
+        let row0 = &src[yi * src_w..(yi + 1) * src_w];
+        let row1 = &src[(yi + 1) * src_w..(yi + 2) * src_w];
+        bilinear_row_u8::<1>(row0, row1, &x_taps, fy, Q14_SCALE - fy, dst_row);
+    }
+}

@@ -3,15 +3,15 @@ use rayon::prelude::*;
 
 use crate::{
     features::{FastDetector, HarrisResponse},
-    filter::{gaussian_blur, gaussian_blur_u8},
+    filter::{gaussian_blur, gaussian_blur_7x7_u8_serial, gaussian_blur_u8, gaussian_kernel_7_q8},
     interpolation::InterpolationMode,
-    resize::{resize, resize_fast_u8},
+    resize::{resize, resize_bilinear_u8_c1_serial, resize_fast_u8, BilinearLutScratch},
 };
 
 use super::pattern::{POS0, POS1};
 
 /// ORB features extracted from a single frame.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct OrbFeatures {
     /// Keypoints as `[col, row]` in full-resolution pixel coordinates.
     pub keypoints_xy: Vec<[f32; 2]>,
@@ -48,6 +48,43 @@ impl OrbFeatures {
     }
 }
 
+impl OrbFeatures {
+    fn clear(&mut self) {
+        self.keypoints_xy.clear();
+        self.orientations.clear();
+        self.descriptors.clear();
+        self.octaves.clear();
+    }
+}
+
+/// Caller-owned working memory of [`OrbDetector::detect_and_extract_u8_into`].
+///
+/// Holds the pyramid levels, the blurred level, the FAST candidates and the
+/// octree nodes. Reusing one scratch across same-sized frames makes the
+/// detector allocation-free after the first frame (x86-64 needs AVX2 for the
+/// allocation-free blur; without it the blur allocates its row buffers).
+#[derive(Default)]
+pub struct OrbScratch {
+    levels: Vec<Image<u8, 1>>,
+    octave: OctaveScratch,
+}
+
+/// The per-octave part of [`OrbScratch`], reused level after level.
+#[derive(Default)]
+struct OctaveScratch {
+    lut: BilinearLutScratch,
+    features_per_level: Vec<usize>,
+    fast: Vec<([usize; 2], f32)>,
+    fast_low: Vec<([usize; 2], f32)>,
+    candidates: Vec<OrbCandidate>,
+    survivors: Vec<OrbCandidate>,
+    octree: OctreeScratch,
+    blur_kernel: Option<[u8; 7]>,
+    blurred: Vec<u8>,
+    blur_ring: Vec<u8>,
+    blur_padded: Vec<u8>,
+}
+
 /// ORB (Oriented FAST and Rotated BRIEF) feature detector and descriptor extractor.
 ///
 /// Detects keypoints using a multi-scale FAST detector with Harris response scoring
@@ -81,6 +118,9 @@ struct OrbCandidate {
     angle: f32,
 }
 
+/// Node of [`distribute_octree_reference`], the allocating octree kept to pin
+/// [`distribute_octree_into`] to it.
+#[cfg(test)]
 #[derive(Clone, Debug)]
 struct ExtractorNode {
     ul: (i32, i32),
@@ -91,6 +131,7 @@ struct ExtractorNode {
     no_more: bool,
 }
 
+#[cfg(test)]
 impl ExtractorNode {
     fn divide(&self, candidates: &[OrbCandidate]) -> [ExtractorNode; 4] {
         // ORB-SLAM3 `DivideNode`: halfX = ceil((UR.x - UL.x) / 2), mid = UL.x + halfX.
@@ -178,9 +219,16 @@ impl OrbDetector {
     }
 
     fn features_per_level(&self) -> Vec<usize> {
+        let mut features_per_level = Vec::new();
+        self.features_per_level_into(&mut features_per_level);
+        features_per_level
+    }
+
+    fn features_per_level_into(&self, features_per_level: &mut Vec<usize>) {
         let nlevels = self.n_scales;
         let scale_factor = self.downscale;
-        let mut features_per_level = vec![0usize; nlevels];
+        features_per_level.clear();
+        features_per_level.resize(nlevels, 0);
 
         let factor = 1.0f32 / scale_factor;
         let mut n_desired =
@@ -194,8 +242,6 @@ impl OrbDetector {
             n_desired *= factor;
         }
         features_per_level[nlevels - 1] = self.n_keypoints.saturating_sub(sum);
-
-        features_per_level
     }
 
     fn build_pyramid(&self, img: &Image<f32, 1>) -> Result<Vec<Image<f32, 1>>, ImageError> {
@@ -998,6 +1044,307 @@ impl OrbDetector {
         Ok(concat_octaves(per_octave))
     }
 
+    /// [`Self::detect_and_extract_u8`] on one thread with caller-owned
+    /// memory: the features go into `out` (cleared first) and every working
+    /// buffer lives in `scratch`.
+    ///
+    /// The output equals [`Self::detect_and_extract_u8`] exactly. Reusing
+    /// `scratch` and `out` across same-sized frames makes the call
+    /// allocation-free after the first frame (see [`OrbScratch`]). Levels
+    /// run one after the other on the calling thread; use
+    /// [`Self::detect_and_extract_u8`] to spread them over rayon.
+    ///
+    /// # Arguments
+    ///
+    /// * `src` - Grayscale u8 input image.
+    /// * `scratch` - Working memory, reused across calls.
+    /// * `out` - Receives the features of `src`.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` once `out` holds the features.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`ImageError`] if a pyramid level cannot be allocated or
+    /// the blur rejects its parameters.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_image::{Image, ImageSize};
+    /// use kornia_imgproc::features::{OrbDetector, OrbFeatures, OrbScratch};
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let size = ImageSize { width: 160, height: 120 };
+    /// let data = (0..size.width * size.height)
+    ///     .map(|i| (((i % size.width) / 8 + (i / size.width) / 8) % 2 * 200) as u8)
+    ///     .collect();
+    /// let img = Image::<u8, 1>::new(size, data)?;
+    /// let orb = OrbDetector::default();
+    ///
+    /// let (mut scratch, mut feats) = (OrbScratch::default(), OrbFeatures::default());
+    /// orb.detect_and_extract_u8_into(&img, &mut scratch, &mut feats)?;
+    /// assert_eq!(feats.descriptors, orb.detect_and_extract_u8(&img)?.descriptors);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn detect_and_extract_u8_into(
+        &self,
+        src: &Image<u8, 1>,
+        scratch: &mut OrbScratch,
+        out: &mut OrbFeatures,
+    ) -> Result<(), ImageError> {
+        let trace = std::env::var_os("KORNIA_ORB_TRACE").is_some();
+        let t0 = std::time::Instant::now();
+        out.clear();
+        let OrbScratch { levels, octave: ws } = scratch;
+        self.features_per_level_into(&mut ws.features_per_level);
+
+        let base = src.size();
+        let mut built = 0;
+        for octave in 0..self.n_scales {
+            if octave > 0 {
+                let t_resize = std::time::Instant::now();
+                let prev_size = if octave == 1 {
+                    base
+                } else {
+                    levels[octave - 2].size()
+                };
+                let Some(target) = self.level_size_u8(base, prev_size, octave) else {
+                    break;
+                };
+                let slot = octave - 1;
+                if slot == levels.len() {
+                    levels.push(Image::from_size_val(target, 0u8)?);
+                } else if levels[slot].size() != target {
+                    levels[slot] = Image::from_size_val(target, 0u8)?;
+                }
+                let (done, rest) = levels.split_at_mut(slot);
+                let prev = if octave == 1 { src } else { &done[slot - 1] };
+                // `resize_fast_u8` needs a 2x2 source; a smaller level would
+                // not shrink, so `level_size_u8` has already stopped.
+                resize_bilinear_u8_c1_serial(
+                    prev.as_slice(),
+                    prev.width(),
+                    prev.height(),
+                    rest[0].as_slice_mut(),
+                    target.width,
+                    target.height,
+                    &mut ws.lut,
+                );
+                built = octave;
+                if trace {
+                    eprintln!(
+                        "  resize[{octave}]={:.2}",
+                        t_resize.elapsed().as_secs_f64() * 1000.0
+                    );
+                }
+            }
+            let level = if octave == 0 {
+                src
+            } else {
+                &levels[octave - 1]
+            };
+            self.process_octave_u8_serial(octave, level, ws, trace, out)?;
+        }
+        levels.truncate(built);
+
+        if trace {
+            eprintln!(
+                "orb_trace: build_detect_extract={:.2}ms kps={}",
+                t0.elapsed().as_secs_f64() * 1000.0,
+                out.keypoints_xy.len(),
+            );
+        }
+        Ok(())
+    }
+
+    /// [`Self::process_octave_u8`] on the calling thread with `ws` as working
+    /// memory, appending the octave's features to `out`. Same steps and
+    /// float operations, so the same output bits.
+    fn process_octave_u8_serial(
+        &self,
+        octave: usize,
+        image: &Image<u8, 1>,
+        ws: &mut OctaveScratch,
+        trace: bool,
+        out: &mut OrbFeatures,
+    ) -> Result<(), ImageError> {
+        const EDGE_THRESHOLD: usize = 19;
+        const DESC_BORDER: isize = 20;
+        let (width, height) = (image.width(), image.height());
+        let ta = std::time::Instant::now();
+
+        let fast_rows = 0..height;
+        crate::features::fast::fast_detect_rows_u8_serial_into(
+            image,
+            self.ini_fast_threshold,
+            self.fast_n,
+            EDGE_THRESHOLD,
+            fast_rows.clone(),
+            &mut ws.fast,
+        );
+        if ws.fast.len() < 10 {
+            crate::features::fast::fast_detect_rows_u8_serial_into(
+                image,
+                self.min_fast_threshold,
+                self.fast_n,
+                EDGE_THRESHOLD,
+                fast_rows,
+                &mut ws.fast_low,
+            );
+            for &cand in ws.fast_low.iter() {
+                let [r0, c0] = cand.0;
+                let dominated = ws.fast.iter().any(|&([r, c], _)| {
+                    let dr = (r as i32 - r0 as i32).abs();
+                    let dc = (c as i32 - c0 as i32).abs();
+                    dr <= 3 && dc <= 3
+                });
+                if !dominated {
+                    ws.fast.push(cand);
+                }
+            }
+        }
+        let raw_len = ws.fast.len();
+        if ws.fast.is_empty() {
+            return Ok(());
+        }
+
+        let target = ws.features_per_level[octave];
+        let cap = target.saturating_mul(20).max(512);
+        let t_before_nms = std::time::Instant::now();
+        // With `min_distance = 1` the NMS sorts and truncates in place and
+        // returns the same buffer.
+        ws.fast = crate::features::fast::suppress_direct_standalone(
+            std::mem::take(&mut ws.fast),
+            cap,
+            width,
+            height,
+            1,
+        );
+        let t_after_nms = std::time::Instant::now();
+        if trace {
+            eprintln!(
+                "  oct[{width:4}x{height:4}] fast={:.2} nms={:.2} kp_raw={raw_len} kp_filt={}",
+                (t_before_nms - ta).as_secs_f64() * 1000.0,
+                (t_after_nms - t_before_nms).as_secs_f64() * 1000.0,
+                ws.fast.len(),
+            );
+        }
+        if ws.fast.is_empty() {
+            return Ok(());
+        }
+        ws.candidates.clear();
+        ws.candidates
+            .extend(ws.fast.iter().map(|&([row, col], response)| OrbCandidate {
+                row,
+                col,
+                response,
+                angle: 0.0,
+            }));
+        if ws.candidates.len() > cap {
+            ws.candidates.select_nth_unstable_by(cap, |a, b| {
+                b.response
+                    .partial_cmp(&a.response)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            ws.candidates.truncate(cap);
+        }
+
+        let t_before_octree = std::time::Instant::now();
+        let bounds = (
+            EDGE_THRESHOLD as i32 - 3,
+            width as i32 - EDGE_THRESHOLD as i32 + 3,
+            EDGE_THRESHOLD as i32 - 3,
+            height as i32 - EDGE_THRESHOLD as i32 + 3,
+        );
+        distribute_octree_into(
+            &ws.candidates,
+            bounds,
+            target,
+            &mut ws.octree,
+            &mut ws.survivors,
+        );
+        let t_after_octree = std::time::Instant::now();
+        if ws.survivors.is_empty() {
+            return Ok(());
+        }
+
+        // The u8 path returns no response, so Harris is not computed here.
+        let simd = orientation_simd_enabled();
+        for cand in ws.survivors.iter_mut() {
+            cand.angle = orientation_u8_at(image.as_slice(), width, cand.row, cand.col, simd);
+        }
+        let t_after_ori = std::time::Instant::now();
+        if trace {
+            eprintln!(
+                "  pyramid[{octave}] octree={:.2} harris=0.00 ori={:.2} survivors={}",
+                (t_after_octree - t_before_octree).as_secs_f64() * 1000.0,
+                (t_after_ori - t_after_octree).as_secs_f64() * 1000.0,
+                ws.survivors.len(),
+            );
+        }
+
+        let t_blur = std::time::Instant::now();
+        let n = width * height;
+        if ws.blurred.len() < n {
+            ws.blurred.resize(n, 0);
+        }
+        let kernel = *ws
+            .blur_kernel
+            .get_or_insert_with(|| gaussian_kernel_7_q8(BLUR_SIGMA));
+        let blurred = &mut ws.blurred[..n];
+        if !gaussian_blur_7x7_u8_serial(
+            image.as_slice(),
+            blurred,
+            height,
+            width,
+            &kernel,
+            &kernel,
+            &mut ws.blur_ring,
+            &mut ws.blur_padded,
+        ) {
+            let mut dst = Image::from_size_val(image.size(), 0u8)?;
+            gaussian_blur_u8(image, &mut dst, (7, 7), (BLUR_SIGMA, BLUR_SIGMA))?;
+            blurred.copy_from_slice(dst.as_slice());
+        }
+        let t_brief = std::time::Instant::now();
+
+        let scale = self.downscale.powi(octave as i32);
+        let inv_scale = 1.0 / scale;
+        let (max_row, max_col) = (
+            height as isize - DESC_BORDER + 1,
+            width as isize - DESC_BORDER + 1,
+        );
+        let oct_u8 = octave as u8;
+        for cand in ws.survivors.iter() {
+            // Full-resolution position and back, as `process_octave_u8`.
+            let (r, c) = (cand.row as f32 * scale, cand.col as f32 * scale);
+            let (kr, kc) = (
+                (r * inv_scale).round() as i32,
+                (c * inv_scale).round() as i32,
+            );
+            let (ri, ci) = (kr as isize, kc as isize);
+            if !(DESC_BORDER - 1 < ri && ri < max_row && DESC_BORDER - 1 < ci && ci < max_col) {
+                continue;
+            }
+            out.descriptors
+                .push(brief_descriptor_u8_at(blurred, width, kr, kc, cand.angle));
+            out.keypoints_xy.push([c, r]);
+            out.orientations.push(cand.angle);
+            out.octaves.push(oct_u8);
+        }
+        if trace {
+            eprintln!(
+                "  extract[{width}x{height}] blur={:.2} brief={:.2}",
+                (t_brief - t_blur).as_secs_f64() * 1000.0,
+                t_brief.elapsed().as_secs_f64() * 1000.0,
+            );
+        }
+        Ok(())
+    }
+
     /// Detect keypoints and compute descriptors in one call.
     ///
     /// Equivalent to calling [`detect`](Self::detect) then [`extract`](Self::extract),
@@ -1041,6 +1388,9 @@ impl OrbDetector {
         })
     }
 }
+
+/// Sigma of the 7x7 Gaussian applied to each level before BRIEF (ORB-SLAM3).
+const BLUR_SIGMA: f32 = 2.0;
 
 /// Keypoints, orientations, descriptors and octave indices of one processed octave.
 type ProcessedOctaveU8 = (Vec<[f32; 2]>, Vec<f32>, Vec<[u8; 32]>, Vec<u8>);
@@ -1145,6 +1495,337 @@ fn octave_bounds(image: &Image<f32, 1>) -> (i32, i32, i32, i32) {
 }
 
 fn distribute_octree(
+    candidates: &[OrbCandidate],
+    min_x: i32,
+    max_x: i32,
+    min_y: i32,
+    max_y: i32,
+    n_features: usize,
+) -> Vec<OrbCandidate> {
+    let mut out = Vec::new();
+    distribute_octree_into(
+        candidates,
+        (min_x, max_x, min_y, max_y),
+        n_features,
+        &mut OctreeScratch::default(),
+        &mut out,
+    );
+    out
+}
+
+/// One octree node: a rectangle and the candidates inside it, which are
+/// `OctreeScratch::keys[start..start + len]` in candidate order.
+#[derive(Clone, Copy, Debug)]
+struct OctreeNode {
+    ul: (i32, i32),
+    ur: (i32, i32),
+    bl: (i32, i32),
+    br: (i32, i32),
+    start: u32,
+    len: u32,
+    no_more: bool,
+}
+
+impl OctreeNode {
+    /// ORB-SLAM3 `DivideNode`, splitting this node's key range in place into
+    /// the four children's ranges (stable, so each child keeps candidate
+    /// order); children in the order UL, UR, BL, BR.
+    fn divide(
+        &self,
+        candidates: &[OrbCandidate],
+        keys: &mut [u32],
+        tmp: &mut Vec<u32>,
+    ) -> [Self; 4] {
+        // halfX = ceil((UR.x - UL.x) / 2): odd-width nodes split
+        // deterministically, centre-pixel keypoints go to the right child.
+        let half_x = ((self.ur.0 - self.ul.0) as f32 / 2.0).ceil() as i32;
+        let half_y = ((self.bl.1 - self.ul.1) as f32 / 2.0).ceil() as i32;
+        let mid_x = self.ul.0 + half_x;
+        let mid_y = self.ul.1 + half_y;
+        let quadrant = |idx: u32| {
+            let kp = &candidates[idx as usize];
+            usize::from(kp.col as i32 >= mid_x) + 2 * usize::from(kp.row as i32 >= mid_y)
+        };
+
+        let range = self.start as usize..(self.start + self.len) as usize;
+        tmp.clear();
+        tmp.extend_from_slice(&keys[range]);
+        let mut counts = [0u32; 4];
+        for &idx in tmp.iter() {
+            counts[quadrant(idx)] += 1;
+        }
+        let mut next = [0u32; 4];
+        let mut acc = self.start;
+        for (n, &c) in next.iter_mut().zip(&counts) {
+            *n = acc;
+            acc += c;
+        }
+        let starts = next;
+        for &idx in tmp.iter() {
+            let q = quadrant(idx);
+            keys[next[q] as usize] = idx;
+            next[q] += 1;
+        }
+
+        let child = |q: usize, ul, ur, bl, br| OctreeNode {
+            ul,
+            ur,
+            bl,
+            br,
+            start: starts[q],
+            len: counts[q],
+            no_more: false,
+        };
+        [
+            child(
+                0,
+                self.ul,
+                (mid_x, self.ul.1),
+                (self.ul.0, mid_y),
+                (mid_x, mid_y),
+            ),
+            child(
+                1,
+                (mid_x, self.ul.1),
+                self.ur,
+                (mid_x, mid_y),
+                (self.ur.0, mid_y),
+            ),
+            child(
+                2,
+                (self.ul.0, mid_y),
+                (mid_x, mid_y),
+                self.bl,
+                (mid_x, self.bl.1),
+            ),
+            child(
+                3,
+                (mid_x, mid_y),
+                (self.ur.0, mid_y),
+                (mid_x, self.bl.1),
+                self.br,
+            ),
+        ]
+    }
+}
+
+/// Reused buffers of [`distribute_octree_into`].
+#[derive(Debug, Default)]
+struct OctreeScratch {
+    keys: Vec<u32>,
+    tmp: Vec<u32>,
+    bin_counts: Vec<u32>,
+    nodes: Vec<OctreeNode>,
+    new_nodes: Vec<OctreeNode>,
+    expandable: Vec<usize>,
+    new_expandable: Vec<usize>,
+    last_expandable: Vec<usize>,
+    sorted: Vec<(usize, usize)>,
+    to_remove: Vec<usize>,
+}
+
+/// Divides `nodes[idx]` and appends its non-empty children to `new_nodes`,
+/// recording the offsets of the still-divisible ones in `new_expandable`.
+fn expand_node(
+    idx: usize,
+    candidates: &[OrbCandidate],
+    nodes: &[OctreeNode],
+    keys: &mut [u32],
+    tmp: &mut Vec<u32>,
+    new_nodes: &mut Vec<OctreeNode>,
+    new_expandable: &mut Vec<usize>,
+) {
+    for mut child in nodes[idx].divide(candidates, keys, tmp) {
+        if child.len == 0 {
+            continue;
+        }
+        child.no_more = child.len == 1;
+        if !child.no_more {
+            new_expandable.push(new_nodes.len());
+        }
+        new_nodes.push(child);
+    }
+}
+
+/// ORB-SLAM3 `DistributeOctTree` on `candidates` inside `(min_x, max_x,
+/// min_y, max_y)`: keeps the best-response candidate of each final node in
+/// `out` (cleared first). Allocation-free once `ws` and `out` have grown.
+///
+/// Expansion loop:
+///   1. Each iteration, divide EVERY expandable node in one pass (expand-all).
+///   2. Track only the newly-created still-expandable children.
+///   3. If size >= N or no progress, done.
+///   4. Else if size (after the pass) + nToExpand*3 > N, where nToExpand is the
+///      number of freshly-created expandables (the nodes a next pass would
+///      divide, each adding up to 3), enter a sorted subloop that splits the
+///      largest of those until we hit N. Each level then keeps at most N + 3.
+///
+/// Ordering and scope of these two phases matter: the expand-all pass runs
+/// unconditionally each iteration, and the sorted subloop only sees nodes
+/// produced by the immediately-preceding expand-all. Node order (removal by
+/// `swap_remove`, children appended) decides the output order, so it is kept
+/// exactly as [`distribute_octree_reference`].
+fn distribute_octree_into(
+    candidates: &[OrbCandidate],
+    (min_x, max_x, min_y, max_y): (i32, i32, i32, i32),
+    n_features: usize,
+    ws: &mut OctreeScratch,
+    out: &mut Vec<OrbCandidate>,
+) {
+    out.clear();
+    if candidates.is_empty() || n_features == 0 {
+        return;
+    }
+    let OctreeScratch {
+        keys,
+        tmp,
+        bin_counts,
+        nodes,
+        new_nodes,
+        expandable,
+        new_expandable,
+        last_expandable,
+        sorted,
+        to_remove,
+    } = ws;
+
+    let width = (max_x - min_x).max(1) as f32;
+    let height = (max_y - min_y).max(1) as f32;
+    let n_ini = ((width / height).round() as usize).max(1);
+    let h_x = width / n_ini as f32;
+    let bin_of =
+        |cand: &OrbCandidate| (((cand.col as f32 - min_x as f32) / h_x) as usize).min(n_ini - 1);
+
+    // Initial nodes: one per bin, keys in candidate order (counting sort).
+    bin_counts.clear();
+    bin_counts.resize(n_ini, 0);
+    for cand in candidates {
+        bin_counts[bin_of(cand)] += 1;
+    }
+    nodes.clear();
+    let mut start = 0u32;
+    for (i, &count) in bin_counts.iter().enumerate() {
+        let ul = (min_x + (h_x * i as f32) as i32, min_y);
+        let ur = (min_x + (h_x * (i + 1) as f32) as i32, min_y);
+        nodes.push(OctreeNode {
+            ul,
+            ur,
+            bl: (ul.0, max_y),
+            br: (ur.0, max_y),
+            start,
+            len: 0,
+            no_more: false,
+        });
+        start += count;
+    }
+    keys.clear();
+    keys.resize(candidates.len(), 0);
+    for (idx, cand) in candidates.iter().enumerate() {
+        let node = &mut nodes[bin_of(cand)];
+        keys[(node.start + node.len) as usize] = idx as u32;
+        node.len += 1;
+    }
+    nodes.retain(|n| n.len != 0);
+    for node in nodes.iter_mut() {
+        node.no_more = node.len == 1;
+    }
+
+    loop {
+        if nodes.len() >= n_features {
+            break;
+        }
+        let prev_size = nodes.len();
+
+        // Phase 1: expand-all.
+        expandable.clear();
+        expandable.extend(
+            nodes
+                .iter()
+                .enumerate()
+                .filter(|(_, n)| !n.no_more && n.len > 1)
+                .map(|(i, _)| i),
+        );
+        if expandable.is_empty() {
+            break;
+        }
+        new_nodes.clear();
+        new_expandable.clear();
+        for &idx in expandable.iter() {
+            expand_node(idx, candidates, nodes, keys, tmp, new_nodes, new_expandable);
+        }
+        // `expandable` is ascending, so reversed it is the descending removal order.
+        for &idx in expandable.iter().rev() {
+            nodes.swap_remove(idx);
+        }
+        let append_base = nodes.len();
+        nodes.extend_from_slice(new_nodes);
+        last_expandable.clear();
+        last_expandable.extend(new_expandable.iter().map(|&off| append_base + off));
+
+        if nodes.len() >= n_features || nodes.len() == prev_size {
+            break;
+        }
+
+        // Phase 2: a second expand-all would overshoot, so split the largest
+        // new expandables one by one (ORB-SLAM3 sorts ascending, then
+        // iterates reversed).
+        if nodes.len() + last_expandable.len() * 3 > n_features {
+            loop {
+                let round_prev_size = nodes.len();
+                if last_expandable.is_empty() {
+                    break;
+                }
+                // `last_expandable` is ascending, so ordering by (size, index)
+                // is the stable sort by size the reference does.
+                sorted.clear();
+                sorted.extend(last_expandable.iter().map(|&i| (i, nodes[i].len as usize)));
+                sorted.sort_unstable_by_key(|&(i, size)| (size, i));
+
+                to_remove.clear();
+                new_nodes.clear();
+                new_expandable.clear();
+                for &(idx, _) in sorted.iter().rev() {
+                    expand_node(idx, candidates, nodes, keys, tmp, new_nodes, new_expandable);
+                    to_remove.push(idx);
+                    if nodes.len() - to_remove.len() + new_nodes.len() >= n_features {
+                        break;
+                    }
+                }
+                to_remove.sort_unstable_by(|a, b| b.cmp(a));
+                for &idx in to_remove.iter() {
+                    nodes.swap_remove(idx);
+                }
+                let append_base = nodes.len();
+                nodes.extend_from_slice(new_nodes);
+                last_expandable.clear();
+                last_expandable.extend(new_expandable.iter().map(|&off| append_base + off));
+
+                if nodes.len() >= n_features || nodes.len() == round_prev_size {
+                    break;
+                }
+            }
+            break;
+        }
+    }
+
+    for node in nodes.iter() {
+        let node_keys = &keys[node.start as usize..(node.start + node.len) as usize];
+        let mut best_idx = node_keys[0] as usize;
+        let mut best_response = candidates[best_idx].response;
+        for &idx in &node_keys[1..] {
+            if candidates[idx as usize].response > best_response {
+                best_response = candidates[idx as usize].response;
+                best_idx = idx as usize;
+            }
+        }
+        out.push(candidates[best_idx]);
+    }
+}
+
+/// The allocating octree [`distribute_octree_into`] replaced, kept to pin
+/// its output in tests.
+#[cfg(test)]
+fn distribute_octree_reference(
     candidates: &[OrbCandidate],
     min_x: i32,
     max_x: i32,
@@ -1580,63 +2261,73 @@ unsafe fn orientation_kp_avx2(src_slice: &[u8], r0: usize, c0: usize, cols: usiz
 
 fn corner_orientations_u8(src: &Image<u8, 1>, corners: &[[usize; 2]]) -> Vec<f32> {
     // Caller must have already filtered keypoints by border distance ≥ 15.
-    const HALF: i32 = 15;
-
     let cols = src.cols();
     let src_slice = src.as_slice();
 
-    #[cfg(target_arch = "aarch64")]
-    let use_neon = std::env::var("KORNIA_ORB_ORI_NEON").map_or(true, |v| v != "0");
-
-    #[cfg(target_arch = "x86_64")]
-    let use_avx2 = crate::simd::cpu_features().has_avx2;
-
+    let simd = orientation_simd_enabled();
     corners
         .par_iter()
-        .map(|&[r0, c0]| {
-            #[cfg(target_arch = "aarch64")]
-            if use_neon {
-                return unsafe { orientation_kp_neon(src_slice, r0, c0, cols) };
-            }
-            #[cfg(target_arch = "x86_64")]
-            if use_avx2 {
-                return unsafe { orientation_kp_avx2(src_slice, r0, c0, cols) };
-            }
-
-            // Standard ORB `ICAngle`: v=0 processed alone, then pairs (+v, -v)
-            // together with half-width UMAX[v]. The mask is not a clean Euclidean
-            // disk — see UMAX docstring for the symmetrization that enforces
-            // 45°-diagonal symmetry.
-            let mut m01: i32 = 0;
-            let mut m10: i32 = 0;
-            let center = r0 as isize * cols as isize + c0 as isize;
-
-            for u in -HALF..=HALF {
-                let idx = (center + u as isize) as usize;
-                let px = unsafe { *src_slice.get_unchecked(idx) } as i32;
-                m10 += u * px;
-            }
-
-            for v in 1..=HALF {
-                let d = UMAX[v as usize];
-                let mut v_sum: i32 = 0;
-                let plus_base = center + (v as isize) * cols as isize;
-                let minus_base = center - (v as isize) * cols as isize;
-                for u in -d..=d {
-                    let val_plus =
-                        unsafe { *src_slice.get_unchecked((plus_base + u as isize) as usize) }
-                            as i32;
-                    let val_minus =
-                        unsafe { *src_slice.get_unchecked((minus_base + u as isize) as usize) }
-                            as i32;
-                    v_sum += val_plus - val_minus;
-                    m10 += u * (val_plus + val_minus);
-                }
-                m01 += v * v_sum;
-            }
-            (m01 as f32).atan2(m10 as f32)
-        })
+        .map(|&[r0, c0]| orientation_u8_at(src_slice, cols, r0, c0, simd))
         .collect()
+}
+
+/// Whether [`orientation_u8_at`] may take its SIMD path on this CPU.
+fn orientation_simd_enabled() -> bool {
+    #[cfg(target_arch = "aarch64")]
+    return std::env::var("KORNIA_ORB_ORI_NEON").map_or(true, |v| v != "0");
+    #[cfg(target_arch = "x86_64")]
+    return crate::simd::cpu_features().has_avx2;
+    #[allow(unreachable_code)]
+    false
+}
+
+/// Intensity-centroid angle (radians) of the corner at `(r0, c0)`, which is
+/// at least 15 px from every border. `simd` comes from
+/// [`orientation_simd_enabled`]; every path gives the same bits.
+#[inline]
+fn orientation_u8_at(src_slice: &[u8], cols: usize, r0: usize, c0: usize, simd: bool) -> f32 {
+    const HALF: i32 = 15;
+
+    #[cfg(target_arch = "aarch64")]
+    if simd {
+        return unsafe { orientation_kp_neon(src_slice, r0, c0, cols) };
+    }
+    #[cfg(target_arch = "x86_64")]
+    if simd {
+        return unsafe { orientation_kp_avx2(src_slice, r0, c0, cols) };
+    }
+    let _ = simd;
+
+    // Standard ORB `ICAngle`: v=0 processed alone, then pairs (+v, -v)
+    // together with half-width UMAX[v]. The mask is not a clean Euclidean
+    // disk — see UMAX docstring for the symmetrization that enforces
+    // 45°-diagonal symmetry.
+    let mut m01: i32 = 0;
+    let mut m10: i32 = 0;
+    let center = r0 as isize * cols as isize + c0 as isize;
+
+    for u in -HALF..=HALF {
+        let idx = (center + u as isize) as usize;
+        let px = unsafe { *src_slice.get_unchecked(idx) } as i32;
+        m10 += u * px;
+    }
+
+    for v in 1..=HALF {
+        let d = UMAX[v as usize];
+        let mut v_sum: i32 = 0;
+        let plus_base = center + (v as isize) * cols as isize;
+        let minus_base = center - (v as isize) * cols as isize;
+        for u in -d..=d {
+            let val_plus =
+                unsafe { *src_slice.get_unchecked((plus_base + u as isize) as usize) } as i32;
+            let val_minus =
+                unsafe { *src_slice.get_unchecked((minus_base + u as isize) as usize) } as i32;
+            v_sum += val_plus - val_minus;
+            m10 += u * (val_plus + val_minus);
+        }
+        m01 += v * v_sum;
+    }
+    (m01 as f32).atan2(m10 as f32)
 }
 
 fn corner_orientations(src: &Image<f32, 1>, corners: &[[usize; 2]]) -> Vec<f32> {
@@ -1690,13 +2381,18 @@ fn orb_loop_u8(src: &Image<u8, 1>, keypoints: &[(i32, i32)], orientation: &[f32]
     keypoints
         .par_iter()
         .zip(orientation.par_iter())
-        .map(|(&(kr, kc), &angle)| {
-            let base = (kr as isize) * (cols as isize) + (kc as isize);
-            let mut rotated = [[0i8; 4]; 256];
-            rotate_pattern_for_angle(angle, &mut rotated);
-            compute_brief_descriptor(src_data, cols, &rotated, base)
-        })
+        .map(|(&(kr, kc), &angle)| brief_descriptor_u8_at(src_data, cols, kr, kc, angle))
         .collect()
+}
+
+/// rBRIEF descriptor of the keypoint at `(kr, kc)` (at least 20 px from
+/// every border) on the blurred level `src_data` of row stride `cols`.
+#[inline]
+fn brief_descriptor_u8_at(src_data: &[u8], cols: usize, kr: i32, kc: i32, angle: f32) -> [u8; 32] {
+    let base = (kr as isize) * (cols as isize) + (kc as isize);
+    let mut rotated = [[0i8; 4]; 256];
+    rotate_pattern_for_angle(angle, &mut rotated);
+    compute_brief_descriptor(src_data, cols, &rotated, base)
 }
 
 /// Rotate the BRIEF pattern for a single orientation and store as i8 offsets.
@@ -2073,6 +2769,151 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    fn assert_same_candidates(a: &[OrbCandidate], b: &[OrbCandidate], what: &str) {
+        assert_eq!(a.len(), b.len(), "{what}: count");
+        for (i, (x, y)) in a.iter().zip(b).enumerate() {
+            assert_eq!(
+                (x.row, x.col, x.response.to_bits()),
+                (y.row, y.col, y.response.to_bits()),
+                "{what}: survivor {i}"
+            );
+        }
+    }
+
+    fn mh01_frame(n: u32) -> Image<u8, 1> {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("../../tests/data/mh01_frame{n}.png"));
+        let png = kornia_io::png::read_image_png_mono8(path).unwrap();
+        Image::<u8, 1>::new(png.size(), png.as_slice().to_vec()).unwrap()
+    }
+
+    /// The arena octree keeps exactly the survivors, in the same order, as
+    /// the allocating one it replaced: on grids, on random point sets with
+    /// duplicate positions and tied responses, and on the FAST candidates of
+    /// every level of a real frame. One scratch is reused across all calls.
+    #[test]
+    fn octree_into_matches_reference() {
+        let mut ws = OctreeScratch::default();
+        let mut out = Vec::new();
+        let mut check =
+            |cands: &[OrbCandidate], bounds: (i32, i32, i32, i32), n: usize, what: &str| {
+                let (a, b, c, d) = bounds;
+                distribute_octree_into(cands, bounds, n, &mut ws, &mut out);
+                assert_same_candidates(
+                    &out,
+                    &distribute_octree_reference(cands, a, b, c, d, n),
+                    what,
+                );
+            };
+
+        let grid = grid_candidates(60, 40);
+        for n in [1usize, 2, 7, 50, 100, 217, 500, 1000, 2400, 5000] {
+            check(&grid, (16, 624, 16, 424), n, &format!("grid n={n}"));
+        }
+
+        let mut x = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move || {
+            x = x
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            x >> 33
+        };
+        for trial in 0..20 {
+            let (w, h) = (100 + (next() % 700) as usize, 60 + (next() % 500) as usize);
+            let count = (next() % 4000) as usize;
+            let cands: Vec<OrbCandidate> = (0..count)
+                .map(|_| OrbCandidate {
+                    row: 16 + (next() as usize) % (h - 32),
+                    col: 16 + (next() as usize) % (w - 32),
+                    response: (next() % 64) as f32,
+                    angle: 0.0,
+                })
+                .collect();
+            let n = 1 + (next() % 600) as usize;
+            check(
+                &cands,
+                (16, w as i32 - 16, 16, h as i32 - 16),
+                n,
+                &format!("random {trial}"),
+            );
+        }
+
+        let orb = OrbDetector {
+            n_keypoints: 1000,
+            ..OrbDetector::default()
+        };
+        let img = mh01_frame(1);
+        let mut levels = Vec::new();
+        orb.build_pyramid_u8_into(&img, &mut levels).unwrap();
+        let fpl = orb.features_per_level();
+        for (octave, level) in std::iter::once(&img).chain(levels.iter()).enumerate() {
+            let fast = crate::features::fast::fast_detect_rows_u8_serial(
+                level,
+                orb.ini_fast_threshold,
+                orb.fast_n,
+                19,
+                0..level.height(),
+            );
+            let cap = fpl[octave].saturating_mul(20).max(512);
+            let cands: Vec<OrbCandidate> = crate::features::fast::suppress_direct_standalone(
+                fast,
+                cap,
+                level.width(),
+                level.height(),
+                1,
+            )
+            .into_iter()
+            .map(|([row, col], response)| OrbCandidate {
+                row,
+                col,
+                response,
+                angle: 0.0,
+            })
+            .collect();
+            let bounds = (
+                16,
+                level.width() as i32 - 16,
+                16,
+                level.height() as i32 - 16,
+            );
+            check(&cands, bounds, fpl[octave], &format!("mh01 level {octave}"));
+        }
+    }
+
+    /// The single-threaded scratch path gives the bits of the fused parallel
+    /// path, with one scratch reused across frames of different sizes.
+    #[test]
+    fn detect_and_extract_u8_into_matches_fused_path() -> Result<(), ImageError> {
+        let orb = OrbDetector {
+            n_keypoints: 1000,
+            ..OrbDetector::default()
+        };
+        let tiny = OrbDetector {
+            n_scales: 20,
+            ..OrbDetector::default()
+        };
+        let mut scratch = OrbScratch::default();
+        let mut out = OrbFeatures::default();
+        let frames = [
+            (mh01_frame(1), &orb),
+            (make_textured_u8(320, 240)?, &orb),
+            (mh01_frame(2), &orb),
+            (make_textured_u8(40, 30)?, &tiny),
+            (mh01_frame(1), &orb),
+        ];
+        for (i, (img, det)) in frames.iter().enumerate() {
+            det.detect_and_extract_u8_into(img, &mut scratch, &mut out)?;
+            let fused = det.detect_and_extract_u8(img)?;
+            assert!(
+                i == 3 || out.len() > 100,
+                "frame {i}: {} features",
+                out.len()
+            );
+            assert_same_features(&fused, &out);
+        }
+        Ok(())
     }
 
     #[test]

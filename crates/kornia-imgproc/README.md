@@ -122,6 +122,14 @@ You can find comprehensive examples in the `examples` folder of the repository:
 *   [`pnp_demo`](../../examples/pnp_demo): Uses image processing for PnP.
 *   [`ros-z-nodes`](../../examples/ros-z-nodes): ROS nodes using image processing.
 
+### ORB detection
+
+`features::OrbDetector` is ORB-SLAM3's extractor (two FAST thresholds, octree
+distribution, 7x7 sigma-2 blur before rBRIEF). `detect_and_extract_u8` spreads
+the pyramid levels over rayon; `detect_and_extract_u8_into` gives the same bits
+on the calling thread with a caller-owned `OrbScratch` and output, and makes no
+heap allocation once both are reused across same-sized frames.
+
 ### Binary descriptor matching
 
 `features::match_descriptors` matches fixed-width binary descriptors with
