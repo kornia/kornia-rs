@@ -53,7 +53,9 @@ impl OrbFeatures {
 /// Detects keypoints using a multi-scale FAST detector with Harris response scoring
 /// and octree-based spatial distribution, then computes rotation-aware BRIEF descriptors.
 pub struct OrbDetector {
-    /// Maximum number of keypoints to retain (default 500).
+    /// Number of keypoints to retain (default 500), split over the levels; as in
+    /// ORB-SLAM3 the octree may keep up to 3 more per level, so the result has at
+    /// most `n_keypoints + 3 * n_scales` keypoints.
     pub n_keypoints: usize,
     /// Number of contiguous pixels required by the FAST detector (default 9).
     pub fast_n: usize,
@@ -1176,9 +1178,10 @@ fn distribute_octree(
     //   1. Each iteration, divide EVERY expandable node in one pass (expand-all).
     //   2. Track only the newly-created still-expandable children in `last_expandables`.
     //   3. If size ≥ N or no progress → done.
-    //   4. Else if projected size (before the pass) + nToExpand*3 > N, enter a sorted
-    //      subloop that splits the largest-by-size of those freshly-created expandables
-    //      until we hit N.
+    //   4. Else if size (after the pass) + nToExpand*3 > N, where nToExpand is the
+    //      number of freshly-created expandables (the nodes a next pass would
+    //      divide, each adding up to 3), enter a sorted subloop that splits the
+    //      largest of those until we hit N. Each level then keeps at most N + 3.
     //
     // Ordering and scope of these two phases matter: the expand-all pass runs
     // unconditionally each iteration, and the sorted subloop only sees nodes
@@ -1205,7 +1208,6 @@ fn distribute_octree(
             break;
         }
 
-        let n_to_expand = expandable_now.len();
         let mut new_nodes: Vec<ExtractorNode> = Vec::new();
         let mut new_expandable_offsets: Vec<usize> = Vec::new();
         for &idx in &expandable_now {
@@ -1241,7 +1243,7 @@ fn distribute_octree(
         // Phase 2: if expand-all left us still short but a second expand-all
         // would overshoot, split the largest newly-created expandables one-by-one
         // (ORB-SLAM3 sorts ascending then iterates reversed → largest first).
-        if prev_size + n_to_expand * 3 > n_features {
+        if nodes.len() + last_expandables.len() * 3 > n_features {
             loop {
                 let round_prev_size = nodes.len();
                 if last_expandables.is_empty() {
@@ -1998,6 +2000,56 @@ mod tests {
         let shared = detector.detect_and_extract_u8_from_pyramid(&pyramid)?;
         assert_same_features(&detector.detect_and_extract_u8(&img)?, &shared);
         Ok(())
+    }
+
+    /// Candidates on a `cols x rows` grid, 10 px apart from (20, 20), with LCG responses.
+    fn grid_candidates(cols: usize, rows: usize) -> Vec<OrbCandidate> {
+        let mut x = 0x2545_f491_4f6c_dd1du64;
+        (0..rows)
+            .flat_map(|r| (0..cols).map(move |c| (r, c)))
+            .map(|(r, c)| {
+                x = x
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                OrbCandidate {
+                    row: 20 + 10 * r,
+                    col: 20 + 10 * c,
+                    response: (x >> 40) as f32,
+                    angle: 0.0,
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn octree_keeps_the_budget_plus_at_most_three() {
+        let candidates = grid_candidates(60, 40);
+        for n in [50usize, 100, 217, 500, 1000] {
+            let kept = distribute_octree(&candidates, 16, 624, 16, 424, n);
+            assert!(kept.len() <= n + 3, "n {n}: kept {}", kept.len());
+            assert!(
+                kept.len() >= n.min(candidates.len()),
+                "n {n}: kept {}",
+                kept.len()
+            );
+        }
+    }
+
+    #[test]
+    fn detect_and_extract_u8_returns_about_n_keypoints() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/data/mh01_frame1.png");
+        let png = kornia_io::png::read_image_png_mono8(path).unwrap();
+        let img = Image::<u8, 1>::new(png.size(), png.as_slice().to_vec()).unwrap();
+        let orb = OrbDetector {
+            n_keypoints: 1000,
+            ..OrbDetector::default()
+        };
+        let n = orb.detect_and_extract_u8(&img).unwrap().keypoints_xy.len();
+        assert!(
+            (900..=1000 + 3 * orb.n_scales).contains(&n),
+            "{n} keypoints"
+        );
     }
 
     fn make_gradient_x(size: usize) -> Image<f32, 1> {
