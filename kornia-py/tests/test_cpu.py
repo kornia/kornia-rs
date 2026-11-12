@@ -21,6 +21,7 @@ def test_cpu_features_returns_object_with_all_fields():
         "has_fma",
         "has_avx512f",
         "has_avx512bw",
+        "has_popcnt",
         "has_neon",
         "has_fp16",
         "has_dotprod",

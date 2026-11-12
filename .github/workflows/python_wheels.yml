@@ -23,7 +23,26 @@ permissions:
   contents: read
 
 jobs:
+  # `--features cuda` reads kornia-oxide-kernels' prebuilt PTX: build it once
+  # (with cuda-oxide, on the host) and hand the one file to every wheel job.
+  # PTX is host-independent, so it serves the x86_64 and aarch64 wheels.
+  cuda-oxide-ptx:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          # Builds third-party code and never pushes: keep no token in .git.
+          persist-credentials: false
+      - uses: ./.github/actions/cuda-oxide-ptx
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cuda-oxide-ptx
+          path: crates/kornia-oxide-kernels/kernels.ptx
+          retention-days: 1
+
   linux:
+    needs: cuda-oxide-ptx
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -51,6 +70,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: cuda-oxide-ptx
+          path: crates/kornia-oxide-kernels
       - uses: messense/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           # Pin maturin 1.13.3 — the version that shipped v0.1.14 and built the
@@ -78,12 +101,17 @@ jobs:
       - name: Install cross binutils for aarch64 disassembly
         if: matrix.target == 'aarch64'
         run: sudo apt-get update && sudo apt-get install -y binutils-aarch64-linux-gnu
-      - name: Verify each SIMD kernel was compiled with the expected intrinsics
+      - name: Verify the SIMD kernels and cuda-oxide PTX in the built wheel
         run: |
           set -e
           WHEEL=$(ls dist/*-manylinux*.whl 2>/dev/null | head -n1)
           [ -n "$WHEEL" ] || { echo "no manylinux wheel found"; exit 1; }
           bash kornia-py/scripts/verify_simd_kernels.sh "$WHEEL"
+          # Real cuda-oxide PTX, not the stub; the build's gate already checks
+          # that the entries match the `#[kernel]` items.
+          mkdir -p /tmp/wheel-check && unzip -q -o "$WHEEL" '*.so' -d /tmp/wheel-check
+          grep -raq '\.visible \.entry ' /tmp/wheel-check || \
+            { echo "::error::no cuda-oxide PTX in $WHEEL"; exit 1; }
       - name: Upload wheels
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
