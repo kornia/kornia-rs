@@ -49,7 +49,9 @@ struct StreamStatus {
 ///
 /// Unlike [`StreamCapture::grab_rgb8`] and [`StreamCapture::grab_gray8`], which report `None`
 /// for a frame that has not arrived yet, the end of the stream and a pipeline error alike, this
-/// enum keeps the three cases apart.
+/// enum keeps the three cases apart. It is `#[non_exhaustive]`, so later states can be added
+/// without a breaking change; downstream matches need a `_` arm.
+#[non_exhaustive]
 pub enum Grab<const C: usize> {
     /// A decoded frame.
     Frame(Image<u8, C>),
@@ -413,6 +415,7 @@ impl StreamCapture {
     ///         Grab::Frame(frame) => println!("{}x{}", frame.width(), frame.height()),
     ///         Grab::Eos => break,
     ///         Grab::Pending => std::thread::sleep(std::time::Duration::from_millis(1)),
+    ///         _ => {}
     ///     }
     /// }
     /// capture.close()?;

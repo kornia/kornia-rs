@@ -343,6 +343,8 @@ fn render_image(app: &mut MyApp, ui: &mut eframe::egui::Ui) {
                     None
                 }
                 Ok(Grab::Pending) => None,
+                // `Grab` is non-exhaustive: any future state is not a frame.
+                Ok(_) => None,
                 Err(err) => {
                     app.finished = true;
                     app.error = Some(err.to_string());

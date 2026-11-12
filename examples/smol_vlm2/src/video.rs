@@ -229,6 +229,8 @@ pub fn from_video_path<const N: usize, P: AsRef<std::path::Path>>(
             Ok(Grab::Eos) => break,
             // No frame is buffered yet; the decoder is still working, so back off briefly.
             Ok(Grab::Pending) => std::thread::sleep(std::time::Duration::from_millis(5)),
+            // `Grab` is non-exhaustive: ignore states this example does not know.
+            Ok(_) => {}
             Err(_) => {
                 return Err(VideoError::FrameGrabbing);
             }
