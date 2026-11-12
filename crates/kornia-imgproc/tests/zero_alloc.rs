@@ -5,6 +5,7 @@
 
 use kornia_image::{Image, ImageSize};
 use kornia_imgproc::filter::scharr_spatial_gradient_separable_f32;
+use kornia_imgproc::optical_flow_pyr_lk::LkPyramidU8;
 use kornia_imgproc::pyramid::{pyrdown_separable_f32, pyrdown_u8};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -86,5 +87,13 @@ fn frontend_kernels_do_not_allocate_in_steady_state() -> Result<(), Box<dyn std:
         scharr_spatial_gradient_separable_f32(&src_f32, &mut dx, &mut dy).unwrap()
     });
     assert_eq!(n, 0, "scharr_spatial_gradient_separable_f32");
+
+    let mut prev = LkPyramidU8::new(&src_u8, 21, 3, true)?;
+    let mut next = LkPyramidU8::new(&src_u8, 21, 3, false)?;
+    let n = steady_allocs(|| {
+        prev.rebuild(&src_u8, 21, 3, true).unwrap();
+        next.rebuild(&src_u8, 21, 3, false).unwrap();
+    });
+    assert_eq!(n, 0, "LkPyramidU8::rebuild");
     Ok(())
 }

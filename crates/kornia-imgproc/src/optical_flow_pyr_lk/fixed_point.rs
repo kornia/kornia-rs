@@ -37,6 +37,10 @@ const MAX_DIFF: i64 = 255 * 32;
 const MAX_DERIV: i64 = 16 * 255;
 /// Points per rayon task.
 const POINTS_PER_TASK: usize = 16;
+/// Border tables up to this many entries (`2 * pad`) stay on the stack.
+const BORDER_TABLE_STACK_LEN: usize = 128;
+/// Level widths up to this keep the Scharr row buffers on the stack (8 kB).
+const DERIV_ROWS_STACK_WIDTH: usize = 2048;
 
 /// Error type for [`calc_optical_flow_pyr_lk_u8`] and [`LkPyramidU8`].
 #[non_exhaustive]
@@ -125,14 +129,22 @@ impl<T: Copy + Default> Plane<T> {
 impl Plane<u8> {
     /// Fills the padding by reflect-101 from the interior.
     fn reflect_border(&mut self) {
+        crate::scratch::with_scratch::<usize, BORDER_TABLE_STACK_LEN, _>(2 * self.pad, |tables| {
+            self.reflect_border_with(tables)
+        });
+    }
+
+    /// `tables` holds `2 * pad` entries for the left and right source columns.
+    fn reflect_border_with(&mut self, tables: &mut [usize]) {
         let (w, h, pad, stride) = (self.width as i32, self.height as i32, self.pad, self.stride);
         // Source columns of the left and right padding, relative to the row start.
-        let left: Vec<usize> = (0..pad as i32)
-            .map(|x| pad + reflect_101(x - pad as i32, w) as usize)
-            .collect();
-        let right: Vec<usize> = (0..pad as i32)
-            .map(|x| pad + reflect_101(w + x, w) as usize)
-            .collect();
+        let (left, right) = tables.split_at_mut(pad);
+        for (x, src) in left.iter_mut().enumerate() {
+            *src = pad + reflect_101(x as i32 - pad as i32, w) as usize;
+        }
+        for (x, src) in right.iter_mut().enumerate() {
+            *src = pad + reflect_101(w + x as i32, w) as usize;
+        }
         for row in self.data[pad * stride..(pad + self.height) * stride].chunks_exact_mut(stride) {
             for (x, &src) in left.iter().enumerate() {
                 row[x] = row[src];
@@ -283,13 +295,14 @@ impl LkPyramidU8 {
             return Err(PyrLkU8Error::InvalidMaxLevel(max_level));
         }
         let pad = WinShape::new(win_size).pad();
-        let sizes = level_sizes(image.size(), win_size, max_level);
+        let (sizes, count) = level_sizes(image.size(), win_size, max_level);
+        let sizes = &sizes[..count];
         let reuse = self.win_size == win_size
             && self.levels.len() == sizes.len()
             && self
                 .levels
                 .iter()
-                .zip(&sizes)
+                .zip(sizes)
                 .all(|(l, s)| l.image.width == s.width && l.image.height == s.height);
         if !reuse {
             self.levels = sizes
@@ -347,9 +360,15 @@ impl LkPyramidU8 {
     }
 }
 
-/// Level sizes as `cv::buildOpticalFlowPyramid` makes them.
-fn level_sizes(size: ImageSize, win: usize, max_level: usize) -> Vec<ImageSize> {
-    let mut sizes = vec![size];
+/// Level sizes as `cv::buildOpticalFlowPyramid` makes them, on the stack:
+/// `(sizes, count)`, `count <= max_level + 1`.
+fn level_sizes(
+    size: ImageSize,
+    win: usize,
+    max_level: usize,
+) -> ([ImageSize; PYR_LK_MAX_LEVEL + 1], usize) {
+    let mut sizes = [size; PYR_LK_MAX_LEVEL + 1];
+    let mut count = 1;
     let mut s = size;
     for _ in 0..max_level {
         s = ImageSize {
@@ -359,9 +378,10 @@ fn level_sizes(size: ImageSize, win: usize, max_level: usize) -> Vec<ImageSize> 
         if s.width <= win || s.height <= win {
             break;
         }
-        sizes.push(s);
+        sizes[count] = s;
+        count += 1;
     }
-    sizes
+    (sizes, count)
 }
 
 fn copy_into(image: &Image<u8, 1>, plane: &mut Plane<u8>) {
@@ -388,27 +408,47 @@ fn downsample_into(src: &Plane<u8>, dst: &mut Plane<u8>) {
 /// OpenCV's `calcSharrDeriv`: unscaled 3x3 Scharr on a reflect-101 padded
 /// level, as separate x and y planes whose padding stays zero.
 fn scharr_deriv_i16(image: &Plane<u8>, ix: &mut Plane<i16>, iy: &mut Plane<i16>) {
-    #[cfg(target_arch = "x86_64")]
-    if crate::simd::cpu_features().has_avx2 {
-        // SAFETY: AVX2 is present.
-        unsafe { scharr_deriv_i16_avx2(image, ix, iy) };
-        return;
-    }
-    scharr_deriv_i16_rows(image, ix, iy);
+    let w = image.width;
+    // The row buffers are taken here, outside the AVX2 function, so the row
+    // loops inline into it without crossing a closure.
+    crate::scratch::with_scratch::<i16, { 2 * (DERIV_ROWS_STACK_WIDTH + 2) }, _>(
+        2 * (w + 2),
+        |buf| {
+            let (smooth, diff) = buf.split_at_mut(w + 2);
+            #[cfg(target_arch = "x86_64")]
+            if crate::simd::cpu_features().has_avx2 {
+                // SAFETY: AVX2 is present.
+                unsafe { scharr_deriv_i16_avx2(image, ix, iy, smooth, diff) };
+                return;
+            }
+            scharr_deriv_i16_rows(image, ix, iy, smooth, diff);
+        },
+    );
 }
 
 /// The portable row loops compiled for AVX2.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-unsafe fn scharr_deriv_i16_avx2(image: &Plane<u8>, ix: &mut Plane<i16>, iy: &mut Plane<i16>) {
-    scharr_deriv_i16_rows(image, ix, iy);
+unsafe fn scharr_deriv_i16_avx2(
+    image: &Plane<u8>,
+    ix: &mut Plane<i16>,
+    iy: &mut Plane<i16>,
+    smooth: &mut [i16],
+    diff: &mut [i16],
+) {
+    scharr_deriv_i16_rows(image, ix, iy, smooth, diff);
 }
 
+/// `smooth` and `diff` hold `w + 2` vertical results of one row.
 #[inline(always)]
-fn scharr_deriv_i16_rows(image: &Plane<u8>, ix: &mut Plane<i16>, iy: &mut Plane<i16>) {
+fn scharr_deriv_i16_rows(
+    image: &Plane<u8>,
+    ix: &mut Plane<i16>,
+    iy: &mut Plane<i16>,
+    smooth: &mut [i16],
+    diff: &mut [i16],
+) {
     let w = image.width;
-    let mut smooth = vec![0i16; w + 2];
-    let mut diff = vec![0i16; w + 2];
     for y in 0..image.height as isize {
         let start = image.index(-1, y);
         let above = &image.data[start - image.stride..][..w + 2];
@@ -1292,8 +1332,68 @@ mod tests {
         let new = || Plane::<i16>::new(img.width, img.height, img.pad);
         let (mut ax, mut ay, mut bx, mut by) = (new(), new(), new(), new());
         scharr_deriv_i16(img, &mut ax, &mut ay);
-        scharr_deriv_i16_rows(img, &mut bx, &mut by);
+        let (mut smooth, mut diff) = (vec![0; img.width + 2], vec![0; img.width + 2]);
+        scharr_deriv_i16_rows(img, &mut bx, &mut by, &mut smooth, &mut diff);
         assert_eq!((ax.data, ay.data), (bx.data, by.data));
+    }
+
+    /// Image bytes and optional (Ix, Iy) of one level.
+    type LevelData = (Vec<u8>, Option<(Vec<i16>, Vec<i16>)>);
+
+    fn planes(p: &LkPyramidU8) -> Vec<LevelData> {
+        p.levels
+            .iter()
+            .map(|l| {
+                let d = l
+                    .deriv
+                    .as_ref()
+                    .map(|(x, y)| (x.data.clone(), y.data.clone()));
+                (l.image.data.clone(), d)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn rebuild_after_a_size_change_matches_new() {
+        let f1 = frame("mh01_frame1.png");
+        let small = Image::<u8, 1>::new(
+            ImageSize {
+                width: 300,
+                height: 200,
+            },
+            f1.as_slice()
+                .chunks_exact(f1.width())
+                .take(200)
+                .flat_map(|row| &row[..300])
+                .copied()
+                .collect(),
+        )
+        .unwrap();
+        let fresh = LkPyramidU8::new(&f1, 21, 3, true).unwrap();
+        let mut p = LkPyramidU8::new(&f1, 21, 3, true).unwrap();
+        p.rebuild(&small, 21, 3, true).unwrap();
+        assert_eq!(
+            planes(&p),
+            planes(&LkPyramidU8::new(&small, 21, 3, true).unwrap())
+        );
+        p.rebuild(&f1, 21, 3, true).unwrap();
+        assert_eq!(planes(&p), planes(&fresh));
+    }
+
+    #[test]
+    fn wide_padding_reflects_from_the_interior() {
+        // Window 71 pads by 73, more than the stack border table holds.
+        let p = LkPyramidU8::new(&frame("mh01_frame1.png"), 71, 0, false).unwrap();
+        let l = &p.levels[0].image;
+        let (w, h, pad) = (l.width as i32, l.height as i32, l.pad as isize);
+        assert!(2 * l.pad > BORDER_TABLE_STACK_LEN);
+        for y in -pad..h as isize + pad {
+            for x in -pad..w as isize + pad {
+                let (sx, sy) = (reflect_101(x as i32, w), reflect_101(y as i32, h));
+                let want = l.data[l.index(sx as isize, sy as isize)];
+                assert_eq!(l.data[l.index(x, y)], want, "({x}, {y})");
+            }
+        }
     }
 
     #[test]
