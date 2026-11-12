@@ -1,12 +1,12 @@
 //! A warmed ICP frame must not allocate: the in-place pyramid rebuild plus every level of the
-//! solve.
+//! solve, with either kernel.
 //!
 //! Its own test binary, because it installs a counting global allocator. The count is per
 //! thread so the harness's other threads cannot leak into it.
 
 use kornia_3d::camera::PinholeCamera;
 use kornia_3d::registration::{
-    icp_projective_plane_with, Association, DepthNoise, IcpPlaneCriteria, IcpWorkspace,
+    icp_projective_plane_with, Association, DepthNoise, IcpKernel, IcpPlaneCriteria, IcpWorkspace,
     PyramidScratch, RgbdPyramid,
 };
 use kornia_algebra::{Mat3F64, Vec3F64};
@@ -139,7 +139,7 @@ fn warmed_call_does_not_allocate() -> Result<(), Box<dyn std::error::Error>> {
         Association::Bilinear,
         Association::Hybrid,
     );
-    for (association, is_sparse, noise) in [
+    let cases = [
         (near, false, constant),
         (near, false, stereo),
         (near, true, constant),
@@ -149,17 +149,24 @@ fn warmed_call_does_not_allocate() -> Result<(), Box<dyn std::error::Error>> {
         (hybrid, false, stereo),
         (hybrid, true, constant),
         (hybrid, true, stereo),
-    ] {
+    ];
+    let kernels = [IcpKernel::Scalar, IcpKernel::Simd];
+    for (kernel, (association, is_sparse, noise)) in kernels
+        .into_iter()
+        .flat_map(|k| cases.into_iter().map(move |c| (k, c)))
+    {
         let warm = if is_sparse { &sparse } else { &full[0] };
         let mut criteria = IcpPlaneCriteria::default();
         criteria.depth_noise = noise;
         criteria.association = association;
         let (r0, t0) = (Mat3F64::IDENTITY, Vec3F64::ZERO);
-        let mut ws = IcpWorkspace::default();
+        let mut ws = IcpWorkspace::new(kernel);
         let mut scratch = PyramidScratch::default();
         let mut pyr = RgbdPyramid::from_depth_mm(warm, &cam, 3)?;
         pyr.rebuild_from_depth_mm(warm, &cam, 3, &mut scratch)?;
+        let cold = allocs();
         let warm_up = icp_projective_plane_with(&mut ws, &pyr, &keyframe, &r0, &t0, &criteria)?;
+        let cold = allocs() - cold;
 
         let before = allocs();
         pyr.rebuild_from_depth_mm(&full[1], &cam, 3, &mut scratch)?;
@@ -173,10 +180,9 @@ fn warmed_call_does_not_allocate() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
         assert!(r.num_associated > 1000);
-        assert_eq!(
-            n, 0,
-            "{association:?}, sparse warm-up {is_sparse}, {noise:?}: {n} allocations in a warmed call"
-        );
+        let case = format!("{kernel:?} {association:?}, sparse warm-up {is_sparse}, {noise:?}");
+        eprintln!("{case}: {cold} allocations in the cold call, {n} warmed");
+        assert_eq!(n, 0, "{case}: {n} allocations in a warmed call");
     }
     Ok(())
 }

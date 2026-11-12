@@ -25,6 +25,10 @@ name = "bench_fundamental"
 
 [[bench]]
 harness = false
+name = "bench_icp"
+
+[[bench]]
+harness = false
 name = "bench_stereo_match"
 
 [[bench]]
