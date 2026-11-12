@@ -455,7 +455,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "parking_lot",
  "percent-encoding",
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
  "x11rb",
 ]
 
@@ -2737,6 +2737,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "convert_case"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1af709f1f33454bf52eadfc8c78b3b9ef9cb26fb54d16dc9cd9a7299f899fd1b"
+dependencies = [
+ "unicode-segmentation",
+]
+
+[[package]]
 name = "cookie"
 version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3115,29 +3124,30 @@ dependencies = [
 
 [[package]]
 name = "cu-bincode"
-version = "2.1.0"
+version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c056e8c9d8cf3f467a1617daddacc4920d32b214ab371f98160033d6b9749138"
+checksum = "ae2e90a0631af2a8e09c4fdadb1814be0707a87526b196a486c04efdaaca4887"
 dependencies = [
  "cu-bincode-derive",
+ "cu29-value-types",
  "serde",
  "unty",
 ]
 
 [[package]]
 name = "cu-bincode-derive"
-version = "2.1.0"
+version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "02017dde7974608238c1bebbac86a36fdd7d7029400f76b0f400ee260e27ed14"
+checksum = "68c5668075aa598f523d50e04303e1c8c5c9a7e8b3f8cb7b15d81b9af68237cf"
 dependencies = [
  "virtue",
 ]
 
 [[package]]
 name = "cu29"
-version = "1.2.1"
+version = "1.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46cda41925225eeb825c31982994e0ba430351b5f446e1a3de6d3f0d34bde2e7"
+checksum = "7157b5f2e135e3ea849c0f743db8b891a683d024e99b7bd5ec153583a8d7c6e7"
 dependencies = [
  "ctrlc",
  "cu-bincode",
@@ -3161,15 +3171,15 @@ dependencies = [
 
 [[package]]
 name = "cu29-build"
-version = "1.2.1"
+version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d4bbd9f74d4ca9667eca1ca99ff3df7bea9b9351dcc23ecfcee9853c7ff26eed"
+checksum = "2de46f9ef7c4aa22d9a4bde5a4239a147a2dd11b4d28519f03bb214da1b879a2"
 
 [[package]]
 name = "cu29-clock"
-version = "1.2.1"
+version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f14c65e169f80289439c560f744a2feac45a118f224be2874808c067e54366b4"
+checksum = "a04976317b0773987873cc75e4cbe6a05310f03e10d3a793880d4fc68d2ab86f"
 dependencies = [
  "cortex-m",
  "cu-bincode",
@@ -3180,15 +3190,14 @@ dependencies = [
 
 [[package]]
 name = "cu29-derive"
-version = "1.2.1"
+version = "1.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "717ddf11ce4fdfc52f7d219313e969fe2efe66e86b2025a5591046c8230fc990"
+checksum = "dff03dfdea633127981473c65e52ea1bdfaa6f8bcbe1f8ab26585bba6500b4e1"
 dependencies = [
- "convert_case 0.11.0",
+ "convert_case 0.12.0",
  "cu29-build",
  "cu29-runtime",
  "cu29-traits",
- "cu29-unifiedlog",
  "cu29-units",
  "itertools 0.15.0",
  "proc-macro2",
@@ -3199,9 +3208,9 @@ dependencies = [
 
 [[package]]
 name = "cu29-intern-strs"
-version = "1.2.1"
+version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae73cc9ed873534afaa6ba58c48787501e131c9dde20d6f7036b0a3c1ccce071"
+checksum = "712a2deb2d4b8334e77b9860230260e57826b03f5609b7939355a9402dd7427b"
 dependencies = [
  "anyhow",
  "cu-bincode",
@@ -3210,9 +3219,9 @@ dependencies = [
 
 [[package]]
 name = "cu29-log"
-version = "1.2.1"
+version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e4a0addf11630073d05a8c78a3a1fbb2973c76681a8225b9bb51367190852def"
+checksum = "8598954aaeeb5225454b3b695a1d212a963c793145a3db3268ebff625b4ebdbb"
 dependencies = [
  "cu-bincode",
  "cu29-clock",
@@ -3225,9 +3234,9 @@ dependencies = [
 
 [[package]]
 name = "cu29-log-derive"
-version = "1.2.1"
+version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e367bb86993a6e7d40a4417db162008c66cb90295837622e6f04b743ebdcd36d"
+checksum = "2b772e688cbc7122bb3c0f60a99311f2ddf77cb350572f0b85de1992fd5ffa76"
 dependencies = [
  "cu29-build",
  "cu29-intern-strs",
@@ -3240,9 +3249,9 @@ dependencies = [
 
 [[package]]
 name = "cu29-log-runtime"
-version = "1.2.1"
+version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "add78b48f58d4ab9d98433c55fbd5223d7920e846ba2b0e2566670d2da20ad8c"
+checksum = "a66097873824b95b4eb50237dfbd0bf917655ef8f74f4d48d7910fe4a0fa26ba"
 dependencies = [
  "cu-bincode",
  "cu29-build",
@@ -3257,9 +3266,9 @@ dependencies = [
 
 [[package]]
 name = "cu29-reflect-derive"
-version = "1.2.1"
+version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c9d6ac030ad1150f5685d907d098b84b70f47d26a82a739d69636c14f3fbf47"
+checksum = "72b039aad2bd34efc35795c872a2d93dd7dda51d3522bd9bdff102f65ff2583a"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3268,9 +3277,9 @@ dependencies = [
 
 [[package]]
 name = "cu29-runtime"
-version = "1.2.1"
+version = "1.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "139f6eb65e5e5a13104160da71b4a5c94316edb4873a379e91a73511e52532da"
+checksum = "436063b81a21ae60359611919ebc911a76a757c893a43756aa75a25c95e450bc"
 dependencies = [
  "arrayvec",
  "clap",
@@ -3289,7 +3298,6 @@ dependencies = [
  "erased-serde",
  "hashbrown 0.17.1",
  "html-escape",
- "layout-rs",
  "libm",
  "memmap2 0.9.10",
  "object-pool",
@@ -3298,20 +3306,20 @@ dependencies = [
  "portable-atomic",
  "rayon",
  "ron",
+ "rtrb",
  "serde",
  "serde_derive",
  "serde_json",
  "smallvec",
  "spin 0.12.3",
- "svg",
  "tempfile",
 ]
 
 [[package]]
 name = "cu29-traits"
-version = "1.2.1"
+version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1507bd26748d90a6b756372012a7211af0ffcb8d48747436e1902debd3a6a752"
+checksum = "9db5137fcaff762d088cfa3e64e6fd938784667819677d07751def9a76cc068a"
 dependencies = [
  "compact_str 0.10.0",
  "cu-bincode",
@@ -3323,38 +3331,51 @@ dependencies = [
 
 [[package]]
 name = "cu29-unifiedlog"
-version = "1.2.1"
+version = "1.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d3c0d82d5aceb023bf0307312fceaad3a1dfc90019e4f2e326405b160bd7e9d"
+checksum = "89c7fc9fe3db4df6f0fea3638fb868e5049acc836882d3bae22ea67ac02c39c5"
 dependencies = [
  "cu-bincode",
  "cu29-traits",
  "memmap2 0.9.10",
  "page_size",
+ "portable-atomic",
  "spin 0.12.3",
 ]
 
 [[package]]
 name = "cu29-units"
-version = "1.2.1"
+version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e334dd2c75bbc58eb2892e0e2f5e8ae8d1485991fe422e40a65c2d01e62d150"
+checksum = "7576432e4cb8d623dda8a4e97bf0ac716101b47f48e28a44ef49bf2373a5da92"
 dependencies = [
  "cu-bincode",
  "cu29-traits",
+ "cu29-value-types",
  "serde",
  "uom",
 ]
 
 [[package]]
 name = "cu29-value"
-version = "1.2.1"
+version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77f762dbf59415c785f14258ec2f95a70696cf2300032c5cd147f27bbba2a82f"
+checksum = "103d9998775868277514dfa5fa7421973f141698a4bd2b8b10593cb95ef99067"
 dependencies = [
  "cu-bincode",
  "cu29-clock",
+ "cu29-units",
+ "cu29-value-types",
  "ordered-float 5.3.0",
+ "serde",
+]
+
+[[package]]
+name = "cu29-value-types"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "53c8b0c71f20772d107295dbd582d16a4de9cc1b57cc51f2915305c7a7b37996"
+dependencies = [
  "serde",
 ]
 
@@ -4466,7 +4487,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5133,7 +5154,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6192,7 +6213,7 @@ dependencies = [
  "gobject-sys",
  "libc",
  "system-deps",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -8268,12 +8289,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bf36173d4167ed999940f804952e6b08197cae5ad5d572eb4db150ce8ad5d58f"
 
 [[package]]
-name = "layout-rs"
-version = "0.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b8b38bc67665e362eb770c6b6ae88b48d040d94a0a10c4904c37bc79d263b95"
-
-[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9518,7 +9533,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -11576,7 +11591,7 @@ dependencies = [
  "once_cell",
  "socket2 0.6.4",
  "tracing",
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -14587,6 +14602,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "rtrb"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "342e1478a6e1c839e7405033eabfdc954d4d5dabd39f34e83420a43a95acfb04"
+
+[[package]]
 name = "rtspcam"
 version = "0.1.0"
 dependencies = [
@@ -14687,7 +14708,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -14755,7 +14776,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -16016,12 +16037,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
-name = "svg"
-version = "0.18.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94afda9cd163c04f6bee8b4bf2501c91548deae308373c436f36aeff3cf3c4a3"
-
-[[package]]
 name = "svgtypes"
 version = "0.15.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -16174,7 +16189,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -18312,7 +18327,7 @@ dependencies = [
  "objc2-metal 0.3.2",
  "objc2-quartz-core 0.3.2",
  "once_cell",
- "ordered-float 5.3.0",
+ "ordered-float 4.6.0",
  "parking_lot",
  "portable-atomic",
  "portable-atomic-util",
@@ -18438,7 +18453,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
