@@ -150,8 +150,23 @@ py-test-threaded = { cmd = "python -m pytest --parallel-threads=8 --iterations=5
 [feature.py315.dependencies]
 python = "3.15.*"
 
+# Python 3.15t (free-threaded) - uses uv to provide Python since conda-forge doesn't have 3.15t yet
 [feature.py315t.dependencies]
-python = "3.15.*"
+uv = "*"
+maturin = ">=1.9"
+pytest = "*"
+
+[feature.py315t.activation]
+scripts = ["scripts/activate-py315t.sh"]
+
+[feature.py315t.tasks]
+py-build = { cmd = "bash ../scripts/build-py315t.sh", cwd = "kornia-py", description = "Build kornia-py with Python 3.15t" }
+py-test = { cmd = "python -m pytest", cwd = "kornia-py", depends-on = [
+  "py-build",
+], description = "Test kornia-py with Python 3.15t" }
+py-test-threaded = { cmd = "python -m pytest --parallel-threads=8 --iterations=50", cwd = "kornia-py", depends-on = [
+  "py-build",
+], description = "Test kornia-py with Python 3.15t free-threaded" }
 
 # ------------------------------------------------------------------------------
 # Feature: C++
