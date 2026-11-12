@@ -2,7 +2,7 @@
 name = "kornia_rs"
 description = "Low level implementations for computer vision in Rust"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 license = { file = "LICENSE" }
 authors = [{ name = "Edgar Riba", email = "edgar@kornia.org" }]
 maintainers = [{ name = "Edgar Riba", email = "edgar@kornia.org" }]
@@ -28,7 +28,6 @@ classifiers = [
   "Programming Language :: Python",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
-  "Programming Language :: Python :: 3.8",
   "Programming Language :: Python :: 3.9",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",

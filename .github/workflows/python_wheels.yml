@@ -47,7 +47,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ${{ fromJSON(inputs.subset == 'minimal' && '["3.12"]' || '["3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.13t", "3.14", "3.14t"]') }}
+        python-version: ${{ fromJSON(inputs.subset == 'minimal' && '["3.12"]' || '["3.9", "3.10", "3.11", "3.12", "3.13", "3.14", "3.14t"]') }}
         target: [x86_64, aarch64]
     # Neutralize the in-repo `.cargo/config.toml` (which targets the local
     # Jetson cross-test setup: `x86_64-linux-gnu-gcc` cross-linker plus
@@ -76,13 +76,9 @@ jobs:
           path: crates/kornia-oxide-kernels
       - uses: messense/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
-          # Pin maturin 1.13.3 — the version that shipped v0.1.14 and built the
-          # whole matrix incl. free-threaded 3.13 (3.13t). Newer maturin sets
-          # FREE_THREADED_MINIMUM_PYTHON_MINOR=14 and drops 3.13t (upstream
-          # deprecated it for 3.14t), so `latest`/default fails 3.13t-linux with
-          # "Free-threaded Python interpreter is only supported on 3.14 and
-          # later". Revisit (unpin) if/when we move to 3.14t-only wheels.
-          maturin-version: v1.13.3
+          # Same maturin on every platform; 1.16 knows pyo3 0.30. The old 1.13.3
+          # pin existed only to keep 3.13t wheels, which pyo3 0.29+ dropped.
+          maturin-version: v1.16.0
           target: ${{ matrix.target }}
           manylinux: auto
           command: build
@@ -126,7 +122,7 @@ jobs:
     runs-on: macos-15
     strategy:
       matrix:
-        python-version: ${{ fromJSON(inputs.subset == 'minimal' && '["3.12"]' || '["3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.13t", "3.14", "3.14t"]') }}
+        python-version: ${{ fromJSON(inputs.subset == 'minimal' && '["3.12"]' || '["3.9", "3.10", "3.11", "3.12", "3.13", "3.14", "3.14t"]') }}
         target: ${{ fromJSON(inputs.subset == 'minimal' && '["aarch64"]' || '["x86_64", "aarch64"]') }}
     steps:
       - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
@@ -142,7 +138,7 @@ jobs:
       - uses: messense/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           command: build
-          maturin-version: v1.15.0
+          maturin-version: v1.16.0
           args: --release --target ${{ matrix.target }}-apple-darwin --out dist -i python${{ matrix.python-version }} -m kornia-py/Cargo.toml
       - name: Upload wheels
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -155,7 +151,7 @@ jobs:
     runs-on: windows-latest
     strategy:
       matrix:
-        python-version: ${{ fromJSON(inputs.subset == 'minimal' && '["3.12"]' || '["3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.13t", "3.14", "3.14t"]') }}
+        python-version: ${{ fromJSON(inputs.subset == 'minimal' && '["3.12"]' || '["3.9", "3.10", "3.11", "3.12", "3.13", "3.14", "3.14t"]') }}
         # x64 only: the old x86 rows never selected an x86 interpreter or a
         # win32 target, so they rebuilt the win_amd64 wheel (PyPI has no win32).
         target: [x64]
@@ -176,7 +172,7 @@ jobs:
       - uses: messense/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           command: build
-          maturin-version: v1.15.0
+          maturin-version: v1.16.0
           args: --release --out dist -i python${{ matrix.python-version }} -m kornia-py/Cargo.toml
       - name: Upload wheels
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -214,7 +210,7 @@ jobs:
       - uses: messense/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           command: build
-          maturin-version: v1.15.0
+          maturin-version: v1.16.0
           args: --release --target aarch64-pc-windows-msvc --out dist -i python${{ matrix.python-version }} -m kornia-py/Cargo.toml
       - name: Verify native ARM64 wheel
         shell: pwsh

@@ -55,13 +55,7 @@ pub(crate) type DetectOut = PyResult<(Vec<PyKeypoint>, Py<PyAny>)>;
 /// work wants a column, so build it once
 /// (`np.fromiter((k.x for k in kp), np.float32, len(kp))`) rather than
 /// re-walking the list per operation.
-#[pyclass(
-    name = "SiftKeypoint",
-    module = "kornia_rs.imgproc",
-    frozen,
-    get_all,
-    skip_from_py_object
-)]
+#[pyclass(name = "SiftKeypoint", module = "kornia_rs.imgproc", frozen, get_all)]
 #[derive(Clone, Copy)]
 pub struct PyKeypoint {
     /// Column coordinate, in pixels of the **input** image.
