@@ -171,7 +171,8 @@ pub type UmeyamaResultF64 = Result<UmeyamaOutputF64, UmeyamaError>;
 /// Umeyama/Kabsch solution.
 ///
 /// Point coordinates are assumed finite; non-finite coordinates of points with
-/// a non-zero weight are not validated and propagate to the result. A point with
+/// a non-zero weight are not validated. A debug build trips the SVD's internal
+/// assertion; a release build propagates a non-finite result. A point with
 /// weight `0` is ignored entirely.
 ///
 /// # Arguments
@@ -393,8 +394,9 @@ impl RobustUmeyamaConfig {
 /// a genuine scale mismatch surfaces as inflated inlier residuals, which
 /// loosens the MAD threshold and weakens rejection.
 ///
-/// Point coordinates are assumed finite; non-finite coordinates propagate to
-/// the result, as in [`umeyama_f64`].
+/// Point coordinates are assumed finite. Non-finite coordinates are not
+/// validated: a debug build trips the SVD's internal assertion, and a release
+/// build propagates a non-finite result.
 ///
 /// # Arguments
 ///
@@ -1907,5 +1909,145 @@ mod tests {
         assert!(!keep_residual(2.5, 2.0, 0.1));
         // Exactly at the bound is kept.
         assert!(keep_residual(2.35, 2.0, 0.1));
+    }
+
+    #[test]
+    fn test_umeyama_f64_robust_two_and_three_points_are_supported() -> Result<(), UmeyamaError> {
+        // Too few survivors for the refit: the call must still return a valid
+        // similarity rather than erroring or panicking.
+        for n in [2usize, 3] {
+            let mut src = random_points(0x9000 + n as u64, n, 2.0);
+            let r_true = rot_z90();
+            let t_true = Vec3F64::new(0.5, -0.3, 2.0);
+            let s_true = 1.7;
+            let mut dst: Vec<Vec3F64> = src
+                .iter()
+                .map(|p| (r_true * *p) * s_true + t_true)
+                .collect();
+            dst[0] += Vec3F64::new(50.0, -40.0, 30.0);
+            add_noise(0x9000 + n as u64 + 100, &mut src, 1e-4);
+
+            let out = umeyama_f64_robust(&src, &dst, &RobustUmeyamaConfig::default(), true)?;
+            assert!((out.r.determinant() - 1.0).abs() < 1e-9, "n={n}");
+            assert!(out.s.is_finite() && out.s > 0.0, "n={n}");
+            assert!(out.t.length().is_finite(), "n={n}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_umeyama_f64_robust_uniform_residuals_do_not_refit() -> Result<(), UmeyamaError> {
+        // Every correspondence is identical, so every residual is identical:
+        // MAD is 0, the whole set is the consensus and no refit is needed.
+        let p = Vec3F64::new(1.0, 2.0, 3.0);
+        let q = Vec3F64::new(0.5, -0.3, 2.0);
+        let src = [p; 4];
+        let dst = [q; 4];
+
+        let out = umeyama_f64_robust(&src, &dst, &RobustUmeyamaConfig::default(), true)?;
+        assert_eq!(out.s, 1.0, "zero source variance falls back to scale 1");
+        assert!(
+            ((out.r * p) * out.s + out.t - q).length() < 1e-9,
+            "the common point must be reproduced"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_umeyama_f64_robust_single_iteration_budget_still_recovers() -> Result<(), UmeyamaError>
+    {
+        // One reweighted solve plus the MAD refit must already recover the
+        // transform; `max_iters` is an upper bound, not a required count.
+        let mut src = random_points(0x9101, 20, 2.0);
+        let r_true = rot_z90();
+        let t_true = Vec3F64::new(0.5, -0.3, 2.0);
+        let s_true = 1.7;
+        add_noise(0x9102, &mut src, 5e-4);
+        let mut dst: Vec<Vec3F64> = src
+            .iter()
+            .map(|p| (r_true * *p) * s_true + t_true)
+            .collect();
+        add_noise(0x9103, &mut dst, 5e-4);
+        dst[5] += Vec3F64::new(50.0, -40.0, 30.0);
+
+        let one = umeyama_f64_robust(
+            &src,
+            &dst,
+            &RobustUmeyamaConfig {
+                max_iters: 1,
+                ..RobustUmeyamaConfig::default()
+            },
+            true,
+        )?;
+        let full = umeyama_f64_robust(&src, &dst, &RobustUmeyamaConfig::default(), true)?;
+        assert_matches_true(&one, &r_true, &t_true, s_true, 5e-3);
+        assert_matches_true(&full, &r_true, &t_true, s_true, 5e-3);
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic]
+    fn test_umeyama_f64_robust_non_finite_inputs_trip_the_debug_assert() {
+        // Documented contract: non-finite coordinates are not validated. Debug
+        // builds trip the SVD's internal assertion rather than returning.
+        let mut src = random_points(0x9201, 12, 2.0);
+        src[3] = Vec3F64::new(f64::NAN, 0.0, 0.0);
+        let dst: Vec<Vec3F64> = src.iter().map(|p| (rot_z90() * *p) * 1.7).collect();
+        let _ = umeyama_f64_robust(&src, &dst, &RobustUmeyamaConfig::default(), true);
+    }
+
+    #[test]
+    fn test_umeyama_f64_robust_tiny_scale_falls_back_to_unit_scale() -> Result<(), UmeyamaError> {
+        // At 1e-8 coordinates `var_src` is below the core's 1e-15 guard, so the
+        // scale falls back to 1.0 (documented in `umeyama_f64`); the covariance
+        // is also below the SVD's absolute tolerance, so the rotation is
+        // underdetermined. The robust wrapper must still return a finite fit.
+        let src = random_points(0x9301, 12, 1e-8);
+        let r_true = rot_z90();
+        let s_true = 1.7;
+        let dst: Vec<Vec3F64> = src.iter().map(|p| (r_true * *p) * s_true).collect();
+
+        let out = umeyama_f64_robust(&src, &dst, &RobustUmeyamaConfig::default(), true)?;
+        assert_eq!(out.s, 1.0, "documented unit-scale fallback");
+        assert!(out.t.length().is_finite());
+        assert!((out.r.determinant() - 1.0).abs() < 1e-9);
+        Ok(())
+    }
+
+    #[test]
+    fn test_umeyama_f64_robust_seeded_stress_sweep() -> Result<(), UmeyamaError> {
+        // Deterministic stress across sizes, transforms and outlier fractions:
+        // outputs stay valid and every uncorrupted correspondence is reproduced.
+        use crate::SO3F64;
+        for k in 0..50usize {
+            let seed = 0xA000 + k as u64;
+            let n = 8 + (k % 20);
+            let src = random_points(seed, n, 2.0);
+            let rot = SO3F64::exp(Vec3F64::new(0.1 + k as f64 * 0.05, -0.2, 0.15)).matrix();
+            let t = Vec3F64::new((k % 5) as f64 * 0.3, -0.4, 1.0);
+            let s = 0.8 + (k % 4) as f64 * 0.4;
+            let mut dst: Vec<Vec3F64> = src.iter().map(|p| (rot * *p) * s + t).collect();
+            let mut corrupted = vec![false; n];
+            for j in ((k % 5)..n).step_by(7) {
+                dst[j] += Vec3F64::new(40.0, -30.0, 25.0);
+                corrupted[j] = true;
+            }
+
+            let out = umeyama_f64_robust(&src, &dst, &RobustUmeyamaConfig::default(), true)?;
+            assert!(
+                (out.r.determinant() - 1.0).abs() < 1e-9,
+                "case {k}: R is not a proper rotation"
+            );
+            assert!(out.s.is_finite() && out.s > 0.0, "case {k}: invalid scale");
+            for (j, (p, d)) in src.iter().zip(&dst).enumerate() {
+                if corrupted[j] {
+                    continue;
+                }
+                let res = ((out.r * *p) * out.s + out.t - *d).length();
+                assert!(res < 1e-6, "case {k} point {j}: residual {res}");
+            }
+        }
+        Ok(())
     }
 }
