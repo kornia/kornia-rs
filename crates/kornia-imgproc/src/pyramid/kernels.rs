@@ -186,8 +186,10 @@ unsafe fn hrow_u8_avx2(src: &[u8], row: &mut [u16], end: usize) -> usize {
     d
 }
 
-/// [`hrow_f32_sse2`] on 256-bit vectors: 8 outputs per step; `shufps` works
-/// per 128-bit lane, so one `vpermpd` restores the order.
+/// [`hrow_f32_sse2`] on 256-bit vectors: 8 outputs per step. `shufps` works
+/// per 128-bit lane, so every tap comes out in the same lane-swapped order;
+/// the taps are combined in that order and one `vpermpd` restores the result
+/// (one lane-crossing shuffle per step instead of one per tap).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn hrow_f32_avx2(src: &[f32], row: &mut [f32], end: usize) -> usize {
@@ -198,24 +200,19 @@ unsafe fn hrow_f32_avx2(src: &[f32], row: &mut [f32], end: usize) -> usize {
     // 64-bit chunks (a0 a2)(b0 b2)(a4 a6)(b4 b6) -> (a0 a2)(a4 a6)(b0 b2)(b4 b6).
     const ORDER: i32 = 0b11_01_10_00;
     let (four, six) = (_mm256_set1_ps(4.0), _mm256_set1_ps(6.0));
-    macro_rules! split {
-        ($a:expr, $b:expr) => {{
-            let (a, b) = ($a, $b);
-            let e = _mm256_castps_pd(_mm256_shuffle_ps::<EVEN>(a, b));
-            let o = _mm256_castps_pd(_mm256_shuffle_ps::<ODD>(a, b));
-            (
-                _mm256_castpd_ps(_mm256_permute4x64_pd::<ORDER>(e)),
-                _mm256_castpd_ps(_mm256_permute4x64_pd::<ORDER>(o)),
-            )
-        }};
-    }
     let mut d = 1;
     // The last load reads floats `2d + 14 .. 2d + 22`.
     while d + STEP <= end && 2 * d + 22 <= src.len() {
         let p = src.as_ptr().add(2 * d - 2);
-        let (s0, s1) = split!(_mm256_loadu_ps(p), _mm256_loadu_ps(p.add(8)));
-        let (s2, s3) = split!(_mm256_loadu_ps(p.add(2)), _mm256_loadu_ps(p.add(10)));
-        let (s4, _) = split!(_mm256_loadu_ps(p.add(4)), _mm256_loadu_ps(p.add(12)));
+        let (a, b) = (_mm256_loadu_ps(p), _mm256_loadu_ps(p.add(8)));
+        let (c, e) = (_mm256_loadu_ps(p.add(2)), _mm256_loadu_ps(p.add(10)));
+        let (f, g) = (_mm256_loadu_ps(p.add(4)), _mm256_loadu_ps(p.add(12)));
+        let s0 = _mm256_shuffle_ps::<EVEN>(a, b);
+        let s1 = _mm256_shuffle_ps::<ODD>(a, b);
+        let s2 = _mm256_shuffle_ps::<EVEN>(c, e);
+        let s3 = _mm256_shuffle_ps::<ODD>(c, e);
+        let s4 = _mm256_shuffle_ps::<EVEN>(f, g);
+        // Lane-wise, so the order of the elements does not change the bits.
         let v = _mm256_add_ps(
             _mm256_mul_ps(s2, six),
             _mm256_add_ps(
@@ -223,7 +220,8 @@ unsafe fn hrow_f32_avx2(src: &[f32], row: &mut [f32], end: usize) -> usize {
                 _mm256_add_ps(s0, s4),
             ),
         );
-        _mm256_storeu_ps(row.as_mut_ptr().add(d), v);
+        let v = _mm256_permute4x64_pd::<ORDER>(_mm256_castps_pd(v));
+        _mm256_storeu_ps(row.as_mut_ptr().add(d), _mm256_castpd_ps(v));
         d += STEP;
     }
     d
@@ -294,19 +292,23 @@ unsafe fn hrow_f32_sse2(src: &[f32], row: &mut [f32], end: usize) -> usize {
     d
 }
 
+/// Output widths up to this keep the ring on the stack (20 kB for f32).
+const RING_STACK_WIDTH: usize = 1024;
+
 /// Five ring rows of the horizontal pass, keyed by source row. The rows an
 /// output needs, after reflection, fall inside five consecutive source rows,
 /// so `row % 5` never evicts one still in use.
-struct Ring<T> {
-    buf: Vec<T>,
+struct Ring<'a, T> {
+    buf: &'a mut [T],
     tags: [usize; TAPS],
     dw: usize,
 }
 
-impl<T: Copy + Default> Ring<T> {
-    fn new(dw: usize) -> Self {
+impl<'a, T: Copy + Default> Ring<'a, T> {
+    /// `buf` holds `TAPS * dw` elements.
+    fn new(buf: &'a mut [T], dw: usize) -> Self {
         Self {
-            buf: vec![T::default(); TAPS * dw],
+            buf,
             tags: [usize::MAX; TAPS],
             dw,
         }
@@ -350,13 +352,18 @@ pub(crate) fn pyrdown_c1_u8(
     dst_stride: usize,
     dw: usize,
 ) {
-    #[cfg(target_arch = "x86_64")]
-    if crate::simd::cpu_features().has_avx2 {
-        // SAFETY: AVX2 is present.
-        unsafe { pyrdown_c1_u8_avx2(src, src_stride, w, h, dst, dst_stride, dw) };
-        return;
-    }
-    pyrdown_c1_u8_body::<true>(src, src_stride, w, h, dst, dst_stride, dw);
+    // The ring is taken here, outside the AVX2 function, so the row loops
+    // inline into it without crossing a closure.
+    crate::scratch::with_scratch::<u16, { TAPS * RING_STACK_WIDTH }, _>(TAPS * dw, |buf| {
+        let ring = &mut Ring::new(buf, dw);
+        #[cfg(target_arch = "x86_64")]
+        if crate::simd::cpu_features().has_avx2 {
+            // SAFETY: AVX2 is present.
+            unsafe { pyrdown_c1_u8_avx2(src, src_stride, w, h, dst, dst_stride, ring) };
+            return;
+        }
+        pyrdown_c1_u8_rows::<true>(src, src_stride, w, h, dst, dst_stride, ring);
+    });
 }
 
 /// The ring kernel compiled for AVX2, with the AVX2 horizontal pass.
@@ -369,22 +376,22 @@ unsafe fn pyrdown_c1_u8_avx2(
     h: usize,
     dst: &mut [u8],
     dst_stride: usize,
-    dw: usize,
+    ring: &mut Ring<'_, u16>,
 ) {
-    pyrdown_c1_u8_body::<false>(src, src_stride, w, h, dst, dst_stride, dw);
+    pyrdown_c1_u8_rows::<false>(src, src_stride, w, h, dst, dst_stride, ring);
 }
 
 #[inline(always)]
-fn pyrdown_c1_u8_body<const SSE2: bool>(
+fn pyrdown_c1_u8_rows<const SSE2: bool>(
     src: &[u8],
     src_stride: usize,
     w: usize,
     h: usize,
     dst: &mut [u8],
     dst_stride: usize,
-    dw: usize,
+    ring: &mut Ring<'_, u16>,
 ) {
-    let mut ring = Ring::<u16>::new(dw);
+    let dw = ring.dw;
     for dy in 0..h.div_ceil(2) {
         let ys = rows_at(dy, h);
         ring.fill(ys, |y, row| {
@@ -402,33 +409,42 @@ fn pyrdown_c1_u8_body<const SSE2: bool>(
 
 /// Single-channel f32 pyrDown, `w >= MIN_WIDTH`, separable.
 pub(super) fn pyrdown_c1_f32(src: &[f32], w: usize, h: usize, dst: &mut [f32], dw: usize) {
-    #[cfg(target_arch = "x86_64")]
-    if crate::simd::cpu_features().has_avx2 {
-        // SAFETY: AVX2 is present.
-        unsafe { pyrdown_c1_f32_avx2(src, w, h, dst, dw) };
-        return;
-    }
-    pyrdown_c1_f32_body::<true>(src, w, h, dst, dw);
+    crate::scratch::with_scratch::<f32, { TAPS * RING_STACK_WIDTH }, _>(TAPS * dw, |buf| {
+        let ring = &mut Ring::new(buf, dw);
+        #[cfg(target_arch = "x86_64")]
+        if crate::simd::cpu_features().has_avx2 {
+            // SAFETY: AVX2 is present.
+            unsafe { pyrdown_c1_f32_avx2(src, w, h, dst, ring) };
+            return;
+        }
+        pyrdown_c1_f32_rows::<true>(src, w, h, dst, ring);
+    });
 }
 
 /// The ring kernel compiled for AVX2, with the AVX2 horizontal pass (no
 /// FMA, so the same rounding).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-unsafe fn pyrdown_c1_f32_avx2(src: &[f32], w: usize, h: usize, dst: &mut [f32], dw: usize) {
-    pyrdown_c1_f32_body::<false>(src, w, h, dst, dw);
-}
-
-#[inline(always)]
-fn pyrdown_c1_f32_body<const SSE2: bool>(
+unsafe fn pyrdown_c1_f32_avx2(
     src: &[f32],
     w: usize,
     h: usize,
     dst: &mut [f32],
-    dw: usize,
+    ring: &mut Ring<'_, f32>,
+) {
+    pyrdown_c1_f32_rows::<false>(src, w, h, dst, ring);
+}
+
+#[inline(always)]
+fn pyrdown_c1_f32_rows<const SSE2: bool>(
+    src: &[f32],
+    w: usize,
+    h: usize,
+    dst: &mut [f32],
+    ring: &mut Ring<'_, f32>,
 ) {
     const SCALE: f32 = 1.0 / 256.0;
-    let mut ring = Ring::<f32>::new(dw);
+    let dw = ring.dw;
     for (dy, out) in dst.chunks_exact_mut(dw).enumerate() {
         let ys = rows_at(dy, h);
         ring.fill(ys, |y, row| hrow_f32::<SSE2>(&src[y * w..(y + 1) * w], row));
@@ -467,6 +483,8 @@ mod tests {
             (64, 33),
             (127, 64),
             (752, 480),
+            // Output wider than the stack ring: heap path.
+            (2 * RING_STACK_WIDTH + 9, 7),
         ]
         .into_iter()
         .enumerate()
@@ -475,12 +493,14 @@ mod tests {
             let src = lcg(w * h, i as u64);
             let (mut a, mut b) = (vec![0u8; dw * dh], vec![0u8; dw * dh]);
             pyrdown_c1_u8(&src, w, w, h, &mut a, dw, dw);
-            pyrdown_c1_u8_body::<true>(&src, w, w, h, &mut b, dw, dw);
+            let mut ring = vec![0u16; TAPS * dw];
+            pyrdown_c1_u8_rows::<true>(&src, w, w, h, &mut b, dw, &mut Ring::new(&mut ring, dw));
             assert_eq!(a, b, "u8 {w}x{h}");
             let srcf: Vec<f32> = src.iter().map(|&v| f32::from(v) * 0.37 + 0.11).collect();
             let (mut a, mut b) = (vec![0f32; dw * dh], vec![0f32; dw * dh]);
             pyrdown_c1_f32(&srcf, w, h, &mut a, dw);
-            pyrdown_c1_f32_body::<true>(&srcf, w, h, &mut b, dw);
+            let mut ring = vec![0f32; TAPS * dw];
+            pyrdown_c1_f32_rows::<true>(&srcf, w, h, &mut b, &mut Ring::new(&mut ring, dw));
             assert_eq!(a, b, "f32 {w}x{h}");
         }
     }

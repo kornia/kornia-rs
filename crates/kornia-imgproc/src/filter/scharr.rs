@@ -65,39 +65,62 @@ pub fn scharr_spatial_gradient_separable_f32(
         return Ok(());
     }
     let (src, dx, dy) = (src.as_slice(), dx.as_slice_mut(), dy.as_slice_mut());
-    #[cfg(target_arch = "x86_64")]
-    if crate::simd::cpu_features().has_avx2 {
-        // SAFETY: AVX2 is present.
-        unsafe { scharr_rows_avx2(src, w, h, dx, dy) };
-        return Ok(());
-    }
-    scharr_rows(src, w, h, dx, dy);
+    // The row buffers are taken here, outside the AVX2 function, so the row
+    // loops inline into it without crossing a closure.
+    crate::scratch::with_scratch::<f32, { 2 * (ROWS_STACK_WIDTH + 2) }, _>(2 * (w + 2), |buf| {
+        let (smooth, diff) = buf.split_at_mut(w + 2);
+        #[cfg(target_arch = "x86_64")]
+        if crate::simd::cpu_features().has_avx2 {
+            // SAFETY: AVX2 is present.
+            unsafe { scharr_rows_avx2(src, w, h, dx, dy, smooth, diff) };
+            return;
+        }
+        scharr_rows(src, w, h, dx, dy, smooth, diff);
+    });
     Ok(())
 }
+
+/// Row widths up to this keep the two row buffers on the stack (16 kB).
+const ROWS_STACK_WIDTH: usize = 2048;
 
 /// The portable row loops compiled for AVX2 (no FMA, so the same rounding).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-unsafe fn scharr_rows_avx2(src: &[f32], w: usize, h: usize, dx: &mut [f32], dy: &mut [f32]) {
-    scharr_rows(src, w, h, dx, dy);
+unsafe fn scharr_rows_avx2(
+    src: &[f32],
+    w: usize,
+    h: usize,
+    dx: &mut [f32],
+    dy: &mut [f32],
+    smooth: &mut [f32],
+    diff: &mut [f32],
+) {
+    scharr_rows(src, w, h, dx, dy, smooth, diff);
 }
 
+/// `smooth` and `diff` hold the vertical results of one row with one
+/// replicated column on each side (`w + 2` each).
 #[inline(always)]
-fn scharr_rows(src: &[f32], w: usize, h: usize, dx: &mut [f32], dy: &mut [f32]) {
-    // Vertical results with one replicated column on each side.
-    let mut smooth = vec![0.0f32; w + 2];
-    let mut diff = vec![0.0f32; w + 2];
+fn scharr_rows(
+    src: &[f32],
+    w: usize,
+    h: usize,
+    dx: &mut [f32],
+    dy: &mut [f32],
+    smooth: &mut [f32],
+    diff: &mut [f32],
+) {
     let rows = dx.chunks_exact_mut(w).zip(dy.chunks_exact_mut(w));
     for (y, (dx_row, dy_row)) in rows.enumerate() {
         let above = &src[y.saturating_sub(1) * w..][..w];
         let center = &src[y * w..][..w];
         let below = &src[(y + 1).min(h - 1) * w..][..w];
         vertical_pass(above, center, below, &mut smooth[1..=w], &mut diff[1..=w]);
-        for buf in [&mut smooth, &mut diff] {
+        for buf in [&mut *smooth, &mut *diff] {
             buf[0] = buf[1];
             buf[w + 1] = buf[w];
         }
-        horizontal_pass(&smooth, &diff, dx_row, dy_row);
+        horizontal_pass(smooth, diff, dx_row, dy_row);
     }
 }
 
@@ -165,9 +188,17 @@ mod tests {
 
     #[test]
     fn separable_equals_3x3_on_integer_pixels() -> Result<(), ImageError> {
-        for (i, (w, h)) in [(1, 1), (2, 1), (1, 3), (3, 2), (17, 9), (752, 480)]
-            .into_iter()
-            .enumerate()
+        for (i, (w, h)) in [
+            (1, 1),
+            (2, 1),
+            (1, 3),
+            (3, 2),
+            (17, 9),
+            (752, 480),
+            (2 * ROWS_STACK_WIDTH + 5, 3),
+        ]
+        .into_iter()
+        .enumerate()
         {
             let data = lcg_bytes(w * h, i as u64)
                 .into_iter()
@@ -227,7 +258,8 @@ mod tests {
         let mut dy = Image::<f32, 1>::from_size_val(src.size(), 0.0)?;
         scharr_spatial_gradient_separable_f32(&src, &mut dx, &mut dy)?;
         let (mut ex, mut ey) = (vec![0.0; w * h], vec![0.0; w * h]);
-        scharr_rows(&data, w, h, &mut ex, &mut ey);
+        let (mut smooth, mut diff) = (vec![0.0; w + 2], vec![0.0; w + 2]);
+        scharr_rows(&data, w, h, &mut ex, &mut ey, &mut smooth, &mut diff);
         assert_eq!((dx.as_slice(), dy.as_slice()), (&ex[..], &ey[..]));
         Ok(())
     }
