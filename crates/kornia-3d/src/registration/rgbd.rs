@@ -10,7 +10,10 @@
 //! * Camera model: [`PinholeCamera`] without distortion (rectified depth), OpenCV convention,
 //!   +Z forward, +X right, +Y down. Pixel centres sit at integer coordinates.
 //! * Depth images: `Image<u16, 1>` in millimetres, `0` = invalid (no measurement), the rule of
-//!   [`kornia_imgproc::depth::is_valid_depth_u16`].
+//!   [`kornia_imgproc::depth::is_valid_depth_u16`]; or `Image<f32, 1>` in metres, valid iff
+//!   finite and `> 0`, the rule of [`kornia_imgproc::depth::is_valid_depth_f32`].
+//! * Depth sigma maps: `Image<f32, 1>` of per-pixel one-sigma depth (`z`) errors in metres, the
+//!   size of their depth; `0` or non-finite = no value for that pixel.
 //! * Vertex maps: `Image<f32, 3>` of camera-frame points in metres, `[0, 0, 0]` = invalid
 //!   (a valid vertex always has `z > 0`).
 //! * Normal maps: `Image<f32, 3>` of unit normals oriented towards the camera (`n . v < 0`),
@@ -19,7 +22,7 @@
 use crate::camera::PinholeCamera;
 use kornia_algebra::Vec3F32;
 use kornia_image::{Image, ImageError, ImageSize};
-use kornia_imgproc::depth::is_valid_depth_u16;
+use kornia_imgproc::depth::{is_valid_depth_f32, is_valid_depth_u16};
 
 /// Errors produced by the RGB-D depth-geometry routines.
 #[derive(Debug, thiserror::Error)]
@@ -92,9 +95,9 @@ pub enum RgbdIcpError {
     /// initial guess.
     #[error("only {0} correspondences passed the gates; need at least 6")]
     TooFewCorrespondences(usize),
-    /// The point-to-plane normal equations do not constrain all six degrees of freedom
-    /// (degenerate geometry such as a single plane), or their solve is not finite.
-    #[error("point-to-plane normal equations are singular or ill-conditioned")]
+    /// The point-to-plane normal equations or their solve are not finite. Degenerate geometry,
+    /// such as a single plane, is not an error: it is solved along its observed directions.
+    #[error("point-to-plane normal equations or their solve are not finite")]
     SingularNormalEquations,
 }
 
@@ -178,20 +181,63 @@ pub fn vertex_map_from_depth_mm(
     camera: &PinholeCamera,
     dst: &mut Image<f32, 3>,
 ) -> Result<(), RgbdIcpError> {
+    vertex_map_from_depth(src, camera, dst, |d| {
+        is_valid_depth_u16(d).then_some(d as f64 * 1e-3)
+    })
+}
+
+/// Back-projects a metre depth image into a camera-frame vertex map in metres.
+///
+/// As [`vertex_map_from_depth_mm`] without the millimetre quantisation: pixel `(u, v)` with
+/// valid depth `z` maps to `z * [(u - cx) / fx, (v - cy) / fy, 1]`. Depth that is `0`,
+/// negative or not finite (see [`kornia_imgproc::depth::is_valid_depth_f32`]) maps to
+/// `[0, 0, 0]`.
+///
+/// # Arguments
+///
+/// * `src` - Depth in metres; `0`, negative or non-finite = invalid.
+/// * `camera` - Intrinsics of `src`, without distortion.
+/// * `dst` - Output vertex map, the size of `src`.
+///
+/// # Returns
+///
+/// `Ok(())` once `dst` holds the vertex map.
+///
+/// # Errors
+///
+/// As [`vertex_map_from_depth_mm`]: [`RgbdIcpError::DistortedCamera`],
+/// [`RgbdIcpError::InvalidIntrinsics`] or [`RgbdIcpError::SizeMismatch`].
+pub fn vertex_map_from_depth_m(
+    src: &Image<f32, 1>,
+    camera: &PinholeCamera,
+    dst: &mut Image<f32, 3>,
+) -> Result<(), RgbdIcpError> {
+    vertex_map_from_depth(src, camera, dst, |d| {
+        is_valid_depth_f32(d).then_some(d as f64)
+    })
+}
+
+/// Back-projection shared by the depth types; `z_m` returns a sample's depth in metres, `None`
+/// when invalid. Monomorphised per type, so the `u16` path keeps its integer test.
+fn vertex_map_from_depth<T: Copy>(
+    src: &Image<T, 1>,
+    camera: &PinholeCamera,
+    dst: &mut Image<f32, 3>,
+    z_m: impl Fn(T) -> Option<f64>,
+) -> Result<(), RgbdIcpError> {
     check_camera(camera)?;
     check_size(src.size(), dst.size())?;
 
     let width = src.width();
     let (fx, fy, cx, cy) = camera.intrinsics();
-    let rows = src.as_slice().chunks_exact(width);
-    let out_rows = dst.as_slice_mut().chunks_exact_mut(3 * width);
+    let rows = src.as_slice().chunks_exact(width.max(1));
+    let out_rows = dst.as_slice_mut().chunks_exact_mut(3 * width.max(1));
     for (v, (row, out_row)) in rows.zip(out_rows).enumerate() {
         for (u, (&d, out_px)) in row.iter().zip(out_row.chunks_exact_mut(3)).enumerate() {
-            if !is_valid_depth_u16(d) {
+            let Some(z) = z_m(d) else {
                 out_px.fill(0.0);
                 continue;
-            }
-            let z = d as f64 * 1e-3;
+            };
             out_px[0] = ((u as f64 - cx) * z / fx) as f32;
             out_px[1] = ((v as f64 - cy) * z / fy) as f32;
             out_px[2] = z as f32;
@@ -346,6 +392,107 @@ pub fn downsample_depth_half(
     Ok(())
 }
 
+/// [`DOWNSAMPLE_JUMP_MM`] in metres, for the `f32` path.
+const DOWNSAMPLE_JUMP_M: f32 = DOWNSAMPLE_JUMP_MM as f32 * 1e-3;
+
+/// Halves a metre depth image, validity- and discontinuity-aware.
+///
+/// The rule of [`downsample_depth_half`] on `f32` metres: the lower median of the valid samples
+/// of each 2x2 block is the pivot and the samples within 50 mm of it are averaged, without
+/// rounding. A block with no valid sample (see [`kornia_imgproc::depth::is_valid_depth_f32`])
+/// becomes `0`. A trailing odd row or column is dropped.
+///
+/// # Arguments
+///
+/// * `src` - Depth in metres; `0`, negative or non-finite = invalid.
+/// * `dst` - Output depth of size `(width / 2, height / 2)` (floor).
+///
+/// # Returns
+///
+/// `Ok(())` once `dst` holds the halved depth.
+///
+/// # Errors
+///
+/// Returns [`RgbdIcpError::SizeMismatch`] if `dst` is not `(width / 2, height / 2)`.
+pub fn downsample_depth_half_m(
+    src: &Image<f32, 1>,
+    dst: &mut Image<f32, 1>,
+) -> Result<(), RgbdIcpError> {
+    downsample_half_m(src, dst, None)
+}
+
+/// Halves a metre depth image as [`downsample_depth_half_m`] and, with `sigmas = (src, dst)`,
+/// its sigma map alongside. The averaged depth is the mean of `n` independent samples, so its
+/// sigma is `sqrt(sum sigma_k^2) / n`; `0` (no value) when an averaged sample has none.
+fn downsample_half_m(
+    src: &Image<f32, 1>,
+    dst: &mut Image<f32, 1>,
+    mut sigmas: Option<(&Image<f32, 1>, &mut Image<f32, 1>)>,
+) -> Result<(), RgbdIcpError> {
+    let half = ImageSize {
+        width: src.width() / 2,
+        height: src.height() / 2,
+    };
+    check_size(half, dst.size())?;
+    if let Some((s_src, s_dst)) = &sigmas {
+        check_size(src.size(), s_src.size())?;
+        check_size(half, s_dst.size())?;
+    }
+    let (width, depth) = (src.width(), src.as_slice());
+
+    for (y, out_row) in dst
+        .as_slice_mut()
+        .chunks_exact_mut(half.width.max(1))
+        .enumerate()
+    {
+        for (x, out) in out_row.iter_mut().enumerate() {
+            let (i0, i1) = (2 * y * width + 2 * x, (2 * y + 1) * width + 2 * x);
+            let mut valid = [(0.0f32, 0usize); 4];
+            let mut n = 0;
+            for i in [i0, i0 + 1, i1, i1 + 1] {
+                if is_valid_depth_f32(depth[i]) {
+                    valid[n] = (depth[i], i);
+                    n += 1;
+                }
+            }
+            let out_idx = y * half.width + x;
+            if n == 0 {
+                *out = 0.0;
+                if let Some((_, s_dst)) = sigmas.as_mut() {
+                    s_dst.as_slice_mut()[out_idx] = 0.0;
+                }
+                continue;
+            }
+            valid[..n].sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+            // lower median, as on the millimetre path
+            let pivot = valid[(n - 1) / 2].0;
+            let (mut sum, mut var, mut count, mut sigma_ok) = (0.0f64, 0.0f64, 0u32, true);
+            for &(d, i) in &valid[..n] {
+                if (d - pivot).abs() <= DOWNSAMPLE_JUMP_M {
+                    sum += d as f64;
+                    count += 1;
+                    if let Some((s_src, _)) = &sigmas {
+                        let s = s_src.as_slice()[i];
+                        // written so that NaN fails
+                        sigma_ok &= s > 0.0 && s.is_finite();
+                        var += s as f64 * s as f64;
+                    }
+                }
+            }
+            *out = (sum / count as f64) as f32;
+            if let Some((_, s_dst)) = sigmas.as_mut() {
+                s_dst.as_slice_mut()[out_idx] = if sigma_ok {
+                    (var.sqrt() / count as f64) as f32
+                } else {
+                    0.0
+                };
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Intrinsics of the image [`downsample_depth_half`] produces from one seen by `camera`.
 ///
 /// With pixel centres at integer coordinates, a half-resolution pixel `u` covers the 2x2
@@ -373,6 +520,9 @@ pub struct RgbdLevel {
     pub(crate) vertices: Image<f32, 3>,
     /// Unit normal map oriented towards the camera, `[0, 0, 0]` = invalid.
     pub(crate) normals: Image<f32, 3>,
+    /// Per-pixel one-sigma depth error in metres, the size of the maps; `None` when the frame
+    /// carries none.
+    pub(crate) depth_sigmas: Option<Image<f32, 1>>,
 }
 
 // Fields stay crate-private so the maps always share one size and match `camera`: the
@@ -397,12 +547,21 @@ impl RgbdLevel {
     pub fn normals(&self) -> &Image<f32, 3> {
         &self.normals
     }
+
+    /// Per-pixel one-sigma depth (`z`) error in metres, `None` when the frame carries none.
+    ///
+    /// Where present it takes precedence over [`super::IcpPlaneCriteria::depth_noise`] for this
+    /// frame's points; `0` or non-finite entries fall back to that model. Coarser levels hold
+    /// the sigma of their averaged depth (see [`downsample_depth_half_m`]).
+    pub fn depth_sigmas(&self) -> Option<&Image<f32, 1>> {
+        self.depth_sigmas.as_ref()
+    }
 }
 
 /// Coarse-to-fine pyramid of vertex and normal maps built from one depth image.
 ///
 /// `levels[0]` is the input resolution; each further level halves the depth with
-/// [`downsample_depth_half`] and the intrinsics to match.
+/// [`downsample_depth_half`] (or [`downsample_depth_half_m`]) and the intrinsics to match.
 #[derive(Clone)]
 pub struct RgbdPyramid {
     /// Pyramid levels, finest first.
@@ -454,6 +613,118 @@ impl RgbdPyramid {
         camera: &PinholeCamera,
         num_levels: usize,
     ) -> Result<Self, RgbdIcpError> {
+        Self::build(
+            depth,
+            None,
+            camera,
+            num_levels,
+            0u16,
+            |src, dst, _| downsample_depth_half(src, dst),
+            vertex_map_from_depth_mm,
+        )
+    }
+
+    /// Builds a pyramid with `num_levels` levels from a metre depth image.
+    ///
+    /// As [`Self::from_depth_mm`] without the millimetre quantisation; coarser levels halve the
+    /// depth with [`downsample_depth_half_m`].
+    ///
+    /// # Arguments
+    ///
+    /// * `depth` - Depth in metres; `0`, negative or non-finite = invalid.
+    /// * `camera` - Intrinsics of `depth`, without distortion.
+    /// * `num_levels` - Number of levels, at least 1.
+    ///
+    /// # Returns
+    ///
+    /// The pyramid, finest level first, without depth sigma maps.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::from_depth_mm`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_3d::camera::PinholeCamera;
+    /// use kornia_3d::registration::RgbdPyramid;
+    /// use kornia_image::{Image, ImageSize};
+    ///
+    /// let size = ImageSize { width: 64, height: 48 };
+    /// let depth = Image::<f32, 1>::from_size_val(size, 1.5)?;
+    /// let camera = PinholeCamera { fx: 50.0, fy: 50.0, cx: 31.5, cy: 23.5, ..PinholeCamera::IDENTITY };
+    /// let pyramid = RgbdPyramid::from_depth_m(&depth, &camera, 2)?;
+    /// assert!(pyramid.levels()[1].depth_sigmas().is_none());
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn from_depth_m(
+        depth: &Image<f32, 1>,
+        camera: &PinholeCamera,
+        num_levels: usize,
+    ) -> Result<Self, RgbdIcpError> {
+        Self::build(
+            depth,
+            None,
+            camera,
+            num_levels,
+            0.0f32,
+            downsample_half_m,
+            vertex_map_from_depth_m,
+        )
+    }
+
+    /// Builds a pyramid as [`Self::from_depth_m`], carrying a per-pixel depth sigma map into
+    /// every level ([`RgbdLevel::depth_sigmas`]).
+    ///
+    /// # Arguments
+    ///
+    /// * `depth` - Depth in metres; `0`, negative or non-finite = invalid.
+    /// * `sigma` - One-sigma depth error in metres per pixel, the size of `depth`; `0` or
+    ///   non-finite = no value for that pixel.
+    /// * `camera` - Intrinsics of `depth`, without distortion.
+    /// * `num_levels` - Number of levels, at least 1.
+    ///
+    /// # Returns
+    ///
+    /// The pyramid, finest level first, each level with its sigma map.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::from_depth_mm`], and [`RgbdIcpError::SizeMismatch`] if `sigma` is not the size
+    /// of `depth`.
+    pub fn from_depth_m_with_sigma(
+        depth: &Image<f32, 1>,
+        sigma: &Image<f32, 1>,
+        camera: &PinholeCamera,
+        num_levels: usize,
+    ) -> Result<Self, RgbdIcpError> {
+        check_size(depth.size(), sigma.size())?;
+        Self::build(
+            depth,
+            Some(sigma),
+            camera,
+            num_levels,
+            0.0f32,
+            downsample_half_m,
+            vertex_map_from_depth_m,
+        )
+    }
+
+    /// The level loop shared by the depth types: `halve` downsamples a level's depth (and its
+    /// sigma map, when given) into the next, `unproject` turns a depth into a vertex map.
+    fn build<T: Copy>(
+        depth: &Image<T, 1>,
+        sigma: Option<&Image<f32, 1>>,
+        camera: &PinholeCamera,
+        num_levels: usize,
+        invalid: T,
+        halve: impl Fn(
+            &Image<T, 1>,
+            &mut Image<T, 1>,
+            Option<(&Image<f32, 1>, &mut Image<f32, 1>)>,
+        ) -> Result<(), RgbdIcpError>,
+        unproject: impl Fn(&Image<T, 1>, &PinholeCamera, &mut Image<f32, 3>) -> Result<(), RgbdIcpError>,
+    ) -> Result<Self, RgbdIcpError> {
         if num_levels == 0 {
             return Err(RgbdIcpError::InvalidNumLevels(num_levels));
         }
@@ -461,10 +732,13 @@ impl RgbdPyramid {
 
         let mut levels = Vec::with_capacity(num_levels);
         let mut level_camera = camera.clone();
-        // level 0 reads `depth` directly; `halved` holds the depth from level 1 on
-        let mut halved: Option<Image<u16, 1>> = None;
+        // level 0 reads `depth` and `sigma` directly; `halved` holds them from level 1 on
+        let mut halved: Option<(Image<T, 1>, Option<Image<f32, 1>>)> = None;
         for level in 0..num_levels {
-            let cur = halved.as_ref().unwrap_or(depth);
+            let (cur, cur_sigma) = match &halved {
+                Some((d, s)) => (d, s.as_ref()),
+                None => (depth, sigma),
+            };
             let size = if level == 0 {
                 cur.size()
             } else {
@@ -481,31 +755,159 @@ impl RgbdPyramid {
                 });
             }
             if level > 0 {
-                let mut half = Image::from_size_val(size, 0u16)?;
-                downsample_depth_half(cur, &mut half)?;
-                halved = Some(half);
+                let mut half = Image::from_size_val(size, invalid)?;
+                let mut half_sigma = match cur_sigma {
+                    Some(_) => Some(Image::from_size_val(size, 0.0f32)?),
+                    None => None,
+                };
+                halve(cur, &mut half, cur_sigma.zip(half_sigma.as_mut()))?;
+                halved = Some((half, half_sigma));
                 level_camera = half_camera(&level_camera);
             }
-            let cur = halved.as_ref().unwrap_or(depth);
+            let (cur, cur_sigma) = match &halved {
+                Some((d, s)) => (d, s.as_ref()),
+                None => (depth, sigma),
+            };
             let mut vertices = Image::from_size_val(size, 0.0f32)?;
-            vertex_map_from_depth_mm(cur, &level_camera, &mut vertices)?;
+            unproject(cur, &level_camera, &mut vertices)?;
             let mut normals = Image::from_size_val(size, 0.0f32)?;
             normal_map_from_vertex_map(&vertices, &mut normals)?;
             levels.push(RgbdLevel {
                 camera: level_camera.clone(),
                 vertices,
                 normals,
+                depth_sigmas: cur_sigma.cloned(),
             });
         }
 
         Ok(Self { levels })
     }
+
+    /// Rebuilds this pyramid in place from a millimetre depth image, reusing its maps.
+    ///
+    /// The same pyramid as [`Self::from_depth_mm`], bit for bit. A level whose size is
+    /// unchanged keeps its images, and `scratch` keeps the halved depths, so once this pyramid
+    /// and `scratch` have seen an image size a call at that size allocates nothing. The input
+    /// is checked before anything is written, so an invalid one leaves the pyramid unchanged.
+    ///
+    /// # Arguments
+    ///
+    /// * `depth` - Depth in millimetres, `0` = invalid.
+    /// * `camera` - Intrinsics of `depth`, without distortion.
+    /// * `num_levels` - Number of levels, at least 1.
+    /// * `scratch` - Halved depths reused across calls.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` once the pyramid holds the levels of `depth`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::from_depth_mm`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_3d::camera::PinholeCamera;
+    /// use kornia_3d::registration::{PyramidScratch, RgbdPyramid};
+    /// use kornia_image::{Image, ImageSize};
+    ///
+    /// let size = ImageSize { width: 64, height: 48 };
+    /// let camera = PinholeCamera { fx: 50.0, fy: 50.0, cx: 31.5, cy: 23.5, ..PinholeCamera::IDENTITY };
+    /// let mut pyramid = RgbdPyramid::from_depth_mm(&Image::from_size_val(size, 1500)?, &camera, 3)?;
+    /// let mut scratch = PyramidScratch::default();
+    /// pyramid.rebuild_from_depth_mm(&Image::from_size_val(size, 1600)?, &camera, 3, &mut scratch)?;
+    /// assert_eq!(pyramid.levels()[0].vertices().as_slice()[2], 1.6);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn rebuild_from_depth_mm(
+        &mut self,
+        depth: &Image<u16, 1>,
+        camera: &PinholeCamera,
+        num_levels: usize,
+        scratch: &mut PyramidScratch,
+    ) -> Result<(), RgbdIcpError> {
+        if num_levels == 0 {
+            return Err(RgbdIcpError::InvalidNumLevels(num_levels));
+        }
+        check_camera(camera)?;
+        // repeated floor halving is a floor division by 2^level
+        let level_size = |level: usize| ImageSize {
+            width: depth.width() >> level,
+            height: depth.height() >> level,
+        };
+        for level in 0..num_levels {
+            let size = level_size(level);
+            if size.width < 3 || size.height < 3 {
+                return Err(RgbdIcpError::ImageTooSmall {
+                    level,
+                    width: size.width,
+                    height: size.height,
+                });
+            }
+        }
+
+        // every pixel of a halved depth and of a vertex map is written, and the normal map is
+        // cleared first, so a reused image carries nothing of the frame before
+        let halved = &mut scratch.halved;
+        halved.truncate(num_levels - 1);
+        for level in 1..num_levels {
+            let size = level_size(level);
+            match halved.get(level - 1) {
+                Some(h) if h.size() == size => {}
+                Some(_) => halved[level - 1] = Image::from_size_val(size, 0)?,
+                None => halved.push(Image::from_size_val(size, 0)?),
+            }
+            let (done, rest) = halved.split_at_mut(level - 1);
+            let src = done.last().unwrap_or(depth);
+            downsample_depth_half(src, &mut rest[0])?;
+        }
+
+        self.levels.truncate(num_levels);
+        let mut level_camera = camera.clone();
+        for level in 0..num_levels {
+            if level > 0 {
+                level_camera = half_camera(&level_camera);
+            }
+            let size = level_size(level);
+            if self.levels.get(level).is_none_or(|l| l.size() != size) {
+                let blank = RgbdLevel {
+                    camera: level_camera.clone(),
+                    vertices: Image::from_size_val(size, 0.0)?,
+                    normals: Image::from_size_val(size, 0.0)?,
+                    depth_sigmas: None,
+                };
+                match self.levels.get_mut(level) {
+                    Some(l) => *l = blank,
+                    None => self.levels.push(blank),
+                }
+            }
+            let cur = if level == 0 {
+                depth
+            } else {
+                &halved[level - 1]
+            };
+            let out = &mut self.levels[level];
+            out.camera = level_camera.clone();
+            out.depth_sigmas = None;
+            vertex_map_from_depth_mm(cur, &level_camera, &mut out.vertices)?;
+            normal_map_from_vertex_map(&out.vertices, &mut out.normals)?;
+        }
+        Ok(())
+    }
+}
+
+/// Reused halved depths for [`RgbdPyramid::rebuild_from_depth_mm`], one per level below the
+/// finest.
+#[derive(Clone, Default)]
+pub struct PyramidScratch {
+    halved: Vec<Image<u16, 1>>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::synth::{
-        render_depth_mm, render_vertex_map, test_camera, Plane, Scene, TEST_SIZE,
+        depth_m_from_mm, render_depth_mm, render_vertex_map, test_camera, Plane, Scene, TEST_SIZE,
     };
     use super::*;
     use kornia_algebra::{Mat3F64, Vec3F64};
@@ -866,6 +1268,211 @@ mod tests {
             RgbdPyramid::from_depth_mm(&depth, &camera, 8),
             Err(RgbdIcpError::ImageTooSmall { level: 6, .. })
         ));
+        Ok(())
+    }
+
+    /// Metre depth that is `0`, negative or not finite gives an invalid vertex and is ignored
+    /// by the halving, as [`is_valid_depth_f32`] decides.
+    #[test]
+    fn test_metre_depth_invalid_values() -> Result<(), Box<dyn std::error::Error>> {
+        let size = ImageSize {
+            width: 4,
+            height: 2,
+        };
+        #[rustfmt::skip]
+        let depth = Image::<f32, 1>::new(size, vec![
+            2.0, 0.0, -1.0, f32::NAN,
+            f32::INFINITY, f32::NEG_INFINITY, -0.0, 1.5,
+        ])?;
+        let camera = PinholeCamera {
+            fx: 2.0,
+            fy: 2.0,
+            cx: 1.5,
+            cy: 0.5,
+            ..PinholeCamera::IDENTITY
+        };
+        let mut verts = Image::<f32, 3>::from_size_val(size, 7.0)?;
+        vertex_map_from_depth_m(&depth, &camera, &mut verts)?;
+        let v = verts.as_slice();
+        assert_eq!(&v[..3], &[-1.5, -0.5, 2.0]);
+        assert_eq!(&v[21..], &[1.125, 0.375, 1.5]);
+        for i in 1..7 {
+            assert_eq!(&v[3 * i..3 * i + 3], &[0.0; 3], "pixel {i}");
+        }
+
+        // each 2x2 block averages its valid samples only; an all-invalid block becomes 0
+        let mut half = Image::<f32, 1>::from_size_val(
+            ImageSize {
+                width: 2,
+                height: 1,
+            },
+            7.0,
+        )?;
+        downsample_depth_half_m(&depth, &mut half)?;
+        assert_eq!(half.as_slice(), &[2.0, 1.5]);
+        let mut all_bad = depth.clone();
+        all_bad.as_slice_mut()[0] = f32::NAN;
+        all_bad.as_slice_mut()[7] = -2.0;
+        downsample_depth_half_m(&all_bad, &mut half)?;
+        assert_eq!(half.as_slice(), &[0.0, 0.0]);
+        assert!(matches!(
+            downsample_depth_half_m(&depth, &mut Image::from_size_val(size, 0.0)?),
+            Err(RgbdIcpError::SizeMismatch { .. })
+        ));
+        Ok(())
+    }
+
+    /// A sigma map halves to the sigma of the block mean, and must have the depth's size.
+    #[test]
+    fn test_sigma_map_pyramid() -> Result<(), Box<dyn std::error::Error>> {
+        let size = ImageSize {
+            width: 6,
+            height: 6,
+        };
+        let mut depth = Image::<f32, 1>::from_size_val(size, 1.0)?;
+        let mut sigma = Image::<f32, 1>::from_size_val(size, 0.004)?;
+        // block (0, 0): one invalid depth, three averaged; block (1, 0): one sample without sigma
+        depth.as_slice_mut()[0] = f32::NAN;
+        sigma.as_slice_mut()[2] = 0.0;
+        let pyr = RgbdPyramid::from_depth_m_with_sigma(&depth, &sigma, &test_camera(), 2)?;
+        let s1 = pyr.levels[1]
+            .depth_sigmas()
+            .ok_or("level 1 has a sigma map")?;
+        assert_eq!(s1.size(), pyr.levels[1].size());
+        let s1 = s1.as_slice();
+        assert!((s1[0] - 0.004 / 3f32.sqrt()).abs() < 1e-9);
+        assert_eq!(s1[1], 0.0);
+        assert!((s1[2] - 0.002).abs() < 1e-9);
+        let s0 = pyr.levels[0]
+            .depth_sigmas()
+            .ok_or("level 0 has a sigma map")?;
+        assert_eq!(s0.as_slice(), sigma.as_slice());
+        assert!(
+            RgbdPyramid::from_depth_m(&depth, &test_camera(), 2)?.levels[0]
+                .depth_sigmas()
+                .is_none()
+        );
+
+        for wrong in [
+            ImageSize {
+                width: 6,
+                height: 5,
+            },
+            ImageSize {
+                width: 5,
+                height: 6,
+            },
+        ] {
+            let sigma = Image::<f32, 1>::from_size_val(wrong, 0.004)?;
+            assert!(matches!(
+                RgbdPyramid::from_depth_m_with_sigma(&depth, &sigma, &test_camera(), 2),
+                Err(RgbdIcpError::SizeMismatch { .. })
+            ));
+        }
+        Ok(())
+    }
+
+    /// The metre pyramid of a millimetre depth equals the millimetre pyramid: identical `z` at
+    /// level 0, and within the millimetre path's rounding of each block mean below it.
+    #[test]
+    fn test_metre_pyramid_matches_millimetre() -> Result<(), Box<dyn std::error::Error>> {
+        let camera = test_camera();
+        let depth = render_depth_mm(
+            &Scene::corner_and_sphere(),
+            &camera,
+            TEST_SIZE,
+            &Mat3F64::IDENTITY,
+            &Vec3F64::ZERO,
+        )?;
+        let mm = RgbdPyramid::from_depth_mm(&depth, &camera, 3)?;
+        let m = RgbdPyramid::from_depth_m(&depth_m_from_mm(&depth)?, &camera, 3)?;
+        for (level, (a, b)) in mm.levels.iter().zip(&m.levels).enumerate() {
+            assert_eq!(a.camera.intrinsics(), b.camera.intrinsics());
+            assert_eq!(a.size(), b.size());
+            // half a millimetre of rounding per halving
+            let tol_z = 0.5e-3 * level as f32 + 1e-6;
+            let (va, vb) = (a.vertices.as_slice(), b.vertices.as_slice());
+            for (i, (pa, pb)) in va.chunks_exact(3).zip(vb.chunks_exact(3)).enumerate() {
+                assert_eq!(
+                    pa[2] > 0.0,
+                    pb[2] > 0.0,
+                    "validity at level {level}, pixel {i}"
+                );
+                if level == 0 {
+                    assert_eq!(pa[2], pb[2], "z at pixel {i}");
+                }
+                assert!((pa[2] - pb[2]).abs() <= tol_z, "level {level}, pixel {i}");
+                for k in 0..2 {
+                    assert!((pa[k] - pb[k]).abs() <= tol_z + 1e-6 * pa[k].abs());
+                }
+            }
+            let (na, nb) = (a.normals.as_slice(), b.normals.as_slice());
+            let mut agree = 0;
+            for (ma, mb) in na.chunks_exact(3).zip(nb.chunks_exact(3)) {
+                assert_eq!(
+                    is_valid_normal(&[ma[0], ma[1], ma[2]]),
+                    is_valid_normal(&[mb[0], mb[1], mb[2]])
+                );
+                let dot = ma[0] * mb[0] + ma[1] * mb[1] + ma[2] * mb[2];
+                if dot > 0.999 {
+                    agree += 1;
+                }
+            }
+            let valid = na.chunks_exact(3).filter(|n| n[2] != 0.0).count();
+            assert!(
+                agree * 100 >= valid * 99,
+                "level {level}: {agree} of {valid}"
+            );
+        }
+        Ok(())
+    }
+
+    /// An in-place rebuild equals a fresh build bit for bit, whatever the pyramid held before:
+    /// another size, more levels, a sigma map, or other depth at the same size.
+    #[test]
+    fn rebuild_matches_from_depth_mm() -> Result<(), Box<dyn std::error::Error>> {
+        let camera = test_camera();
+        let render = |t: Vec3F64| {
+            render_depth_mm(
+                &Scene::corner_and_sphere(),
+                &camera,
+                TEST_SIZE,
+                &Mat3F64::IDENTITY,
+                &t,
+            )
+        };
+        let (first, second) = (
+            render(Vec3F64::ZERO)?,
+            render(Vec3F64::new(0.03, 0.0, 0.01))?,
+        );
+        let small = ImageSize {
+            width: 40,
+            height: 30,
+        };
+        let stale = Image::<f32, 1>::from_size_val(small, 1.0)?;
+        let sigma = Image::<f32, 1>::from_size_val(small, 0.004)?;
+        let mut pyr = RgbdPyramid::from_depth_m_with_sigma(&stale, &sigma, &camera, 3)?;
+        let mut scratch = PyramidScratch::default();
+        let bits = |img: &[f32]| img.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        for (depth, num_levels) in [(&first, 3), (&second, 3), (&first, 2)] {
+            pyr.rebuild_from_depth_mm(depth, &camera, num_levels, &mut scratch)?;
+            let fresh = RgbdPyramid::from_depth_mm(depth, &camera, num_levels)?;
+            assert_eq!(pyr.levels.len(), num_levels);
+            for (a, b) in fresh.levels.iter().zip(&pyr.levels) {
+                assert_eq!(a.camera.intrinsics(), b.camera.intrinsics());
+                assert_eq!(bits(a.vertices.as_slice()), bits(b.vertices.as_slice()));
+                assert_eq!(bits(a.normals.as_slice()), bits(b.normals.as_slice()));
+                assert!(b.depth_sigmas.is_none());
+            }
+        }
+        // an invalid input is rejected before anything is written
+        let before = bits(pyr.levels[0].vertices.as_slice());
+        assert!(matches!(
+            pyr.rebuild_from_depth_mm(&first, &camera, 9, &mut scratch),
+            Err(RgbdIcpError::ImageTooSmall { .. })
+        ));
+        assert_eq!(pyr.levels.len(), 2);
+        assert_eq!(bits(pyr.levels[0].vertices.as_slice()), before);
         Ok(())
     }
 }
