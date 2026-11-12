@@ -8002,6 +8002,7 @@ dependencies = [
  "nalgebra 0.35.0",
  "rand 0.10.3",
  "thiserror 2.0.21",
+ "wide 1.7.1",
 ]
 
 [[package]]
@@ -8088,7 +8089,9 @@ dependencies = [
  "kornia-algebra",
  "kornia-image",
  "kornia-io",
+ "kornia-oxide-kernels",
  "kornia-tensor",
+ "libc",
  "ndarray 0.17.2",
  "num-traits",
  "opencv",
@@ -8122,6 +8125,15 @@ dependencies = [
  "turbojpeg",
  "v4l 0.14.0",
  "zune-jpeg",
+]
+
+[[package]]
+name = "kornia-oxide-kernels"
+version = "0.2.0"
+dependencies = [
+ "cudarc 0.19.9",
+ "kornia-tensor",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -11317,9 +11329,9 @@ dependencies = [
 
 [[package]]
 name = "pulldown-cmark"
-version = "0.13.5"
+version = "0.13.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "278e9268c93b9e498a2da46c34d90ba93a3255eb99009646398f34bc73ab36eb"
+checksum = "3db2be46835f013dd3f4fa7f5f7402c537787b54ebb6fe2b94bbdd7e2669bb7b"
 dependencies = [
  "bitflags 2.13.0",
  "memchr",

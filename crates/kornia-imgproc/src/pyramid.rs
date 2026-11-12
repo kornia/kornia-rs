@@ -1,5 +1,9 @@
+use kornia_algebra::simd::F32x8;
 use kornia_image::{Image, ImageError, ImageSize};
 use rayon::prelude::*;
+
+mod kernels;
+pub(crate) use kernels::pyrdown_c1_u8 as pyrdown_c1_u8_strided;
 
 // Gaussian kernel weights
 
@@ -249,7 +253,7 @@ pub fn pyrup_f32<const C: usize>(
 }
 
 #[inline]
-fn reflect_101(mut p: i32, len: i32) -> i32 {
+pub(crate) fn reflect_101(mut p: i32, len: i32) -> i32 {
     if len == 1 {
         return 0;
     }
@@ -266,6 +270,125 @@ fn reflect_101(mut p: i32, len: i32) -> i32 {
     }
 
     p
+}
+
+/// Outputs per column tile of [`pyrdown_interior_c1`]; a multiple of [`F32x8::LANES`].
+const PYRDOWN_TILE: usize = 64;
+
+/// Vectors per step of [`pyrdown_interior_c1`]: a wide step whose independent
+/// add chains overlap on the add ports, then single vectors.
+const PYRDOWN_VECTORS_PER_STEP: [usize; 2] = [4, 1];
+
+/// Interior rows of [`pyrdown_f32`] for one channel, [`F32x8::LANES`] outputs
+/// per vector.
+///
+/// Each lane runs the scalar kernel's exact operation sequence (25 products
+/// added in `ky`-major order, separate `*` and `+`, no FMA), so the result
+/// is bit-identical to the scalar loop. For each tile of [`PYRDOWN_TILE`]
+/// outputs, the even and odd source columns of the 5 rows it reads are split
+/// into stack buffers, so the stride-2 taps become contiguous loads: tap `kx`
+/// of output `x` reads `even[x-1]`, `odd[x-1]`, `even[x]`, `odd[x]`,
+/// `even[x+1]`. The buffers are 5 rows of one tile (about 2.6 KiB), so the
+/// kernel allocates nothing.
+fn pyrdown_interior_c1(
+    src: &[f32],
+    src_width: usize,
+    dst: &mut [f32],
+    dst_width: usize,
+    dst_height: usize,
+    weights: &[f32; 25],
+) {
+    const LANES: usize = F32x8::LANES;
+    let weights_x8: [[F32x8; 5]; 5] =
+        std::array::from_fn(|ky| std::array::from_fn(|kx| F32x8::splat(weights[ky * 5 + kx])));
+
+    // Local index `j` holds source column `2 * (x0 - 1 + j)` (even) and the one
+    // after it (odd), for the tile starting at output `x0`.
+    let mut even = [[0.0f32; PYRDOWN_TILE + 2]; 5];
+    let mut odd = [[0.0f32; PYRDOWN_TILE + 1]; 5];
+
+    let x_end = dst_width.saturating_sub(1);
+    for dst_y in 1..dst_height.saturating_sub(1) {
+        let sy = dst_y * 2;
+        let out = &mut dst[dst_y * dst_width..(dst_y + 1) * dst_width];
+        let mut x0 = 1usize;
+        while x0 < x_end {
+            let n = PYRDOWN_TILE.min(x_end - x0);
+            let lanes = n - n % LANES;
+            if lanes > 0 {
+                for (ky, (e, o)) in even.iter_mut().zip(odd.iter_mut()).enumerate() {
+                    let row = &src[(sy + ky - 2) * src_width..(sy + ky - 1) * src_width];
+                    let base = 2 * (x0 - 1);
+                    for (j, v) in e.iter_mut().take(lanes + 2).enumerate() {
+                        *v = row[base + 2 * j];
+                    }
+                    for (j, v) in o.iter_mut().take(lanes + 1).enumerate() {
+                        *v = row[base + 2 * j + 1];
+                    }
+                }
+            }
+            // Outputs before `l` are written; a failed load (unreachable within
+            // `lanes`) leaves the rest to the scalar tail.
+            let mut l = 0usize;
+            'vector: for width in PYRDOWN_VECTORS_PER_STEP {
+                while l + LANES * width <= lanes {
+                    let Some(sums) = pyrdown_tile_lanes(&even, &odd, &weights_x8, l, width) else {
+                        break 'vector;
+                    };
+                    for (v, sum) in sums.iter().enumerate().take(width) {
+                        let xv = x0 + l + LANES * v;
+                        if out
+                            .get_mut(xv..)
+                            .and_then(|o| sum.write_to_slice(o))
+                            .is_none()
+                        {
+                            break 'vector;
+                        }
+                    }
+                    l += LANES * width;
+                }
+            }
+            for (dx, slot) in out.iter_mut().enumerate().take(x0 + n).skip(x0 + l) {
+                let sx = dx * 2;
+                let mut sum = 0.0f32;
+                let mut k = 0;
+                for ky in 0..5 {
+                    let row = (sy + ky - 2) * src_width;
+                    for kx in 0..5 {
+                        sum += src[row + sx + kx - 2] * weights[k];
+                        k += 1;
+                    }
+                }
+                *slot = sum;
+            }
+            x0 += n;
+        }
+    }
+}
+
+/// `width` vectors of [`pyrdown_interior_c1`] sums starting at tile output `l`;
+/// `None` if a load runs past the even or odd buffers.
+#[inline(always)]
+fn pyrdown_tile_lanes(
+    even: &[[f32; PYRDOWN_TILE + 2]; 5],
+    odd: &[[f32; PYRDOWN_TILE + 1]; 5],
+    weights_x8: &[[F32x8; 5]; 5],
+    l: usize,
+    width: usize,
+) -> Option<[F32x8; PYRDOWN_VECTORS_PER_STEP[0]]> {
+    let load = |s: &[f32], i: usize| s.get(i..).and_then(F32x8::from_slice);
+    let mut sums = [F32x8::ZERO; PYRDOWN_VECTORS_PER_STEP[0]];
+    for ((e, o), w) in even.iter().zip(odd).zip(weights_x8) {
+        for (v, sum) in sums.iter_mut().enumerate().take(width) {
+            let lv = l + F32x8::LANES * v;
+            *sum += load(e, lv)? * w[0];
+            *sum += load(o, lv)? * w[1];
+            *sum += load(e, lv + 1)? * w[2];
+            *sum += load(o, lv + 1)? * w[3];
+            *sum += load(e, lv + 2)? * w[4];
+        }
+    }
+    Some(sums)
 }
 
 /// Downsample an image by applying Gaussian blur and then subsampling.
@@ -361,7 +484,23 @@ pub fn pyrdown_f32<const C: usize>(
     let center_x_start = 1;
     let center_x_end = (dst_width - 1).min(dst_width);
 
-    for dst_y in center_y_start..center_y_end {
+    // Single-channel interiors take the vector kernel; the scalar loop below
+    // then covers only multi-channel images.
+    let scalar_rows = if C == 1 {
+        pyrdown_interior_c1(
+            src_data,
+            src_width,
+            dst_data,
+            dst_width,
+            dst_height,
+            &kernel_weights,
+        );
+        0..0
+    } else {
+        center_y_start..center_y_end
+    };
+
+    for dst_y in scalar_rows {
         let src_center_y = dst_y * 2;
 
         for dst_x in center_x_start..center_x_end {
@@ -450,6 +589,61 @@ pub fn build_pyramid<const C: usize>(
     Ok(pyramid)
 }
 
+/// Downsample a single-channel f32 image with the separable 5-tap Gaussian.
+///
+/// Same kernel and BORDER_REFLECT_101 border as [`pyrdown_f32`], computed as
+/// OpenCV's `cv::pyrDown` does: a horizontal 1-4-6-4-1 pass with decimation,
+/// then a vertical one, scaled by 1/256. That is 10 multiply-adds per output
+/// instead of 25, so results differ from [`pyrdown_f32`] by float rounding
+/// only. For integer-valued pixels (a u8 image cast to f32) every partial sum
+/// is exact and both functions return the same values.
+///
+/// # Arguments
+///
+/// * `src` - The source image.
+/// * `dst` - The destination image, `ceil(width / 2)` by `ceil(height / 2)`.
+///
+/// # Returns
+///
+/// `Ok(())` on success.
+///
+/// # Errors
+///
+/// Returns [`ImageError::InvalidImageSize`] if `dst` is not half the size of `src`.
+///
+/// # Example
+///
+/// ```
+/// use kornia_image::{Image, ImageSize};
+/// use kornia_imgproc::pyramid::pyrdown_separable_f32;
+///
+/// let src = Image::<f32, 1>::from_size_val(ImageSize { width: 8, height: 6 }, 1.0).unwrap();
+/// let mut dst = Image::<f32, 1>::from_size_val(ImageSize { width: 4, height: 3 }, 0.0).unwrap();
+/// pyrdown_separable_f32(&src, &mut dst).unwrap();
+/// assert!(dst.as_slice().iter().all(|&v| (v - 1.0).abs() < 1e-6));
+/// ```
+pub fn pyrdown_separable_f32(
+    src: &Image<f32, 1>,
+    dst: &mut Image<f32, 1>,
+) -> Result<(), ImageError> {
+    if src.width() < kernels::MIN_WIDTH {
+        return pyrdown_f32(src, dst);
+    }
+    let expected_width = src.width().div_ceil(2);
+    let expected_height = src.height().div_ceil(2);
+    if dst.width() != expected_width || dst.height() != expected_height {
+        return Err(ImageError::InvalidImageSize(
+            expected_width,
+            expected_height,
+            dst.width(),
+            dst.height(),
+        ));
+    }
+    let (w, h, dw) = (src.width(), src.height(), dst.width());
+    kernels::pyrdown_c1_f32(src.as_slice(), w, h, dst.as_slice_mut(), dw);
+    Ok(())
+}
+
 /// Downsample a u8 image by applying Gaussian blur and then subsampling.
 ///
 /// This function halves the size of the input image by first applying a Gaussian blur
@@ -490,6 +684,19 @@ pub fn pyrdown_u8<const C: usize>(
         ));
     }
 
+    if C == 1 && src.width() >= kernels::MIN_WIDTH {
+        let (w, h, dw) = (src.width(), src.height(), dst.width());
+        kernels::pyrdown_c1_u8(src.as_slice(), w, w, h, dst.as_slice_mut(), dw, dw);
+        return Ok(());
+    }
+
+    pyrdown_u8_two_pass(src, dst);
+    Ok(())
+}
+
+/// Generic-channel u8 pyrDown: full horizontal pass into a u16 buffer, then
+/// the vertical pass. The single-channel ring kernel gives the same bytes.
+fn pyrdown_u8_two_pass<const C: usize>(src: &Image<u8, C>, dst: &mut Image<u8, C>) {
     let buffer_width = dst.width();
     let buffer_height = src.height();
     let mut buffer = vec![0u16; buffer_width * buffer_height * C];
@@ -506,8 +713,6 @@ pub fn pyrdown_u8<const C: usize>(
         dst.as_slice_mut(),
         dst_width,
     );
-
-    Ok(())
 }
 
 fn pyrdown_horizontal_pass_u8<const C: usize>(
@@ -908,6 +1113,58 @@ mod tests {
             assert!(!val.is_nan());
         }
 
+        Ok(())
+    }
+
+    /// Independent per-pixel pyrdown for one channel: every output reads its
+    /// 25 taps through reflect-101 and adds `src * (wy * wx)` in `ky`-major
+    /// order, the order of the library kernel, so the two agree bit for bit.
+    fn pyrdown_f32_c1_reference(src: &[f32], width: usize, height: usize) -> Vec<f32> {
+        let k = [0.0625f32, 0.25, 0.375, 0.25, 0.0625];
+        let (dst_width, dst_height) = (width.div_ceil(2), height.div_ceil(2));
+        let mut dst = vec![0.0f32; dst_width * dst_height];
+        for (i, out) in dst.iter_mut().enumerate() {
+            let (x, y) = ((i % dst_width) as i32 * 2, (i / dst_width) as i32 * 2);
+            let mut sum = 0.0f32;
+            for (ky, wy) in k.iter().enumerate() {
+                let sy = reflect_101(y + ky as i32 - 2, height as i32) as usize;
+                for (kx, wx) in k.iter().enumerate() {
+                    let sx = reflect_101(x + kx as i32 - 2, width as i32) as usize;
+                    sum += src[sy * width + sx] * (wy * wx);
+                }
+            }
+            *out = sum;
+        }
+        dst
+    }
+
+    /// The single-channel vector kernel, its scalar tail and the borders
+    /// must match the per-pixel reference bit for bit (no FMA anywhere).
+    #[test]
+    fn test_pyrdown_f32_vector_matches_scalar_bits() -> Result<(), ImageError> {
+        let mut state = 0x9e37_79b9_u32;
+        for (width, height) in [(5, 5), (17, 9), (18, 11), (33, 34), (752, 480), (101, 63)] {
+            let size = ImageSize { width, height };
+            let plane: Vec<f32> = (0..width * height)
+                .map(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 17;
+                    state ^= state << 5;
+                    (state % 25_500) as f32 / 100.0
+                })
+                .collect();
+            let expected = pyrdown_f32_c1_reference(&plane, width, height);
+            let src = Image::<f32, 1>::new(size, plane)?;
+            let half = ImageSize {
+                width: width.div_ceil(2),
+                height: height.div_ceil(2),
+            };
+            let mut dst = Image::<f32, 1>::from_size_val(half, 0.0)?;
+            pyrdown_f32(&src, &mut dst)?;
+            for (i, (v, e)) in dst.as_slice().iter().zip(&expected).enumerate() {
+                assert_eq!(v.to_bits(), e.to_bits(), "{width}x{height} at {i}");
+            }
+        }
         Ok(())
     }
 
@@ -1453,6 +1710,134 @@ mod tests {
 }
 
 // ── CUDA adapters + PyramidPlan ──────────────────────────────────────────────
+
+#[cfg(test)]
+mod ring_kernel_tests {
+    use super::*;
+
+    /// Deterministic pseudo-random bytes (64-bit LCG, high byte).
+    fn lcg_bytes(n: usize, seed: u64) -> Vec<u8> {
+        let mut x = seed;
+        (0..n)
+            .map(|_| {
+                x = x
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                (x >> 56) as u8
+            })
+            .collect()
+    }
+
+    const SIZES: [(usize, usize); 9] = [
+        (5, 1),
+        (5, 2),
+        (6, 3),
+        (7, 5),
+        (8, 8),
+        (33, 17),
+        (64, 47),
+        (101, 100),
+        (752, 480),
+    ];
+
+    #[test]
+    fn ring_u8_matches_two_pass() -> Result<(), ImageError> {
+        for (i, &(w, h)) in SIZES.iter().enumerate() {
+            let src = Image::<u8, 1>::new(
+                ImageSize {
+                    width: w,
+                    height: h,
+                },
+                lcg_bytes(w * h, i as u64),
+            )?;
+            let half = ImageSize {
+                width: w.div_ceil(2),
+                height: h.div_ceil(2),
+            };
+            let mut ring = Image::<u8, 1>::from_size_val(half, 0)?;
+            let mut two_pass = Image::<u8, 1>::from_size_val(half, 0)?;
+            pyrdown_u8(&src, &mut ring)?;
+            pyrdown_u8_two_pass(&src, &mut two_pass);
+            assert_eq!(ring.as_slice(), two_pass.as_slice(), "size {w}x{h}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn separable_f32_equals_5x5_on_integer_pixels() -> Result<(), ImageError> {
+        for (i, &(w, h)) in SIZES.iter().enumerate() {
+            let data = lcg_bytes(w * h, 100 + i as u64)
+                .into_iter()
+                .map(f32::from)
+                .collect();
+            let src = Image::<f32, 1>::new(
+                ImageSize {
+                    width: w,
+                    height: h,
+                },
+                data,
+            )?;
+            let half = ImageSize {
+                width: w.div_ceil(2),
+                height: h.div_ceil(2),
+            };
+            let mut sep = Image::<f32, 1>::from_size_val(half, 0.0)?;
+            let mut full = Image::<f32, 1>::from_size_val(half, 0.0)?;
+            pyrdown_separable_f32(&src, &mut sep)?;
+            pyrdown_f32(&src, &mut full)?;
+            assert_eq!(sep.as_slice(), full.as_slice(), "size {w}x{h}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn separable_f32_close_to_5x5_on_float_pixels() -> Result<(), ImageError> {
+        let (w, h) = (97, 64);
+        let data = lcg_bytes(w * h, 7)
+            .into_iter()
+            .map(|v| f32::from(v) / 255.0 + 0.123)
+            .collect();
+        let src = Image::<f32, 1>::new(
+            ImageSize {
+                width: w,
+                height: h,
+            },
+            data,
+        )?;
+        let half = ImageSize {
+            width: w.div_ceil(2),
+            height: h.div_ceil(2),
+        };
+        let mut sep = Image::<f32, 1>::from_size_val(half, 0.0)?;
+        let mut full = Image::<f32, 1>::from_size_val(half, 0.0)?;
+        pyrdown_separable_f32(&src, &mut sep)?;
+        pyrdown_f32(&src, &mut full)?;
+        for (a, b) in sep.as_slice().iter().zip(full.as_slice()) {
+            assert!((a - b).abs() <= 1e-6, "{a} vs {b}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn separable_f32_rejects_wrong_size() -> Result<(), ImageError> {
+        let src = Image::<f32, 1>::from_size_val(
+            ImageSize {
+                width: 8,
+                height: 8,
+            },
+            0.0,
+        )?;
+        let mut dst = Image::<f32, 1>::from_size_val(
+            ImageSize {
+                width: 3,
+                height: 4,
+            },
+            0.0,
+        )?;
+        assert!(pyrdown_separable_f32(&src, &mut dst).is_err());
+        Ok(())
+    }
+}
 
 #[cfg(feature = "cuda")]
 mod cuda_adapters {

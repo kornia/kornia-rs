@@ -1,0 +1,1 @@
+`ba_affine::bundle_adjust_affine` allocates far less per solve: 36 instead of 20,084 allocations at 10,000 points and 4 cameras, and 38 instead of 60,164 at 10 cameras, with bit-identical results on those scenes. Solve time on `bench_affine_ba` is unchanged.
