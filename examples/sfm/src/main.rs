@@ -341,6 +341,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         t.elapsed().as_secs_f64()
     );
 
+    // Descriptors and the device matcher are only needed for matching; release
+    // them before reconstruction so a long clip does not keep them resident
+    // through bundle adjustment.
+    drop(all_features);
+    drop(cuda_matcher);
+
     // Sample every raw observation's colour now, then release the RGB frames
     // before reconstruction. Colours are later looked up by the surviving
     // observation, so the frames need not stay resident.
