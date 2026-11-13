@@ -8124,6 +8124,7 @@ dependencies = [
  "tiff 0.11.3",
  "turbojpeg",
  "v4l 0.14.0",
+ "zune-bmp",
  "zune-jpeg",
 ]
 
@@ -20055,6 +20056,16 @@ checksum = "481ada9c543b2323cbb7bbdbb5249177fbf0188ed959ed2c15e4b22421c84ed3"
 dependencies = [
  "cc",
  "pkg-config",
+]
+
+[[package]]
+name = "zune-bmp"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1b77b890dbf6b1a32fc57d9f1f30e22175694c454581de7c6e466f2853cf9fe3"
+dependencies = [
+ "log",
+ "zune-core",
 ]
 
 [[package]]

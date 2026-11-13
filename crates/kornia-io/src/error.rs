@@ -1,6 +1,10 @@
 /// An error type for the io module.
 #[derive(thiserror::Error, Debug)]
 pub enum IoError {
+    /// Error decoding a BMP image.
+    #[error("BMP decoding failed: {0}")]
+    BmpDecodingError(String),
+
     /// Error when the file does not exist.
     #[error("File does not exist: {0}")]
     FileDoesNotExist(std::path::PathBuf),
