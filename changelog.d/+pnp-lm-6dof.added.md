@@ -1,0 +1,1 @@
+`kornia_3d::pnp::refine_pose_lm_6dof`: a Levenberg-Marquardt PnP pose refine with the same inputs and outputs as `refine_pose_lm`, using fixed-size 6-DoF normal equations on the stack. It makes one heap allocation per call, against about 4,000 for `refine_pose_lm` on 100 points.
