@@ -17,11 +17,15 @@ Three kinds:
 ## Case files
 
 - `patch.diff`: applied to the copied tree. `check_skills.py` runs
-  `git apply --check`, so a case goes stale loudly when the code moves.
+  `git apply --check`, so a case goes stale loudly when the code moves. A
+  stale case fails only a change under `.claude/skills` or to the eval scripts;
+  any other change gets a warning, so a contributor fixing code a case quotes
+  never edits a review fixture. Re-syncing it is a maintainer's job:
+  `SKILLS_STRICT_EVALS=1 pixi run skills-check` lists every stale case.
   Whitespace hooks skip `evals/**.diff` and the generated `precision.md`
   graders (they embed the diff); never let a formatter touch them.
 - `merged.diff` (controls only): the PR's change, already in the tree
-  (`check_skills.py` checks it still reverse-applies). The reviewer gets it and
+  (`check_skills.py` checks it still reverse-applies, with the same rule). The reviewer gets it and
   `patch.diff` as one `pr.diff`.
 - `pr.md`: the PR title and body the reviewer sees, as `PR.md`.
 - `issue.md` (optional): what `gh issue view` prints for the linked issue,
