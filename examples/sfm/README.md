@@ -112,34 +112,34 @@ matching). Decode is clock-paced at ~24 s and is included in `Total`.
 
 | Config | Detector | Extract (s) | Match (s) | Geo (s) | Matches (raw→verified) | Tracks | Recon (s) | Points | Views | RMSE (px) | Total (s) |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| `orb_base` | ORB | 2.2 | 2.5 | — | 19810 | 4048 | 1.7 | 125 | 2/63 | 0.761 | 29.9 |
-| `orb_geo` | ORB | 2.3 | 2.6 | 3.5 | 19810→14570 | 4084 | 3.7 | 674 | 10/63 | 1.106 | 35.7 |
-| `orb_geo --geo-min-inliers 8` | ORB | 2.4 | 3.0 | 3.9 | 19810→15598 | 4169 | 4.5 | 692 | 11/63 | 1.122 | 37.4 |
-| `orb_geo --wide-baseline 20` | ORB | 2.5 | 2.7 | 4.3 | 20973→14713 | 4057 | 4.5 | 700 | 12/63 | 1.133 | 37.5 |
-| `sift_base` | SIFT (CUDA) | 1.0 | 0.1 | — | 21667 | 3483 | 3.0 | 520 | 9/63 | 2.244 | 27.8 |
-| `sift_geo` | SIFT (CUDA) | 0.7 | 0.1 | 2.2 | 21667→17170 | 3780 | 9.0 | 809 | 16/63 | 1.880 | 35.3 |
-| `sift_geo_sprt` (champion) | SIFT (CUDA) | 0.7 | 0.1 | 2.2 | 21667→17170 | 3780 | 12.3 | 1175 | 22/63 | 2.086 | 38.6 |
-| champion, no `--cuda` | SIFT (CPU) | 16.5 | 11.4 | 2.3 | 21667→17170 | 3780 | 12.4 | 1175 | 22/63 | 2.086 | 65.9 |
-| champion + `--refine-intrinsics` | SIFT (CUDA) | 0.8 | 0.1 | 2.2 | 21667→17170 | 3780 | 17.0 | 1175 | 22/63 | 2.064 | 43.6 |
-| champion + `--wide-baseline 20` | SIFT (CUDA) | 0.7 | 0.1 | 2.5 | 22643→17389 | 3711 | 16.0 | 816 | 17/63 | 1.898 | 42.8 |
-| champion, `--frame-step 5` | SIFT (CUDA) | 1.2 | 0.2 | 3.7 | 70314→60896 | 6590 | 26.1 | 2037 | 39/126 | 2.414 | 54.6 |
+| `orb_base` | ORB | 0.0 | 0.0 | — | 17964 | 3645 | 0.0 | 69 | 2/63 | 1.013 | 23.5 |
+| `orb_geo` | ORB | 0.0 | 0.0 | 0.1 | 17964→13211 | 3688 | 0.0 | 125 | 2/63 | 0.694 | 23.4 |
+| `orb_geo --geo-min-inliers 8` | ORB | 0.0 | 0.0 | 0.1 | 17964→14315 | 3781 | 0.0 | 130 | 2/63 | 0.695 | 23.4 |
+| `orb_geo --wide-baseline 20` | ORB | 0.0 | 0.0 | 0.1 | 19029→13344 | 3663 | 0.2 | 924 | 17/63 | 1.366 | 23.6 |
+| `sift_base` | SIFT (CUDA) | 0.5 | 0.1 | — | 21667 | 3483 | 0.1 | 551 | 10/63 | 2.458 | 24.0 |
+| `sift_geo` | SIFT (CUDA) | 0.5 | 0.1 | 0.1 | 21667→17170 | 3780 | 0.4 | 1172 | 22/63 | 2.076 | 24.3 |
+| `sift_geo_sprt` (champion) | SIFT (CUDA) | 0.5 | 0.1 | 0.1 | 21667→17170 | 3780 | 0.5 | 1171 | 22/63 | 2.068 | 24.3 |
+| champion, no `--cuda` | SIFT (CPU) | 2.4 | 0.0 | 0.1 | 21667→17170 | 3780 | 0.5 | 1171 | 22/63 | 2.068 | 26.2 |
+| champion + `--refine-intrinsics` | SIFT (CUDA) | 0.5 | 0.1 | 0.1 | 21667→17170 | 3780 | 0.5 | 1171 | 22/63 | 2.045 | 24.6 |
+| champion + `--wide-baseline 20` | SIFT (CUDA) | 0.5 | 0.1 | 0.1 | 22643→17389 | 3711 | 0.7 | 1275 | 25/63 | 2.093 | 24.6 |
+| champion, `--frame-step 5` | SIFT (CUDA) | 0.9 | 0.2 | 0.1 | 70314→60896 | 6590 | 5.4 | 3882 | 84/126 | 2.299 | 30.0 |
 
 Observations:
 
 - **Deterministic**: two identical champion runs produce byte-identical PLY.
-- **`--cuda` speeds up both stages with identical output**: extraction
-  16.5 s → 0.7 s and matching 11.4 s → 0.1 s; the reconstruction is
-  byte-identical to the CPU path.
-- **The seven-point fundamental solver (kornia-3d's default) registers many
-  more views**: SIFT 16 → 22/63 and ORB reaches 10/63 at the stock
-  `--geo-min-inliers 15` (the eight-point solver needed 8). RMSE rises slightly
-  (2.09 px) because the longer map spans harder views.
-- **`--geo-verify` is the accuracy lever**: SIFT 9 → 16 views (22 with
-  `--sprt`), ORB 2 → 10.
-- **`--wide-baseline 20`** trades views for longer-baseline triangulation.
+- **`--cuda` == CPU output**: byte-identical PLY. It cuts extraction 2.4 s →
+  0.5 s and total 26.2 s → 24.3 s; matching is sub-0.2 s on both paths.
+- **Reconstruction is now sub-second** on this clip (0.0–0.7 s except the
+  larger `--frame-step 5` map); the run is dominated by the clock-paced decode.
+- **`--geo-verify` is the accuracy lever**: SIFT 10 → 22 views. ORB stays at
+  2/63 with 500 features *without* wide-baseline (upstream ORB now honours the
+  per-frame keypoint budget, which changes the keypoint distribution); it
+  reaches 17/63 with `--wide-baseline 20`.
+- **`--sprt` no longer changes registration here** (22 views with or without,
+  1171 vs 1172 points); it only changes PnP cost on harder data.
 - **`--refine-intrinsics`** is near-neutral here (the EXIF focal is already
-  accurate: it fits `gamma≈1.00`).
-- **`--frame-step 5`** gives the densest map (2037 pts, 39/126 views) at higher
+  accurate: it fits `gamma≈1.00`; RMSE 2.068 → 2.045 px).
+- **`--frame-step 5`** gives the densest map (3882 pts, 84/126 views) at higher
   RMSE.
 
 Reproduce the champion (device SIFT, requires an NVIDIA GPU with NVRTC on the
