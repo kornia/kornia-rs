@@ -122,11 +122,26 @@ You can find comprehensive examples in the `examples` folder of the repository:
 *   [`pnp_demo`](../../examples/pnp_demo): Uses image processing for PnP.
 *   [`ros-z-nodes`](../../examples/ros-z-nodes): ROS nodes using image processing.
 
+### ORB detection
+
+`features::OrbDetector` is ORB-SLAM3's extractor (two FAST thresholds, octree
+distribution, 7x7 sigma-2 blur before rBRIEF). `detect_and_extract_u8` spreads
+the pyramid levels over rayon; `detect_and_extract_u8_into` gives the same bits
+on the calling thread with a caller-owned `OrbScratch` and output, and makes no
+heap allocation once both are reused across same-sized frames.
+
+`features::OrbCvDetector` is OpenCV's ORB (`cv::ORB::create` with its
+defaults): the same keypoints, angles and descriptors bit for bit
+(`INTER_LINEAR_EXACT` pyramid, FAST-9 with 3x3 suppression, `retainBest`, 7x7
+Harris, `fastAtan2`, OpenCV's float pre-BRIEF blur), checked against OpenCV
+5.0 fixtures (`benches/opencv_orb_fixtures.py`). With an `OrbCvScratch` it is
+allocation-free after the first frame. Orientations are radians.
+
 ### Binary descriptor matching
 
 `features::match_descriptors` matches fixed-width binary descriptors with
 Hamming distance, an optional distance cap, mutual nearest neighbors, and a
-forward Lowe ratio filter. ORB's 32-byte descriptors use AVX2 or NEON row
+forward Lowe ratio filter. ORB's 32-byte descriptors use POPCNT or NEON row
 kernels; other widths and CPUs use a scalar row kernel. Large mutual scans
 reuse forward distances for reverse minima with worker-local scratch buffers.
 The ORB and projection matchers share these row kernels.
@@ -135,6 +150,14 @@ An enabled ratio filter (`max_ratio < 1.0`) rejects ambiguous zero-distance
 ties. `None`, NaN, and ratios >= 1.0 disable the generic matcher's ratio filter.
 Projection matching omits queries with no eligible candidate, including when
 the distance cap is `u32::MAX`.
+
+`features::match_smnn` (Hamming) and `features::match_smnn_f32` (L2) have the
+contract of `kornia.feature.match_smnn`: mutual nearest neighbors with
+`nearest / second_nearest <= th` in both directions, returned with the larger of
+the two ratios. One pass over the distance table serves both directions. The SIFT
+and cosine matchers share the float pass.
+`cuda::sift::SiftMatcher::match_smnn` returns the same bits on device for integer
+SIFT descriptors, and refuses others rather than truncating them.
 
 For real EuRoC ORB matching benchmarks, including timed Rayon pool entry, run
 `cargo bench -p kornia-imgproc --bench bench_features -- descriptor_matching`.

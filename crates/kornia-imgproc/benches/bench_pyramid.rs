@@ -1,12 +1,16 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
 use kornia_image::Image;
-use kornia_imgproc::pyramid::{pyrdown_f32, pyrdown_u8, pyrup_f32, pyrup_u8};
+use kornia_imgproc::pyramid::{
+    pyrdown_f32, pyrdown_separable_f32, pyrdown_u8, pyrup_f32, pyrup_u8,
+};
 
 fn bench_pyramid(c: &mut Criterion) {
     let mut group = c.benchmark_group("Pyramid Operations");
 
-    for (width, height) in [(256, 224), (512, 448), (1024, 896)].iter() {
+    // 752x480 is a common VGA-class camera size (EuRoC); its rows are not a multiple of 8
+    // outputs after halving, so the vector kernels' scalar tails run too.
+    for (width, height) in [(256, 224), (512, 448), (752, 480), (1024, 896)].iter() {
         group.throughput(criterion::Throughput::Elements((*width * *height) as u64));
 
         let parameter_string = format!("{width}x{height}");
@@ -65,6 +69,17 @@ fn bench_pyramid(c: &mut Criterion) {
                 let (src, mut dst) = (i.0, i.1.clone());
                 b.iter(|| {
                     std::hint::black_box(pyrdown_f32(src, &mut dst)).unwrap();
+                })
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("pyrdown_separable_f32", &parameter_string),
+            &(&large_image, &down_image),
+            |b, i| {
+                let (src, mut dst) = (i.0, i.1.clone());
+                b.iter(|| {
+                    std::hint::black_box(pyrdown_separable_f32(src, &mut dst)).unwrap();
                 })
             },
         );
