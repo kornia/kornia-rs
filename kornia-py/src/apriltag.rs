@@ -379,7 +379,7 @@ impl From<Quad> for PyQuad {
 }
 
 /// 3D pose estimate for an AprilTag.
-#[pyclass(name = "TagPose", frozen, get_all, skip_from_py_object)]
+#[pyclass(name = "TagPose", frozen, get_all)]
 #[derive(Clone)]
 pub struct PyTagPose {
     /// 3×3 rotation matrix (world-to-camera, row-major), flattened to 9 elements.

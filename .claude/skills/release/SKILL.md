@@ -91,7 +91,7 @@ Create one todo per step.
      matrix and wait for every job to pass:
      `gh workflow run python_release_validate.yml -R kornia/kornia-rs --ref vX.Y.Z -f subset=full`
      then `gh run watch`. `minimal` (py3.12 only) is NOT enough for a release:
-     free-threaded (3.13t/3.14t), py3.8 and cross-built wheels only build in
+     free-threaded (3.14t), py3.9 and cross-built wheels only build in
      `full`. Any red job = do not publish.
    - Rust: `scripts/release_rust.sh --check` and the plan run (no `--execute`)
      must list exactly the crates/versions expected.

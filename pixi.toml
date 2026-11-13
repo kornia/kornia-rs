@@ -19,7 +19,6 @@ dev = { features = [
   "dev-tools",
 ], solve-group = "default" }
 # Python version-specific environments for CI matrix testing
-py38 = { features = ["rust", "python", "py38"] }
 py39 = { features = ["rust", "python", "py39"] }
 py310 = { features = ["rust", "python", "py310"] }
 py311 = { features = ["rust", "python", "py311"] }
@@ -90,7 +89,7 @@ rust-cross-test-aarch64-full = { cmd = "env -u CARGO -u RUSTC -u RUSTUP_HOME PAT
 # ------------------------------------------------------------------------------
 
 [feature.python.dependencies]
-python = ">=3.8"
+python = ">=3.9"
 uv = "*"
 maturin = ">=1.9"
 pytest = "*"
@@ -109,9 +108,6 @@ py-clean = { cmd = "rm -rf .venv target dist *.egg-info && find . -type d -name 
 # ------------------------------------------------------------------------------
 # Python version overrides (only specify version, inherit tasks from python)
 # ------------------------------------------------------------------------------
-
-[feature.py38.dependencies]
-python = "3.8.*"
 
 [feature.py39.dependencies]
 python = "3.9.*"
