@@ -361,6 +361,25 @@ impl approx::RelativeEq for SO3F32 {
     }
 }
 
+/// Errors that can occur when converting a 3×3 matrix to an [`SO3F64`] rotation.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, thiserror::Error)]
+pub enum RotationError {
+    /// The matrix is not orthonormal (`Rᵀ R ≠ I`).
+    #[error("matrix is not orthonormal: max |(RᵀR - I)_ij| = {max_error:.6e}")]
+    NotOrthonormal {
+        /// The maximum absolute entry of `Rᵀ R - I`.
+        max_error: f64,
+    },
+
+    /// The matrix does not have determinant +1 (e.g. reflection with det ≈ -1).
+    #[error("matrix is not a proper rotation: det = {det:.6e} (expected +1)")]
+    NotProper {
+        /// The determinant of the matrix.
+        det: f64,
+    },
+}
+
 /// A 3D rotation in double precision, stored as a unit quaternion.
 ///
 /// The `f64` counterpart of [`SO3F32`]: same SU(2) → SO(3) double-cover
@@ -413,6 +432,90 @@ impl SO3F64 {
         Self {
             q: QuatF64::from_mat3(mat),
         }
+    }
+
+    /// Attempt to construct an `SO3F64` rotation from a 3×3 matrix, validating
+    /// orthonormality (`Rᵀ R = I`) and proper handedness (`det(R) = +1`).
+    ///
+    /// Matrices with non-positive determinants (`det ≤ 0.0`, including reflections)
+    /// are strictly rejected as improper (`RotationError::NotProper`), even when a large
+    /// tolerance is provided. Non-finite tolerances (NaN, +Inf, -Inf) are rejected
+    /// as [`RotationError::NotOrthonormal`].
+    ///
+    /// # Arguments
+    ///
+    /// * `mat` - Candidate 3×3 rotation matrix.
+    /// * `tol` - Non-negative, finite tolerance for orthonormality and determinant checks.
+    ///   Non-finite tolerances are rejected.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(SO3F64)` if `mat` is a valid rotation matrix within `tol`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RotationError::NotOrthonormal`] if `mat` has non-finite entries,
+    /// if `tol` is negative or non-finite (NaN, Inf), or if the maximum absolute entry
+    /// of `Rᵀ R - I` exceeds `tol`.
+    /// Returns [`RotationError::NotProper`] if the matrix is orthonormal but its
+    /// determinant is non-positive (`det ≤ 0.0`) or deviates from +1 by more than `tol`
+    /// (e.g., a reflection matrix).
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use kornia_algebra::{Mat3F64, SO3F64, RotationError};
+    ///
+    /// // Valid identity matrix
+    /// let r = SO3F64::try_from_matrix(&Mat3F64::IDENTITY, 1e-6);
+    /// assert!(r.is_ok());
+    ///
+    /// // Reflection matrix (det = -1) rejected, even with a large tolerance
+    /// let reflection = Mat3F64::from_rows_array(&[
+    ///     -1.0, 0.0, 0.0,
+    ///      0.0, 1.0, 0.0,
+    ///      0.0, 0.0, 1.0,
+    /// ]);
+    /// assert!(matches!(
+    ///     SO3F64::try_from_matrix(&reflection, 1e-6),
+    ///     Err(RotationError::NotProper { .. })
+    /// ));
+    /// assert!(matches!(
+    ///     SO3F64::try_from_matrix(&reflection, 2.0),
+    ///     Err(RotationError::NotProper { .. })
+    /// ));
+    /// ```
+    pub fn try_from_matrix(mat: &Mat3F64, tol: f64) -> Result<Self, RotationError> {
+        let ata = mat.transpose() * *mat;
+        let diff = ata - Mat3F64::IDENTITY;
+        let cols_arr = diff.to_cols_array();
+        let max_error = cols_arr.iter().fold(0.0_f64, |acc, &v| {
+            if v.is_nan() || acc.is_nan() {
+                f64::NAN
+            } else {
+                acc.max(v.abs())
+            }
+        });
+
+        // Explicitly reject non-finite matrix entries, invalid tolerances (negative, NaN, Inf),
+        // non-finite max_error (NaN, +Inf, -Inf), or max_error > tol.
+        if !mat.is_finite()
+            || !tol.is_finite()
+            || tol < 0.0
+            || !max_error.is_finite()
+            || max_error > tol
+        {
+            return Err(RotationError::NotOrthonormal { max_error });
+        }
+
+        let det = mat.determinant();
+        // Explicitly reject non-finite determinant, non-positive determinant (<= 0.0),
+        // or determinant deviating from +1 by more than tol.
+        if !det.is_finite() || det <= 0.0 || (det - 1.0_f64).abs() > tol {
+            return Err(RotationError::NotProper { det });
+        }
+
+        Ok(Self::from_matrix(mat))
     }
 
     /// Create from the rotation block of a 4x4 homogeneous matrix.
@@ -1300,5 +1403,150 @@ mod tests_f64 {
         let r = SO3F64::exp(Vec3F64::new(0.4, -0.1, 0.8));
         let r2 = SO3F64::from_matrix(&r.matrix());
         assert_mat_eq(&r.matrix(), &r2.matrix(), 1e-12);
+    }
+
+    #[test]
+    fn try_from_matrix_identity() {
+        let r = SO3F64::try_from_matrix(&Mat3F64::IDENTITY, 1e-12).unwrap();
+        assert_mat_eq(&r.matrix(), &Mat3F64::IDENTITY, 1e-12);
+    }
+
+    #[test]
+    fn try_from_matrix_roundtrip() {
+        let original = SO3F64::exp(Vec3F64::new(0.3, -0.5, 0.2));
+        let mat = original.matrix();
+        let recovered = SO3F64::try_from_matrix(&mat, 1e-12).unwrap();
+        assert_mat_eq(&recovered.matrix(), &mat, 1e-12);
+    }
+
+    #[test]
+    fn try_from_matrix_known_rotation() {
+        // 90-degree rotation around Z
+        let mat = Mat3F64::from_rows_array(&[0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+        let r = SO3F64::try_from_matrix(&mat, 1e-12).unwrap();
+        assert_mat_eq(&r.matrix(), &mat, 1e-12);
+    }
+
+    #[test]
+    fn try_from_matrix_rejects_reflection_with_not_proper() {
+        let reflection = Mat3F64::from_rows_array(&[-1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+        let err = SO3F64::try_from_matrix(&reflection, 1e-6).unwrap_err();
+        match err {
+            RotationError::NotProper { det } => {
+                assert!((det - (-1.0)).abs() < 1e-12);
+            }
+            _ => panic!("expected NotProper, got {err:?}"),
+        }
+
+        // Even with a large tolerance (e.g. tol = 2.0 or 10.0 where |det - 1| = 2.0 <= tol),
+        // non-positive determinants must still be rejected with RotationError::NotProper.
+        for large_tol in [2.0, 10.0] {
+            let err_large = SO3F64::try_from_matrix(&reflection, large_tol).unwrap_err();
+            match err_large {
+                RotationError::NotProper { det } => {
+                    assert!((det - (-1.0)).abs() < 1e-12);
+                }
+                _ => panic!("expected NotProper for tol = {large_tol}, got {err_large:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn try_from_matrix_rejects_non_orthonormal() {
+        // Scaled identity
+        let scaled = Mat3F64::from_rows_array(&[2.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 2.0]);
+        let err = SO3F64::try_from_matrix(&scaled, 1e-6).unwrap_err();
+        match err {
+            RotationError::NotOrthonormal { max_error } => {
+                // R^T R - I = 4 I - I = 3 I -> max_error = 3.0
+                assert!((max_error - 3.0).abs() < 1e-12);
+            }
+            _ => panic!("expected NotOrthonormal, got {err:?}"),
+        }
+
+        // Shear
+        let shear = Mat3F64::from_rows_array(&[1.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+        let err = SO3F64::try_from_matrix(&shear, 1e-6).unwrap_err();
+        assert!(matches!(err, RotationError::NotOrthonormal { .. }));
+    }
+
+    #[test]
+    fn try_from_matrix_rejects_non_finite() {
+        let with_nan =
+            Mat3F64::from_rows_array(&[f64::NAN, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+        let err = SO3F64::try_from_matrix(&with_nan, 1e-6).unwrap_err();
+        match err {
+            RotationError::NotOrthonormal { max_error } => {
+                assert!(max_error.is_nan());
+            }
+            _ => panic!("expected NotOrthonormal with NaN, got {err:?}"),
+        }
+
+        let with_inf =
+            Mat3F64::from_rows_array(&[f64::INFINITY, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+        let err = SO3F64::try_from_matrix(&with_inf, 1e-6).unwrap_err();
+        assert!(matches!(err, RotationError::NotOrthonormal { .. }));
+    }
+
+    #[test]
+    fn try_from_matrix_rejects_invalid_tolerance() {
+        let err_neg = SO3F64::try_from_matrix(&Mat3F64::IDENTITY, -1e-6).unwrap_err();
+        assert!(matches!(err_neg, RotationError::NotOrthonormal { .. }));
+
+        let err_nan = SO3F64::try_from_matrix(&Mat3F64::IDENTITY, f64::NAN).unwrap_err();
+        assert!(matches!(err_nan, RotationError::NotOrthonormal { .. }));
+
+        let err_inf = SO3F64::try_from_matrix(&Mat3F64::IDENTITY, f64::INFINITY).unwrap_err();
+        assert!(matches!(err_inf, RotationError::NotOrthonormal { .. }));
+    }
+
+    #[test]
+    fn try_from_matrix_tolerance_boundary() {
+        let mut perturbed = Mat3F64::IDENTITY.to_cols_array();
+        perturbed[0] += 1e-7;
+        let m_perturbed = Mat3F64::from_cols_array(&perturbed);
+
+        assert!(SO3F64::try_from_matrix(&m_perturbed, 1e-6).is_ok());
+        assert!(SO3F64::try_from_matrix(&m_perturbed, 1e-8).is_err());
+    }
+
+    #[test]
+    fn try_from_matrix_rejects_overflow_intermediate() {
+        // Finite entries that overflow during RᵀR (max_error becomes +Inf or NaN):
+        let large_val = 1e200_f64;
+        let large_mat = Mat3F64::from_rows_array(&[
+            large_val, 0.0, 0.0, 0.0, large_val, 0.0, 0.0, 0.0, large_val,
+        ]);
+        assert!(large_mat.is_finite());
+        let err = SO3F64::try_from_matrix(&large_mat, 1e-6).unwrap_err();
+        match err {
+            RotationError::NotOrthonormal { max_error } => {
+                assert!(!max_error.is_finite());
+            }
+            _ => panic!("expected NotOrthonormal with non-finite max_error, got {err:?}"),
+        }
+
+        // Matrix with f64::MAX:
+        let max_mat = Mat3F64::from_rows_array(&[f64::MAX, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+        assert!(max_mat.is_finite());
+        let err_max = SO3F64::try_from_matrix(&max_mat, 1e-6).unwrap_err();
+        match err_max {
+            RotationError::NotOrthonormal { max_error } => {
+                assert!(!max_error.is_finite());
+            }
+            _ => panic!("expected NotOrthonormal with non-finite max_error, got {err_max:?}"),
+        }
+
+        // Finite matrix whose RᵀR off-diagonal dot-product produces +Inf - Inf = NaN:
+        let nan_prod_mat =
+            Mat3F64::from_rows_array(&[1e200, -1e200, 0.0, 1e200, 1e200, 0.0, 0.0, 0.0, 1.0]);
+        assert!(nan_prod_mat.is_finite());
+        let err_nan_prod = SO3F64::try_from_matrix(&nan_prod_mat, 1e-6).unwrap_err();
+        match err_nan_prod {
+            RotationError::NotOrthonormal { max_error } => {
+                assert!(max_error.is_nan());
+            }
+            _ => panic!("expected NotOrthonormal with NaN max_error, got {err_nan_prod:?}"),
+        }
     }
 }

@@ -324,6 +324,136 @@ impl Mat3F64 {
     pub fn from_quat(quat: QuatF64) -> Self {
         Self(glam::DMat3::from_quat(quat.0))
     }
+
+    /// Create a matrix from a row-major flat array.
+    ///
+    /// The input is interpreted as:
+    ///
+    /// ```text
+    /// m[0] m[1] m[2]   row 0
+    /// m[3] m[4] m[5]   row 1
+    /// m[6] m[7] m[8]   row 2
+    /// ```
+    ///
+    /// This is the conventional mathematical layout (and the layout used by
+    /// NumPy, Eigen, and most textbooks). Internally the matrix is stored in
+    /// the column-major order that `glam` requires, so the constructor
+    /// transposes the input.
+    ///
+    /// # Arguments
+    ///
+    /// * `m` - Row-major flat array `[R00, R01, R02, R10, R11, R12, R20, R21, R22]`.
+    ///
+    /// # Returns
+    ///
+    /// A `Mat3F64` whose `(i, j)` entry equals `m[i * 3 + j]`.
+    ///
+    /// # Errors
+    ///
+    /// This method does not return an error.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use kornia_algebra::Mat3F64;
+    ///
+    /// // Identity supplied row-major.
+    /// let m = Mat3F64::from_rows_array(&[
+    ///     1.0, 0.0, 0.0,
+    ///     0.0, 1.0, 0.0,
+    ///     0.0, 0.0, 1.0,
+    /// ]);
+    /// assert_eq!(m, Mat3F64::IDENTITY);
+    /// ```
+    #[inline]
+    pub fn from_rows_array(m: &[f64; 9]) -> Self {
+        // glam DMat3::from_cols_array expects column-major order:
+        // [col0_row0, col0_row1, col0_row2, col1_row0, ...].
+        // A row-major input m[row * 3 + col] becomes col-major as m[col * 3 + row].
+        Self(glam::DMat3::from_cols_array(&[
+            m[0], m[3], m[6], // column 0: (R00, R10, R20)
+            m[1], m[4], m[7], // column 1: (R01, R11, R21)
+            m[2], m[5], m[8], // column 2: (R02, R12, R22)
+        ]))
+    }
+
+    /// Return `true` if this matrix is a valid rotation matrix within `tol`.
+    ///
+    /// A matrix R is a rotation matrix (element of SO(3)) if and only if:
+    ///
+    /// 1. **Orthonormality**: `Rᵀ R ≈ I` — every column is a unit vector and
+    ///    all columns are mutually orthogonal.
+    /// 2. **Proper handedness**: `det(R) ≈ +1` — the matrix preserves orientation.
+    ///
+    /// Both conditions are checked against `tol`. Specifically:
+    ///
+    /// - The maximum absolute entry of `Rᵀ R − I` must be `≤ tol`.
+    /// - `det(R)` must be strictly positive (`det(R) > 0`), and `|det(R) − 1|` must be `≤ tol`.
+    ///   Matrices with non-positive determinants (such as reflections where `det(R) = -1`)
+    ///   are always rejected, even if a large tolerance would otherwise encompass them.
+    ///
+    /// Tolerance `tol` must be finite and non-negative. Non-finite tolerances (NaN, +Inf, -Inf)
+    /// and negative tolerances are rejected immediately. Returns `false` for any non-finite entry,
+    /// invalid tolerance, or if intermediate calculations produce non-finite values.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The matrix to test.
+    /// * `tol`  - Non-negative, finite tolerance; `1e-6` is a reasonable default for
+    ///   `f64` matrices rounded through intermediate `f32` arithmetic. Non-finite tolerances
+    ///   (such as `f64::NAN` or `f64::INFINITY`) are rejected.
+    ///
+    /// # Returns
+    ///
+    /// `true` if `self` is a rotation matrix to within `tol`, `false` otherwise.
+    ///
+    /// # Errors
+    ///
+    /// This method does not return an error. It returns `false` for
+    /// invalid tolerances (negative, non-finite) or non-finite matrix values.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use kornia_algebra::Mat3F64;
+    ///
+    /// assert!(Mat3F64::IDENTITY.is_rotation(1e-10));
+    ///
+    /// // A reflection has det = -1, so it is not a rotation, even with a large tolerance.
+    /// let reflection = Mat3F64::from_rows_array(&[
+    ///     -1.0, 0.0, 0.0,
+    ///      0.0, 1.0, 0.0,
+    ///      0.0, 0.0, 1.0,
+    /// ]);
+    /// assert!(!reflection.is_rotation(1e-10));
+    /// assert!(!reflection.is_rotation(2.0));
+    /// ```
+    pub fn is_rotation(&self, tol: f64) -> bool {
+        // Reject non-finite entries or invalid tolerance early.
+        if !self.is_finite() || !tol.is_finite() || tol < 0.0 {
+            return false;
+        }
+        // Check orthonormality: max |entry of (RᵀR - I)| <= tol.
+        let ata = self.transpose() * *self;
+        let diff = ata - Mat3F64::IDENTITY;
+        let cols_arr = diff.to_cols_array();
+        let max_err = cols_arr.iter().fold(0.0_f64, |acc, &v| {
+            if v.is_nan() || acc.is_nan() {
+                f64::NAN
+            } else {
+                acc.max(v.abs())
+            }
+        });
+        if !max_err.is_finite() || max_err > tol {
+            return false;
+        }
+        // Check proper handedness: det > 0 and |det - 1| <= tol.
+        let det = self.determinant();
+        if !det.is_finite() || det <= 0.0 || (det - 1.0_f64).abs() > tol {
+            return false;
+        }
+        true
+    }
 }
 
 // 3x3 matrix (aligned, single precision).
@@ -639,6 +769,104 @@ mod tests {
         assert_eq!(m.x_axis(), Vec3F64::new(1.0, 2.0, 3.0));
         assert_eq!(m.y_axis(), Vec3F64::new(4.0, 5.0, 6.0));
         assert_eq!(m.z_axis(), Vec3F64::new(7.0, 8.0, 9.0));
+    }
+
+    #[test]
+    fn test_mat3f64_from_rows_array() {
+        // Row-major input:
+        // [ 1.0, 2.0, 3.0 ]  row 0
+        // [ 4.0, 5.0, 6.0 ]  row 1
+        // [ 7.0, 8.0, 9.0 ]  row 2
+        let row_major = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
+        let m = Mat3F64::from_rows_array(&row_major);
+
+        // Columns are the transposes of rows:
+        assert_eq!(m.x_axis(), Vec3F64::new(1.0, 4.0, 7.0));
+        assert_eq!(m.y_axis(), Vec3F64::new(2.0, 5.0, 8.0));
+        assert_eq!(m.z_axis(), Vec3F64::new(3.0, 6.0, 9.0));
+
+        // Matches column-major array of transposed entries:
+        let col_major = [1.0, 4.0, 7.0, 2.0, 5.0, 8.0, 3.0, 6.0, 9.0];
+        let m_col = Mat3F64::from_cols_array(&col_major);
+        assert_eq!(m, m_col);
+
+        // from_rows_array is the transpose of from_cols_array on identical flat buffers:
+        let m_direct_cols = Mat3F64::from_cols_array(&row_major);
+        assert_eq!(m, m_direct_cols.transpose());
+    }
+
+    #[test]
+    fn test_mat3f64_is_rotation() {
+        // 1. Identity is a rotation.
+        assert!(Mat3F64::IDENTITY.is_rotation(1e-12));
+
+        // 2. Exact 90-degree rotations.
+        let rot_z90 = Mat3F64::from_rows_array(&[0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+        assert!(rot_z90.is_rotation(1e-12));
+
+        let rot_x90 = Mat3F64::from_rows_array(&[1.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 1.0, 0.0]);
+        assert!(rot_x90.is_rotation(1e-12));
+
+        let rot_y90 = Mat3F64::from_rows_array(&[0.0, 0.0, 1.0, 0.0, 1.0, 0.0, -1.0, 0.0, 0.0]);
+        assert!(rot_y90.is_rotation(1e-12));
+
+        // 3. Small perturbation within vs outside tolerance.
+        let mut perturbed = Mat3F64::IDENTITY.to_cols_array();
+        perturbed[0] += 1e-7;
+        let m_perturbed = Mat3F64::from_cols_array(&perturbed);
+        assert!(m_perturbed.is_rotation(1e-6));
+        assert!(!m_perturbed.is_rotation(1e-8));
+
+        // 4. Reflection (orthogonal, det = -1).
+        let reflection = Mat3F64::from_rows_array(&[-1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+        assert!(!reflection.is_rotation(1e-6));
+        // Large tolerance must not accept reflection with non-positive determinant:
+        assert!(!reflection.is_rotation(2.0));
+        assert!(!reflection.is_rotation(10.0));
+
+        // 5. Scaling (det != 1, R^T R != I).
+        let scaled = Mat3F64::from_rows_array(&[2.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 2.0]);
+        assert!(!scaled.is_rotation(1e-6));
+
+        // 6. Shear (non-orthogonal).
+        let shear = Mat3F64::from_rows_array(&[1.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+        assert!(!shear.is_rotation(1e-6));
+
+        // 7. Non-finite values.
+        let with_nan =
+            Mat3F64::from_rows_array(&[f64::NAN, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+        assert!(!with_nan.is_rotation(1e-6));
+
+        let with_inf =
+            Mat3F64::from_rows_array(&[f64::INFINITY, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+        assert!(!with_inf.is_rotation(1e-6));
+
+        // 8. Invalid tolerance (negative, NaN, or infinite).
+        assert!(!Mat3F64::IDENTITY.is_rotation(-1e-6));
+        assert!(!Mat3F64::IDENTITY.is_rotation(f64::NAN));
+        assert!(!Mat3F64::IDENTITY.is_rotation(f64::INFINITY));
+    }
+
+    #[test]
+    fn test_mat3f64_is_rotation_overflow() {
+        // Finite entries that overflow during RᵀR:
+        let large_val = 1e200_f64;
+        let large_mat = Mat3F64::from_rows_array(&[
+            large_val, 0.0, 0.0, 0.0, large_val, 0.0, 0.0, 0.0, large_val,
+        ]);
+        assert!(large_mat.is_finite());
+        assert!(!large_mat.is_rotation(1e-6));
+
+        // Matrix with f64::MAX:
+        let max_mat = Mat3F64::from_rows_array(&[f64::MAX, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+        assert!(max_mat.is_finite());
+        assert!(!max_mat.is_rotation(1e-6));
+
+        // Finite matrix whose RᵀR off-diagonal dot-product produces +Inf - Inf = NaN:
+        let nan_prod_mat =
+            Mat3F64::from_rows_array(&[1e200, -1e200, 0.0, 1e200, 1e200, 0.0, 0.0, 0.0, 1.0]);
+        assert!(nan_prod_mat.is_finite());
+        assert!(!nan_prod_mat.is_rotation(1e-6));
     }
 
     #[test]
