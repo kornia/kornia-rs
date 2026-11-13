@@ -1,0 +1,1 @@
+Expose float64 affine bundle adjustment as `kornia_rs.k3d.bundle_adjust_affine`, with NumPy input validation, typed results, GIL-free solving, and a generated-scene example with an independent SciPy reference.

@@ -1,0 +1,277 @@
+//! Voxel downsampling, voxel neighbour counts and the radius / statistical
+//! outlier filters on 100k and 1M uniform random points in a 4 m cube
+//! (0.1 m voxels): CPU, and with `--features cuda` the device twins of the
+//! voxel ops on device-resident points (stream synchronized per iteration).
+//!
+//! The outlier filters also run on the same cloud with a few NaN points
+//! (`*_nan_cpu`: non-finite points are dropped before the grid search, which
+//! must stay in use) and on a clustered cloud (`*_clustered_cpu`: dense
+//! clusters on a sparse background, where the statistical filter shrinks
+//! its cells and sends the background queries to the k-d tree).
+//!
+//! `*_outliers_reused_cpu` run the uniform-cloud filters through one
+//! reused `OutlierFilter` scratch instead of the allocating free functions.
+//!
+//! `voxel_downsample_*_attrs_cpu` times `voxel_downsample` on the same
+//! cloud with colors and normals, so it includes the attribute reduction
+//! (or copy). `view_*_cpu` times the zero-copy [`VoxelView`] reductions on a
+//! reused scratch (`VoxelDownsampler::view`), `view_first_to_point_cloud_cpu`
+//! adds the copy into an owned cloud, and `remove_sparse_voxels26_*` times
+//! the density filter returning its view, and with the copy.
+//!
+//! `cargo bench -p kornia-3d --bench bench_voxel [--features cuda]`
+//! Single-thread numbers: `RAYON_NUM_THREADS=1`.
+//! Baselines on the same inputs: `benches/bench_voxel_baselines.py`.
+
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use kornia_3d::pointcloud::filter::{
+    radius_inlier_indices, statistical_inlier_indices, OutlierFilter,
+};
+use kornia_3d::pointcloud::PointCloud;
+use kornia_3d::voxel::{
+    remove_sparse_voxels, voxel_downsample, DownsampleMode, VoxelConnectivity, VoxelDownsampler,
+    VoxelLayout, VoxelView,
+};
+
+const SIZES: [usize; 2] = [100_000, 1_000_000];
+const EXTENT_M: f64 = 4.0;
+const VOXEL_M: f64 = 0.1;
+const RADIUS_M: f64 = 0.05;
+const RADIUS_MIN_NEIGHBOURS: usize = 2;
+const STAT_K: usize = 16;
+const STAT_STD_RATIO: f64 = 1.0;
+/// NaN points spliced into the `*_nan_cpu` clouds.
+const NAN_POINTS: usize = 3;
+/// Clusters of the clustered cloud, and the edge of each cluster's cube.
+const CLUSTERS: usize = 20;
+const CLUSTER_EDGE_M: f64 = 0.05;
+/// One point in this many of the clustered cloud is uniform background.
+const BACKGROUND_EVERY: usize = 100;
+
+/// xorshift64 points in `[0, EXTENT_M)³`; the Python baselines use the same
+/// generator.
+fn points(n: usize) -> Vec<[f64; 3]> {
+    let mut s = 0x2545_f491_4f6c_dd1du64;
+    let mut next = || {
+        s ^= s << 13;
+        s ^= s >> 7;
+        s ^= s << 17;
+        (s >> 11) as f64 / (1u64 << 53) as f64 * EXTENT_M
+    };
+    (0..n).map(|_| [next(), next(), next()]).collect()
+}
+
+/// `points(n)` with [`NAN_POINTS`] of them, evenly spaced, set to NaN.
+fn points_with_nan(n: usize) -> Vec<[f64; 3]> {
+    let mut pts = points(n);
+    for i in 0..NAN_POINTS {
+        pts[i * n / NAN_POINTS] = [f64::NAN; 3];
+    }
+    pts
+}
+
+/// [`CLUSTERS`] cubes of edge [`CLUSTER_EDGE_M`] at random centres, plus
+/// one uniform background point in [`BACKGROUND_EVERY`].
+fn clustered_points(n: usize) -> Vec<[f64; 3]> {
+    let base = points(n + CLUSTERS);
+    let (centres, offsets) = base.split_at(CLUSTERS);
+    let scale = CLUSTER_EDGE_M / EXTENT_M;
+    offsets
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            if i % BACKGROUND_EVERY == 0 {
+                return *p;
+            }
+            let c = centres[i % CLUSTERS];
+            [
+                c[0] + p[0] * scale,
+                c[1] + p[1] * scale,
+                c[2] + p[2] * scale,
+            ]
+        })
+        .collect()
+}
+
+fn bench_voxel(c: &mut Criterion) {
+    let mut group = c.benchmark_group("Voxel");
+    group.sample_size(10);
+    let layout = VoxelLayout::new(VOXEL_M, [0.0; 3]).unwrap();
+    for n in SIZES {
+        let id = format!("{}k", n / 1000);
+        let pts = points(n);
+        let mut ds = VoxelDownsampler::new();
+        let mut out = Vec::with_capacity(n);
+        let mut index = Vec::with_capacity(n);
+        let mut counts = Vec::with_capacity(n);
+        let mut kept = Vec::with_capacity(n);
+
+        for (name, mode) in [
+            ("downsample_centroid_cpu", DownsampleMode::Centroid),
+            ("downsample_first_cpu", DownsampleMode::First),
+            ("downsample_nearest_cpu", DownsampleMode::NearestToCentre),
+        ] {
+            group.bench_function(BenchmarkId::new(name, &id), |b| {
+                b.iter(|| {
+                    ds.downsample_into(&pts, &layout, mode, &mut out, Some(&mut index))
+                        .unwrap()
+                })
+            });
+        }
+        let colors = pts
+            .iter()
+            .map(|p| p.map(|v| (v / EXTENT_M * 255.0) as u8))
+            .collect();
+        let normals = pts
+            .iter()
+            .map(|p| {
+                let len = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt().max(1e-12);
+                p.map(|v| v / len)
+            })
+            .collect();
+        let cloud = PointCloud::new(pts.clone(), Some(colors), Some(normals));
+        for (name, mode) in [
+            (
+                "voxel_downsample_centroid_attrs_cpu",
+                DownsampleMode::Centroid,
+            ),
+            ("voxel_downsample_first_attrs_cpu", DownsampleMode::First),
+            (
+                "voxel_downsample_nearest_attrs_cpu",
+                DownsampleMode::NearestToCentre,
+            ),
+        ] {
+            group.bench_function(BenchmarkId::new(name, &id), |b| {
+                b.iter(|| voxel_downsample(&cloud, &layout, mode).unwrap())
+            });
+        }
+        group.bench_function(BenchmarkId::new("view_first_cpu", &id), |b| {
+            b.iter(|| ds.view(&cloud, &layout).unwrap().first().len())
+        });
+        group.bench_function(BenchmarkId::new("view_nearest_cpu", &id), |b| {
+            b.iter(|| ds.view(&cloud, &layout).unwrap().nearest().len())
+        });
+        group.bench_function(BenchmarkId::new("view_centroids_attrs_cpu", &id), |b| {
+            b.iter(|| ds.view(&cloud, &layout).unwrap().centroids())
+        });
+        group.bench_function(
+            BenchmarkId::new("view_first_to_point_cloud_cpu", &id),
+            |b| b.iter(|| ds.view(&cloud, &layout).unwrap().first().to_point_cloud()),
+        );
+        group.bench_function(BenchmarkId::new("voxel_view_new_cpu", &id), |b| {
+            b.iter(|| VoxelView::new(&cloud, &layout).unwrap().len())
+        });
+        let conn = VoxelConnectivity::TwentySix;
+        group.bench_function(
+            BenchmarkId::new("remove_sparse_voxels26_view_cpu", &id),
+            |b| {
+                b.iter(|| {
+                    remove_sparse_voxels(&cloud, &layout, conn, 3)
+                        .unwrap()
+                        .len()
+                })
+            },
+        );
+        group.bench_function(
+            BenchmarkId::new("remove_sparse_voxels26_attrs_cpu", &id),
+            |b| {
+                b.iter(|| {
+                    remove_sparse_voxels(&cloud, &layout, conn, 3)
+                        .unwrap()
+                        .to_point_cloud()
+                })
+            },
+        );
+        group.bench_function(BenchmarkId::new("neighbour_counts26_cpu", &id), |b| {
+            b.iter(|| {
+                ds.neighbour_counts_into(&pts, &layout, VoxelConnectivity::TwentySix, &mut counts)
+                    .unwrap()
+            })
+        });
+        group.bench_function(BenchmarkId::new("radius_outliers_cpu", &id), |b| {
+            b.iter(|| {
+                radius_inlier_indices(&pts, RADIUS_M, RADIUS_MIN_NEIGHBOURS, &mut kept).unwrap()
+            })
+        });
+        group.bench_function(BenchmarkId::new("statistical_outliers_cpu", &id), |b| {
+            b.iter(|| statistical_inlier_indices(&pts, STAT_K, STAT_STD_RATIO, &mut kept).unwrap())
+        });
+        let mut filter = OutlierFilter::new();
+        group.bench_function(BenchmarkId::new("radius_outliers_reused_cpu", &id), |b| {
+            b.iter(|| {
+                filter
+                    .radius_inlier_indices_into(&pts, RADIUS_M, RADIUS_MIN_NEIGHBOURS, &mut kept)
+                    .unwrap()
+            })
+        });
+        group.bench_function(
+            BenchmarkId::new("statistical_outliers_reused_cpu", &id),
+            |b| {
+                b.iter(|| {
+                    filter
+                        .statistical_inlier_indices_into(&pts, STAT_K, STAT_STD_RATIO, &mut kept)
+                        .unwrap()
+                })
+            },
+        );
+        for (suffix, cloud) in [
+            ("nan", points_with_nan(n)),
+            ("clustered", clustered_points(n)),
+        ] {
+            group.bench_function(
+                BenchmarkId::new(format!("radius_outliers_{suffix}_cpu"), &id),
+                |b| {
+                    b.iter(|| {
+                        radius_inlier_indices(&cloud, RADIUS_M, RADIUS_MIN_NEIGHBOURS, &mut kept)
+                            .unwrap()
+                    })
+                },
+            );
+            group.bench_function(
+                BenchmarkId::new(format!("statistical_outliers_{suffix}_cpu"), &id),
+                |b| {
+                    b.iter(|| {
+                        statistical_inlier_indices(&cloud, STAT_K, STAT_STD_RATIO, &mut kept)
+                            .unwrap()
+                    })
+                },
+            );
+        }
+
+        #[cfg(feature = "cuda")]
+        {
+            use cudarc::driver::CudaContext;
+            use kornia_3d::voxel::CudaVoxelFilter;
+
+            let st = CudaContext::new(0).unwrap().default_stream();
+            let mut filter = CudaVoxelFilter::new(&st).unwrap();
+            let dev = st.clone_htod(pts.as_flattened()).unwrap();
+            let mut vox = filter.alloc_voxel_cloud(n).unwrap();
+            let mut cnt = filter.alloc_neighbour_counts(n).unwrap();
+            for (name, mode) in [
+                ("downsample_centroid_cuda", DownsampleMode::Centroid),
+                ("downsample_first_cuda", DownsampleMode::First),
+                ("downsample_nearest_cuda", DownsampleMode::NearestToCentre),
+            ] {
+                group.bench_function(BenchmarkId::new(name, &id), |b| {
+                    b.iter(|| {
+                        filter.downsample(&dev, n, &layout, mode, &mut vox).unwrap();
+                        st.synchronize().unwrap();
+                    })
+                });
+            }
+            group.bench_function(BenchmarkId::new("neighbour_counts26_cuda", &id), |b| {
+                b.iter(|| {
+                    filter
+                        .neighbour_counts(&dev, n, &layout, VoxelConnectivity::TwentySix, &mut cnt)
+                        .unwrap();
+                    st.synchronize().unwrap();
+                })
+            });
+        }
+    }
+    group.finish();
+}
+
+criterion_group!(benches, bench_voxel);
+criterion_main!(benches);

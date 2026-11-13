@@ -13,6 +13,9 @@ pub mod ba_affine;
 /// Pinhole camera model with Brown-Conrady distortion and Kannala-Brandt fisheye model.
 pub mod camera;
 
+/// Depth images (`DepthImage`) to 3D: unprojection to point clouds and registration into another camera.
+pub mod depth;
+
 /// I/O utilities for reading and writing 3D data.
 pub mod io;
 
@@ -45,3 +48,6 @@ pub mod stereo;
 
 /// 3D transforms algorithms.
 pub mod transforms;
+
+/// Voxel grids: sparse hash grid, voxel downsampling and voxel density filtering.
+pub mod voxel;

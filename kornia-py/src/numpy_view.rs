@@ -59,7 +59,7 @@ pub unsafe fn view<'py, T: Element>(
     let ptr = unsafe {
         PY_ARRAY_API.PyArray_NewFromDescr(
             py,
-            PY_ARRAY_API.get_type_object(py, npyffi::NpyTypes::PyArray_Type),
+            npyffi::get_type_object(py, npyffi::NpyTypes::PyArray_Type),
             T::get_dtype(py).into_dtype_ptr(),
             dims.len() as c_int,
             dims_buf.as_mut_ptr(),
