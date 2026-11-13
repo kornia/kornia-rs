@@ -159,6 +159,28 @@ fn validate_positive_args(frame_step: usize, match_window: usize) -> Result<(), 
     Ok(())
 }
 
+/// Reject camera intrinsics that cannot describe a pinhole camera.
+///
+/// A zero, negative or non-finite focal length (or a non-finite principal
+/// point) is accepted by the CLI but only fails much later, after decoding and
+/// matching, when the camera is constructed. Reject it before the pipeline
+/// starts and name the offending flag.
+fn validate_intrinsics(fx: f64, fy: f64, cx: f64, cy: f64) -> Result<(), String> {
+    if !fx.is_finite() || fx <= 0.0 {
+        return Err(format!("--fx must be finite and > 0, got {fx}"));
+    }
+    if !fy.is_finite() || fy <= 0.0 {
+        return Err(format!("--fy must be finite and > 0, got {fy}"));
+    }
+    if !cx.is_finite() {
+        return Err(format!("--cx must be finite, got {cx}"));
+    }
+    if !cy.is_finite() {
+        return Err(format!("--cy must be finite, got {cy}"));
+    }
+    Ok(())
+}
+
 /// Build and validate the SPRT config from CLI flags.
 ///
 /// Returns `None` when SPRT is disabled. An invalid config (epsilon/delta
@@ -193,6 +215,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Reject zero values up front rather than panicking deep in the pipeline.
     validate_positive_args(args.frame_step, args.match_window)
+        .map_err(|e| -> Box<dyn Error> { e.into() })?;
+    validate_intrinsics(args.fx, args.fy, args.cx, args.cy)
         .map_err(|e| -> Box<dyn Error> { e.into() })?;
 
     // Validate SPRT before the pipeline runs; an invalid config would otherwise
@@ -446,6 +470,35 @@ mod tests {
         assert!(validate_positive_args(0, 5).is_err(), "frame-step 0");
         assert!(validate_positive_args(1, 0).is_err(), "match-window 0");
         assert!(validate_positive_args(0, 0).is_err());
+    }
+
+    #[test]
+    fn validate_intrinsics_rejects_invalid() {
+        assert!(validate_intrinsics(895.0, 895.0, 640.0, 360.0).is_ok());
+        assert!(
+            validate_intrinsics(0.0, 895.0, 640.0, 360.0).is_err(),
+            "--fx 0"
+        );
+        assert!(
+            validate_intrinsics(895.0, -1.0, 640.0, 360.0).is_err(),
+            "--fy < 0"
+        );
+        assert!(
+            validate_intrinsics(f64::NAN, 895.0, 640.0, 360.0).is_err(),
+            "--fx NaN"
+        );
+        assert!(
+            validate_intrinsics(895.0, f64::INFINITY, 640.0, 360.0).is_err(),
+            "--fy inf"
+        );
+        assert!(
+            validate_intrinsics(895.0, 895.0, f64::NAN, 360.0).is_err(),
+            "--cx NaN"
+        );
+        assert!(
+            validate_intrinsics(895.0, 895.0, 640.0, f64::NEG_INFINITY).is_err(),
+            "--cy -inf"
+        );
     }
 
     #[test]
