@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 use kornia_image::Image;
 use kornia_imgproc::color::gray_from_rgb_u8;
 use kornia_io::gstreamer::video::{ImageFormat, VideoReader};
+use kornia_io::gstreamer::Grab;
 
 /// Owned frames decoded from a video: parallel RGB and grayscale buffers.
 pub type VideoFrames = (Vec<Image<u8, 3>>, Vec<Image<u8, 1>>);
@@ -25,10 +26,10 @@ const PROGRESS_INTERVAL: usize = 10;
 
 /// How long to wait for the first frame before declaring the stream dead.
 ///
-/// `grab_rgb8()` returns `Ok(None)` for "not yet", end-of-stream and pipeline
-/// error alike (kornia-io #1158). A healthy file delivers its first frame in
-/// well under a second, so silence this long means nothing will ever arrive
-/// (audio-only, truncated, or no decoder). Low-fps truncation is left to #1158.
+/// `try_grab_rgb8()` reports EOS and pipeline errors via the bus, but a file
+/// with no video stream at all (e.g. audio-only) never reaches the video sink,
+/// so it stays `Grab::Pending` forever. A healthy video delivers its first frame
+/// in well under a second, so this bound turns that case into an error.
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Whether the read has waited past [`STARTUP_TIMEOUT`] without any frame.
@@ -147,10 +148,10 @@ pub fn read_frames(path: &Path, frame_step: usize) -> Result<VideoFrames, Box<dy
 
     let mut stats = ReadStats::new();
 
-    // NOTE: `VideoReader` only decodes to RGB via `grab_rgb8()` regardless of
-    // the requested `ImageFormat`; requesting `Mono8` makes GStreamer produce
-    // 1-byte frames that the RGB validator rejects at runtime. So we always
-    // request RGB and convert to grayscale ourselves.
+    // Request RGB because point colours are sampled from RGB frames; the
+    // grayscale images used for features are converted here from the same frame.
+    // (`try_grab_gray8` also exists, but grabbing one stream twice would step
+    // the pipeline twice.)
     let init_start = Instant::now();
     let mut reader = VideoReader::new(path, ImageFormat::Rgb8)?;
     reader.start()?;
@@ -159,18 +160,14 @@ pub fn read_frames(path: &Path, frame_step: usize) -> Result<VideoFrames, Box<dy
     let mut rgb_frames: Vec<Image<u8, 3>> = Vec::new();
     let mut gray_frames: Vec<Image<u8, 1>> = Vec::new();
     let mut frame_idx: usize = 0;
-    let mut seen_any = false;
-    let mut consecutive_none: usize = 0;
 
     loop {
         let grab_start = Instant::now();
-        let grabbed = reader.grab_rgb8()?;
+        let grabbed = reader.try_grab_rgb8()?;
         stats.grab += grab_start.elapsed();
 
         match grabbed {
-            Some(frame) => {
-                seen_any = true;
-                consecutive_none = 0;
+            Grab::Frame(frame) => {
                 stats.frames_grabbed += 1;
                 if frame_idx.is_multiple_of(frame_step) {
                     // `frame` is zero-copy, backed by a read-only GStreamer buffer.
@@ -192,35 +189,20 @@ pub fn read_frames(path: &Path, frame_step: usize) -> Result<VideoFrames, Box<dy
                 frame_idx += 1;
                 stats.progress();
             }
-            None => {
-                consecutive_none += 1;
-                // `grab_rgb8()` returns `None` while the pipeline is still
-                // buffering; it does not mean end-of-stream. Prefer detecting
-                // the end via playback position, but some files report a bad
-                // duration (e.g. a malformed moov atom), so fall back to a
-                // sustained silence after having seen frames.
-                //
-                // A stream that never delivers a frame (audio-only, truncated,
-                // no decoder) would otherwise spin forever, because the
-                // silence fallback below requires `seen_any`.
-                if startup_timed_out(seen_any, stats.start.elapsed()) {
+            // No frame buffered yet: back off briefly and retry.
+            Grab::Pending => {
+                if startup_timed_out(stats.frames_grabbed == 0, stats.start.elapsed()) {
                     return Err(format!(
-                        "no frames decoded within {}s; the stream is empty or \
-                         undecodable (see kornia-io #1158)",
+                        "no frames decoded within {}s; the stream is empty or has no \
+                         video (e.g. audio-only)",
                         STARTUP_TIMEOUT.as_secs()
                     )
                     .into());
                 }
-                if let (Some(pos), Some(dur)) = (reader.get_pos(), reader.get_duration()) {
-                    if pos >= dur {
-                        break;
-                    }
-                }
-                if seen_any && consecutive_none > 30 {
-                    break;
-                }
                 std::thread::sleep(Duration::from_millis(10));
             }
+            // End of stream: kornia-io's reader reports it on the bus now.
+            Grab::Eos => break,
         }
     }
 
@@ -255,13 +237,11 @@ mod tests {
 
     #[test]
     fn startup_timed_out_only_before_first_frame() {
-        // Not yet at the limit, or already seen a frame: no timeout.
         assert!(!startup_timed_out(false, Duration::ZERO));
         assert!(!startup_timed_out(
             true,
             STARTUP_TIMEOUT + Duration::from_secs(60)
         ));
-        // Never saw a frame and the limit passed: timeout.
         assert!(startup_timed_out(
             false,
             STARTUP_TIMEOUT + Duration::from_secs(1)
