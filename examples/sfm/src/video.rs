@@ -252,26 +252,34 @@ mod tests {
 
     /// Encodes one solid-colour frame per `colours` entry into an H.264 MP4.
     ///
-    /// Returns `None` (skipping the caller) when `x264enc` is not installed.
-    fn write_solid_mp4(path: &Path, colours: &[(u8, u8, u8)]) -> Option<()> {
+    /// Returns `Ok(None)` when `x264enc` is not installed (the caller skips the
+    /// round-trip test), `Ok(Some(()))` once the file is closed, and `Err` for
+    /// any other writer failure, so encoding problems cannot silently skip the
+    /// test.
+    fn write_solid_mp4(
+        path: &Path,
+        colours: &[(u8, u8, u8)],
+    ) -> Result<Option<()>, Box<dyn std::error::Error>> {
         let mut writer =
             match VideoWriter::new(path, VideoCodec::H264, ImageFormat::Rgb8, 30, TEST_SIZE) {
                 Ok(writer) => writer,
-                Err(e) => {
+                // The only expected skip: the encoder plugin is not installed.
+                Err(e) if e.to_string().contains("x264enc") => {
                     eprintln!("skipping video round-trip test: {e}");
-                    return None;
+                    return Ok(None);
                 }
+                Err(e) => return Err(e.into()),
             };
-        writer.start().ok()?;
+        writer.start()?;
         for &(r, g, b) in colours {
             let bytes: Vec<u8> = std::iter::repeat_n([r, g, b], TEST_SIZE.width * TEST_SIZE.height)
                 .flatten()
                 .collect();
-            let frame = Image::<u8, 3>::from_size_slice(TEST_SIZE, &bytes).ok()?;
-            writer.write(&frame).ok()?;
+            let frame = Image::<u8, 3>::from_size_slice(TEST_SIZE, &bytes)?;
+            writer.write(&frame)?;
         }
-        writer.close().ok()?;
-        Some(())
+        writer.close()?;
+        Ok(Some(()))
     }
 
     /// A pipeline that cannot decode must surface an error, not spin forever.
@@ -301,7 +309,7 @@ mod tests {
         let colours: Vec<(u8, u8, u8)> = (0..7)
             .map(|i| (i * 20 + 10, i * 20 + 26, i * 20 + 42))
             .collect();
-        if write_solid_mp4(&path, &colours).is_none() {
+        if write_solid_mp4(&path, &colours).unwrap().is_none() {
             return;
         }
 
@@ -356,7 +364,7 @@ mod tests {
         let colours: Vec<(u8, u8, u8)> = (0..6)
             .map(|i| (i * 20 + 10, i * 20 + 26, i * 20 + 42))
             .collect();
-        if write_solid_mp4(&path, &colours).is_none() {
+        if write_solid_mp4(&path, &colours).unwrap().is_none() {
             return;
         }
 
