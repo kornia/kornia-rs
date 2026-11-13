@@ -27,6 +27,18 @@ pub const MIN_SAFE_GEO_INLIERS: usize = 15;
 
 /// Returns a warning when the requested `--geo-min-inliers` is below the safe
 /// floor, else `None`.
+///
+/// # Arguments
+///
+/// * `requested` - The `--geo-min-inliers` value from the CLI.
+///
+/// # Returns
+///
+/// `Some(message)` when `requested < MIN_SAFE_GEO_INLIERS`, else `None`.
+///
+/// # Errors
+///
+/// Never fails; it only formats a warning string.
 pub fn min_inliers_warning(requested: usize) -> Option<String> {
     (requested < MIN_SAFE_GEO_INLIERS).then(|| {
         format!(
@@ -53,6 +65,15 @@ pub fn min_inliers_warning(requested: usize) -> Option<String> {
 ///
 /// The sequential reference the parallel matcher must agree with; only the test
 /// suite calls it (the pipeline always matches in parallel).
+///
+/// # Returns
+///
+/// Every matched [`TrackEdge`], grouped per `(i, j)` pair in `(i, j)` order.
+///
+/// # Errors
+///
+/// Does not return an error: this test path uses the CPU matcher only, whose
+/// matches cannot fail.
 #[cfg(test)]
 pub fn match_sequential_pairs(
     features: &[FrameFeatures],
@@ -114,6 +135,16 @@ fn track_edge(
 /// * `window` - How many following frames each frame is matched against.
 /// * `ratio` - Lowe's ratio-test threshold.
 /// * `cuda` - Device SIFT matcher for CUDA-resident descriptors, if any.
+///
+/// # Returns
+///
+/// Every matched [`TrackEdge`] from all pairs; the set is identical to
+/// [`match_sequential_pairs`], in a different order.
+///
+/// # Errors
+///
+/// Returns the matcher's error (including a CUDA/device failure) instead of
+/// silently dropping the pair's matches.
 pub fn match_pairs_parallel(
     features: &[FrameFeatures],
     window: usize,
@@ -172,6 +203,11 @@ pub fn match_pairs_parallel(
 /// # Returns
 ///
 /// The subset of `edges` that are inliers of a verified fundamental matrix.
+///
+/// # Errors
+///
+/// Does not return an error: a pair whose fundamental-matrix fit fails is
+/// skipped and contributes no edges.
 pub fn verify_matches_geometrically(
     edges: &[TrackEdge],
     threshold: f64,
@@ -230,7 +266,23 @@ pub fn verify_matches_geometrically(
 /// which let more cameras register via PnP. They are harder to match (more
 /// outliers), so run `--geo-verify` after enabling this.
 ///
-/// Returns the number of edges appended.
+/// # Arguments
+///
+/// * `features` - Per-frame features, indexed by frame number.
+/// * `window` - Sliding-window size; pairs with `j - i <= window` are skipped.
+/// * `stride` - Spacing `K` between wide-baseline partners; `0` disables.
+/// * `ratio` - Lowe's ratio-test threshold.
+/// * `cuda` - Device SIFT matcher for CUDA-resident descriptors, if any.
+/// * `edges` - Edge list to append to.
+///
+/// # Returns
+///
+/// The number of edges appended.
+///
+/// # Errors
+///
+/// Returns the matcher's error (including a CUDA/device failure) instead of
+/// silently dropping the pair's matches.
 pub fn append_wide_baseline_edges(
     features: &[FrameFeatures],
     window: usize,
