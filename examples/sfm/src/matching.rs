@@ -242,26 +242,33 @@ pub fn append_wide_baseline_edges(
     if stride == 0 || features.len() <= window + 1 {
         return Ok(0);
     }
-    let mut added = 0;
+
+    // Enumerate the pairs the sequential loop would visit.
+    let mut pairs = Vec::new();
     for i in 0..features.len() {
         // First j > i + window with (j - i) % stride == 0.
         let start = i + window + 1;
         let first = start + ((stride - (start - i) % stride) % stride);
         for j in (first..features.len()).step_by(stride) {
-            let matches = match_pair(&features[i], &features[j], ratio, cuda)?;
-            for (kpt_a, kpt_b) in matches {
-                edges.push(TrackEdge {
-                    cam_a: i,
-                    kpt_a: kpt_a as u32,
-                    uv_a: keypoint_to_uv(features[i].keypoints[kpt_a]),
-                    cam_b: j,
-                    kpt_b: kpt_b as u32,
-                    uv_b: keypoint_to_uv(features[j].keypoints[kpt_b]),
-                });
-                added += 1;
-            }
+            pairs.push((i, j));
         }
     }
+
+    // Same contract as `match_pairs_parallel`: rayon preserves input order on
+    // `collect`, so the appended edges keep the sequential order.
+    let per_pair: Result<Vec<Vec<TrackEdge>>, String> = pairs
+        .par_iter()
+        .map(|&(i, j)| {
+            Ok(match_pair(&features[i], &features[j], ratio, cuda)?
+                .into_iter()
+                .map(|(kpt_a, kpt_b)| track_edge(features, i, j, kpt_a, kpt_b))
+                .collect())
+        })
+        .collect();
+
+    let per_pair = per_pair?;
+    let added = per_pair.iter().map(Vec::len).sum();
+    edges.extend(per_pair.into_iter().flatten());
     Ok(added)
 }
 
@@ -521,6 +528,17 @@ mod tests {
                 "pair ({a},{b}) must be wide-baseline (dist > window, multiple of stride)"
             );
         }
+        // Rayon preserves input order on `collect`, so the parallel version
+        // emits exactly the sequential order: pairs in (i, j) order, each
+        // contributing its matches contiguously.
+        let expected: Vec<(usize, usize)> = [(0, 2), (0, 4), (1, 3), (2, 4)]
+            .into_iter()
+            .flat_map(|pair| [pair, pair])
+            .collect();
+        assert_eq!(
+            pairs, expected,
+            "wide-baseline edges keep the sequential order"
+        );
     }
 
     #[test]
