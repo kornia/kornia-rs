@@ -24,19 +24,6 @@ pub type VideoFrames = (Vec<Image<u8, 3>>, Vec<Image<u8, 1>>);
 /// How often (in frames) the live progress line is refreshed.
 const PROGRESS_INTERVAL: usize = 10;
 
-/// How long to wait for the first frame before declaring the stream dead.
-///
-/// `try_grab_rgb8()` reports EOS and pipeline errors via the bus, but a file
-/// with no video stream at all (e.g. audio-only) never reaches the video sink,
-/// so it stays `Grab::Pending` forever. A healthy video delivers its first frame
-/// in well under a second, so this bound turns that case into an error.
-const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Whether the read has waited past [`STARTUP_TIMEOUT`] without any frame.
-fn startup_timed_out(seen_any: bool, elapsed: Duration) -> bool {
-    !seen_any && elapsed > STARTUP_TIMEOUT
-}
-
 /// Cumulative timing and progress counters for one `read_frames` call.
 struct ReadStats {
     /// Time to construct and start the GStreamer pipeline.
@@ -141,8 +128,10 @@ impl ReadStats {
 ///
 /// # Errors
 ///
-/// Returns an error if the video cannot be opened or decoded, or if any frame
-/// cannot be converted to grayscale.
+/// Returns an error if the video cannot be opened, its pipeline fails (an
+/// undecodable file, a container with no video stream such as audio-only, a
+/// missing decoder), or a frame cannot be converted to grayscale. Reaching the
+/// end of the stream is not an error: the frames decoded so far are returned.
 pub fn read_frames(path: &Path, frame_step: usize) -> Result<VideoFrames, Box<dyn Error>> {
     assert!(frame_step >= 1, "frame_step must be >= 1");
 
@@ -189,19 +178,14 @@ pub fn read_frames(path: &Path, frame_step: usize) -> Result<VideoFrames, Box<dy
                 frame_idx += 1;
                 stats.progress();
             }
-            // No frame buffered yet: back off briefly and retry.
-            Grab::Pending => {
-                if startup_timed_out(stats.frames_grabbed == 0, stats.start.elapsed()) {
-                    return Err(format!(
-                        "no frames decoded within {}s; the stream is empty or has no \
-                         video (e.g. audio-only)",
-                        STARTUP_TIMEOUT.as_secs()
-                    )
-                    .into());
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            // End of stream: kornia-io's reader reports it on the bus now.
+            // Still running, nothing buffered yet: back off and retry. The
+            // reader reports the terminal states itself — a failed pipeline
+            // (undecodable file, audio-only container, missing decoder)
+            // surfaces as `Err(StreamError)` from `try_grab_rgb8`, and the
+            // end of the stream as `Grab::Eos` — so this arm never has to
+            // guess that the stream is dead.
+            Grab::Pending => std::thread::sleep(Duration::from_millis(10)),
+            // End of stream: every decoded frame has been grabbed.
             Grab::Eos => break,
         }
     }
@@ -235,16 +219,165 @@ mod tests {
         let _ = read_frames(Path::new("x.mp4"), 0);
     }
 
+    use kornia_image::ImageSize;
+    use kornia_io::gstreamer::video::{VideoCodec, VideoWriter};
+
+    const TEST_SIZE: ImageSize = ImageSize {
+        width: 64,
+        height: 48,
+    };
+
+    /// Runs `f` on its own thread, panicking if it has not returned within
+    /// `timeout`. The regressions this module guards against are infinite read
+    /// loops, which a plain assertion can never fail — only a deadline can.
+    fn finishes_within<T: Send + 'static>(
+        timeout: Duration,
+        f: impl FnOnce() -> T + Send + 'static,
+    ) -> T {
+        let handle = std::thread::spawn(f);
+        let deadline = Instant::now() + timeout;
+        loop {
+            if handle.is_finished() {
+                return handle
+                    .join()
+                    .unwrap_or_else(|e| std::panic::resume_unwind(e));
+            }
+            assert!(
+                Instant::now() < deadline,
+                "operation did not finish within {timeout:?}"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Encodes one solid-colour frame per `colours` entry into an H.264 MP4.
+    ///
+    /// Returns `None` (skipping the caller) when `x264enc` is not installed.
+    fn write_solid_mp4(path: &Path, colours: &[(u8, u8, u8)]) -> Option<()> {
+        let mut writer =
+            match VideoWriter::new(path, VideoCodec::H264, ImageFormat::Rgb8, 30, TEST_SIZE) {
+                Ok(writer) => writer,
+                Err(e) => {
+                    eprintln!("skipping video round-trip test: {e}");
+                    return None;
+                }
+            };
+        writer.start().ok()?;
+        for &(r, g, b) in colours {
+            let bytes: Vec<u8> = std::iter::repeat_n([r, g, b], TEST_SIZE.width * TEST_SIZE.height)
+                .flatten()
+                .collect();
+            let frame = Image::<u8, 3>::from_size_slice(TEST_SIZE, &bytes).ok()?;
+            writer.write(&frame).ok()?;
+        }
+        writer.close().ok()?;
+        Some(())
+    }
+
+    /// A pipeline that cannot decode must surface an error, not spin forever.
     #[test]
-    fn startup_timed_out_only_before_first_frame() {
-        assert!(!startup_timed_out(false, Duration::ZERO));
-        assert!(!startup_timed_out(
-            true,
-            STARTUP_TIMEOUT + Duration::from_secs(60)
-        ));
-        assert!(startup_timed_out(
-            false,
-            STARTUP_TIMEOUT + Duration::from_secs(1)
-        ));
+    fn read_frames_errors_on_non_media_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("not-a-video.bin");
+        std::fs::write(&path, b"this is not a media file").unwrap();
+
+        // decodebin rejects the file on the bus; try_grab_rgb8 must report it.
+        let result = finishes_within(Duration::from_secs(30), move || {
+            read_frames(&path, 1).map_err(|e| e.to_string())
+        });
+        match result {
+            Ok((rgb, _)) => panic!("a non-media file must fail, got {} frames", rgb.len()),
+            Err(e) => assert!(!e.is_empty(), "error must carry a message"),
+        }
+    }
+
+    /// End-of-stream must deliver every decoded frame, with no truncation.
+    #[test]
+    fn read_frames_reads_every_frame_and_stops_at_eos() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("frames.mp4");
+        // Solid colours with r < g < b keep channel order observable even after
+        // the lossy H.264 round-trip; rising r per frame keeps order observable.
+        let colours: Vec<(u8, u8, u8)> = (0..7)
+            .map(|i| (i * 20 + 10, i * 20 + 26, i * 20 + 42))
+            .collect();
+        if write_solid_mp4(&path, &colours).is_none() {
+            return;
+        }
+
+        let (rgb, gray) = finishes_within(Duration::from_secs(30), move || {
+            read_frames(&path, 1).map_err(|e| e.to_string())
+        })
+        .unwrap();
+
+        assert_eq!(rgb.len(), colours.len(), "every decoded frame is returned");
+        assert_eq!(gray.len(), colours.len(), "RGB and gray stay in step");
+        for (i, (frame, gray_frame)) in rgb.iter().zip(&gray).enumerate() {
+            let (er, eg, eb) = colours[i];
+            assert_eq!(
+                (frame.width(), frame.height()),
+                (TEST_SIZE.width, TEST_SIZE.height)
+            );
+            for px in frame.as_slice().chunks_exact(3) {
+                // Uniform source must decode uniformly (no stride shearing).
+                let (r, g, b) = (px[0], px[1], px[2]);
+                // H.264 is lossy: allow a few levels of quantization error.
+                // The `r < g < b` check below is what catches colour rotation.
+                assert!(
+                    r.abs_diff(er) <= 8 && g.abs_diff(eg) <= 8 && b.abs_diff(eb) <= 8,
+                    "expected solid ({er}, {eg}, {eb}), got ({r}, {g}, {b})"
+                );
+                // Channel order survives the encode/decode (no colour rotation).
+                assert!(r < g && g < b, "channel order changed: ({r}, {g}, {b})");
+            }
+            // Every gray pixel must equal the OpenCV Q14 oracle applied to the
+            // reconstructed RGB pixel (kornia-imgproc's fixed-point weights).
+            let (r, g, b) = (
+                frame.as_slice()[0],
+                frame.as_slice()[1],
+                frame.as_slice()[2],
+            );
+            let expected_gray =
+                ((4899 * r as u32 + 9617 * g as u32 + 1868 * b as u32 + 8192) >> 14) as u8;
+            for &v in gray_frame.as_slice() {
+                assert!(
+                    v.abs_diff(expected_gray) <= 1,
+                    "gray {v} != expected {expected_gray} for RGB ({r}, {g}, {b})"
+                );
+            }
+        }
+    }
+
+    /// `frame_step` keeps exactly the indexed frames, in order.
+    #[test]
+    fn read_frames_subsamples_with_frame_step() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("subsample.mp4");
+        let colours: Vec<(u8, u8, u8)> = (0..6)
+            .map(|i| (i * 20 + 10, i * 20 + 26, i * 20 + 42))
+            .collect();
+        if write_solid_mp4(&path, &colours).is_none() {
+            return;
+        }
+
+        let (rgb, gray) = finishes_within(Duration::from_secs(30), move || {
+            read_frames(&path, 3).map_err(|e| e.to_string())
+        })
+        .unwrap();
+        assert_eq!(rgb.len(), 2, "indices 0 and 3 are kept");
+        assert_eq!(gray.len(), 2);
+        for (frame, expected) in rgb.iter().zip([&colours[0], &colours[3]]) {
+            let (er, _eg, _eb) = *expected;
+            let mean_r = frame
+                .as_slice()
+                .chunks_exact(3)
+                .map(|px| px[0] as u32)
+                .sum::<u32>()
+                / (TEST_SIZE.width * TEST_SIZE.height) as u32;
+            assert!(
+                mean_r.abs_diff(er as u32) <= 4,
+                "frame mean r {mean_r} != expected {er}"
+            );
+        }
     }
 }
