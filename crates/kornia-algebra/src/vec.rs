@@ -264,6 +264,20 @@ define_cross_product!(Vec3F32, glam::Vec3);
 define_cross_product!(Vec3F64, glam::DVec3);
 define_cross_product!(Vec3AF32, glam::Vec3A);
 
+impl From<Vec3F64> for nalgebra::Vector3<f64> {
+    #[inline]
+    fn from(v: Vec3F64) -> Self {
+        Self::new(v.x, v.y, v.z)
+    }
+}
+
+impl From<nalgebra::Vector3<f64>> for Vec3F64 {
+    #[inline]
+    fn from(v: nalgebra::Vector3<f64>) -> Self {
+        Self::new(v.x, v.y, v.z)
+    }
+}
+
 // Dynamic-sized vectors from nalgebra (for optimization and large-scale operations)
 /// Dynamic-sized vector with f32 elements.
 pub type DVecF32 = nalgebra::DVector<f32>;
@@ -275,6 +289,23 @@ pub type DVecF64 = nalgebra::DVector<f64>;
 ///
 /// A stack value (no allocation); pairs with [`crate::Mat6F64`].
 pub type Vec6F64 = nalgebra::Vector6<f64>;
+
+/// `N`-vector with f64 elements, for fixed sizes past glam's 4.
+///
+/// A stack value (no allocation); pairs with [`crate::SMatF64`].
+pub type SVecF64<const N: usize> = nalgebra::SVector<f64, N>;
+
+/// 9-vector with f64 elements, e.g. an IMU navigation-state error (rotation, velocity,
+/// position).
+///
+/// A stack value (no allocation); pairs with [`crate::Mat9F64`].
+pub type Vec9F64 = SVecF64<9>;
+
+/// 15-vector with f64 elements, e.g. an IMU navigation-state error plus gyroscope and
+/// accelerometer bias errors.
+///
+/// A stack value (no allocation); pairs with [`crate::Mat15F64`].
+pub type Vec15F64 = SVecF64<15>;
 
 #[cfg(test)]
 mod tests {
@@ -366,6 +397,14 @@ mod tests {
         let glam_v: glam::DVec3 = v.into();
         let back: Vec3F64 = glam_v.into();
         assert_eq!(v, back);
+    }
+
+    #[test]
+    fn test_vec3f64_nalgebra_roundtrip() {
+        let v = Vec3F64::new(1.0, 2.0, 3.0);
+        let n = nalgebra::Vector3::from(v);
+        assert_eq!(n, nalgebra::Vector3::new(1.0, 2.0, 3.0));
+        assert_eq!(Vec3F64::from(n), v);
     }
 
     // Vec3A tests

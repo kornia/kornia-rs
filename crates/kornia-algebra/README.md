@@ -16,6 +16,7 @@
 *   **Manifold Operations:** Exp/Log maps, adjoints, and tangent space operations.
 *   **Optimization Ready:** Analytical Jacobians for all group operations.
 *   **Linear Algebra:** Typed vectors and matrices (`Vec3F32`, `Mat4F32`) with SIMD acceleration (via `glam`).
+*   **Fixed-size f64 blocks:** `SMatF64<R, C>` / `SVecF64<N>` past 4x4 (`Mat6F64`, `Mat9F64`, `Mat15F64`), via `nalgebra`, for pose and IMU-state Jacobians and covariances.
 *   **Quaternions:** Robust unit quaternion support for 3D rotations.
 
 ## 📦 Installation

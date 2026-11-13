@@ -326,6 +326,20 @@ impl Mat3F64 {
     }
 }
 
+impl From<Mat3F64> for nalgebra::Matrix3<f64> {
+    #[inline]
+    fn from(m: Mat3F64) -> Self {
+        Self::from_column_slice(&m.to_cols_array())
+    }
+}
+
+impl From<nalgebra::Matrix3<f64>> for Mat3F64 {
+    #[inline]
+    fn from(m: nalgebra::Matrix3<f64>) -> Self {
+        Self(glam::DMat3::from_cols_array_2d(&m.data.0))
+    }
+}
+
 // 3x3 matrix (aligned, single precision).
 define_matrix_type!(
     Mat3AF32,
@@ -381,10 +395,49 @@ pub type DMatF64 = nalgebra::DMatrix<f64>;
 /// `symmetric_eigen()`.
 pub type Mat6F64 = nalgebra::Matrix6<f64>;
 
+/// `R`x`C` matrix with f64 elements, for fixed sizes past glam's 4x4.
+///
+/// A stack value (no allocation); [`Mat6F64`], [`Mat9F64`] and [`Mat15F64`] are instances.
+pub type SMatF64<const R: usize, const C: usize> = nalgebra::SMatrix<f64, R, C>;
+
+/// 9x9 matrix with f64 elements, e.g. the covariance of an IMU navigation state
+/// (rotation, velocity, position).
+///
+/// A stack value (no allocation).
+pub type Mat9F64 = SMatF64<9, 9>;
+
+/// 15x15 matrix with f64 elements, e.g. the covariance of an IMU navigation state plus
+/// gyroscope and accelerometer biases.
+///
+/// A stack value (no allocation).
+pub type Mat15F64 = SMatF64<15, 15>;
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Vec6F64;
+    use crate::{SVecF64, Vec15F64, Vec6F64, Vec9F64};
+
+    #[test]
+    fn named_fixed_sizes_are_smat_aliases() {
+        let _: SMatF64<6, 6> = Mat6F64::identity();
+        let _: SVecF64<6> = Vec6F64::zeros();
+        let _: SMatF64<9, 9> = Mat9F64::identity();
+        let _: SVecF64<9> = Vec9F64::zeros();
+        let _: SMatF64<15, 15> = Mat15F64::identity();
+        let _: SVecF64<15> = Vec15F64::zeros();
+    }
+
+    #[test]
+    fn mat3f64_nalgebra_roundtrip_keeps_rows_and_columns() {
+        let m = Mat3F64::from_cols_array(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
+        let n = nalgebra::Matrix3::from(m);
+        let rows = nalgebra::Matrix3::new(1.0, 4.0, 7.0, 2.0, 5.0, 8.0, 3.0, 6.0, 9.0);
+        assert_eq!(n, rows);
+        assert_eq!(Mat3F64::from(n), m);
+
+        let v = Vec3F64::new(-1.0, 0.5, 2.0);
+        assert_eq!(Vec3F64::from(n * nalgebra::Vector3::from(v)), m * v);
+    }
 
     #[test]
     fn mat6_cholesky_solves_spd_system() {
