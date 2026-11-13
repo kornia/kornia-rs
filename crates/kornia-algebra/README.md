@@ -74,7 +74,7 @@ fn main() {
 *   **`vec`**: Vector types (`Vec2`, `Vec3`, `Vec4`, and dynamic `DVec`).
 *   **`mat`**: Matrix types (`Mat2`, `Mat3`, `Mat4`, and dynamic `DMat`).
 *   **`quat`**: Quaternion types.
-*   **`linalg`**: General linear algebra helpers.
+*   **`linalg`**: General linear algebra helpers (`svd3`, `cholesky`, and Umeyama rigid/similarity alignment including the outlier-robust `umeyama_f64_robust`).
 *   **`optim`**: Factor graph optimization module.
 *   **`param`**: Parameterization utilities.
 
