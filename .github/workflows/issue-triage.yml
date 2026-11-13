@@ -31,7 +31,7 @@ jobs:
             const welcomeMessage = '## ⚠️ Before Submitting a PR\n\n' +
               'If you plan to work on this, say so here so others do not duplicate it, then link this issue from your PR. ' +
               'PRs need a pasted `kornia-code-review` self-review before a maintainer reviews them. ' +
-              'See our [Contributing Guide](CONTRIBUTING.md) for details.';
+              'See our [Contributing Guide](https://github.com/${{ github.repository }}/blob/main/CONTRIBUTING.md) for details.';
 
             await github.rest.issues.createComment({
               owner: context.repo.owner,
