@@ -123,7 +123,8 @@ struct Args {
     #[argh(switch)]
     sprt: bool,
 
-    /// SPRT expected inlier ratio (default: 0.5)
+    /// SPRT expected inlier ratio (default: 0.5; kornia-3d caps it at 0.3
+    /// until a consensus exists, then tracks the observed ratio)
     #[argh(option, default = "0.5")]
     sprt_epsilon: f64,
 

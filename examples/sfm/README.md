@@ -134,7 +134,8 @@ Observations:
   more views**: SIFT 16 → 22/63 and ORB reaches 10/63 at the stock
   `--geo-min-inliers 15` (the eight-point solver needed 8). RMSE rises slightly
   (2.09 px) because the longer map spans harder views.
-- **`--geo-verify` is the accuracy lever**: SIFT 9 → 22 views, ORB 2 → 10.
+- **`--geo-verify` is the accuracy lever**: SIFT 9 → 16 views (22 with
+  `--sprt`), ORB 2 → 10.
 - **`--wide-baseline 20`** trades views for longer-baseline triangulation.
 - **`--refine-intrinsics`** is near-neutral here (the EXIF focal is already
   accurate: it fits `gamma≈1.00`).
