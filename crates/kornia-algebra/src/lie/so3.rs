@@ -497,6 +497,18 @@ impl SO3F64 {
     /// distance formula implemented in Eigen's [`QuaternionBase::angularDistance()`](https://gitlab.com/libeigen/eigen/-/blob/master/Eigen/src/Geometry/Quaternion.h)
     /// (`2 * atan2(d.vec().norm(), abs(d.w()))`).
     ///
+    /// # Arguments
+    ///
+    /// * `self` - The rotation represented by a normalized quaternion.
+    ///
+    /// # Returns
+    ///
+    /// The shortest rotation angle in radians, in the range `[0, π]`.
+    ///
+    /// # Errors
+    ///
+    /// This method does not return an error.
+    ///
     /// # Example
     ///
     /// ```rust
