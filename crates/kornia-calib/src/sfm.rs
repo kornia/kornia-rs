@@ -2729,9 +2729,17 @@ mod tests {
             registered(&plain),
             "SPRT must not change which views register on a clean rig"
         );
-        assert!(
-            registered(&with_sprt) >= 2,
-            "the bootstrap pair must register"
+        // All three views must register: a two-view result would only prove the
+        // bootstrap pair, which never exercises the PnP path SPRT changes.
+        assert_eq!(
+            registered(&plain),
+            cams.len(),
+            "the plain run must register every camera"
+        );
+        assert_eq!(
+            registered(&with_sprt),
+            cams.len(),
+            "the SPRT run must register every camera"
         );
     }
 
