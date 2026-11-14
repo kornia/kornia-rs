@@ -168,7 +168,8 @@ impl StreamCapture {
                         {
                             // FLUSH_STOP takes the sink pad's stream lock before probes run,
                             // so an in-flight new_sample callback finishes before this clear.
-                            // See GStreamer's FLUSH_START/STOP event design:
+                            // The ordering is exercised by tests::flush_stop_discards_inflight_sample.
+                            // Background on GStreamer's FLUSH_START/STOP events:
                             // https://gstreamer.freedesktop.org/documentation/additional/design/events.html
                             let mut ring = match circular_buffer.lock() {
                                 Ok(ring) => ring,
@@ -679,6 +680,7 @@ mod tests {
                 && pad.send_event(gstreamer::event::FlushStop::new(true))
         });
         attempt_rx.recv_timeout(DEADLINE)?;
+        // A descheduled flush thread can make this window vacuous; the final queue check still applies.
         let early_stop = stopped_rx.recv_timeout(Duration::from_millis(100));
         release_tx.send(())?;
         stopped_rx.recv_timeout(DEADLINE)?;
