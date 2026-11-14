@@ -335,10 +335,10 @@ impl Mat3F64 {
     /// m[6] m[7] m[8]   row 2
     /// ```
     ///
-    /// This is the conventional mathematical layout (and the layout used by
-    /// NumPy, Eigen, and most textbooks). Internally the matrix is stored in
-    /// the column-major order that `glam` requires, so the constructor
-    /// transposes the input.
+    /// This is the conventional row-major mathematical matrix layout.
+    /// The constructor reorders these row-major elements into the column-major
+    /// layout required internally by `glam`, preserving the mathematical matrix
+    /// and entry positions.
     ///
     /// # Arguments
     ///
@@ -379,29 +379,24 @@ impl Mat3F64 {
 
     /// Return `true` if this matrix is a valid rotation matrix within `tol`.
     ///
-    /// A matrix R is a rotation matrix (element of SO(3)) if and only if:
+    /// A matrix R is considered a valid rotation matrix within tolerance `tol` when:
     ///
-    /// 1. **Orthonormality**: `Rᵀ R ≈ I` — every column is a unit vector and
-    ///    all columns are mutually orthogonal.
-    /// 2. **Proper handedness**: `det(R) ≈ +1` — the matrix preserves orientation.
+    /// 1. **Orthonormality**: `Rᵀ R ≈ I` — the maximum absolute entry of
+    ///    `Rᵀ R - I` must be less than or equal to `tol`.
+    /// 2. **Proper handedness**: `det(R) > 0` — the matrix preserves orientation
+    ///    rather than reflecting. This condition is checked independently of `tol`.
     ///
-    /// Both conditions are checked against `tol`. Specifically:
-    ///
-    /// - The maximum absolute entry of `Rᵀ R − I` must be `≤ tol`.
-    /// - `det(R)` must be strictly positive (`det(R) > 0`), and `|det(R) − 1|` must be `≤ tol`.
-    ///   Matrices with non-positive determinants (such as reflections where `det(R) = -1`)
-    ///   are always rejected, even if a large tolerance would otherwise encompass them.
-    ///
-    /// Tolerance `tol` must be finite and non-negative. Non-finite tolerances (NaN, +Inf, -Inf)
-    /// and negative tolerances are rejected immediately. Returns `false` for any non-finite entry,
-    /// invalid tolerance, or if intermediate calculations produce non-finite values.
+    /// Tolerance `tol` must be finite and non-negative. Returns `false` for any
+    /// invalid tolerance (negative, NaN, or infinite), non-finite matrix entries
+    /// or intermediate calculations, matrices whose orthonormality error exceeds
+    /// `tol`, or matrices with non-positive determinants (e.g. reflections).
     ///
     /// # Arguments
     ///
     /// * `self` - The matrix to test.
-    /// * `tol`  - Non-negative, finite tolerance; `1e-6` is a reasonable default for
-    ///   `f64` matrices rounded through intermediate `f32` arithmetic. Non-finite tolerances
-    ///   (such as `f64::NAN` or `f64::INFINITY`) are rejected.
+    /// * `tol`  - Non-negative, finite tolerance for the orthonormality check; `1e-6`
+    ///   is a reasonable default for `f64` matrices rounded through intermediate `f32` arithmetic.
+    ///   Non-finite tolerances (such as `f64::NAN` or `f64::INFINITY`) or negative tolerances return `false`.
     ///
     /// # Returns
     ///
@@ -409,8 +404,9 @@ impl Mat3F64 {
     ///
     /// # Errors
     ///
-    /// This method does not return an error. It returns `false` for
-    /// invalid tolerances (negative, non-finite) or non-finite matrix values.
+    /// This method does not return an error. It returns `false` if the matrix
+    /// has non-finite entries, orthonormality error exceeding `tol`, non-positive
+    /// determinant, or if the tolerance is invalid.
     ///
     /// # Example
     ///
@@ -419,7 +415,7 @@ impl Mat3F64 {
     ///
     /// assert!(Mat3F64::IDENTITY.is_rotation(1e-10));
     ///
-    /// // A reflection has det = -1, so it is not a rotation, even with a large tolerance.
+    /// // A reflection has det = -1 <= 0, so it is not a rotation, even with a large tolerance.
     /// let reflection = Mat3F64::from_rows_array(&[
     ///     -1.0, 0.0, 0.0,
     ///      0.0, 1.0, 0.0,
@@ -428,31 +424,9 @@ impl Mat3F64 {
     /// assert!(!reflection.is_rotation(1e-10));
     /// assert!(!reflection.is_rotation(2.0));
     /// ```
+    #[inline]
     pub fn is_rotation(&self, tol: f64) -> bool {
-        // Reject non-finite entries or invalid tolerance early.
-        if !self.is_finite() || !tol.is_finite() || tol < 0.0 {
-            return false;
-        }
-        // Check orthonormality: max |entry of (RᵀR - I)| <= tol.
-        let ata = self.transpose() * *self;
-        let diff = ata - Mat3F64::IDENTITY;
-        let cols_arr = diff.to_cols_array();
-        let max_err = cols_arr.iter().fold(0.0_f64, |acc, &v| {
-            if v.is_nan() || acc.is_nan() {
-                f64::NAN
-            } else {
-                acc.max(v.abs())
-            }
-        });
-        if !max_err.is_finite() || max_err > tol {
-            return false;
-        }
-        // Check proper handedness: det > 0 and |det - 1| <= tol.
-        let det = self.determinant();
-        if !det.is_finite() || det <= 0.0 || (det - 1.0_f64).abs() > tol {
-            return false;
-        }
-        true
+        crate::lie::validate_rotation_matrix(self, tol).is_ok()
     }
 }
 
@@ -845,6 +819,17 @@ mod tests {
         assert!(!Mat3F64::IDENTITY.is_rotation(-1e-6));
         assert!(!Mat3F64::IDENTITY.is_rotation(f64::NAN));
         assert!(!Mat3F64::IDENTITY.is_rotation(f64::INFINITY));
+
+        // 9. Perturbed scale: diag(1 + 4.9e-7) satisfies max |RᵀR - I| ≈ 9.8e-7 <= 1e-6.
+        // It has det ≈ 1 + 1.47e-6 > 0, so it must be recognized as a valid rotation.
+        let s = 1.0 + 4.9e-7;
+        let scaled_perturbed = Mat3F64::from_rows_array(&[s, 0.0, 0.0, 0.0, s, 0.0, 0.0, 0.0, s]);
+        assert!(scaled_perturbed.is_rotation(1e-6));
+
+        // 10. diag(1.01): max |RᵀR - I| = 0.0201 <= 0.04, but > 0.01.
+        let m_101 = Mat3F64::from_rows_array(&[1.01, 0.0, 0.0, 0.0, 1.01, 0.0, 0.0, 0.0, 1.01]);
+        assert!(m_101.is_rotation(0.04));
+        assert!(!m_101.is_rotation(0.01));
     }
 
     #[test]

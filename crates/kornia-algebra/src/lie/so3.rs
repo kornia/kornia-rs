@@ -365,6 +365,18 @@ impl approx::RelativeEq for SO3F32 {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, thiserror::Error)]
 pub enum RotationError {
+    /// The supplied tolerance is negative or non-finite (NaN, infinity).
+    #[error("tolerance must be non-negative and finite, got {tol}")]
+    InvalidTolerance {
+        /// The invalid tolerance value.
+        tol: f64,
+    },
+
+    /// The matrix contains non-finite entries (NaN, infinity) or intermediate
+    /// calculations produced non-finite values.
+    #[error("matrix entries and intermediate calculations must be finite")]
+    NonFinite,
+
     /// The matrix is not orthonormal (`Rᵀ R ≠ I`).
     #[error("matrix is not orthonormal: max |(RᵀR - I)_ij| = {max_error:.6e}")]
     NotOrthonormal {
@@ -372,12 +384,138 @@ pub enum RotationError {
         max_error: f64,
     },
 
-    /// The matrix does not have determinant +1 (e.g. reflection with det ≈ -1).
-    #[error("matrix is not a proper rotation: det = {det:.6e} (expected +1)")]
+    /// The matrix does not have a positive determinant (e.g. reflection with det ≤ 0).
+    #[error("matrix is not a proper rotation: det = {det:.6e} (expected > 0)")]
     NotProper {
         /// The determinant of the matrix.
         det: f64,
     },
+
+    /// The matrix projection onto SO(3) failed due to zero-length or degenerate column vectors.
+    #[error("matrix projection to SO(3) failed due to zero or linearly dependent column vectors")]
+    DegenerateProjection,
+}
+
+/// Shared internal validator for rotation matrices.
+///
+/// Validates that a 3x3 matrix is an element of SO(3) within tolerance `tol`:
+/// 1. Rejects non-finite or negative `tol`.
+/// 2. Rejects matrices with non-finite entries.
+/// 3. Computes `Rᵀ R` and verifies `max |(RᵀR - I)_ij| <= tol`.
+/// 4. Verifies `det(R) > 0.0` (proper rotation / right-handedness).
+pub(crate) fn validate_rotation_matrix(mat: &Mat3F64, tol: f64) -> Result<(), RotationError> {
+    if !tol.is_finite() || tol < 0.0 {
+        return Err(RotationError::InvalidTolerance { tol });
+    }
+
+    if !mat.is_finite() {
+        return Err(RotationError::NonFinite);
+    }
+
+    let rtr = mat.transpose() * (*mat);
+    let diff = rtr - Mat3F64::IDENTITY;
+
+    // Explicitly verify that intermediate calculations for RᵀR - I are finite
+    // before computing max_error.
+    if !diff.is_finite() {
+        return Err(RotationError::NonFinite);
+    }
+
+    let max_err = diff
+        .to_cols_array()
+        .iter()
+        .fold(0.0_f64, |acc, &x| acc.max(x.abs()));
+
+    if !max_err.is_finite() {
+        return Err(RotationError::NonFinite);
+    }
+
+    if max_err > tol {
+        return Err(RotationError::NotOrthonormal { max_error: max_err });
+    }
+
+    let det = mat.determinant();
+    if !det.is_finite() {
+        return Err(RotationError::NonFinite);
+    }
+
+    if det <= 0.0 {
+        return Err(RotationError::NotProper { det });
+    }
+
+    Ok(())
+}
+
+/// Normalizes a 3D vector using scale-first normalization to avoid underflow
+/// and overflow during norm calculation.
+///
+/// Returns `Err(RotationError::NonFinite)` if any vector component is non-finite (NaN, infinity).
+/// Returns `Err(RotationError::DegenerateProjection)` if the vector has zero length or underflows
+/// to zero.
+fn scale_first_normalize(v: glam::DVec3) -> Result<glam::DVec3, RotationError> {
+    if !v.is_finite() {
+        return Err(RotationError::NonFinite);
+    }
+
+    let max_c = v.x.abs().max(v.y.abs()).max(v.z.abs());
+    if max_c == 0.0 {
+        return Err(RotationError::DegenerateProjection);
+    }
+
+    let scaled = v / max_c;
+    let norm_sq = scaled.length_squared();
+    if !norm_sq.is_finite() {
+        return Err(RotationError::NonFinite);
+    }
+    if norm_sq == 0.0 {
+        return Err(RotationError::DegenerateProjection);
+    }
+
+    let norm = norm_sq.sqrt();
+    let unit = scaled / norm;
+    if !unit.is_finite() {
+        return Err(RotationError::NonFinite);
+    }
+    if !unit.is_normalized() {
+        return Err(RotationError::DegenerateProjection);
+    }
+
+    Ok(unit)
+}
+
+/// Orthonormalizes a 3x3 matrix using Gram-Schmidt process with a right-handed
+/// cross product.
+///
+/// This projects an approximate rotation matrix (already validated to be in SO(3)
+/// within tolerance) to an element of SO(3). Employs scale-first normalization
+/// to prevent underflow with subnormal components, ensuring columns are unit length
+/// within standard floating-point precision (`is_normalized() == true`) and mutually
+/// orthogonal before passing to `glam::DQuat::from_mat3`, preventing `glam_assert` failures.
+///
+/// Returns `Err(RotationError::NonFinite)` if columns or intermediate vectors are non-finite.
+/// Returns `Err(RotationError::DegenerateProjection)` if columns or Gram-Schmidt residuals
+/// are zero or linearly dependent.
+pub(crate) fn project_to_so3(mat: &Mat3F64) -> Result<glam::DMat3, RotationError> {
+    if !mat.is_finite() {
+        return Err(RotationError::NonFinite);
+    }
+
+    let x = mat.0.x_axis;
+    let y = mat.0.y_axis;
+
+    let u0 = scale_first_normalize(x)?;
+    let r1 = y - u0 * u0.dot(y);
+    let u1 = scale_first_normalize(r1)?;
+    let u2 = u0.cross(u1);
+
+    if !u2.is_finite() {
+        return Err(RotationError::NonFinite);
+    }
+    if !u2.is_normalized() {
+        return Err(RotationError::DegenerateProjection);
+    }
+
+    Ok(glam::DMat3::from_cols(u0, u1, u2))
 }
 
 /// A 3D rotation in double precision, stored as a unit quaternion.
@@ -435,18 +573,23 @@ impl SO3F64 {
     }
 
     /// Attempt to construct an `SO3F64` rotation from a 3×3 matrix, validating
-    /// orthonormality (`Rᵀ R = I`) and proper handedness (`det(R) = +1`).
+    /// orthonormality (`Rᵀ R ≈ I`) and proper handedness (`det(R) > 0`).
     ///
     /// Matrices with non-positive determinants (`det ≤ 0.0`, including reflections)
     /// are strictly rejected as improper (`RotationError::NotProper`), even when a large
-    /// tolerance is provided. Non-finite tolerances (NaN, +Inf, -Inf) are rejected
-    /// as [`RotationError::NotOrthonormal`].
+    /// tolerance is provided. Invalid tolerances (negative, NaN, infinity) return
+    /// [`RotationError::InvalidTolerance`], and non-finite matrix entries return
+    /// [`RotationError::NonFinite`].
+    ///
+    /// When the input matrix is accepted within tolerance, it is orthonormalized
+    /// via scale-first Gram-Schmidt projection before quaternion conversion, ensuring
+    /// normalized columns within floating-point precision and numerical robustness
+    /// without panicking under assertion checks.
     ///
     /// # Arguments
     ///
     /// * `mat` - Candidate 3×3 rotation matrix.
-    /// * `tol` - Non-negative, finite tolerance for orthonormality and determinant checks.
-    ///   Non-finite tolerances are rejected.
+    /// * `tol` - Non-negative, finite tolerance for the orthonormality check.
     ///
     /// # Returns
     ///
@@ -454,12 +597,14 @@ impl SO3F64 {
     ///
     /// # Errors
     ///
-    /// Returns [`RotationError::NotOrthonormal`] if `mat` has non-finite entries,
-    /// if `tol` is negative or non-finite (NaN, Inf), or if the maximum absolute entry
-    /// of `Rᵀ R - I` exceeds `tol`.
-    /// Returns [`RotationError::NotProper`] if the matrix is orthonormal but its
-    /// determinant is non-positive (`det ≤ 0.0`) or deviates from +1 by more than `tol`
-    /// (e.g., a reflection matrix).
+    /// Returns [`RotationError::InvalidTolerance`] if `tol` is negative or non-finite.
+    /// Returns [`RotationError::NonFinite`] if `mat` has non-finite entries or intermediate
+    /// calculations produce non-finite values.
+    /// Returns [`RotationError::NotOrthonormal`] if the maximum absolute entry of `Rᵀ R - I`
+    /// exceeds `tol`.
+    /// Returns [`RotationError::NotProper`] if the matrix has a non-positive determinant (`det ≤ 0.0`).
+    /// Returns [`RotationError::DegenerateProjection`] if the matrix columns or Gram-Schmidt residuals
+    /// are degenerate (zero-length or collinear), preventing projection to SO(3).
     ///
     /// # Example
     ///
@@ -486,36 +631,11 @@ impl SO3F64 {
     /// ));
     /// ```
     pub fn try_from_matrix(mat: &Mat3F64, tol: f64) -> Result<Self, RotationError> {
-        let ata = mat.transpose() * *mat;
-        let diff = ata - Mat3F64::IDENTITY;
-        let cols_arr = diff.to_cols_array();
-        let max_error = cols_arr.iter().fold(0.0_f64, |acc, &v| {
-            if v.is_nan() || acc.is_nan() {
-                f64::NAN
-            } else {
-                acc.max(v.abs())
-            }
-        });
-
-        // Explicitly reject non-finite matrix entries, invalid tolerances (negative, NaN, Inf),
-        // non-finite max_error (NaN, +Inf, -Inf), or max_error > tol.
-        if !mat.is_finite()
-            || !tol.is_finite()
-            || tol < 0.0
-            || !max_error.is_finite()
-            || max_error > tol
-        {
-            return Err(RotationError::NotOrthonormal { max_error });
-        }
-
-        let det = mat.determinant();
-        // Explicitly reject non-finite determinant, non-positive determinant (<= 0.0),
-        // or determinant deviating from +1 by more than tol.
-        if !det.is_finite() || det <= 0.0 || (det - 1.0_f64).abs() > tol {
-            return Err(RotationError::NotProper { det });
-        }
-
-        Ok(Self::from_matrix(mat))
+        validate_rotation_matrix(mat, tol)?;
+        let ortho = project_to_so3(mat)?;
+        Ok(Self {
+            q: QuatF64(glam::DQuat::from_mat3(&ortho).normalize()),
+        })
     }
 
     /// Create from the rotation block of a 4x4 homogeneous matrix.
@@ -1421,10 +1541,25 @@ mod tests_f64 {
 
     #[test]
     fn try_from_matrix_known_rotation() {
-        // 90-degree rotation around Z
+        // Analytical reference: +90° rotation around Z axis.
+        // Quaternion convention: [x, y, z, w] = [0, 0, sin(45°), cos(45°)] = [0, 0, 1/√2, 1/√2].
+        // Cross-checked against standard SO(3) exponential map: exp([0, 0, π/2]^)
+        // and Eigen's Geometry module documentation (Eigen::AngleAxisd and Eigen::Quaterniond):
+        // https://libeigen.gitlab.io/eigen/docs-master/classEigen_1_1AngleAxis.html
+        // https://libeigen.gitlab.io/eigen/docs-master/classEigen_1_1Quaternion.html
+        // Eigen::AngleAxisd(pi/2, Vector3d::UnitZ()) analytically maps to
+        // Quaterniond(cos(theta/2), axis.x * sin(theta/2), axis.y * sin(theta/2), axis.z * sin(theta/2)),
+        // which gives [x, y, z, w] = [0, 0, 1/sqrt(2), 1/sqrt(2)].
+        let expected_val = std::f64::consts::FRAC_1_SQRT_2;
         let mat = Mat3F64::from_rows_array(&[0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
         let r = SO3F64::try_from_matrix(&mat, 1e-12).unwrap();
         assert_mat_eq(&r.matrix(), &mat, 1e-12);
+
+        let q = r.q;
+        assert!(q.x.abs() < 1e-12);
+        assert!(q.y.abs() < 1e-12);
+        assert!((q.z.abs() - expected_val).abs() < 1e-12);
+        assert!((q.w.abs() - expected_val).abs() < 1e-12);
     }
 
     #[test]
@@ -1475,29 +1610,30 @@ mod tests_f64 {
         let with_nan =
             Mat3F64::from_rows_array(&[f64::NAN, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
         let err = SO3F64::try_from_matrix(&with_nan, 1e-6).unwrap_err();
-        match err {
-            RotationError::NotOrthonormal { max_error } => {
-                assert!(max_error.is_nan());
-            }
-            _ => panic!("expected NotOrthonormal with NaN, got {err:?}"),
-        }
+        assert_eq!(err, RotationError::NonFinite);
 
         let with_inf =
             Mat3F64::from_rows_array(&[f64::INFINITY, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
         let err = SO3F64::try_from_matrix(&with_inf, 1e-6).unwrap_err();
-        assert!(matches!(err, RotationError::NotOrthonormal { .. }));
+        assert_eq!(err, RotationError::NonFinite);
     }
 
     #[test]
     fn try_from_matrix_rejects_invalid_tolerance() {
         let err_neg = SO3F64::try_from_matrix(&Mat3F64::IDENTITY, -1e-6).unwrap_err();
-        assert!(matches!(err_neg, RotationError::NotOrthonormal { .. }));
+        assert_eq!(err_neg, RotationError::InvalidTolerance { tol: -1e-6 });
 
         let err_nan = SO3F64::try_from_matrix(&Mat3F64::IDENTITY, f64::NAN).unwrap_err();
-        assert!(matches!(err_nan, RotationError::NotOrthonormal { .. }));
+        match err_nan {
+            RotationError::InvalidTolerance { tol } => assert!(tol.is_nan()),
+            _ => panic!("expected InvalidTolerance for NaN, got {err_nan:?}"),
+        }
 
         let err_inf = SO3F64::try_from_matrix(&Mat3F64::IDENTITY, f64::INFINITY).unwrap_err();
-        assert!(matches!(err_inf, RotationError::NotOrthonormal { .. }));
+        assert_eq!(
+            err_inf,
+            RotationError::InvalidTolerance { tol: f64::INFINITY }
+        );
     }
 
     #[test]
@@ -1519,34 +1655,138 @@ mod tests_f64 {
         ]);
         assert!(large_mat.is_finite());
         let err = SO3F64::try_from_matrix(&large_mat, 1e-6).unwrap_err();
-        match err {
-            RotationError::NotOrthonormal { max_error } => {
-                assert!(!max_error.is_finite());
-            }
-            _ => panic!("expected NotOrthonormal with non-finite max_error, got {err:?}"),
-        }
+        assert_eq!(err, RotationError::NonFinite);
 
         // Matrix with f64::MAX:
         let max_mat = Mat3F64::from_rows_array(&[f64::MAX, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
         assert!(max_mat.is_finite());
         let err_max = SO3F64::try_from_matrix(&max_mat, 1e-6).unwrap_err();
-        match err_max {
-            RotationError::NotOrthonormal { max_error } => {
-                assert!(!max_error.is_finite());
-            }
-            _ => panic!("expected NotOrthonormal with non-finite max_error, got {err_max:?}"),
-        }
+        assert_eq!(err_max, RotationError::NonFinite);
 
         // Finite matrix whose RᵀR off-diagonal dot-product produces +Inf - Inf = NaN:
         let nan_prod_mat =
             Mat3F64::from_rows_array(&[1e200, -1e200, 0.0, 1e200, 1e200, 0.0, 0.0, 0.0, 1.0]);
         assert!(nan_prod_mat.is_finite());
         let err_nan_prod = SO3F64::try_from_matrix(&nan_prod_mat, 1e-6).unwrap_err();
-        match err_nan_prod {
-            RotationError::NotOrthonormal { max_error } => {
-                assert!(max_error.is_nan());
-            }
-            _ => panic!("expected NotOrthonormal with NaN max_error, got {err_nan_prod:?}"),
-        }
+        assert_eq!(err_nan_prod, RotationError::NonFinite);
+    }
+
+    #[test]
+    fn try_from_matrix_perturbed_scale_passes_and_quaternion_is_unit() {
+        // Small scale perturbation where RᵀR - I is within tolerance and det > 0.
+        let s = 1.0 + 4.9e-7;
+        let scaled_perturbed = Mat3F64::from_rows_array(&[s, 0.0, 0.0, 0.0, s, 0.0, 0.0, 0.0, s]);
+        let so3 = SO3F64::try_from_matrix(&scaled_perturbed, 1e-6).unwrap();
+        let q = so3.q;
+        let len = (q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w).sqrt();
+        assert!(
+            (len - 1.0).abs() < 1e-12,
+            "quaternion length {} is not unit",
+            len
+        );
+    }
+
+    #[test]
+    fn try_from_matrix_approximate_scale_does_not_panic_under_glam_assert() {
+        // diag(1.01, 1.01, 1.01) has RᵀR = diag(1.0201, 1.0201, 1.0201).
+        // max |RᵀR - I| = 0.0201 <= 0.04.
+        // Its determinant is 1.01³ ≈ 1.0303 > 0.
+        // It must pass validation at tol = 0.04 and project to a valid unit quaternion
+        // without panicking under glam assertions.
+        let m = Mat3F64::from_rows_array(&[1.01, 0.0, 0.0, 0.0, 1.01, 0.0, 0.0, 0.0, 1.01]);
+        let so3 = SO3F64::try_from_matrix(&m, 0.04).expect("should accept scale within tol");
+        let q = so3.q;
+        let len = (q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w).sqrt();
+        assert!(
+            (len - 1.0).abs() < 1e-12,
+            "quaternion length {} is not unit",
+            len
+        );
+
+        // Verify inverse behavior: SO3 * SO3.inverse() == Identity
+        let inv = so3.inverse();
+        let prod = so3 * inv;
+        let diff = (prod.q.w.abs() - 1.0).abs();
+        assert!(diff < 1e-12, "inverse identity diff: {}", diff);
+    }
+
+    #[test]
+    fn try_from_matrix_subnormal_column_does_not_panic_under_glam_assert() {
+        // Subnormal diagonal element: 1e-320 has (1e-320)² = 0.0 (underflow in standard dot product).
+        // At tol = 1.0, RᵀR - I = diag(-1.0, 0.0, 0.0), so max_error = 1.0 <= tol.
+        // Determinant is 1e-320 > 0.0.
+        // Scale-first normalization avoids underflow during projection, producing
+        // a valid unit quaternion without panicking under glam assertions.
+        let mat = Mat3F64::from_rows_array(&[1e-320, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+        let res = SO3F64::try_from_matrix(&mat, 1.0);
+        let so3 = res.expect("scale-first normalization should succeed for subnormal column");
+        let q = so3.q;
+        assert!(q.x.is_finite() && q.y.is_finite() && q.z.is_finite() && q.w.is_finite());
+        let len = (q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w).sqrt();
+        assert!(
+            (len - 1.0).abs() < 1e-12,
+            "quaternion length {len} is not unit"
+        );
+
+        // Verify inverse property
+        let inv = so3.inverse();
+        let prod = so3 * inv;
+        let diff = (prod.q.w.abs() - 1.0).abs();
+        assert!(diff < 1e-12, "inverse identity diff: {diff}");
+    }
+
+    #[test]
+    fn project_to_so3_distinguishes_degenerate_from_non_finite() {
+        // 1. Zero column vector is DegenerateProjection, not NonFinite
+        let zero_col_mat = Mat3F64::from_cols(
+            Vec3F64::ZERO,
+            Vec3F64::new(0.0, 1.0, 0.0),
+            Vec3F64::new(0.0, 0.0, 1.0),
+        );
+        let err_zero = project_to_so3(&zero_col_mat).unwrap_err();
+        assert_eq!(err_zero, RotationError::DegenerateProjection);
+
+        // 2. Collinear columns (Gram-Schmidt residual zero) is DegenerateProjection
+        let collinear_mat = Mat3F64::from_cols(
+            Vec3F64::new(1.0, 0.0, 0.0),
+            Vec3F64::new(1.0, 0.0, 0.0), // y is parallel to x
+            Vec3F64::new(0.0, 0.0, 1.0),
+        );
+        let err_collinear = project_to_so3(&collinear_mat).unwrap_err();
+        assert_eq!(err_collinear, RotationError::DegenerateProjection);
+
+        // 3. Non-finite column is NonFinite
+        let nan_col_mat = Mat3F64::from_cols(
+            Vec3F64::new(f64::NAN, 0.0, 0.0),
+            Vec3F64::new(0.0, 1.0, 0.0),
+            Vec3F64::new(0.0, 0.0, 1.0),
+        );
+        let err_nan = project_to_so3(&nan_col_mat).unwrap_err();
+        assert_eq!(err_nan, RotationError::NonFinite);
+
+        let inf_col_mat = Mat3F64::from_cols(
+            Vec3F64::new(1.0, 0.0, 0.0),
+            Vec3F64::new(0.0, f64::INFINITY, 0.0),
+            Vec3F64::new(0.0, 0.0, 1.0),
+        );
+        let err_inf = project_to_so3(&inf_col_mat).unwrap_err();
+        assert_eq!(err_inf, RotationError::NonFinite);
+
+        // 4. Non-finite in third column is NonFinite
+        let nan_col3_mat = Mat3F64::from_cols(
+            Vec3F64::new(1.0, 0.0, 0.0),
+            Vec3F64::new(0.0, 1.0, 0.0),
+            Vec3F64::new(0.0, 0.0, f64::NAN),
+        );
+        let err_nan3 = project_to_so3(&nan_col3_mat).unwrap_err();
+        assert_eq!(err_nan3, RotationError::NonFinite);
+
+        let inf_col3_mat = Mat3F64::from_cols(
+            Vec3F64::new(1.0, 0.0, 0.0),
+            Vec3F64::new(0.0, 1.0, 0.0),
+            Vec3F64::new(0.0, 0.0, f64::INFINITY),
+        );
+        let err_inf3 = project_to_so3(&inf_col3_mat).unwrap_err();
+        assert_eq!(err_inf3, RotationError::NonFinite);
     }
 }

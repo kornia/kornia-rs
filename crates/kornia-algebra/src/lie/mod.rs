@@ -103,4 +103,5 @@ pub use se2::SE2F32;
 pub use se3::{SE3F32, SE3F64};
 pub use sim3::Sim3F32;
 pub use so2::SO2F32;
+pub(crate) use so3::validate_rotation_matrix;
 pub use so3::{RotationError, SO3F32, SO3F64};
