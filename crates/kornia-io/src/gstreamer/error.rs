@@ -1,5 +1,6 @@
 /// An error type for the stream module.
 #[derive(thiserror::Error, Debug)]
+#[non_exhaustive]
 pub enum StreamCaptureError {
     /// A GStreamer error: initialization, building the pipeline, or an error posted by a
     /// pipeline element while it runs (with the element and debug details in the message).
@@ -37,11 +38,6 @@ pub enum StreamCaptureError {
     /// An error occurred during GStreamer to map the buffer to an ImageFrame.
     #[error("Failed to create an image frame")]
     CreateImageFrameError,
-
-    // TODO: support later on ImageError
-    /// An error occurred during processing the image frame.
-    #[error(transparent)]
-    ProcessImageFrameError(#[from] Box<dyn std::error::Error + Send + Sync>),
 
     /// An error occurred during GStreamer to send eos event.
     #[error("Failed to send eos event")]
@@ -81,7 +77,13 @@ pub enum StreamCaptureError {
         got: usize,
     },
 
-    /// An error occurred when the image is not valid.
+    /// Building a kornia `Image` from a captured GStreamer frame failed.
+    ///
+    /// A buffer too short for the frame is reported first as [`Self::BufferSizeMismatch`];
+    /// this variant covers what the `Image` constructor still rejects after that check.
+    /// The wrapped [`kornia_image::ImageError`] says exactly what was wrong, and this error
+    /// shows its message unchanged. Callers of the video reader receive it inside
+    /// [`VideoReaderError::StreamCaptureError`].
     #[error(transparent)]
     ImageError(#[from] kornia_image::ImageError),
 
@@ -113,4 +115,51 @@ pub enum VideoReaderError {
     /// An error occurred in the stream capture process.
     #[error(transparent)]
     StreamCaptureError(#[from] StreamCaptureError),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{StreamCaptureError, VideoReaderError};
+    use kornia_image::{Image, ImageError, ImageSize};
+    use std::error::Error as _;
+
+    /// Builds a 2x2 RGB image; `?` converts an `ImageError` into a `StreamCaptureError`.
+    fn image_from_bytes(data: Vec<u8>) -> Result<Image<u8, 3>, StreamCaptureError> {
+        let size = ImageSize {
+            width: 2,
+            height: 2,
+        };
+        Ok(Image::<u8, 3>::new(size, data)?)
+    }
+
+    // Exercises the From/Display/source() mechanics directly: `InvalidChannelShape` cannot be
+    // produced through the capture path, because `image_from_gst_buffer` rejects short buffers
+    // with `BufferSizeMismatch` (gstreamer/mod.rs:381) before building the image.
+    #[test]
+    fn image_error_reaches_video_reader_error_unchanged() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // A 2x2 RGB image needs 2 * 2 * 3 = 12 bytes; 5 bytes must fail.
+        let err = image_from_bytes(vec![0u8; 5])
+            .err()
+            .ok_or("expected an error for 5 bytes of a 2x2 RGB image")?;
+
+        assert!(matches!(
+            err,
+            StreamCaptureError::ImageError(ImageError::InvalidChannelShape(5, 12))
+        ));
+
+        let expected = ImageError::InvalidChannelShape(5, 12).to_string();
+        assert_eq!(err.to_string(), expected);
+        // `transparent` forwards source() to the inner error, which has none: no extra chain link.
+        assert!(err.source().is_none());
+
+        let reader_err = VideoReaderError::from(err);
+        assert!(matches!(
+            reader_err,
+            VideoReaderError::StreamCaptureError(StreamCaptureError::ImageError(_))
+        ));
+        assert_eq!(reader_err.to_string(), expected);
+        assert!(reader_err.source().is_none());
+        Ok(())
+    }
 }
