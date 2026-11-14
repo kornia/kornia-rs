@@ -12,7 +12,9 @@
 //! `cudarc::driver::result::launch_kernel` with stack parameter arrays,
 //! counts kept on the device (grid-stride kernels), one stream sync (the
 //! counter download). Device buffers grow geometrically on a cold step;
-//! the logical capacities (and [`TsdfError::PoolFull`]) follow the CPU.
+//! the logical capacities (and [`TsdfError::PoolFull`]) follow the CPU,
+//! except that `needed` is a lower bound once a step's misses overflow a
+//! miss set of `2^16` slots that the pool cannot hold.
 
 use std::ffi::c_void;
 use std::marker::PhantomData;
@@ -57,6 +59,53 @@ const STAGE_ALIGN: usize = 256;
 const MIN_BLOCKS: usize = 1024;
 /// Smallest miss-set size.
 const MIN_MISS_SLOTS: usize = 1 << 12;
+/// Miss-set size from which a step that cannot fit the pool fails at once
+/// instead of growing the set to count every miss (`PoolFull::needed` is
+/// exact below it, a lower bound above).
+pub(crate) const MAX_EXACT_MISS_SLOTS: usize = 1 << 16;
+/// Test-only fault injection: fails one upcoming call of an op on this
+/// thread, as a device error would.
+#[cfg(test)]
+pub(crate) mod fault {
+    use std::cell::Cell;
+
+    use super::TsdfError;
+
+    #[derive(Clone, Copy, PartialEq)]
+    pub(crate) enum Op {
+        Alloc,
+        Dtoh,
+    }
+
+    thread_local! {
+        static ARMED: Cell<Option<(Op, usize)>> = const { Cell::new(None) };
+    }
+
+    /// Fails the `skip`-th next call of `op` (0 = the next).
+    pub(crate) fn arm(op: Op, skip: usize) {
+        ARMED.set(Some((op, skip)));
+    }
+
+    /// Whether the armed fault is still pending (it did not fire).
+    pub(crate) fn disarm() -> bool {
+        ARMED.take().is_some()
+    }
+
+    pub(crate) fn hit(op: Op) -> Result<(), TsdfError> {
+        match ARMED.get() {
+            Some((o, 0)) if o == op => {
+                ARMED.set(None);
+                Err(TsdfError::Cuda("injected fault".into()))
+            }
+            Some((o, n)) if o == op => {
+                ARMED.set(Some((o, n - 1)));
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
 /// `depth_kind` of a `u16` / `f32` depth image (`tsdf.rs`).
 const DEPTH_U16: u32 = 0;
 const DEPTH_F32: u32 = 1;
@@ -199,6 +248,8 @@ impl Dev {
     }
 
     fn alloc<T: DeviceRepr + ValidAsZeroBits>(&self, len: usize) -> Result<DevBuf<T>, TsdfError> {
+        #[cfg(test)]
+        fault::hit(fault::Op::Alloc)?;
         let buf = self.stream.alloc_zeros::<T>(len.max(1)).map_err(cuda)?;
         let ptr = {
             let (p, _record) = buf.device_ptr(&self.stream);
@@ -221,6 +272,8 @@ impl Dev {
     }
 
     fn dtoh<T>(&self, dst: &mut [T], src: u64) -> Result<(), TsdfError> {
+        #[cfg(test)]
+        fault::hit(fault::Op::Dtoh)?;
         if dst.is_empty() {
             return Ok(());
         }
@@ -680,6 +733,19 @@ impl Engine {
         1usize << (3 * self.log2)
     }
 
+    /// Test hook: `(heads, index headers, index stride, dirty list, hits)`.
+    #[cfg(test)]
+    fn dims(&self) -> (usize, usize, usize, usize, usize) {
+        let ix = &self.index;
+        (
+            self.heads.len(),
+            ix.headers,
+            ix.stride,
+            self.s.dirty_list.len,
+            self.s.hits.len,
+        )
+    }
+
     fn device_bytes(&self) -> usize {
         let ix = &self.index;
         ix.headers * (ix.slots * 12 + ix.stride * (2 * 12 + 8 + 4 + 8 + 4 + 4))
@@ -804,6 +870,13 @@ impl Engine {
             let c = self.s.host_counters;
             let abort = c[tc::SC_ABORT];
             if abort & tc::ABORT_MISS_SET != 0 {
+                // A full set holds more misses than the pool can ever
+                // take: past `MAX_EXACT_MISS_SLOTS` fail now, not after
+                // doubling (and re-running every touch) to count them all.
+                let slots = self.s.miss_slots;
+                if slots >= MAX_EXACT_MISS_SLOTS && slots > self.pool_room(h, growth) {
+                    self.make_room(h, slots + 1, growth)?;
+                }
                 self.grow_miss_set(input.n)?;
                 continue;
             }
@@ -1030,16 +1103,35 @@ impl Engine {
 
     /// Doubles the miss set (cold) after it overflowed.
     fn grow_miss_set(&mut self, n: usize) -> Result<(), TsdfError> {
-        let slots = 2 * self.s.miss_slots;
+        self.resize_miss_set(n, 2 * self.s.miss_slots)
+    }
+
+    /// A miss set of `slots` (a power of two) for `n` observations; all
+    /// or nothing (every buffer is allocated before any is replaced).
+    fn resize_miss_set(&mut self, n: usize, slots: usize) -> Result<(), TsdfError> {
         let dev = &self.dev;
-        self.s.miss_keys = dev.alloc(slots)?;
-        self.s.miss_mark = dev.alloc(slots)?;
-        self.s.miss_list = dev.alloc(slots)?;
-        self.s.miss_rank = dev.alloc(slots)?;
-        self.s.new_keys = dev.alloc(slots)?;
-        self.s.news = dev.alloc(n.max(1) * slots)?;
-        self.s.miss_slots = slots;
+        let miss_keys = dev.alloc(slots)?;
+        let miss_mark = dev.alloc(slots)?;
+        let miss_list = dev.alloc(slots)?;
+        let miss_rank = dev.alloc(slots)?;
+        let new_keys = dev.alloc(slots)?;
+        let news = dev.alloc(n.max(1) * slots)?;
+        let s = &mut self.s;
+        (s.miss_keys, s.miss_mark, s.miss_list) = (miss_keys, miss_mark, miss_list);
+        (s.miss_rank, s.new_keys, s.news) = (miss_rank, new_keys, news);
+        s.miss_slots = slots;
         Ok(())
+    }
+
+    /// Most blocks header `h` can still take: its logical capacity under
+    /// `Fixed`, the `u32` voxel-index limit otherwise.
+    fn pool_room(&self, h: usize, growth: PoolGrowth) -> usize {
+        let pages = self.pools.pages;
+        match growth {
+            PoolGrowth::Fixed => (self.heads[h].cap.saturating_sub(self.heads[h].len))
+                .min(self.pools.cap.saturating_sub(pages)),
+            PoolGrowth::Geometric => max_blocks(self.voxels()).saturating_sub(pages),
+        }
     }
 
     /// Room for `m` more blocks in header `h`: the CPU's capacity rule
@@ -1073,18 +1165,19 @@ impl Engine {
         if blocks > self.index.stride {
             let cap = self.heads.iter().map(|h| h.cap).max().unwrap_or(blocks);
             let stride = (2 * self.index.stride).max(blocks).min(cap.max(blocks));
-            let headers = self.index.headers;
-            self.index
-                .relayout(&self.dev, &self.heads, headers, stride)?;
             let dev = &self.dev;
             let n = self.s.staged.len().max(1);
+            // The scratch first, the index last: a failure leaves the old
+            // stride, so a retry regrows whatever is missing.
             ensure(dev, &mut self.s.hits, n * stride)?;
             ensure(dev, &mut self.s.dirty_list, stride)?;
             let slots = hash_slots(stride);
             if slots > self.s.miss_slots {
-                self.s.miss_slots = slots / 2;
-                self.grow_miss_set(n)?;
+                self.resize_miss_set(n, slots)?;
             }
+            let headers = self.index.headers;
+            self.index
+                .relayout(&self.dev, &self.heads, headers, stride)?;
         }
         if pages > self.pools.phys {
             let phys = (2 * self.pools.phys)
@@ -1332,8 +1425,27 @@ impl Engine {
     }
 
     /// Full extraction of header `h` appended to `mesh` (global indices),
-    /// mapped by `xf` when given.
+    /// mapped by `xf` when given. On error `mesh` is as it was.
     fn extract(
+        &mut self,
+        h: usize,
+        mp: &MeshParams,
+        xf: Option<&tc::Rigid>,
+        mesh: &mut TriangleMesh,
+    ) -> Result<(), TsdfError> {
+        let (v, t) = (mesh.vertices.len(), mesh.triangles.len());
+        let (n, c) = (mesh.normals.len(), mesh.colors.len());
+        let res = self.extract_append(h, mp, xf, mesh);
+        if res.is_err() {
+            mesh.vertices.truncate(v);
+            mesh.triangles.truncate(t);
+            mesh.normals.truncate(n);
+            mesh.colors.truncate(c);
+        }
+        res
+    }
+
+    fn extract_append(
         &mut self,
         h: usize,
         mp: &MeshParams,
@@ -1582,6 +1694,15 @@ impl Engine {
         if n <= self.heads.len() {
             return Ok(());
         }
+        // The index first: `heads.len() <= index.headers` must survive a
+        // failed relayout (the old index is kept), or later steps index
+        // past its buffers.
+        if n > self.index.headers {
+            let headers = n.max(2 * self.index.headers);
+            let stride = self.index.stride;
+            self.index
+                .relayout(&self.dev, &self.heads, headers, stride)?;
+        }
         let cap = self.params.block_capacity;
         self.heads.resize(
             n,
@@ -1590,12 +1711,6 @@ impl Engine {
                 ..Head::default()
             },
         );
-        if n > self.index.headers {
-            let headers = n.max(2 * self.index.headers);
-            let stride = self.index.stride;
-            self.index
-                .relayout(&self.dev, &self.heads, headers, stride)?;
-        }
         Ok(())
     }
 
@@ -1895,7 +2010,8 @@ where
     ///
     /// # Errors
     ///
-    /// As [`TsdfVolume::extract_mesh_into`], plus [`TsdfError::Cuda`].
+    /// As [`TsdfVolume::extract_mesh_into`], plus [`TsdfError::Cuda`]
+    /// (`mesh` is then empty).
     pub fn extract_mesh_into(
         &mut self,
         params: &MeshParams,
@@ -1989,6 +2105,13 @@ where
     #[cfg(test)]
     pub(crate) fn miss_slots(&self) -> usize {
         self.e.s.miss_slots
+    }
+
+    /// Test hook: the engine's `(heads, index headers, stride, dirty list,
+    /// hits)` sizes.
+    #[cfg(test)]
+    pub(crate) fn dims(&self) -> (usize, usize, usize, usize, usize) {
+        self.e.dims()
     }
 
     /// Allocated block keys, ascending (downloads; cold).
@@ -2297,7 +2420,7 @@ where
     /// # Errors
     ///
     /// As [`super::SubmapTsdf::extract_mesh_into`], plus
-    /// [`TsdfError::Cuda`].
+    /// [`TsdfError::Cuda`] (`mesh` is then empty).
     pub fn extract_mesh_into(
         &mut self,
         filter: SubmapFilter<'_>,
@@ -2314,7 +2437,10 @@ where
             let h = &self.book.headers[slot];
             if filter.matches(h.id) {
                 let xf = rigid_from_pose(&h.world_from_submap)?;
-                self.e.extract(slot, params, Some(&xf), mesh)?;
+                if let Err(e) = self.e.extract(slot, params, Some(&xf), mesh) {
+                    mesh.clear();
+                    return Err(e);
+                }
             }
         }
         Ok(())
@@ -2533,6 +2659,20 @@ where
         let mut pools = Pools::with_capacity(1, Self::VOXELS, self.e.params.color);
         self.e.download(s, &mut index, &mut pools)?;
         Ok(Some(content_hash(&index, &pools)))
+    }
+
+    /// Test hook: grows the header table to `n` headers.
+    #[cfg(test)]
+    pub(crate) fn ensure_headers(&mut self, n: usize) -> Result<(), TsdfError> {
+        self.e.dev.bind()?;
+        self.e.ensure_headers(n)
+    }
+
+    /// Test hook: the engine's `(heads, index headers, stride, dirty list,
+    /// hits)` sizes.
+    #[cfg(test)]
+    pub(crate) fn dims(&self) -> (usize, usize, usize, usize, usize) {
+        self.e.dims()
     }
 
     /// Test hook: a submap's index and voxels on the host.

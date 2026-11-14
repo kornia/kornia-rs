@@ -1798,3 +1798,28 @@ fn tsdf_fp_environment_rejected() {
     .join()
     .unwrap();
 }
+
+/// The device counts pixels and strides its grid loops in `u32`: a size
+/// whose `w * h` reaches `2^31` (e.g. exactly `2^32`, which wraps to 0)
+/// is refused up front.
+#[test]
+fn tsdf_image_pixel_count_fits_device_u32() {
+    use super::sensor::check_image_size;
+    let size = |width, height| ImageSize { width, height };
+    assert!(check_image_size(size(1 << 24, 127)).is_ok());
+    assert!(check_image_size(size(1, 1 << 24)).is_ok());
+    for (w, h) in [
+        (1 << 24, 128),
+        (1 << 16, 1 << 16),
+        (1 << 24, 256),
+        (1 << 24, 1 << 24),
+    ] {
+        assert!(
+            matches!(
+                check_image_size(size(w, h)),
+                Err(TsdfError::InvalidParameter { field: "size", .. })
+            ),
+            "{w}x{h}"
+        );
+    }
+}

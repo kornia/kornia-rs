@@ -1320,3 +1320,196 @@ fn tsdf_submap_errors_and_growth_like_cpu() {
         })
     ));
 }
+
+// ------------------------------------------- device errors (fault injection) ----
+
+use super::cuda::{fault, MAX_EXACT_MISS_SLOTS};
+
+/// Runs `body(k)` for `k = 0, 1, ..` until the fault it arms (the `k`-th
+/// next call of some op) no longer fires, i.e. every call of the sequence
+/// has failed once; returns how many did.
+fn sweep_faults(mut body: impl FnMut(usize)) -> usize {
+    for k in 0..256 {
+        body(k);
+        if fault::disarm() {
+            return k;
+        }
+    }
+    panic!("the fault never stopped firing");
+}
+
+/// A failed header-table growth leaves `heads` no longer than the index's
+/// headers (later steps address `index[h]` for `h < heads.len()`), and a
+/// retry completes it.
+#[test]
+fn tsdf_cuda_failed_header_growth_keeps_heads_within_index() {
+    let w = world();
+    let p = SubmapParams {
+        max_submaps: 2,
+        ..submap_params(false)
+    };
+    let mut errors = 0;
+    let fired = sweep_faults(|k| {
+        let mut map = CudaSubmapTsdf::<8>::new(p.clone(), stream()).unwrap();
+        map.add_agent(AgentId(0), rig(&w.rig_a), spawn_every_two())
+            .unwrap();
+        fault::arm(fault::Op::Alloc, k);
+        let r = map.ensure_headers(3);
+        let (heads, headers, ..) = map.dims();
+        assert!(heads <= headers, "k={k}: {heads} heads, {headers} headers");
+        if r.is_err() {
+            errors += 1;
+            map.ensure_headers(3).unwrap();
+        }
+        let (heads, headers, ..) = map.dims();
+        assert_eq!((heads, headers >= 3), (3, true), "k={k}");
+    });
+    assert!(
+        fired > 0 && errors == fired,
+        "{fired} faults, {errors} errors"
+    );
+}
+
+/// A failed index regrowth leaves the scratch buffers at least as large as
+/// the index's stride, before and after the retry (the dirty list and the
+/// hit lists are indexed by pool).
+#[test]
+fn tsdf_cuda_failed_reserve_keeps_scratch_in_step_with_the_index() {
+    let mut errors = 0;
+    let fired = sweep_faults(|k| {
+        let mut vol = CudaTsdfVolume::<8>::new(layout(), params(1 << 16), stream()).unwrap();
+        fault::arm(fault::Op::Alloc, k);
+        let r = vol.reserve(5000);
+        let check = |vol: &CudaTsdfVolume<8>, when: &str| {
+            let (_, _, stride, dirty, hits) = vol.dims();
+            assert!(
+                dirty >= stride && hits >= stride,
+                "k={k} {when}: {dirty}/{hits} < {stride}"
+            );
+        };
+        check(&vol, "after");
+        if r.is_err() {
+            errors += 1;
+            vol.reserve(5000).unwrap();
+            check(&vol, "after retry");
+        }
+        assert!(vol.dims().2 >= 5000, "k={k}: stride");
+    });
+    assert!(
+        fired > 0 && errors == fired,
+        "{fired} faults, {errors} errors"
+    );
+}
+
+/// A step that touches far more blocks than a fixed pool can ever hold
+/// fails with `PoolFull` once the miss set has reached its exact-count
+/// bound, without doubling it (and re-running every touch) to hold them all.
+#[test]
+fn tsdf_cuda_pool_full_stops_growing_the_miss_set() {
+    let fine = TsdfLayout::new(0.005, 4.0).unwrap();
+    let s = pinhole(640, 360, 500.0, (0.1, 7.0));
+    let size = s.sensor.size();
+    let mut x = 0x2545_f491_4f6c_dd1du64;
+    let data = (0..size.width * size.height)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            0.5 + 4.5 * (x >> 40) as f32 / (1u64 << 24) as f32
+        })
+        .collect();
+    let d = DepthImage::new(Image::new(size, data).unwrap(), 1.0).unwrap();
+    let mut vol = CudaTsdfVolume::<8>::new(
+        fine,
+        TsdfParams {
+            growth: PoolGrowth::Fixed,
+            ..params(1)
+        },
+        stream(),
+    )
+    .unwrap();
+    let e = vol
+        .integrate(&[obs(&s, Pose3d::IDENTITY, &d)])
+        .expect_err("a one-block pool took the frame");
+    assert!(
+        matches!(e, TsdfError::PoolFull { capacity: 1, needed } if needed > MAX_EXACT_MISS_SLOTS),
+        "{e:?}"
+    );
+    assert_eq!(
+        vol.miss_slots(),
+        MAX_EXACT_MISS_SLOTS,
+        "the miss set kept doubling"
+    );
+    assert_eq!(vol.num_blocks(), 0);
+}
+
+/// A device error while extracting leaves no half-written mesh: the volume
+/// type's output is empty, and so is the map's, even when the error hits
+/// the second submap.
+#[test]
+fn tsdf_cuda_failed_extract_leaves_no_partial_mesh() {
+    let mp = MeshParams {
+        weight_threshold: 1,
+        normals: true,
+        colors: true,
+    };
+    let run = pinhole_run(64, 48, 3);
+    let mut vol = CudaTsdfVolume::<8>::new(layout(), params(1 << 13), stream()).unwrap();
+    for k in 0..3 {
+        let o = with_color(obs(&run.sensor, run.poses[k], &run.depth[k]), &run.color[k]);
+        vol.integrate(&[o]).unwrap();
+    }
+    let mut errors = 0;
+    let fired = sweep_faults(|k| {
+        let mut mesh = junk_mesh();
+        fault::arm(fault::Op::Dtoh, k);
+        let r = vol.extract_mesh_into(&mp, &mut mesh);
+        if r.is_err() {
+            errors += 1;
+            let lens = (mesh.vertices.len(), mesh.triangles.len());
+            assert_eq!(lens, (0, 0), "volume k={k}");
+            assert!(
+                mesh.normals.is_empty() && mesh.colors.is_empty(),
+                "volume k={k}"
+            );
+        }
+    });
+    assert!(
+        fired > 0 && errors == fired,
+        "{fired} faults, {errors} errors"
+    );
+
+    let w = world();
+    let data = steps(&w);
+    let frames: Vec<Vec<SensorFrame<'_>>> = data.iter().map(frames).collect();
+    let mut map = gpu_map::<8>(&w, submap_params(false));
+    for (d, f) in data.iter().zip(&frames).take(6) {
+        map.integrate(&agent_step(d, f)).unwrap();
+    }
+    assert!(map.submap_ids().count() >= 2, "one submap only");
+    let mp = MeshParams {
+        colors: false,
+        ..mp
+    };
+    let mut errors = 0;
+    let fired = sweep_faults(|k| {
+        let mut mesh = junk_mesh();
+        fault::arm(fault::Op::Dtoh, k);
+        let r = map.extract_mesh_into(SubmapFilter::All, &mp, &mut mesh);
+        if r.is_err() {
+            errors += 1;
+            assert!(
+                mesh.vertices.is_empty()
+                    && mesh.triangles.is_empty()
+                    && mesh.normals.is_empty()
+                    && mesh.colors.is_empty(),
+                "map k={k}: {} vertices",
+                mesh.vertices.len()
+            );
+        }
+    });
+    assert!(
+        fired > 3 && errors == fired,
+        "{fired} faults, {errors} errors"
+    );
+}

@@ -32,7 +32,7 @@ pub const FMA_ALLOWED: &[&str] = &[
 /// - G2: no `.ftz`, `.approx`, `div.full`, `rsqrt`/`sin`/`cos`/`ex2`/`lg2`/
 ///   `tanh`, float `min`/`max`, or `.sat` on a float op (`rcp.rn` is IEEE);
 /// - G3: no float `atom`/`red`;
-/// - G4: every `fma` of an `FMA_ALLOWED` entry sits between the inline-asm
+/// - G4: every `fma` (and float `mad`) of an `FMA_ALLOWED` entry sits between the inline-asm
 ///   markers, i.e. comes from an explicit `fma.rn` (the shared core's
 ///   `F32Ops`), never from contraction.
 ///
@@ -119,7 +119,7 @@ pub fn gate(ptx: &str, scanned: &[String]) -> Result<(), Vec<String>> {
             errs.push(format!(
                 "gate: {name}: contracted `{op}` (not an entry in FMA_ALLOWED)"
             ));
-        } else if op.starts_with("fma.") && !in_asm {
+        } else if (op.starts_with("fma.") || float_mad) && !in_asm {
             errs.push(format!(
                 "gate: {name}: `{op}` outside inline asm (contracted, not an explicit fma.rn)"
             ));

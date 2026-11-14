@@ -219,6 +219,15 @@ fn fma_only_from_inline_asm() {
         entry(name, &format!("{}\t{fma}\n", asm("mov.f32 %f1, %f2;")))
     );
     assert!(gate(&after, &names).is_err());
+    // a float `mad` is the same fused op: bare in an allowed entry fails
+    let mad = "mad.rn.f32 %f1, %f2, %f3, %f4;";
+    let bare_mad = format!("{HEAD}{}", entry(name, &format!("\t{mad}\n")));
+    let errs = gate(&bare_mad, &names).expect_err("bare float mad passed");
+    assert!(errs.iter().any(|e| e.contains("inline asm")), "{errs:?}");
+    // an integer `mad` is not an fma
+    let int_mad = "mad.lo.s32 %r1, %r2, 3, %r2;";
+    let ok_int = format!("{HEAD}{}", entry(name, &format!("\t{int_mad}\n")));
+    assert_eq!(gate(&ok_int, &names), Ok(()));
     // never in a helper, even from asm
     let helper_asm = format!("{HEAD}{}{}", helper(&asm(fma)), entry(name, ""));
     assert!(gate(&helper_asm, &names).is_err());

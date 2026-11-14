@@ -345,14 +345,15 @@ fn tsdf_lidar_and_sensor_validation() -> R {
             Err(TsdfError::DistortedCamera)
         ));
     }
-    // image size limits: W, H <= 2^24 and W * H <= 2^32
+    // image size limits: W, H <= 2^24 and W * H < 2^31 (u32 on the device)
     let c = cam(10.0, 10.0, 2.0, 2.0);
     let sized = |w: usize, h: usize| PinholeSensor::new(&c, size(w, h), dr);
     assert!(sized(1 << 24, 1).is_ok());
     assert!(sized(1, 1 << 24).is_ok());
     assert!(sized((1 << 24) + 1, 1).is_err());
-    assert!(sized(65536, 65536).is_ok());
-    assert!(sized(65536, 65537).is_err());
+    assert!(sized(1 << 24, 127).is_ok());
+    assert!(sized(1 << 24, 128).is_err());
+    assert!(sized(65536, 65536).is_err());
     assert!(sized(0, 4).is_err() && sized(4, 0).is_err());
     // depth ranges
     for (a, b) in [

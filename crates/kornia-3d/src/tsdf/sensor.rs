@@ -13,8 +13,9 @@ use crate::pose::Pose3d;
 
 /// Largest image side: pixel coordinates stay exact in `f32`.
 const MAX_SIDE: usize = 1 << 24;
-/// Largest pixel count: indices stay in `u32`.
-const MAX_PIXELS: u64 = 1 << 32;
+/// Largest pixel count: the device computes `w * h` and strides its grid
+/// loops in `u32`, so it stays below `2^31` (no wrap, `i += stride` ends).
+const MAX_PIXELS: u64 = (u32::MAX / 2) as u64;
 /// Relative tolerance of a wrapping azimuth grid's full turn.
 const WRAP_TOLERANCE: f64 = 1e-9;
 

@@ -216,7 +216,9 @@ pub enum TsdfError {
     PoolFull {
         /// Pool capacity in blocks.
         capacity: usize,
-        /// Blocks the step needs.
+        /// Blocks the step needs (the CUDA backend reports a lower bound
+        /// once a step's misses overflow its `2^16`-slot miss set and the
+        /// pool cannot hold them).
         needed: usize,
     },
 
