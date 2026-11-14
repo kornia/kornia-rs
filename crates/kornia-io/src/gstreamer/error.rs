@@ -1,5 +1,6 @@
 /// An error type for the stream module.
 #[derive(thiserror::Error, Debug)]
+#[non_exhaustive]
 pub enum StreamCaptureError {
     /// A GStreamer error: initialization, building the pipeline, or an error posted by a
     /// pipeline element while it runs (with the element and debug details in the message).
@@ -78,8 +79,8 @@ pub enum StreamCaptureError {
 
     /// Building a kornia `Image` from a captured GStreamer frame failed.
     ///
-    /// Returned when the frame's pixel data cannot form an image of the negotiated size, for
-    /// example when the data length does not match `width * height * channels`.
+    /// A buffer too short for the frame is reported first as [`Self::BufferSizeMismatch`];
+    /// this variant covers what the `Image` constructor still rejects after that check.
     /// The wrapped [`kornia_image::ImageError`] says exactly what was wrong, and this error
     /// shows its message unchanged. Callers of the video reader receive it inside
     /// [`VideoReaderError::StreamCaptureError`].
