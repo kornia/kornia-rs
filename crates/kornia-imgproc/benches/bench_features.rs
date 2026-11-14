@@ -131,6 +131,24 @@ fn bench_harris_response(c: &mut Criterion) {
                     });
                 },
             );
+            let mut src_pin =
+                kornia_tensor::zeros_pinned::<f32, 1>([width * height], &ctx).unwrap();
+            src_pin.as_slice_mut().copy_from_slice(image_f32.as_slice());
+            let mut dst_pin =
+                kornia_tensor::zeros_pinned::<f32, 1>([width * height], &ctx).unwrap();
+            group.bench_function(
+                BenchmarkId::new("harris_cuda_roundtrip_pinned", &parameter_string),
+                |b| {
+                    b.iter(|| {
+                        stream.memcpy_htod(src_pin.as_slice(), &mut src).unwrap();
+                        launch_harris_f32(&ctx, &stream, &src, &mut dst, *width, *height, 0.04)
+                            .unwrap();
+                        stream.memcpy_dtoh(&dst, dst_pin.as_slice_mut()).unwrap();
+                        stream.synchronize().unwrap();
+                        std::hint::black_box(&dst_pin);
+                    });
+                },
+            );
         }
     }
     group.finish();
