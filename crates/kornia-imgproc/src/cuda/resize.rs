@@ -81,6 +81,7 @@
 use std::sync::{Arc, OnceLock};
 
 use cudarc::driver::{CudaContext, CudaSlice, CudaStream};
+use kornia_oxide_kernels as oxide;
 use kornia_tensor::CudaKernel;
 
 use super::{make_config, try_compile_with_l1};
@@ -116,8 +117,8 @@ extern "C" __global__ void resize_bilinear_downscale_3c(
     float sx = fmaxf(fminf(ax * (float)dst_x + bx, (float)(src_w - 1u)), 0.0f);
     float sy = fmaxf(fminf(ay * (float)dst_y + by, (float)(src_h - 1u)), 0.0f);
 
-    unsigned int x0 = (unsigned int)sx;
-    unsigned int y0 = (unsigned int)sy;
+    unsigned int x0 = min((unsigned int)sx, src_w - 1u);
+    unsigned int y0 = min((unsigned int)sy, src_h - 1u);
     unsigned int x1 = min(x0 + 1u, src_w - 1u);
     unsigned int y1 = min(y0 + 1u, src_h - 1u);
 
@@ -204,8 +205,8 @@ extern "C" __global__ void resize_bilinear_normalize_3c(
     float sx = fmaxf(fminf(ax * (float)dst_x + bx, (float)(src_w - 1u)), 0.0f);
     float sy = fmaxf(fminf(ay * (float)dst_y + by, (float)(src_h - 1u)), 0.0f);
 
-    unsigned int x0 = (unsigned int)sx;
-    unsigned int y0 = (unsigned int)sy;
+    unsigned int x0 = min((unsigned int)sx, src_w - 1u);
+    unsigned int y0 = min((unsigned int)sy, src_h - 1u);
     unsigned int x1 = min(x0 + 1u, src_w - 1u);
     unsigned int y1 = min(y0 + 1u, src_h - 1u);
 
@@ -410,6 +411,83 @@ static BICUBIC_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 static LANCZOS_H_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 static LANCZOS_V_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 
+// ── Kernel selection: oxide with NVRTC fallback ───────────────────────────────
+
+/// Which resize kernel to launch; tests force the fallback (see
+/// `GrayU8Kernel` in `cuda::color::gray` for the same pattern).
+#[derive(Debug, Clone, Copy)]
+enum ResizeKernel {
+    /// cuda-oxide, else NVRTC.
+    Auto,
+    /// NVRTC only. Only tests pick it.
+    #[cfg_attr(not(test), allow(dead_code))]
+    Nvrtc,
+}
+
+/// Try oxide kernel first; on any error (old GPU, stub PTX, failed load),
+/// compile and cache the NVRTC fallback. The loader retries a failed load
+/// on the next call, so transient errors don't stick.
+fn bilinear_kernel(
+    ctx: &Arc<CudaContext>,
+    stream: &Arc<CudaStream>,
+    which: ResizeKernel,
+) -> Result<&'static CudaKernel, String> {
+    // Any oxide error (old GPU, stub PTX, failed load) means NVRTC; the
+    // loader retries a failed load on the next call.
+    if let ResizeKernel::Auto = which {
+        if let Ok(k) = oxide::__private::kernel(stream, oxide::entry::RESIZE_BILINEAR_DOWNSCALE_3C)
+        {
+            return Ok(k);
+        }
+    }
+    BILINEAR_KERNEL
+        .get_or_init(|| try_compile_with_l1(ctx, BILINEAR_SRC, "resize_bilinear_downscale_3c"))
+        .as_ref()
+        .map_err(|e| e.clone())
+}
+
+/// Try oxide kernel first; on any error, compile and cache the NVRTC fallback.
+fn nearest_kernel(
+    ctx: &Arc<CudaContext>,
+    stream: &Arc<CudaStream>,
+    which: ResizeKernel,
+) -> Result<&'static CudaKernel, String> {
+    if let ResizeKernel::Auto = which {
+        if let Ok(k) = oxide::__private::kernel(stream, oxide::entry::RESIZE_NEAREST_DOWNSCALE_3C) {
+            return Ok(k);
+        }
+    }
+    NEAREST_KERNEL
+        .get_or_init(|| try_compile_with_l1(ctx, NEAREST_SRC, "resize_nearest_downscale_3c"))
+        .as_ref()
+        .map_err(|e| e.clone())
+}
+
+/// Checked `width * height * 3`, capped at `u32::MAX` (the kernels index with
+/// `u32` arithmetic), then checked against `len`. Shared by the bilinear and
+/// nearest-neighbor launchers for both `src` and `dst`.
+///
+/// Rejects `width == 0` or `height == 0` on its own: `need` would otherwise be
+/// `0`, which passes the length check against any `len` including `0`, and a
+/// zero `src_w`/`src_h` makes the kernels compute `src_w - 1` as `u32::MAX`,
+/// reading outside `src` on the device.
+fn check_resize_len(width: u32, height: u32, len: usize) -> Result<usize, CudaResizeError> {
+    if width == 0 || height == 0 {
+        return Err(CudaResizeError::Cuda(
+            "image dimensions must be non-zero".into(),
+        ));
+    }
+    let need = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|px| px.checked_mul(3))
+        .filter(|&n| n <= u32::MAX as usize)
+        .ok_or_else(|| CudaResizeError::Cuda("width * height * 3 overflows u32".into()))?;
+    if len < need {
+        return Err(CudaResizeError::SliceTooSmall { got: len, need });
+    }
+    Ok(need)
+}
+
 // ── Error type ────────────────────────────────────────────────────────────────
 
 /// Error type returned by the CUDA downscale launchers.
@@ -455,7 +533,7 @@ pub enum PixelMapping {
 
 impl PixelMapping {
     /// Per-axis affine coefficients `(a, b)` of `src = a*dst + b`.
-    fn coeffs(self, src_len: u32, dst_len: u32) -> (f32, f32) {
+    pub(crate) fn coeffs(self, src_len: u32, dst_len: u32) -> (f32, f32) {
         match self {
             PixelMapping::HalfPixel => {
                 let a = src_len as f32 / dst_len as f32;
@@ -512,23 +590,44 @@ pub fn launch_resize_bilinear_downscale_cuda(
     mapping: PixelMapping,
     block_dim: Option<(u32, u32)>,
 ) -> Result<(), CudaResizeError> {
+    launch_resize_bilinear_downscale_cuda_with(
+        ctx,
+        stream,
+        src,
+        dst,
+        src_width,
+        src_height,
+        dst_width,
+        dst_height,
+        mapping,
+        block_dim,
+        ResizeKernel::Auto,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn launch_resize_bilinear_downscale_cuda_with(
+    ctx: &Arc<CudaContext>,
+    stream: &Arc<CudaStream>,
+    src: &CudaSlice<f32>,
+    dst: &mut CudaSlice<f32>,
+    src_width: u32,
+    src_height: u32,
+    dst_width: u32,
+    dst_height: u32,
+    mapping: PixelMapping,
+    block_dim: Option<(u32, u32)>,
+    which: ResizeKernel,
+) -> Result<(), CudaResizeError> {
     if src_width == 0 || src_height == 0 || dst_width == 0 || dst_height == 0 {
         return Err(CudaResizeError::Cuda(
             "image dimensions must be non-zero".into(),
         ));
     }
-    let need = (dst_width as usize) * (dst_height as usize) * 3;
-    if dst.len() < need {
-        return Err(CudaResizeError::SliceTooSmall {
-            got: dst.len(),
-            need,
-        });
-    }
+    check_resize_len(src_width, src_height, src.len())?;
+    check_resize_len(dst_width, dst_height, dst.len())?;
 
-    let kernel = BILINEAR_KERNEL
-        .get_or_init(|| try_compile_with_l1(ctx, BILINEAR_SRC, "resize_bilinear_downscale_3c"))
-        .as_ref()
-        .map_err(|e| CudaResizeError::Cuda(e.clone()))?;
+    let kernel = bilinear_kernel(ctx, stream, which).map_err(CudaResizeError::Cuda)?;
 
     let (ax, bx) = mapping.coeffs(src_width, dst_width);
     let (ay, by) = mapping.coeffs(src_height, dst_height);
@@ -674,23 +773,44 @@ pub fn launch_resize_nearest_downscale_cuda(
     mapping: PixelMapping,
     block_dim: Option<(u32, u32)>,
 ) -> Result<(), CudaResizeError> {
+    launch_resize_nearest_downscale_cuda_with(
+        ctx,
+        stream,
+        src,
+        dst,
+        src_width,
+        src_height,
+        dst_width,
+        dst_height,
+        mapping,
+        block_dim,
+        ResizeKernel::Auto,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn launch_resize_nearest_downscale_cuda_with(
+    ctx: &Arc<CudaContext>,
+    stream: &Arc<CudaStream>,
+    src: &CudaSlice<f32>,
+    dst: &mut CudaSlice<f32>,
+    src_width: u32,
+    src_height: u32,
+    dst_width: u32,
+    dst_height: u32,
+    mapping: PixelMapping,
+    block_dim: Option<(u32, u32)>,
+    which: ResizeKernel,
+) -> Result<(), CudaResizeError> {
     if src_width == 0 || src_height == 0 || dst_width == 0 || dst_height == 0 {
         return Err(CudaResizeError::Cuda(
             "image dimensions must be non-zero".into(),
         ));
     }
-    let need = (dst_width as usize) * (dst_height as usize) * 3;
-    if dst.len() < need {
-        return Err(CudaResizeError::SliceTooSmall {
-            got: dst.len(),
-            need,
-        });
-    }
+    check_resize_len(src_width, src_height, src.len())?;
+    check_resize_len(dst_width, dst_height, dst.len())?;
 
-    let kernel = NEAREST_KERNEL
-        .get_or_init(|| try_compile_with_l1(ctx, NEAREST_SRC, "resize_nearest_downscale_3c"))
-        .as_ref()
-        .map_err(|e| CudaResizeError::Cuda(e.clone()))?;
+    let kernel = nearest_kernel(ctx, stream, which).map_err(CudaResizeError::Cuda)?;
 
     let (ax, bx) = mapping.coeffs(src_width, dst_width);
     let (ay, by) = mapping.coeffs(src_height, dst_height);
@@ -1056,6 +1176,199 @@ mod tests {
         ] {
             assert_bit_exact(src, dst, InterpolationMode::Bilinear)?;
             assert_bit_exact(src, dst, InterpolationMode::Nearest)?;
+        }
+        Ok(())
+    }
+
+    /// The NVRTC fallback (pre-sm_75 GPUs, stub PTX, a failed module load),
+    /// forced here, matches the CPU path byte for byte — same contract as the
+    /// cuda-oxide kernel exercised through `cpu_and_gpu`/`assert_bit_exact`.
+    #[test]
+    fn resize_nvrtc_fallback_bit_exact() -> Result<(), Box<dyn std::error::Error>> {
+        let (sw, sh) = (129, 97);
+        let (dw, dh) = (64, 48);
+        let data = pattern_f32(sw * sh * 3);
+        let src = Image::<f32, 3>::new(
+            ImageSize {
+                width: sw,
+                height: sh,
+            },
+            data.clone(),
+        )?;
+
+        let stream = default_stream();
+        let ctx = &stream.context();
+        let d_src = stream.clone_htod(&data)?;
+        let (swu, shu, dwu, dhu) = (sw as u32, sh as u32, dw as u32, dh as u32);
+
+        for interpolation in [InterpolationMode::Bilinear, InterpolationMode::Nearest] {
+            let mut cpu = Image::<f32, 3>::from_size_val(
+                ImageSize {
+                    width: dw,
+                    height: dh,
+                },
+                0.0,
+            )?;
+            resize(&src, &mut cpu, interpolation)?;
+
+            let mut d_dst = stream.alloc_zeros::<f32>(dw * dh * 3)?;
+            match interpolation {
+                InterpolationMode::Bilinear => launch_resize_bilinear_downscale_cuda_with(
+                    ctx,
+                    &stream,
+                    &d_src,
+                    &mut d_dst,
+                    swu,
+                    shu,
+                    dwu,
+                    dhu,
+                    PixelMapping::HalfPixel,
+                    None,
+                    ResizeKernel::Nvrtc,
+                ),
+                InterpolationMode::Nearest => launch_resize_nearest_downscale_cuda_with(
+                    ctx,
+                    &stream,
+                    &d_src,
+                    &mut d_dst,
+                    swu,
+                    shu,
+                    dwu,
+                    dhu,
+                    PixelMapping::HalfPixel,
+                    None,
+                    ResizeKernel::Nvrtc,
+                ),
+                other => return Err(format!("unsupported mode in test: {other:?}").into()),
+            }?;
+            let gpu: Vec<f32> = stream.clone_dtoh(&d_dst)?;
+            stream.synchronize()?;
+            let bad = cpu
+                .as_slice()
+                .iter()
+                .zip(&gpu)
+                .enumerate()
+                .find(|(_, (c, g))| c.to_bits() != g.to_bits());
+            if let Some((i, (c, g))) = bad {
+                return Err(format!(
+                    "NVRTC vs CPU ({interpolation:?}): first mismatch at element {i}: cpu {c} gpu {g}"
+                )
+                .into());
+            }
+        }
+        Ok(())
+    }
+
+    /// Without real PTX the public launcher picks the NVRTC kernel instead of
+    /// failing; with it, the cuda-oxide one (same contract as
+    /// `gray_from_rgb_u8_kernel_selection` in `cuda::color::gray`).
+    #[test]
+    fn resize_kernel_selection() {
+        let stream = default_stream();
+        let ctx = &stream.context();
+
+        let bilinear_auto = bilinear_kernel(ctx, &stream, ResizeKernel::Auto).unwrap();
+        let bilinear_nvrtc = bilinear_kernel(ctx, &stream, ResizeKernel::Nvrtc).unwrap();
+        assert_eq!(std::ptr::eq(bilinear_auto, bilinear_nvrtc), oxide::IS_STUB);
+
+        let nearest_auto = nearest_kernel(ctx, &stream, ResizeKernel::Auto).unwrap();
+        let nearest_nvrtc = nearest_kernel(ctx, &stream, ResizeKernel::Nvrtc).unwrap();
+        assert_eq!(std::ptr::eq(nearest_auto, nearest_nvrtc), oxide::IS_STUB);
+    }
+
+    /// Regression test for the coordinate-clamping bug: at source dimensions
+    /// at or beyond `f32`'s 24-bit integer-precision limit (2^24 =
+    /// 16,777,216), `(src_w - 1) as f32` can round *up* to `src_w` itself, so
+    /// the post-clamp coordinate `sx` can equal `src_w` instead of
+    /// `src_w - 1`. Without the `.min(src_w - 1)` clamp after the cast to
+    /// `u32`, `x0` would then point one element past the source allocation.
+    ///
+    /// Exercises the exact arithmetic the kernels perform (half-pixel
+    /// mapping, clamp to `[0, src_w-1]`, cast to `u32`, then clamp again)
+    /// without allocating a multi-hundred-MB buffer: an identity-scale
+    /// (`dst_len == src_len`) 1-D mapping at the boundary width is enough to
+    /// reproduce the float rounding, and the assertion is on the arithmetic
+    /// itself rather than a full kernel launch.
+    #[test]
+    fn large_identity_resize_coordinate_stays_in_bounds() {
+        // 2^24 + 4: large enough that `src_w - 1` is not exactly
+        // representable as f32 and the naive cast can round up to src_w.
+        let src_w: u32 = (1u32 << 24) + 4;
+        let dst_w = src_w; // identity resize: dst_x maps back to itself
+
+        let (a, b) = PixelMapping::HalfPixel.coeffs(src_w, dst_w);
+        let hix = (src_w - 1) as f32;
+
+        // The last destination column is the one most likely to round past
+        // the valid range.
+        for &dst_x in &[0u32, dst_w / 2, dst_w - 1] {
+            let cx = a * dst_x as f32 + b;
+            let cx = if cx < hix { cx } else { hix };
+            let sx = if cx > 0.0 { cx } else { 0.0 };
+
+            // This is the fix under test: without `.min(src_w - 1)`, `x0`
+            // could equal `src_w` when `sx` rounds up to `src_w` as f32.
+            let x0 = (sx as u32).min(src_w - 1);
+
+            assert!(
+                x0 < src_w,
+                "dst_x={dst_x}: x0={x0} is out of bounds for src_w={src_w} (sx={sx})"
+            );
+        }
+    }
+
+    /// Regression test: a zero `src_w`/`src_h`/`dst_w`/`dst_h` must be
+    /// rejected before a kernel is ever selected or launched. Without this,
+    /// `check_resize_len` would see `need == 0`, pass against any `dst.len()`,
+    /// and the kernel would compute `src_w - 1` as `u32::MAX` on the device.
+    /// Checked for both the `Auto` (oxide/NVRTC) and forced `Nvrtc` path, since
+    /// the guard must run before kernel selection to cover both.
+    #[test]
+    fn rejects_zero_dimensions() -> Result<(), Box<dyn std::error::Error>> {
+        let stream = default_stream();
+        let ctx = &stream.context();
+        let d_src = stream.alloc_zeros::<f32>(4 * 4 * 3)?;
+
+        for which in [ResizeKernel::Auto, ResizeKernel::Nvrtc] {
+            for (sw, sh, dw, dh) in [(0u32, 4, 4, 4), (4, 0, 4, 4), (4, 4, 0, 4), (4, 4, 4, 0)] {
+                let mut d_dst = stream.alloc_zeros::<f32>(4 * 4 * 3)?;
+                let bilinear = launch_resize_bilinear_downscale_cuda_with(
+                    ctx,
+                    &stream,
+                    &d_src,
+                    &mut d_dst,
+                    sw,
+                    sh,
+                    dw,
+                    dh,
+                    PixelMapping::HalfPixel,
+                    None,
+                    which,
+                );
+                assert!(
+                    bilinear.is_err(),
+                    "bilinear ({which:?}) accepted zero dimension: {sw}x{sh}->{dw}x{dh}"
+                );
+
+                let mut d_dst = stream.alloc_zeros::<f32>(4 * 4 * 3)?;
+                let nearest = launch_resize_nearest_downscale_cuda_with(
+                    ctx,
+                    &stream,
+                    &d_src,
+                    &mut d_dst,
+                    sw,
+                    sh,
+                    dw,
+                    dh,
+                    PixelMapping::HalfPixel,
+                    None,
+                    which,
+                );
+                assert!(
+                    nearest.is_err(),
+                    "nearest ({which:?}) accepted zero dimension: {sw}x{sh}->{dw}x{dh}"
+                );
+            }
         }
         Ok(())
     }
