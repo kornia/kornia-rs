@@ -821,6 +821,13 @@ where
         self.slot_of(id).map(|s| self.headers[s].world_from_submap)
     }
 
+    /// Test hook: the local pool order (key per pool index) of a submap.
+    #[cfg(test)]
+    pub(crate) fn pool_keys(&self, id: SubmapId) -> Option<&[u64]> {
+        self.slot_of(id)
+            .map(|s| self.headers[s].index.pool_keys.as_slice())
+    }
+
     /// Blocks of a submap.
     ///
     /// # Arguments

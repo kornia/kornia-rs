@@ -17,6 +17,11 @@ use crate::registration::RgbdPyramid;
 
 type R = Result<(), Box<dyn std::error::Error>>;
 
+mod pin_core;
+mod pin_integrate;
+mod pin_ray_mesh;
+mod pin_submap;
+
 const VOXEL: f32 = 0.02;
 
 // ------------------------------------------------------------ fixtures ----

@@ -178,6 +178,37 @@ mod tests {
     }
 
     #[test]
+    fn ply_mesh_golden_bytes() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("mesh.ply");
+        let mesh = TriangleMesh {
+            vertices: vec![[0.0, 1.0, 2.0], [3.0, 4.0, 5.0], [-1.0, 0.5, 0.25]],
+            normals: vec![[0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, -1.0, 0.0]],
+            colors: vec![[1, 2, 3], [4, 5, 6], [7, 8, 9]],
+            triangles: vec![[0, 1, 2]],
+        };
+        write_ply_mesh(&path, &mesh)?;
+        let mut want = b"ply\nformat binary_little_endian 1.0\nelement vertex 3\n\
+            property float x\nproperty float y\nproperty float z\n\
+            property float nx\nproperty float ny\nproperty float nz\n\
+            property uchar red\nproperty uchar green\nproperty uchar blue\n\
+            element face 1\nproperty list uchar uint vertex_indices\nend_header\n"
+            .to_vec();
+        for i in 0..3 {
+            for v in mesh.vertices[i].iter().chain(&mesh.normals[i]) {
+                want.extend(v.to_le_bytes());
+            }
+            want.extend(mesh.colors[i]);
+        }
+        want.push(3);
+        for i in [0u32, 1, 2] {
+            want.extend(i.to_le_bytes());
+        }
+        assert_eq!(std::fs::read(path)?, want);
+        Ok(())
+    }
+
+    #[test]
     fn ply_mesh_bytes_deterministic() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let (a, b) = (dir.path().join("a.ply"), dir.path().join("b.ply"));
