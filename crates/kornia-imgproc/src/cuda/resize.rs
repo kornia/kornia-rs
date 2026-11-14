@@ -415,7 +415,7 @@ static LANCZOS_V_KERNEL: OnceLock<Result<CudaKernel, String>> = OnceLock::new();
 
 /// Which resize kernel to launch; tests force the fallback (see
 /// `GrayU8Kernel` in `cuda::color::gray` for the same pattern).
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 enum ResizeKernel {
     /// cuda-oxide, else NVRTC.
     Auto,
@@ -466,7 +466,17 @@ fn nearest_kernel(
 /// Checked `width * height * 3`, capped at `u32::MAX` (the kernels index with
 /// `u32` arithmetic), then checked against `len`. Shared by the bilinear and
 /// nearest-neighbor launchers for both `src` and `dst`.
+///
+/// Rejects `width == 0` or `height == 0` on its own: `need` would otherwise be
+/// `0`, which passes the length check against any `len` including `0`, and a
+/// zero `src_w`/`src_h` makes the kernels compute `src_w - 1` as `u32::MAX`,
+/// reading outside `src` on the device.
 fn check_resize_len(width: u32, height: u32, len: usize) -> Result<usize, CudaResizeError> {
+    if width == 0 || height == 0 {
+        return Err(CudaResizeError::Cuda(
+            "image dimensions must be non-zero".into(),
+        ));
+    }
     let need = (width as usize)
         .checked_mul(height as usize)
         .and_then(|px| px.checked_mul(3))
@@ -1305,6 +1315,62 @@ mod tests {
                 "dst_x={dst_x}: x0={x0} is out of bounds for src_w={src_w} (sx={sx})"
             );
         }
+    }
+
+    /// Regression test: a zero `src_w`/`src_h`/`dst_w`/`dst_h` must be
+    /// rejected before a kernel is ever selected or launched. Without this,
+    /// `check_resize_len` would see `need == 0`, pass against any `dst.len()`,
+    /// and the kernel would compute `src_w - 1` as `u32::MAX` on the device.
+    /// Checked for both the `Auto` (oxide/NVRTC) and forced `Nvrtc` path, since
+    /// the guard must run before kernel selection to cover both.
+    #[test]
+    fn rejects_zero_dimensions() -> Result<(), Box<dyn std::error::Error>> {
+        let stream = default_stream();
+        let ctx = &stream.context();
+        let d_src = stream.alloc_zeros::<f32>(4 * 4 * 3)?;
+
+        for which in [ResizeKernel::Auto, ResizeKernel::Nvrtc] {
+            for (sw, sh, dw, dh) in [(0u32, 4, 4, 4), (4, 0, 4, 4), (4, 4, 0, 4), (4, 4, 4, 0)] {
+                let mut d_dst = stream.alloc_zeros::<f32>(4 * 4 * 3)?;
+                let bilinear = launch_resize_bilinear_downscale_cuda_with(
+                    ctx,
+                    &stream,
+                    &d_src,
+                    &mut d_dst,
+                    sw,
+                    sh,
+                    dw,
+                    dh,
+                    PixelMapping::HalfPixel,
+                    None,
+                    which,
+                );
+                assert!(
+                    bilinear.is_err(),
+                    "bilinear ({which:?}) accepted zero dimension: {sw}x{sh}->{dw}x{dh}"
+                );
+
+                let mut d_dst = stream.alloc_zeros::<f32>(4 * 4 * 3)?;
+                let nearest = launch_resize_nearest_downscale_cuda_with(
+                    ctx,
+                    &stream,
+                    &d_src,
+                    &mut d_dst,
+                    sw,
+                    sh,
+                    dw,
+                    dh,
+                    PixelMapping::HalfPixel,
+                    None,
+                    which,
+                );
+                assert!(
+                    nearest.is_err(),
+                    "nearest ({which:?}) accepted zero dimension: {sw}x{sh}->{dw}x{dh}"
+                );
+            }
+        }
+        Ok(())
     }
 
     /// Unified (managed) images must dispatch to the CUDA kernel through the
