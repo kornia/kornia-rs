@@ -245,13 +245,36 @@ pub struct SubmapMeshCache {
 }
 
 impl SubmapMeshCache {
-    /// An empty cache.
+    /// An empty cache; each submap's slab grows on its first updates.
     ///
     /// # Returns
     ///
     /// The cache.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// An empty cache with a slab reserved for each of `submaps` submap
+    /// slots, so that updates within those capacities never allocate, also
+    /// for a submap spawned later.
+    ///
+    /// # Arguments
+    ///
+    /// * `submaps` - Submap slots (the map's [`SubmapParams::max_submaps`]).
+    /// * `vertices` - Vertex capacity of each slab.
+    /// * `triangles` - Triangle capacity of each slab.
+    /// * `blocks` - Block capacity of each slab.
+    ///
+    /// # Returns
+    ///
+    /// The cache.
+    pub fn with_capacity(submaps: usize, vertices: usize, triangles: usize, blocks: usize) -> Self {
+        Self {
+            caches: (0..submaps)
+                .map(|_| BlockMeshCache::with_capacity(vertices, triangles, blocks))
+                .collect(),
+            ids: vec![None; submaps],
+        }
     }
 
     /// Writes the cached meshes of the selected submaps in the world frame
@@ -884,7 +907,7 @@ where
             }
             let id = self.headers[s].id;
             if cache.ids[s] != Some(id) {
-                cache.caches[s] = BlockMeshCache::default();
+                cache.caches[s].invalidate();
                 cache.ids[s] = Some(id);
             }
             let st = update_cache(&self.view(s), ws, params, &mut cache.caches[s]);

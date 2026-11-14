@@ -1325,6 +1325,35 @@ fn tsdf_submap_pose_update_moves_only_target_agent() -> R {
 }
 
 #[test]
+fn tsdf_submap_cache_with_capacity_matches_new() -> R {
+    let w = world();
+    let data = steps(&w);
+    let frames: Vec<Vec<SensorFrame<'_>>> = data.iter().map(frames).collect();
+    let all: Vec<AgentStep<'_>> = (0..data.len())
+        .map(|i| agent_step(&data[i], &frames[i]))
+        .collect();
+    let mut map = new_map(&w);
+    let mut ws = TsdfWorkspace::default();
+    map.integrate_batch(&mut ws, &all)?;
+    let mp = MeshParams::default();
+    let mut plain = SubmapMeshCache::new();
+    let mut reserved = SubmapMeshCache::with_capacity(16, 1 << 12, 1 << 12, 64);
+    let (mut a, mut b) = (TriangleMesh::new(), TriangleMesh::new());
+    for cache in [&mut plain, &mut reserved] {
+        let st = map.update_mesh_cache(&mut ws, &mp, cache)?;
+        assert!(st.remeshed_blocks > 0);
+    }
+    plain.write_into(&map, SubmapFilter::All, &mut a)?;
+    reserved.write_into(&map, SubmapFilter::All, &mut b)?;
+    assert!(!a.triangles.is_empty());
+    assert_eq!(mesh_bits(&a), mesh_bits(&b));
+    // a second update finds nothing to re-mesh
+    let st = map.update_mesh_cache(&mut ws, &mp, &mut reserved)?;
+    assert_eq!(st.remeshed_blocks, 0);
+    Ok(())
+}
+
+#[test]
 fn tsdf_raycast_multi_submap_nearest() -> R {
     let cam = pinhole(48, 36, 45.0, (0.1, 4.0));
     let size = cam.sensor.size();

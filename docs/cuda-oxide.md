@@ -138,6 +138,27 @@ stamp=$(KORNIA_OXIDE_PTX=$ph cargo check -q -p kornia-oxide-kernels --features p
 export KORNIA_OXIDE_PTX=$ph
 ```
 
+### Guards on the shared TSDF core
+
+`device/src/tsdf_core.rs` is compiled twice, by the device crate and, through
+`#[path]`, by this crate's host library (kornia-3d's CPU path), so it must stay
+`no_std`, free of `alloc` and of any float op whose bits differ between the two.
+Three guards, none needing the toolchain or a GPU:
+
+- `no_std`: `rustup target add aarch64-unknown-none` once, then
+  `cargo build -p kornia-oxide-kernels --target aarch64-unknown-none`. A host
+  build accepts `extern crate std;`, a bare-metal one does not (CI: the "CUDA
+  features" job of `rust_lint.yml`).
+- clippy `disallowed-methods` in `crates/kornia-oxide-kernels/clippy.toml`:
+  `f32::{min, max, clamp, mul_add, sqrt, floor}`. `cargo clippy -p
+  kornia-oxide-kernels -- -D warnings` covers min/max/clamp, and the
+  `--features cuda` run (CI) the std-only `mul_add`/`sqrt`/`floor`. The fused
+  multiply-add and square root come from `F32Ops`, the floor from `floor_i32`.
+- `tests/tsdf_core_rules.rs` scans the source for the same names plus the SIMD
+  helpers and `std`; kornia-3d's `tests/tsdf_source_rules.rs` does so for
+  `src/tsdf` (`F32x4`/`F32x8`, unfused or approximate NEON intrinsics, a
+  `mul_add` outside `StdOps`).
+
 ## Adding a kernel / migrating an NVRTC family
 
 A second kernel PR (e.g. bicubic resize) does exactly this; nothing else:

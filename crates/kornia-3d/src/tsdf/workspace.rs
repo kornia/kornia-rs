@@ -114,6 +114,27 @@ impl TsdfWorkspace {
         self.dirty_mark.reserve(blocks);
     }
 
+    /// Empties the block mesh buffers and sizes them for the worst block of
+    /// edge `b`, so that no later block, whatever its surface, grows them.
+    pub(crate) fn reserve_block_mesh(&mut self, b: usize, normals: bool, colors: bool) {
+        self.cubes.clear();
+        self.block_vertices.clear();
+        self.block_normals.clear();
+        self.block_colors.clear();
+        self.block_triangles.clear();
+        // at most one vertex per edge, five triangles per cube
+        let vertices = 3 * (b + 1) * (b + 1) * (b + 1);
+        self.cubes.reserve(b * b * b);
+        self.block_vertices.reserve(vertices);
+        if normals {
+            self.block_normals.reserve(vertices);
+        }
+        if colors {
+            self.block_colors.reserve(vertices);
+        }
+        self.block_triangles.reserve(5 * b * b * b);
+    }
+
     /// Clears the step buffers.
     pub(crate) fn begin_step(&mut self) {
         self.visible.clear();

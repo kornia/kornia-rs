@@ -261,6 +261,7 @@ pub(crate) fn mesh_block(
     }
     ws.edge_epoch += 1;
     let epoch = ws.edge_epoch;
+    ws.reserve_block_mesh(b as usize, params.normals, params.colors);
 
     // cubes in ascending lx + B * (ly + B * lz); mark the edges they use
     ws.cubes.clear();
@@ -522,6 +523,11 @@ impl BlockMeshCache {
         }
     }
 
+    /// Forgets the content (the next update rebuilds it), keeping the slab.
+    pub(crate) fn invalidate(&mut self) {
+        self.params = None;
+    }
+
     fn reset(&mut self, params: MeshParams) {
         self.vertices.clear();
         self.normals.clear();
@@ -572,20 +578,13 @@ impl BlockMeshCache {
         s.t_len = nt;
     }
 
-    /// Repacks the live meshes densely (allocates; cold).
+    /// Repacks the live meshes densely (allocates; cold). The new buffers
+    /// keep the old capacity, so appends after a compaction stay in the slab.
     fn compact(&mut self) {
-        let mut v = Vec::with_capacity(self.live_vertices);
-        let mut nrm = Vec::with_capacity(if self.normals.is_empty() {
-            0
-        } else {
-            self.live_vertices
-        });
-        let mut col = Vec::with_capacity(if self.colors.is_empty() {
-            0
-        } else {
-            self.live_vertices
-        });
-        let mut t = Vec::with_capacity(self.live_triangles);
+        let mut v = Vec::with_capacity(self.vertices.capacity());
+        let mut nrm = Vec::with_capacity(self.normals.capacity());
+        let mut col = Vec::with_capacity(self.colors.capacity());
+        let mut t = Vec::with_capacity(self.triangles.capacity());
         for &(_, p) in &self.order {
             let s = &mut self.slots[p as usize];
             let off = v.len();
@@ -830,5 +829,37 @@ where
         }
         point_cloud_view(&self.view(), &p, ws, points, colors, normals);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tsdf_compact_keeps_the_slab_capacity() {
+        let mut c = BlockMeshCache::with_capacity(64, 64, 2);
+        // a block meshed at offset 10 (rows 0..10 are garbage), 3 vertices and 1 triangle at 5
+        c.vertices = (0..13).map(|i| [i as f32; 3]).collect();
+        c.normals = c.vertices.clone();
+        c.triangles = (0..6).map(|i| [i; 3]).collect();
+        c.slots = vec![Slot {
+            v_off: 10,
+            v_len: 3,
+            v_cap: 3,
+            t_off: 5,
+            t_len: 1,
+            t_cap: 1,
+        }];
+        c.order = vec![(0, 0)];
+        (c.live_vertices, c.live_triangles) = (3, 1);
+        let (cv, ct) = (c.vertices.capacity(), c.triangles.capacity());
+        c.compact();
+        assert_eq!(c.vertices, [[10.0; 3], [11.0; 3], [12.0; 3]]);
+        assert_eq!(c.normals, c.vertices);
+        assert_eq!(c.triangles, [[5; 3]]);
+        assert_eq!((c.slots[0].v_off, c.slots[0].t_off), (0, 0));
+        assert!(c.vertices.capacity() >= cv && c.normals.capacity() >= cv);
+        assert!(c.triangles.capacity() >= ct);
     }
 }
