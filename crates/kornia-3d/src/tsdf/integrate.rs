@@ -10,7 +10,7 @@ use std::marker::PhantomData;
 use kornia_oxide_kernels::tsdf_core::{self as tc, RawDepth};
 use rayon::prelude::*;
 
-use super::alloc::{allocate, prepare, touch, Obs, ObsKind};
+use super::alloc::{allocate, prepare, touch, touch_par, Obs, ObsKind};
 use super::sensor::{DepthRef, SensorObservation};
 use super::volume::{BlockIndex, Pools};
 use super::workspace::TsdfWorkspace;
@@ -40,9 +40,17 @@ pub(crate) fn integrate_step<'o>(
     let grid = t.layout.grid(t.log2);
     let mut stats = IntegrateStats::default();
     ws.begin_step();
+    // parallel only inside a pool of >1 thread (same output either way)
+    let par = ws.kernel() == TsdfKernel::Simd
+        && rayon::current_thread_index().is_some()
+        && rayon::current_num_threads() > 1;
     for s in 0..n {
         let o = obs(s)?;
-        let r = touch(&o, &grid, t.index, ws, &mut stats);
+        let r = if par {
+            touch_par(&o, &grid, t.index, ws, &mut stats)
+        } else {
+            touch(&o, &grid, t.index, ws, &mut stats)
+        };
         ws.ranges.push(r);
     }
     stats.new_blocks = allocate(t.index, t.pools, t.params.growth, ws)?;

@@ -4,6 +4,7 @@
 
 use kornia_image::Image;
 use kornia_oxide_kernels::tsdf_core::{self as tc, RawDepth};
+use rayon::prelude::*;
 
 use super::sensor::{check_observation, DepthRef, RangeSensor, SphericalLidar};
 use super::volume::{ensure_capacity, insert_blocks, BlockIndex, Pools};
@@ -164,6 +165,196 @@ impl Toucher<'_> {
                 }
             }
         }
+    }
+}
+
+/// Samples per chunk of the parallel touch pass. Fixed, so the merge order
+/// does not depend on the pool size.
+const TOUCH_CHUNK: usize = 1 << 14;
+/// Entries of a chunk's direct-mapped key filter (a power of two).
+const CHUNK_FILTER: usize = 256;
+
+/// Scratch of one chunk of the parallel touch pass.
+#[derive(Debug, Default)]
+pub(crate) struct TouchChunk {
+    hits: Vec<u32>,
+    misses: Vec<u64>,
+    filter: Vec<u64>,
+    valid: u64,
+    out_of_range: u64,
+}
+
+/// Sizes the chunks for observations of up to `pixels` samples: like
+/// `obs_misses`, a cold chunk may list up to one key per sample.
+pub(crate) fn reserve_chunks(chunks: &mut Vec<TouchChunk>, pixels: usize) {
+    let n = pixels.div_ceil(TOUCH_CHUNK);
+    if chunks.len() < n {
+        chunks.resize_with(n, TouchChunk::default);
+    }
+    for c in chunks.iter_mut() {
+        c.hits.reserve(TOUCH_CHUNK);
+        c.misses.reserve(TOUCH_CHUNK);
+        c.filter.reserve(CHUNK_FILTER);
+    }
+}
+
+impl TouchChunk {
+    fn run<D: RawDepth>(
+        &mut self,
+        kind: &ObsKind<'_>,
+        depth: &[D],
+        i0: usize,
+        i1: usize,
+        grid: &tc::Grid,
+        index: &BlockIndex,
+    ) {
+        self.hits.clear();
+        self.misses.clear();
+        if self.filter.len() != CHUNK_FILTER {
+            self.filter.clear();
+            self.filter.resize(CHUNK_FILTER, tc::EMPTY_KEY);
+        } else {
+            self.filter.fill(tc::EMPTY_KEY);
+        }
+        self.valid = 0;
+        self.out_of_range = 0;
+        let mut prev = None;
+        match kind {
+            ObsKind::Pinhole(p) => {
+                let w = p.width as usize;
+                for (i, &raw) in depth[i0..i1].iter().enumerate() {
+                    let Some(d) = raw.metres(p.mpu, p.range_min, p.range_max) else {
+                        continue;
+                    };
+                    let i = i0 + i;
+                    let ps = tc::pinhole_point(p, (i % w) as u32, (i / w) as u32, d);
+                    let vfs = &p.volume_from_sensor;
+                    self.point(
+                        tc::xform::<StdOps>(&vfs.r, &vfs.t, ps),
+                        grid,
+                        index,
+                        &mut prev,
+                    );
+                }
+            }
+            ObsKind::Spherical(p, lidar) => {
+                let w = p.width as usize;
+                for (i, &raw) in depth[i0..i1].iter().enumerate() {
+                    let Some(d) = raw.metres(p.mpu, p.range_min, p.range_max) else {
+                        continue;
+                    };
+                    let i = i0 + i;
+                    let (ce, se, ca, sa) = lidar.beam(i / w, i % w);
+                    let ps = tc::spherical_point(d, ce, se, ca, sa);
+                    let vfs = &p.volume_from_sensor;
+                    self.point(
+                        tc::xform::<StdOps>(&vfs.r, &vfs.t, ps),
+                        grid,
+                        index,
+                        &mut prev,
+                    );
+                }
+            }
+        }
+    }
+
+    #[inline(always)]
+    fn point(
+        &mut self,
+        pv: [f32; 3],
+        grid: &tc::Grid,
+        index: &BlockIndex,
+        prev: &mut Option<([i32; 3], [i32; 3])>,
+    ) {
+        self.valid += 1;
+        let Some(bx) = tc::touch_box(pv, grid) else {
+            self.out_of_range += 1;
+            return;
+        };
+        if *prev == Some(bx) {
+            return;
+        }
+        *prev = Some(bx);
+        let (lo, hi) = bx;
+        for x in lo[0]..=hi[0] {
+            for y in lo[1]..=hi[1] {
+                for z in lo[2]..=hi[2] {
+                    let key = tc::pack_block_key([x, y, z]);
+                    // drops only later repeats: first-occurrence order is kept
+                    let slot = tc::hash_slot(key, CHUNK_FILTER.trailing_zeros());
+                    if self.filter[slot] == key {
+                        continue;
+                    }
+                    self.filter[slot] = key;
+                    match index.lookup(key) {
+                        Some(p) => self.hits.push(p),
+                        None => self.misses.push(key),
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// [`touch`] with the samples split into fixed chunks run as rayon tasks
+/// (read-only on the index), merged serially in chunk order. `visible`
+/// keeps the serial first-occurrence order and the misses the same set, so
+/// every later result is identical to [`touch`].
+pub(crate) fn touch_par(
+    obs: &Obs<'_>,
+    grid: &tc::Grid,
+    index: &mut BlockIndex,
+    ws: &mut TsdfWorkspace,
+    stats: &mut IntegrateStats,
+) -> ObsRange {
+    let len = match obs.depth {
+        DepthRef::U16(d) => d.image().as_slice().len(),
+        DepthRef::F32(d) => d.image().as_slice().len(),
+    };
+    let n = len.div_ceil(TOUCH_CHUNK);
+    if ws.touch_chunks.len() < n {
+        ws.touch_chunks.resize_with(n, TouchChunk::default);
+    }
+    {
+        let ix: &BlockIndex = index;
+        let chunks = ws.touch_chunks[..n].par_iter_mut().enumerate();
+        let run = |(c, ch): (usize, &mut TouchChunk)| {
+            let (i0, i1) = (c * TOUCH_CHUNK, ((c + 1) * TOUCH_CHUNK).min(len));
+            match obs.depth {
+                DepthRef::U16(d) => ch.run(&obs.kind, d.image().as_slice(), i0, i1, grid, ix),
+                DepthRef::F32(d) => ch.run(&obs.kind, d.image().as_slice(), i0, i1, grid, ix),
+            }
+        };
+        chunks.for_each(run);
+    }
+    let mark = index.next_mark();
+    let v0 = ws.visible.len();
+    let m0 = ws.obs_misses.len();
+    ws.miss_filter.fill(tc::EMPTY_KEY);
+    let mf = MISS_FILTER.trailing_zeros();
+    for ch in &ws.touch_chunks[..n] {
+        stats.valid_pixels += ch.valid;
+        stats.out_of_range += ch.out_of_range;
+        for &p in &ch.hits {
+            let m = &mut index.mark[p as usize];
+            if *m != mark {
+                *m = mark;
+                ws.visible.push(p);
+            }
+        }
+        for &key in &ch.misses {
+            let slot = tc::hash_slot(key, mf);
+            if ws.miss_filter[slot] != key {
+                ws.miss_filter[slot] = key;
+                ws.obs_misses.push(key);
+            }
+        }
+    }
+    ObsRange {
+        visible: (v0, ws.visible.len()),
+        misses: (m0, ws.obs_misses.len()),
+        new: (0, 0),
+        mark,
     }
 }
 

@@ -25,6 +25,7 @@ mod pin_core;
 mod pin_integrate;
 mod pin_ray_mesh;
 mod pin_submap;
+mod touch_par;
 
 const VOXEL: f32 = 0.02;
 

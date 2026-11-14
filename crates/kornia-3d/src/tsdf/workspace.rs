@@ -42,6 +42,7 @@ pub struct TsdfWorkspace {
     pub(crate) misses: Vec<u64>,
     pub(crate) ranges: Vec<ObsRange>,
     pub(crate) miss_filter: Vec<u64>,
+    pub(crate) touch_chunks: Vec<super::alloc::TouchChunk>,
     // submap steps and batches
     pub(crate) frame_order: Vec<u32>,
     pub(crate) batch_order: Vec<u32>,
@@ -140,6 +141,7 @@ impl TsdfWorkspace {
         self.misses.reserve(blocks);
         self.ranges.reserve(obs);
         self.miss_filter.reserve(MISS_FILTER);
+        super::alloc::reserve_chunks(&mut self.touch_chunks, hint.pixels_per_step);
         self.frame_order.reserve(obs);
         self.batch_order.reserve(hint.steps_per_batch);
         self.dirty.reserve(blocks);
