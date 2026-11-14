@@ -75,6 +75,38 @@ fn z_of(c: &Column, p: &tc::RaycastParams) -> Option<u32> {
 }
 
 #[test]
+fn tsdf_raycast_block_skip_back_off() {
+    // block_step 4: z = 0.25 (unallocated) skips to 4.25, already behind the
+    // crossing between voxels 2 and 3; the march backs off to 1.25, re-marches
+    // one voxel at a time and finds it (a plain block skip misses it)
+    let c = Column(vec![
+        None,
+        None,
+        Some((0.5, 1)),
+        Some((-0.5, 1)),
+        Some((-0.5, 1)),
+    ]);
+    let p = tc::RaycastParams {
+        block_step: 4.0,
+        ..ray(1.0, 64, 1, 100.0)
+    };
+    assert_eq!(z_of(&c, &p), Some(2.75f32.to_bits()));
+    // five samples: 0.25, 4.25 (back-off), 1.25, 2.25, 3.25
+    assert!(march(&c, &tc::RaycastParams { max_steps: 5, ..p }).is_some());
+    assert_eq!(march(&c, &tc::RaycastParams { max_steps: 4, ..p }), None);
+    // landing on a positive voxel after a skip needs no back-off
+    let pos = Column(vec![
+        None,
+        None,
+        None,
+        None,
+        Some((0.5, 1)),
+        Some((-0.5, 1)),
+    ]);
+    assert_eq!(z_of(&pos, &p), Some(4.75f32.to_bits()));
+}
+
+#[test]
 fn tsdf_raycast_stop_rule() {
     let p = ray(1.0, 64, 1, 100.0);
     let hit = |z: f32| Some(z.to_bits());
@@ -247,22 +279,22 @@ fn tsdf_trilinear_gradient_op_order() {
 
 #[test]
 fn tsdf_raycast_params_and_outputs() -> R {
-    // max_steps = ceil((max - min) / voxel) + 2, in f64 on the host
+    // max_steps = 2 * ceil((max - min) / voxel) + 2, in f64 on the host
     let l = TsdfLayout::new(0.02, 4.0)?;
-    let spec = (((4.0f32 as f64 - 0.1f32 as f64) / 0.02f32 as f64).ceil() + 2.0) as u32;
+    let spec = (2.0 * ((4.0f32 as f64 - 0.1f32 as f64) / 0.02f32 as f64).ceil() + 2.0) as u32;
     let p = RaycastParams::new(&l, 0.1, 4.0)?;
     assert_eq!(
         (p.max_steps, p.weight_threshold, p.colors),
         (spec, 1, false)
     );
-    assert_eq!(spec, 198);
+    assert_eq!(spec, 394);
     // the span is divided in f64: an f32 span gives another count for some ranges
     let mut differs = 0;
     for k in 0..2000 {
         let (lo, hi) = (0.05 + 0.001 * (k % 7) as f32, 1.0 + 0.0137 * k as f32);
-        let want = (((hi as f64 - lo as f64) / 0.02f32 as f64).ceil() + 2.0) as u32;
+        let want = (2.0 * ((hi as f64 - lo as f64) / 0.02f32 as f64).ceil() + 2.0) as u32;
         assert_eq!(RaycastParams::new(&l, lo, hi)?.max_steps, want);
-        differs += ((((hi - lo) / 0.02f32).ceil() + 2.0) as u32 != want) as usize;
+        differs += ((2.0 * ((hi - lo) / 0.02f32).ceil() + 2.0) as u32 != want) as usize;
     }
     witness("f32 span", differs);
     assert!(RaycastParams::new(&l, 0.0, 1.0).is_ok());

@@ -844,6 +844,10 @@ pub fn raycast_pixel<O: F32Ops, S: VoxelSampler>(
     // (f, z) of the previous valid sample
     let mut prev: Option<(f32, f32)> = None;
     let mut hit: Option<(f32, f32, f32, f32)> = None;
+    // Unallocated samples below `fine_until` step one voxel, not one block.
+    let mut fine_until = rp.depth_min;
+    // The last step was a block skip.
+    let mut skipped = false;
     for _ in 0..rp.max_steps {
         if !(z < rp.depth_max) {
             break;
@@ -854,14 +858,29 @@ pub fn raycast_pixel<O: F32Ops, S: VoxelSampler>(
         };
         match sample {
             None => {
-                z += rp.block_step;
+                if z < fine_until {
+                    z += rp.voxel_size;
+                    skipped = false;
+                } else {
+                    z += rp.block_step;
+                    skipped = true;
+                }
                 prev = None;
             }
             Some((_, w)) if (w as u32) < rp.weight_threshold => {
                 z += rp.voxel_size;
                 prev = None;
+                skipped = false;
+            }
+            // A block skip landed behind the surface: re-march the skipped
+            // block one voxel at a time, else the crossing is never seen.
+            Some((f, _)) if skipped && f < 0.0 => {
+                fine_until = z;
+                z = (z - rp.block_step) + rp.voxel_size;
+                skipped = false;
             }
             Some((f, _)) => {
+                skipped = false;
                 if let Some((fp, zp)) = prev {
                     if fp >= 0.0 && f < 0.0 {
                         hit = Some((fp, zp, f, z));

@@ -958,6 +958,13 @@ fn tsdf_raycast_depth_matches_render() -> R {
         }
         valid += 1;
         if z == 0.0 {
+            // only frustum-edge rays may miss: their voxels behind the
+            // surface project outside the image and are never integrated
+            let (px, py) = (i % 160, i / 160);
+            assert!(
+                px <= 1 || px >= 158 || py <= 1 || py >= 118,
+                "interior miss at ({px}, {py})"
+            );
             continue;
         }
         hits += 1;
@@ -1370,10 +1377,9 @@ fn tsdf_raycast_multi_submap_nearest() -> R {
     )];
     map.add_agent(AgentId(0), rig(&one), SpawnPolicy::default())?;
     map.add_agent(AgentId(1), rig(&one), SpawnPolicy::default())?;
-    // 1.25, not 1.2: with depth_min 0.1 the centre ray samples z = 1.06
-    // (unallocated) then 1.22, already behind a plane at 1.2, and the
-    // block-step march (contract section 13) misses it
-    let far = DepthImage::from_size_val(size, 1.25f32, 1.0)?;
+    // 1.2: the centre ray samples z = 1.06 (unallocated), then 1.22, already
+    // behind the plane; the march must back off and re-march that block
+    let far = DepthImage::from_size_val(size, 1.2f32, 1.0)?;
     let near = DepthImage::from_size_val(size, 1.0f32, 1.0)?;
     let mut ws = TsdfWorkspace::default();
     for (agent, d) in [(AgentId(0), &far), (AgentId(1), &near)] {
@@ -1410,7 +1416,7 @@ fn tsdf_raycast_multi_submap_nearest() -> R {
     let all = cast(SubmapFilter::All)?;
     let a0 = cast(SubmapFilter::Agents(&[AgentId(0)]))?;
     assert!((all - 1.0).abs() < VOXEL, "nearest submap wins: {all}");
-    assert!((a0 - 1.25).abs() < VOXEL, "filtered to agent 0: {a0}");
+    assert!((a0 - 1.2).abs() < VOXEL, "filtered to agent 0: {a0}");
     let unknown = SubmapId {
         agent: AgentId(0),
         seq: 7,

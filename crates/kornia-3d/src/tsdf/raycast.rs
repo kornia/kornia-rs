@@ -15,7 +15,8 @@ use crate::camera::PinholeCamera;
 use crate::pose::Pose3d;
 use crate::registration::{RgbdLevel, RgbdPyramid};
 
-/// Steps beyond `(depth_max - depth_min) / voxel_size` in the default cap.
+/// Steps beyond `2 * ceil((depth_max - depth_min) / voxel_size)` in the default
+/// cap; the factor 2 covers re-marching a skipped block after a back-off.
 const EXTRA_STEPS: f64 = 2.0;
 
 /// Raycast parameters.
@@ -35,7 +36,7 @@ pub struct RaycastParams {
 
 impl RaycastParams {
     /// Weight threshold 1, no colour, and the step cap
-    /// `ceil((depth_max - depth_min) / voxel_size) + 2`.
+    /// `2 * ceil((depth_max - depth_min) / voxel_size) + 2`.
     ///
     /// # Arguments
     ///
@@ -52,7 +53,7 @@ impl RaycastParams {
     /// [`TsdfError::InvalidParameter`] for an invalid range.
     pub fn new(layout: &TsdfLayout, depth_min: f32, depth_max: f32) -> Result<Self, TsdfError> {
         let span = (depth_max as f64 - depth_min as f64) / layout.voxel_size() as f64;
-        let steps = span.ceil() + EXTRA_STEPS;
+        let steps = 2.0 * span.ceil() + EXTRA_STEPS;
         let p = Self {
             depth_min,
             depth_max,
@@ -334,8 +335,9 @@ where
     ///
     /// Each pixel's ray starts at camera z `depth_min` and marches: one
     /// block over an unallocated block, one voxel over voxels below the
-    /// weight threshold, else `max(tsdf * truncation, voxel_size)`. The
-    /// first `tsdf >= 0 -> tsdf < 0` crossing of consecutive valid samples
+    /// weight threshold, else `max(tsdf * truncation, voxel_size)`. A block
+    /// skip that lands behind the surface backs off and re-marches that
+    /// block one voxel at a time. The first `tsdf >= 0 -> tsdf < 0` crossing of consecutive valid samples
     /// is the hit, refined linearly. The normal is the trilinear gradient
     /// of the 8 surrounding voxels (zero unless all are valid), in the
     /// camera frame, facing the camera.
