@@ -389,20 +389,20 @@ fn tsdf_integrate_neon_matches_scalar_multi_agent() -> R {
 
 /// Root of the NICE-SLAM Replica export (holding `room0/` and
 /// `cam_params.json`); the test skips without it.
-const REPLICA_ENV: &str = "KORNIA_TSDF_REPLICA";
+pub(super) const REPLICA_ENV: &str = "KORNIA_TSDF_REPLICA";
 /// Frames used: every fifth of the first 100.
 const REPLICA_FRAMES: usize = 20;
 const REPLICA_STRIDE: usize = 5;
 
 /// Room0 frame `k`: depth (u16, `scale` units per metre), colour and
 /// `world_from_camera` (traj.txt is row-major camera-to-world).
-struct ReplicaFrame {
-    depth: DepthImage<u16>,
-    color: Image<u8, 3>,
-    world_from_camera: Pose3d,
+pub(super) struct ReplicaFrame {
+    pub(super) depth: DepthImage<u16>,
+    pub(super) color: Image<u8, 3>,
+    pub(super) world_from_camera: Pose3d,
 }
 
-fn replica_frames(
+pub(super) fn replica_frames(
     root: &std::path::Path,
     size: ImageSize,
     scale: f32,

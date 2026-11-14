@@ -814,6 +814,14 @@ impl CudaKernel {
         }
     }
 
+    /// The raw function handle, for a launcher that calls
+    /// `cudarc::driver::result::launch_kernel` with a stack parameter array
+    /// (`launch_builder` allocates its argument lists on every launch).
+    #[doc(hidden)]
+    pub fn cu_function(&self) -> cudarc::driver::sys::CUfunction {
+        self.func.cu_function()
+    }
+
     /// Set the L1/shared-memory carveout for this kernel.
     ///
     /// Pass `0` to give L1 the maximum possible space (all shared memory budget

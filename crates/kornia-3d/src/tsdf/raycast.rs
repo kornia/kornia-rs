@@ -91,10 +91,10 @@ impl RaycastParams {
 /// Raycast outputs of one view; pixels without a hit are zero.
 #[derive(Clone)]
 pub struct RaycastMaps {
-    depth: Image<f32, 1>,
-    vertices: Image<f32, 3>,
-    normals: Image<f32, 3>,
-    colors: Option<Image<u8, 3>>,
+    pub(crate) depth: Image<f32, 1>,
+    pub(crate) vertices: Image<f32, 3>,
+    pub(crate) normals: Image<f32, 3>,
+    pub(crate) colors: Option<Image<u8, 3>>,
 }
 
 impl RaycastMaps {

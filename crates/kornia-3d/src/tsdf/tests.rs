@@ -17,6 +17,9 @@ use crate::registration::RgbdPyramid;
 
 type R = Result<(), Box<dyn std::error::Error>>;
 
+#[cfg(feature = "cuda")]
+#[path = "cuda_tests.rs"]
+mod cuda_tests;
 mod neon;
 mod pin_core;
 mod pin_integrate;

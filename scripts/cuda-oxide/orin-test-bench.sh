@@ -59,6 +59,9 @@ echo "entries: ${entries[*]}"
 log="$(mktemp)"
 cargo test --release -p kornia-imgproc --features cuda --lib -- "${entries[@]}" \
   --test-threads=1 2>&1 | tee "$log"
+# The TSDF kernels' parity tests live with their launchers in kornia-3d.
+cargo test --release -p kornia-3d --features cuda --lib -- "${entries[@]}" \
+  --test-threads=1 2>&1 | tee -a "$log"
 # The loader is kornia-oxide-kernels' `cuda` feature; `ptx` loads the real PTX.
 cargo test --release -p kornia-oxide-kernels --features cuda,ptx --lib -- \
   loader 2>&1 | tee -a "$log"

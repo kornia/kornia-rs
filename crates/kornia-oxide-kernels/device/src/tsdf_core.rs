@@ -823,15 +823,17 @@ pub fn hash_slot(key: u64, log2_cap: u32) -> usize {
     (key.wrapping_mul(HASH_MUL) >> (64 - log2_cap)) as usize
 }
 
-/// Linear-probe lookup; `keys.len() == vals.len() == 2^log2_cap`.
+/// Linear-probe search of `key` in a table of `2^log2_cap` slots whose keys
+/// `key_at` reads: its slot, `None` at an empty slot or after a full cycle.
 #[inline(always)]
-pub fn hash_lookup(keys: &[u64], vals: &[u32], log2_cap: u32, key: u64) -> Option<u32> {
-    let mask = keys.len() - 1;
+pub fn hash_find(log2_cap: u32, key: u64, key_at: impl Fn(usize) -> u64) -> Option<usize> {
+    let n = 1usize << log2_cap;
+    let mask = n - 1;
     let mut i = hash_slot(key, log2_cap);
-    for _ in 0..keys.len() {
-        let k = keys[i];
+    for _ in 0..n {
+        let k = key_at(i);
         if k == key {
-            return Some(vals[i]);
+            return Some(i);
         }
         if k == EMPTY_KEY {
             return None;
@@ -839,6 +841,45 @@ pub fn hash_lookup(keys: &[u64], vals: &[u32], log2_cap: u32, key: u64) -> Optio
         i = (i + 1) & mask;
     }
     None
+}
+
+/// Linear-probe lookup; `keys.len() == vals.len() == 2^log2_cap`.
+#[inline(always)]
+pub fn hash_lookup(keys: &[u64], vals: &[u32], log2_cap: u32, key: u64) -> Option<u32> {
+    hash_find(log2_cap, key, |i| keys[i]).map(|i| vals[i])
+}
+
+/// Block coordinate range of a key: `[-2^20, 2^20)`.
+pub const KEY_RANGE: i32 = 1 << 20;
+
+/// Key of block `bc + d`, `None` outside the key range.
+#[inline(always)]
+pub fn neighbour_key(bc: [i32; 3], d: [i32; 3]) -> Option<u64> {
+    let n = [bc[0] + d[0], bc[1] + d[1], bc[2] + d[2]];
+    let ok = |v: i32| v >= -KEY_RANGE && v < KEY_RANGE;
+    if ok(n[0]) && ok(n[1]) && ok(n[2]) {
+        Some(pack_block_key(n))
+    } else {
+        None
+    }
+}
+
+/// Voxel coordinates of the min corner of block `key`.
+#[inline(always)]
+pub fn block_origin(key: u64, log2: u32) -> [i32; 3] {
+    let bc = unpack_block_key(key);
+    [bc[0] << log2, bc[1] << log2, bc[2] << log2]
+}
+
+/// Local coordinates of in-block index `i` (inverse of [`local_index`]).
+#[inline(always)]
+pub fn local_coords(i: u32, log2: u32) -> [i32; 3] {
+    let m = (1u32 << log2) - 1;
+    [
+        (i & m) as i32,
+        ((i >> log2) & m) as i32,
+        (i >> (2 * log2)) as i32,
+    ]
 }
 
 /// Linear-probe insert of a key not in the table; `false` if it is full.
@@ -963,6 +1004,97 @@ pub fn grad_axis(plus: Option<f32>, centre: f32, minus: Option<f32>) -> f32 {
         (None, Some(m)) => centre - m,
         (None, None) => 0.0,
     }
+}
+
+/// The voxels around one block, in local coordinates `[-1, B + 1]^3`, as a
+/// mesher sees them.
+pub trait MeshVoxels {
+    /// Value of voxel `v` if it is valid (allocated, weight at least the
+    /// threshold).
+    fn value(&self, v: [i32; 3]) -> Option<f32>;
+    /// Colour of voxel `v`.
+    fn rgb(&self, v: [i32; 3]) -> [u8; 3];
+}
+
+/// Gradient at valid voxel `v` (value `c`): [`grad_axis`] per axis.
+#[inline(always)]
+pub fn mesh_gradient<G: MeshVoxels>(g: &G, v: [i32; 3], c: f32) -> [f32; 3] {
+    let mut out = [0f32; 3];
+    for k in 0..3 {
+        let mut p = v;
+        p[k] += 1;
+        let mut m = v;
+        m[k] -= 1;
+        out[k] = grad_axis(g.value(p), c, g.value(m));
+    }
+    out
+}
+
+/// Vertex on the edge from local voxel `a` along `axis` (both ends valid,
+/// signs differ) of the block with min voxel `origin`: position, colour
+/// and normal (zero when not requested).
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+pub fn mesh_edge_point<O: F32Ops, G: MeshVoxels>(
+    g: &G,
+    origin: [i32; 3],
+    a: [i32; 3],
+    axis: usize,
+    voxel_size: f32,
+    half_voxel: f32,
+    normals: bool,
+    colors: bool,
+) -> ([f32; 3], [u8; 3], [f32; 3]) {
+    let mut b = a;
+    b[axis] += 1;
+    // valid ends, so never the fallback
+    let fa = g.value(a).unwrap_or(0.0);
+    let fb = g.value(b).unwrap_or(0.0);
+    let t = edge_t(fa, fb);
+    let ga = [origin[0] + a[0], origin[1] + a[1], origin[2] + a[2]];
+    let ca = voxel_centre::<O>(ga, voxel_size, half_voxel);
+    let p = edge_vertex::<O>(ca, axis, voxel_size, t);
+    let c = if colors {
+        lerp_color::<O>(t, g.rgb(a), g.rgb(b))
+    } else {
+        [0; 3]
+    };
+    let n = if normals {
+        edge_normal::<O>(t, mesh_gradient(g, a, fa), mesh_gradient(g, b, fb))
+    } else {
+        [0.0; 3]
+    };
+    (p, c, n)
+}
+
+/// Triangles of cube configuration `conf`.
+#[inline(always)]
+pub fn tri_count(conf: usize) -> u32 {
+    let row = &TRI_TABLE[conf];
+    let mut n = 0;
+    while n < 5 && row[3 * n] >= 0 {
+        n += 1;
+    }
+    n as u32
+}
+
+/// Whether block edge `(o, axis)`, `o` in `[0, B]^3`, carries a vertex:
+/// some cube of the block (min corner in `[0, B)^3`) crosses it, `conf`
+/// giving each cube's configuration (0 for a cube that is not meshed).
+#[inline(always)]
+pub fn edge_used(o: [i32; 3], axis: u32, b: i32, conf: impl Fn([i32; 3]) -> usize) -> bool {
+    for k in 0..12 {
+        if EDGE_AXIS[k] != axis {
+            continue;
+        }
+        let off = EDGE_OWNER[k];
+        let c = [o[0] - off[0], o[1] - off[1], o[2] - off[2]];
+        let inside = c[0] >= 0 && c[1] >= 0 && c[2] >= 0 && c[0] < b && c[1] < b && c[2] < b;
+        if inside && EDGE_TABLE[conf(c)] & (1 << k) != 0 {
+            return true;
+        }
+    }
+    false
 }
 
 // ------------------------------------------------------------- raycast ----
@@ -1181,6 +1313,88 @@ pub fn raycast_pixel<O: F32Ops, S: VoxelSampler>(
         normal,
         point,
     })
+}
+
+// --------------------------------------------------------- device ABI ----
+
+// The CUDA kernels' parameter blocks and counters, laid out once for the
+// host launcher and the device (`#[repr(C)]`, read through a pointer).
+
+/// Threads per block of every TSDF kernel.
+pub const THREADS: u32 = 256;
+
+/// Step counter: distinct missing blocks (the miss list length).
+pub const SC_MISSES: usize = 0;
+/// Step counter: abort bits ([`ABORT_MISS_SET`], [`ABORT_POOL_FULL`]).
+pub const SC_ABORT: usize = 1;
+/// Step counter: kept depth samples.
+pub const SC_VALID: usize = 2;
+/// Step counter: kept samples whose band leaves the voxel domain.
+pub const SC_OUT_OF_RANGE: usize = 3;
+/// Step counter: voxel updates.
+pub const SC_UPDATED: usize = 4;
+/// Step counter: distinct blocks touched.
+pub const SC_TOUCHED: usize = 5;
+/// Step counters (`u64` each).
+pub const SC_LEN: usize = 8;
+/// Abort bit: the miss set is full (grow it, re-run the step).
+pub const ABORT_MISS_SET: u64 = 1;
+/// Abort bit: the step needs more blocks than the pool holds.
+pub const ABORT_POOL_FULL: u64 = 2;
+
+/// Constants of one device integration step.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StepParams {
+    /// Grid constants.
+    pub grid: Grid,
+    /// Weight cap.
+    pub max_weight: u32,
+    /// Colour weight cap.
+    pub max_color_weight: u32,
+    /// `log2` of the block hash slots.
+    pub log2_cap: u32,
+    /// `log2` of the miss-set slots.
+    pub log2_miss: u32,
+    /// Blocks before the step (first new local pool index).
+    pub len: u32,
+    /// Pages before the step (first new page).
+    pub pages: u32,
+    /// Local pool capacity.
+    pub index_cap: u32,
+    /// Page capacity.
+    pub arena_cap: u32,
+    /// The step's epoch (`modified` value of a touched block).
+    pub epoch: u64,
+}
+
+/// Constants of one device meshing pass (one volume or submap).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MeshParamsDev {
+    /// Applied to positions (`xform`) and normals (`rot`) when `transform`.
+    pub world_from_volume: Rigid,
+    /// Voxel edge (metres).
+    pub voxel_size: f32,
+    /// `voxel_size * 0.5`.
+    pub half_voxel: f32,
+    /// `log2(B)`.
+    pub log2: u32,
+    /// `log2` of the block hash slots.
+    pub log2_cap: u32,
+    /// Smallest valid weight (`>= 1`).
+    pub weight_threshold: u32,
+    /// Non-zero: output normals.
+    pub normals: u32,
+    /// Non-zero: output colours.
+    pub colors: u32,
+    /// Non-zero: map by `world_from_volume`.
+    pub transform: u32,
+    /// Non-zero: triangle indices are global (`index_base + vertex offset
+    /// + local`), else block-local.
+    pub global_index: u32,
+    /// First vertex index of this pass in the output mesh.
+    pub index_base: u32,
 }
 
 // ------------------------------------------------------------- tables ----

@@ -48,6 +48,8 @@
 //! [`atan2_det`]: crate::tsdf::atan2_det
 
 mod alloc;
+#[cfg(feature = "cuda")]
+mod cuda;
 mod integrate;
 #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
 mod integrate_neon;
@@ -61,6 +63,8 @@ mod workspace;
 #[cfg(test)]
 mod tests;
 
+#[cfg(feature = "cuda")]
+pub use cuda::{CudaSubmapTsdf, CudaTsdfVolume};
 pub use mesh::{BlockMeshCache, MeshParams, MeshUpdateStats};
 pub use raycast::{RaycastMaps, RaycastParams};
 pub use sensor::{
@@ -243,6 +247,28 @@ pub enum TsdfError {
         #[source]
         source: Box<TsdfError>,
     },
+
+    /// A CUDA driver call failed; the device volume is unspecified.
+    #[cfg(feature = "cuda")]
+    #[error("CUDA error: {0}")]
+    Cuda(String),
+
+    /// The device is older than the kernels' PTX target.
+    #[cfg(feature = "cuda")]
+    #[error(
+        "CUDA device has compute capability {major}.{minor}; the TSDF kernels need 7.5 or newer"
+    )]
+    UnsupportedComputeCapability {
+        /// Major compute capability.
+        major: i32,
+        /// Minor compute capability.
+        minor: i32,
+    },
+
+    /// Built with the stub PTX (no crate enabled `kornia-oxide-kernels/ptx`).
+    #[cfg(feature = "cuda")]
+    #[error("built without the cuda-oxide PTX (stub)")]
+    KernelsUnavailable,
 }
 
 /// Opaque agent (robot, rig) id.

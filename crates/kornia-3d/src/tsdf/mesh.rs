@@ -111,18 +111,6 @@ fn affected_offsets(normals: bool) -> &'static [[i32; 3]] {
     }
 }
 
-/// Block coordinate range accepted by key packing.
-const KEY_RANGE: i32 = 1 << 20;
-
-fn neighbour_key(bc: [i32; 3], d: [i32; 3]) -> Option<u64> {
-    let n = [bc[0] + d[0], bc[1] + d[1], bc[2] + d[2]];
-    if n.iter().all(|v| (-KEY_RANGE..KEY_RANGE).contains(v)) {
-        Some(tc::pack_block_key(n))
-    } else {
-        None
-    }
-}
-
 /// Loads the voxels `[-1, B + 1]^3` around block `bc` into the workspace
 /// grid (value, validity, colour).
 fn load_neighbourhood(
@@ -142,7 +130,7 @@ fn load_neighbourhood(
             ((i / 3) % 3) as i32 - 1,
             (i / 9) as i32 - 1,
         ];
-        *base = neighbour_key(bc, d).and_then(|k| view.block_base(k));
+        *base = tc::neighbour_key(bc, d).and_then(|k| view.block_base(k));
     }
     let len = n * n * n;
     if ws.grid_f.len() < len {
@@ -191,20 +179,23 @@ fn add(a: [i32; 3], b: [i32; 3]) -> [i32; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 
-/// Gradient of the loaded grid at valid local voxel `v`.
-fn gradient(ws: &TsdfWorkspace, v: [i32; 3], n: i32) -> [f32; 3] {
-    let f = |p: [i32; 3]| {
-        let i = gidx(p, n);
-        ws.grid_ok[i].then(|| ws.grid_f[i])
-    };
-    let c = ws.grid_f[gidx(v, n)];
-    let mut g = [0f32; 3];
-    for k in 0..3u32 {
-        let e = axis(k);
-        let minus = [v[0] - e[0], v[1] - e[1], v[2] - e[2]];
-        g[k as usize] = tc::grad_axis(f(add(v, e)), c, f(minus));
+/// The loaded grid of one block as the shared core's mesher reads it.
+struct LoadedGrid<'a> {
+    ws: &'a TsdfWorkspace,
+    n: i32,
+}
+
+impl tc::MeshVoxels for LoadedGrid<'_> {
+    #[inline(always)]
+    fn value(&self, v: [i32; 3]) -> Option<f32> {
+        let i = gidx(v, self.n);
+        self.ws.grid_ok[i].then(|| self.ws.grid_f[i])
     }
-    g
+
+    #[inline(always)]
+    fn rgb(&self, v: [i32; 3]) -> [u8; 3] {
+        self.ws.grid_rgb[gidx(v, self.n)]
+    }
 }
 
 /// Edge vertex (position, colour, normal) from owner `a` along `k`.
@@ -217,23 +208,21 @@ fn edge_point(
     normals: bool,
     colors: bool,
 ) -> ([f32; 3], [u8; 3], [f32; 3]) {
-    let n = (1i32 << view.grid.log2) + 3;
-    let b = add(a, axis(k));
-    let (ia, ib) = (gidx(a, n), gidx(b, n));
-    let t = tc::edge_t(ws.grid_f[ia], ws.grid_f[ib]);
-    let ca = tc::voxel_centre::<StdOps>(add(g0, a), view.grid.voxel_size, view.grid.half_voxel);
-    let p = tc::edge_vertex::<StdOps>(ca, k as usize, view.grid.voxel_size, t);
-    let c = if colors {
-        tc::lerp_color::<StdOps>(t, ws.grid_rgb[ia], ws.grid_rgb[ib])
-    } else {
-        [0; 3]
+    let grid = LoadedGrid {
+        ws,
+        n: (1i32 << view.grid.log2) + 3,
     };
-    let nrm = if normals {
-        tc::edge_normal::<StdOps>(t, gradient(ws, a, n), gradient(ws, b, n))
-    } else {
-        [0.0; 3]
-    };
-    (p, c, nrm)
+    let g = &view.grid;
+    tc::mesh_edge_point::<StdOps, _>(
+        &grid,
+        g0,
+        a,
+        k as usize,
+        g.voxel_size,
+        g.half_voxel,
+        normals,
+        colors,
+    )
 }
 
 /// Meshes block `key` into the workspace's block buffers (block-local
@@ -528,6 +517,48 @@ impl BlockMeshCache {
         self.params = None;
     }
 
+    /// Starts an update from a volume of `len` blocks at step `epoch`:
+    /// resets the cache on new params or an older volume, then sizes the
+    /// slots. Returns the cache's epoch and block count before the update
+    /// (blocks modified after that epoch, or at or past that count, are
+    /// dirty).
+    pub(crate) fn begin_update(
+        &mut self,
+        params: &MeshParams,
+        epoch: u64,
+        len: usize,
+    ) -> (u64, usize) {
+        if self.params != Some(*params) || self.epoch > epoch || self.slots.len() > len {
+            self.reset(*params);
+        }
+        let before = (self.epoch, self.slots.len());
+        self.slots.resize(len, Slot::default());
+        before
+    }
+
+    /// Ends an update: block order from the volume's ascending `(key,
+    /// pool)` list, compaction if the slab is mostly garbage, the epoch.
+    pub(crate) fn finish_update(
+        &mut self,
+        sorted: &[(u64, u32)],
+        epoch: u64,
+        remeshed: u32,
+    ) -> MeshUpdateStats {
+        self.order.clear();
+        self.order.extend_from_slice(sorted);
+        let garbage =
+            self.vertices.len() - self.live_vertices + self.triangles.len() - self.live_triangles;
+        if garbage > COMPACT_SLACK && garbage > self.live_vertices + self.live_triangles {
+            self.compact();
+        }
+        self.epoch = epoch;
+        MeshUpdateStats {
+            remeshed_blocks: remeshed,
+            vertices: self.live_vertices as u64,
+            triangles: self.live_triangles as u64,
+        }
+    }
+
     fn reset(&mut self, params: MeshParams) {
         self.vertices.clear();
         self.normals.clear();
@@ -543,9 +574,30 @@ impl BlockMeshCache {
 
     /// Stores the workspace's block mesh as block `p`'s.
     fn store(&mut self, p: usize, ws: &TsdfWorkspace, params: &MeshParams) {
+        self.store_parts(
+            p,
+            &ws.block_vertices,
+            &ws.block_normals,
+            &ws.block_colors,
+            &ws.block_triangles,
+            params,
+        );
+    }
+
+    /// Stores one block's mesh (block-local triangle indices) as block
+    /// `p`'s; `normals`/`colors` are empty unless `params` asks for them.
+    pub(crate) fn store_parts(
+        &mut self,
+        p: usize,
+        vertices: &[[f32; 3]],
+        normals: &[[f32; 3]],
+        colors: &[[u8; 3]],
+        triangles: &[[u32; 3]],
+        params: &MeshParams,
+    ) {
         let s = &mut self.slots[p];
-        let nv = ws.block_vertices.len();
-        let nt = ws.block_triangles.len();
+        let nv = vertices.len();
+        let nt = triangles.len();
         if nv > s.v_cap {
             s.v_off = self.vertices.len();
             s.v_cap = nv;
@@ -564,14 +616,14 @@ impl BlockMeshCache {
             self.triangles.resize(s.t_off + nt, [0; 3]);
         }
         let vr = s.v_off..s.v_off + nv;
-        self.vertices[vr.clone()].copy_from_slice(&ws.block_vertices);
+        self.vertices[vr.clone()].copy_from_slice(vertices);
         if params.normals {
-            self.normals[vr.clone()].copy_from_slice(&ws.block_normals);
+            self.normals[vr.clone()].copy_from_slice(normals);
         }
         if params.colors {
-            self.colors[vr].copy_from_slice(&ws.block_colors);
+            self.colors[vr].copy_from_slice(colors);
         }
-        self.triangles[s.t_off..s.t_off + nt].copy_from_slice(&ws.block_triangles);
+        self.triangles[s.t_off..s.t_off + nt].copy_from_slice(triangles);
         self.live_vertices = self.live_vertices + nv - s.v_len;
         self.live_triangles = self.live_triangles + nt - s.t_len;
         s.v_len = nv;
@@ -670,10 +722,7 @@ pub(crate) fn update_cache(
     cache: &mut BlockMeshCache,
 ) -> MeshUpdateStats {
     let index = view.index;
-    if cache.params != Some(*params) || cache.epoch > index.epoch || cache.slots.len() > index.len()
-    {
-        cache.reset(*params);
-    }
+    let (cache_epoch, cache_len) = cache.begin_update(params, index.epoch, index.len());
     ws.dirty.clear();
     if ws.dirty_mark.len() < index.len() {
         ws.dirty_mark.resize(index.len(), 0);
@@ -686,12 +735,12 @@ pub(crate) fn update_cache(
     let mark = ws.dirty_epoch;
     let offsets = affected_offsets(params.normals);
     for &(key, p) in &index.sorted {
-        if index.modified[p as usize] <= cache.epoch && (p as usize) < cache.slots.len() {
+        if index.modified[p as usize] <= cache_epoch && (p as usize) < cache_len {
             continue;
         }
         let bc = tc::unpack_block_key(key);
         for d in offsets {
-            let Some(q) = neighbour_key(bc, *d).and_then(|k| index.lookup(k)) else {
+            let Some(q) = tc::neighbour_key(bc, *d).and_then(|k| index.lookup(k)) else {
                 continue;
             };
             let m = &mut ws.dirty_mark[q as usize];
@@ -701,25 +750,12 @@ pub(crate) fn update_cache(
             }
         }
     }
-    cache.slots.resize(index.len(), Slot::default());
     for i in 0..ws.dirty.len() {
         let q = ws.dirty[i] as usize;
         mesh_block(view, index.pool_keys[q], params, ws);
         cache.store(q, ws, params);
     }
-    cache.order.clear();
-    cache.order.extend_from_slice(&index.sorted);
-    let garbage =
-        cache.vertices.len() - cache.live_vertices + cache.triangles.len() - cache.live_triangles;
-    if garbage > COMPACT_SLACK && garbage > cache.live_vertices + cache.live_triangles {
-        cache.compact();
-    }
-    cache.epoch = index.epoch;
-    MeshUpdateStats {
-        remeshed_blocks: ws.dirty.len() as u32,
-        vertices: cache.live_vertices as u64,
-        triangles: cache.live_triangles as u64,
-    }
+    cache.finish_update(&index.sorted, index.epoch, ws.dirty.len() as u32)
 }
 
 impl<const B: usize> TsdfVolume<B>

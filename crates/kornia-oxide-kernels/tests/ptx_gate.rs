@@ -3,7 +3,7 @@
 
 #[path = "../ptx_gate.rs"]
 mod ptx_gate;
-use ptx_gate::gate;
+use ptx_gate::{gate, FMA_ALLOWED};
 
 const HEAD: &str = ".version 6.3\n.target sm_75\n.address_size 64\n";
 
@@ -116,4 +116,129 @@ fn module_violations() {
     }
     assert_eq!(gate(&commented, &k()), Ok(()));
     assert!(gate(&format!("{HEAD}{}", entry("k", "")), &[]).is_err());
+}
+
+fn asm(op: &str) -> String {
+    format!("\t// begin inline asm\n\t{op}\n\t// end inline asm\n")
+}
+
+/// Float rules G1-G3 (kornia-3d TSDF contract, section 18): each rejected
+/// opcode fails in an entry and in a helper, even inside inline asm.
+#[test]
+fn float_violations() {
+    for op in [
+        // G1: no rounding modifier
+        "add.f32 %f1, %f2, %f3;",
+        "sub.f32 %f1, %f2, %f3;",
+        "mul.f32 %f1, %f2, %f3;",
+        "add.f64 %fd1, %fd2, %fd3;",
+        "mul.f64 %fd1, %fd2, %fd3;",
+        // G2: flush, approximations, transcendentals, min/max, saturation
+        "add.rn.ftz.f32 %f1, %f2, %f3;",
+        "mul.rn.ftz.f32 %f1, %f2, %f3;",
+        "div.approx.f32 %f1, %f2, %f3;",
+        "div.full.f32 %f1, %f2, %f3;",
+        "rcp.approx.f32 %f1, %f2;",
+        "rcp.approx.ftz.f64 %fd1, %fd2;",
+        "sqrt.approx.f32 %f1, %f2;",
+        "rsqrt.approx.f32 %f1, %f2;",
+        "sin.approx.f32 %f1, %f2;",
+        "cos.approx.f32 %f1, %f2;",
+        "ex2.approx.f32 %f1, %f2;",
+        "lg2.approx.f32 %f1, %f2;",
+        "tanh.approx.f32 %f1, %f2;",
+        "min.f32 %f1, %f2, %f3;",
+        "max.f32 %f1, %f2, %f3;",
+        "max.NaN.f32 %f1, %f2, %f3;",
+        "min.f64 %fd1, %fd2, %fd3;",
+        "add.rn.sat.f32 %f1, %f2, %f3;",
+        "cvt.sat.f32.f32 %f1, %f2;",
+        // G3: float atomics
+        "atom.global.add.f32 %f1, [%rd1], %f2;",
+        "red.global.add.f32 [%rd1], %f2;",
+        "atom.global.add.f64 %fd1, [%rd1], %fd2;",
+    ] {
+        for ptx in [
+            format!("{HEAD}{}", entry("k", &format!("\t{op}\n"))),
+            format!("{HEAD}{}", entry("k", &asm(op))),
+            format!("{HEAD}{}{}", helper(&format!("\t{op}\n")), entry("k", "")),
+        ] {
+            assert!(gate(&ptx, &k()).is_err(), "`{op}` passed the gate:\n{ptx}");
+        }
+    }
+}
+
+/// IEEE float ops and integer look-alikes pass (`rcp.rn` is how LLVM
+/// lowers `1.0 / x`).
+#[test]
+fn float_ops_pass() {
+    for op in [
+        "add.rn.f32 %f1, %f2, %f3;",
+        "sub.rn.f32 %f1, %f2, %f3;",
+        "mul.rn.f32 %f1, %f2, %f3;",
+        "add.rz.f64 %fd1, %fd2, %fd3;",
+        "div.rn.f32 %f1, %f2, %f3;",
+        "rcp.rn.f32 %f1, %f2;",
+        "sqrt.rn.f32 %f1, %f2;",
+        "neg.f32 %f1, %f2;",
+        "abs.f32 %f1, %f2;",
+        "cvt.rzi.s32.f32 %r1, %f1;",
+        "cvt.rmi.f32.f32 %f1, %f2;",
+        "setp.lt.f32 %p1, %f1, %f2;",
+        "selp.f32 %f1, %f2, %f3, %p1;",
+        "min.u32 %r1, %r2, %r3;",
+        "max.s32 %r1, %r2, %r3;",
+        "add.s32 %r1, %r2, %r3;",
+        "mul.lo.s32 %r1, %r2, %r3;",
+        "mul.wide.u32 %rd1, %r2, %r3;",
+        "atom.global.add.u64 %rd1, [%rd2], 1;",
+        "atom.global.cas.b64 %rd1, [%rd2], %rd3, %rd4;",
+        "red.global.or.b64 [%rd1], %rd2;",
+        "ld.global.f32 %f1, [%rd1];",
+    ] {
+        let ptx = format!("{HEAD}{}", entry("k", &format!("\t{op}\n")));
+        assert_eq!(gate(&ptx, &k()), Ok(()), "`{op}`");
+    }
+}
+
+/// G4: an allowed entry's fma must come from inline asm (an explicit
+/// `fma.rn`); a contracted one, or one in a helper, fails.
+#[test]
+fn fma_only_from_inline_asm() {
+    let fma = "fma.rn.f32 %f1, %f2, %f3, %f4;";
+    let name = FMA_ALLOWED[0];
+    let names = vec![name.to_string()];
+    let ok = format!("{HEAD}{}", entry(name, &asm(fma)));
+    assert_eq!(gate(&ok, &names), Ok(()));
+    let bare = format!("{HEAD}{}", entry(name, &format!("\t{fma}\n")));
+    let errs = gate(&bare, &names).expect_err("bare fma passed");
+    assert!(errs.iter().any(|e| e.contains("inline asm")), "{errs:?}");
+    // the markers are scoped: an fma after `end inline asm` is bare
+    let after = format!(
+        "{HEAD}{}",
+        entry(name, &format!("{}\t{fma}\n", asm("mov.f32 %f1, %f2;")))
+    );
+    assert!(gate(&after, &names).is_err());
+    // never in a helper, even from asm
+    let helper_asm = format!("{HEAD}{}{}", helper(&asm(fma)), entry(name, ""));
+    assert!(gate(&helper_asm, &names).is_err());
+}
+
+/// The contract names exactly these entries (G4).
+#[test]
+fn fma_allowed_is_the_contract_set() {
+    let mut got = FMA_ALLOWED.to_vec();
+    got.sort_unstable();
+    assert_eq!(
+        got,
+        [
+            "tsdf_integrate_pinhole",
+            "tsdf_integrate_spherical",
+            "tsdf_mc_emit",
+            "tsdf_range_from_points",
+            "tsdf_raycast",
+            "tsdf_touch_pinhole",
+            "tsdf_touch_spherical",
+        ]
+    );
 }

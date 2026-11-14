@@ -10,7 +10,7 @@ use std::marker::PhantomData;
 
 use kornia_image::Image;
 
-use super::alloc::prepare;
+use super::alloc::{prepare, Obs};
 use super::integrate::{integrate_step, StepTarget};
 use super::mesh::{extract_view, update_cache, BlockMeshCache, MeshParams, MeshUpdateStats};
 use super::raycast::{
@@ -195,7 +195,7 @@ pub enum SubmapFilter<'a> {
 }
 
 impl SubmapFilter<'_> {
-    fn matches(&self, id: SubmapId) -> bool {
+    pub(crate) fn matches(&self, id: SubmapId) -> bool {
         match self {
             Self::All => true,
             Self::Agents(a) => a.contains(&id.agent),
@@ -303,11 +303,22 @@ impl SubmapMeshCache {
     where
         BlockDim<B>: SupportedBlockDim,
     {
+        self.write_book(&map.book, filter, mesh)
+    }
+
+    /// [`SubmapMeshCache::write_into`] from a map's bookkeeping (host or
+    /// device map).
+    pub(crate) fn write_book<I: SlotIndex>(
+        &self,
+        book: &Book<I>,
+        filter: SubmapFilter<'_>,
+        mesh: &mut TriangleMesh,
+    ) -> Result<(), TsdfError> {
         check_fp_env()?;
-        map.check_filter(&filter)?;
+        book.check_filter(&filter)?;
         mesh.clear();
-        for &slot in &map.live {
-            let h = &map.headers[slot as usize];
+        for &slot in &book.live {
+            let h = &book.headers[slot as usize];
             if !filter.matches(h.id) {
                 continue;
             }
@@ -321,18 +332,57 @@ impl SubmapMeshCache {
         }
         Ok(())
     }
+
+    /// The cache of slot `slot` for submap `id`, invalidated when the slot
+    /// changed submap.
+    pub(crate) fn slot_cache(&mut self, slot: usize, id: SubmapId) -> &mut BlockMeshCache {
+        if self.caches.len() <= slot {
+            self.caches.resize_with(slot + 1, BlockMeshCache::default);
+            self.ids.resize(slot + 1, None);
+        }
+        if self.ids[slot] != Some(id) {
+            self.caches[slot].invalidate();
+            self.ids[slot] = Some(id);
+        }
+        &mut self.caches[slot]
+    }
+}
+
+/// A submap slot's block index as the bookkeeping sees it (the host
+/// `BlockIndex`, or a device index's host mirror).
+pub(crate) trait SlotIndex {
+    /// An empty index for `capacity` blocks.
+    fn with_capacity(capacity: usize) -> Self;
+    /// Allocated blocks.
+    fn len(&self) -> usize;
+    /// Empties the index, keeping its capacity.
+    fn clear(&mut self);
+}
+
+impl SlotIndex for BlockIndex {
+    fn with_capacity(capacity: usize) -> Self {
+        BlockIndex::with_capacity(capacity)
+    }
+
+    fn len(&self) -> usize {
+        BlockIndex::len(self)
+    }
+
+    fn clear(&mut self) {
+        BlockIndex::clear(self)
+    }
 }
 
 #[derive(Debug, Clone)]
-struct Header {
-    id: SubmapId,
-    index: BlockIndex,
-    world_from_submap: Pose3d,
-    steps: u32,
-    last_used: u64,
+pub(crate) struct Header<I> {
+    pub(crate) id: SubmapId,
+    pub(crate) index: I,
+    pub(crate) world_from_submap: Pose3d,
+    pub(crate) steps: u32,
+    pub(crate) last_used: u64,
 }
 
-impl Header {
+impl<I: SlotIndex> Header<I> {
     /// A free slot with a hash for `capacity` blocks.
     fn new(capacity: usize) -> Self {
         Self {
@@ -340,7 +390,7 @@ impl Header {
                 agent: AgentId(0),
                 seq: 0,
             },
-            index: BlockIndex::with_capacity(capacity),
+            index: I::with_capacity(capacity),
             world_from_submap: Pose3d::IDENTITY,
             steps: 0,
             last_used: 0,
@@ -349,9 +399,9 @@ impl Header {
 }
 
 #[derive(Debug, Clone)]
-struct Agent {
+pub(crate) struct Agent {
     id: AgentId,
-    rig: SensorRig,
+    pub(crate) rig: SensorRig,
     spawn: SpawnPolicy,
     cos_max_rotation: f64,
     active: Option<u32>,
@@ -360,53 +410,57 @@ struct Agent {
     spawn_body: Pose3d,
 }
 
-/// A multi-agent map of TSDF submaps over one shared voxel arena.
-///
-/// Each agent integrates into its own active submap; a [`SpawnPolicy`]
-/// starts a new one. Loop closure moves submaps with
-/// [`SubmapTsdf::set_submap_poses`] (poses from any optimiser, e.g.
-/// [`crate::pgo`]); queries (mesh, raycast) cover a [`SubmapFilter`] of
-/// the union, each submap in its own pose. Overlapping submaps are never
-/// fused voxel-wise: the raycast keeps the nearest hit.
-pub struct SubmapTsdf<const B: usize = 8>
-where
-    BlockDim<B>: SupportedBlockDim,
-{
-    params: SubmapParams,
-    headers: Vec<Header>,
-    used: usize,
-    live: Vec<u32>,
-    agents: Vec<Agent>,
-    arena: Pools,
-    clock: u64,
-    _block: PhantomData<BlockDim<B>>,
+/// Where a step goes, decided before it is applied.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct StepPlan {
+    /// Index into `agents`.
+    pub(crate) agent: usize,
+    /// Header slot.
+    pub(crate) slot: usize,
+    /// The step spawns the slot's submap.
+    pub(crate) spawn: bool,
+    pub(crate) world_from_submap: Pose3d,
+    pub(crate) submap_from_body: Pose3d,
 }
 
-impl<const B: usize> SubmapTsdf<B>
-where
-    BlockDim<B>: SupportedBlockDim,
-{
-    const LOG2: u32 = <BlockDim<B> as SupportedBlockDim>::LOG2;
-    const VOXELS: usize = <BlockDim<B> as SupportedBlockDim>::VOXELS;
+/// Observation `s` (fold order `order`) of a planned step of the agent
+/// with rig `rig`: its pose in the submap is `submap_from_body ∘
+/// body_from_sensor`.
+pub(crate) fn observation<'a>(
+    rig: &'a SensorRig,
+    plan: &StepPlan,
+    step: &AgentStep<'a>,
+    order: &[u32],
+    s: usize,
+) -> Result<Obs<'a>, TsdfError> {
+    let f = &step.frames[order[s] as usize];
+    let rs = rig
+        .get(f.sensor)
+        .ok_or(TsdfError::UnknownSensor(f.sensor))?;
+    let volume_from_sensor = plan.submap_from_body.compose(&rs.body_from_sensor);
+    prepare(&rs.sensor, &volume_from_sensor, f.depth, f.color)
+}
 
-    /// Creates an empty map and preallocates `max_submaps` submap slots
-    /// (each with a hash for `volume.block_capacity` blocks) and the arena.
-    ///
-    /// # Arguments
-    ///
-    /// * `params` - Layout, voxel parameters and capacities.
-    ///
-    /// # Returns
-    ///
-    /// The map.
-    ///
-    /// # Errors
-    ///
-    /// [`TsdfError::InvalidParameter`] for a zero or oversized capacity.
-    pub fn new(params: SubmapParams) -> Result<Self, TsdfError> {
-        params.volume.validate(Self::VOXELS)?;
+/// The bookkeeping of a submap map, shared by [`SubmapTsdf`] and its CUDA
+/// twin: agents, submap slots, poses, the spawn policy and the step order.
+/// `I` is a slot's block index.
+#[derive(Debug, Clone)]
+pub(crate) struct Book<I> {
+    pub(crate) params: SubmapParams,
+    pub(crate) headers: Vec<Header<I>>,
+    pub(crate) used: usize,
+    pub(crate) live: Vec<u32>,
+    pub(crate) agents: Vec<Agent>,
+    pub(crate) clock: u64,
+}
+
+impl<I: SlotIndex> Book<I> {
+    /// Validates `params` (for `voxels` voxels per block) and preallocates
+    /// the slots.
+    pub(crate) fn new(params: SubmapParams, voxels: usize) -> Result<Self, TsdfError> {
+        params.volume.validate(voxels)?;
         let bad = |field: &'static str, value: f64| TsdfError::InvalidParameter { field, value };
-        if params.arena_blocks == 0 || params.arena_blocks > max_blocks(Self::VOXELS) {
+        if params.arena_blocks == 0 || params.arena_blocks > max_blocks(voxels) {
             return Err(bad("arena_blocks", params.arena_blocks as f64));
         }
         if params.max_submaps == 0 || params.max_submaps > u32::MAX as usize {
@@ -421,35 +475,12 @@ where
             used: 0,
             live: Vec::with_capacity(params.max_submaps),
             agents: Vec::new(),
-            arena: Pools::with_capacity(params.arena_blocks, Self::VOXELS, params.volume.color),
             clock: 0,
             params,
-            _block: PhantomData,
         })
     }
 
-    /// Map parameters.
-    pub fn params(&self) -> &SubmapParams {
-        &self.params
-    }
-
-    /// Registers an agent with its rig and spawn policy.
-    ///
-    /// # Arguments
-    ///
-    /// * `agent` - New agent id.
-    /// * `rig` - Its sensors.
-    /// * `spawn` - Its spawn policy.
-    ///
-    /// # Returns
-    ///
-    /// `Ok(())` once registered.
-    ///
-    /// # Errors
-    ///
-    /// [`TsdfError::DuplicateAgent`], [`TsdfError::InvalidParameter`]
-    /// (policy).
-    pub fn add_agent(
+    pub(crate) fn add_agent(
         &mut self,
         agent: AgentId,
         rig: SensorRig,
@@ -501,22 +532,14 @@ where
             .map_err(|_| TsdfError::UnknownAgent(agent))
     }
 
-    fn slot_of(&self, id: SubmapId) -> Option<usize> {
+    pub(crate) fn slot_of(&self, id: SubmapId) -> Option<usize> {
         self.live
             .binary_search_by_key(&id, |&s| self.headers[s as usize].id)
             .ok()
             .map(|i| self.live[i] as usize)
     }
 
-    fn view(&self, slot: usize) -> VolumeRef<'_> {
-        VolumeRef {
-            index: &self.headers[slot].index,
-            pools: &self.arena,
-            grid: self.params.layout.grid(Self::LOG2),
-        }
-    }
-
-    fn check_filter(&self, filter: &SubmapFilter<'_>) -> Result<(), TsdfError> {
+    pub(crate) fn check_filter(&self, filter: &SubmapFilter<'_>) -> Result<(), TsdfError> {
         match filter {
             SubmapFilter::All => Ok(()),
             SubmapFilter::Agents(a) => a
@@ -531,7 +554,7 @@ where
     }
 
     /// Static checks of a step (nothing mutated).
-    fn validate_step(&self, step: &AgentStep<'_>) -> Result<(), TsdfError> {
+    pub(crate) fn validate_step(&self, step: &AgentStep<'_>) -> Result<(), TsdfError> {
         let a = &self.agents[self.agent_index(step.agent)?];
         if let Some(last) = a.last_stamp {
             if step.stamp <= last {
@@ -572,12 +595,9 @@ where
             || h.index.len() >= p.max_blocks
     }
 
-    /// Applies one validated step.
-    fn apply_step(
-        &mut self,
-        ws: &mut TsdfWorkspace,
-        step: &AgentStep<'_>,
-    ) -> Result<StepReport, TsdfError> {
+    /// Plans a validated step: its slot (a cleared free one on a spawn) and
+    /// frames. Fails before anything observable changes.
+    pub(crate) fn plan(&mut self, step: &AgentStep<'_>) -> Result<StepPlan, TsdfError> {
         let ai = self.agent_index(step.agent)?;
         let spawn = self.should_spawn(&self.agents[ai], step);
         let slot = if spawn {
@@ -606,40 +626,38 @@ where
         } else {
             self.headers[slot].world_from_submap
         };
-        let submap_from_body = world_from_submap.inverse().compose(&step.world_from_body);
+        Ok(StepPlan {
+            agent: ai,
+            slot,
+            spawn,
+            world_from_submap,
+            submap_from_body: world_from_submap.inverse().compose(&step.world_from_body),
+        })
+    }
 
-        let mut order = std::mem::take(&mut ws.frame_order);
+    /// Fills `order` with the step's frame indices by ascending sensor id.
+    pub(crate) fn order_frames(step: &AgentStep<'_>, order: &mut Vec<u32>) {
         order.clear();
         order.extend(0..step.frames.len() as u32);
         order.sort_unstable_by_key(|&i| step.frames[i as usize].sensor);
-        let rig = &self.agents[ai].rig;
-        let obs = |s: usize| {
-            let f = &step.frames[order[s] as usize];
-            let rs = rig
-                .get(f.sensor)
-                .ok_or(TsdfError::UnknownSensor(f.sensor))?;
-            let volume_from_sensor = submap_from_body.compose(&rs.body_from_sensor);
-            prepare(&rs.sensor, &volume_from_sensor, f.depth, f.color)
-        };
-        let target = StepTarget {
-            index: &mut self.headers[slot].index,
-            pools: &mut self.arena,
-            layout: &self.params.layout,
-            params: &self.params.volume,
-            log2: Self::LOG2,
-        };
-        let res = integrate_step(target, ws, step.frames.len(), &obs);
-        ws.frame_order = order;
-        let stats = res?;
+    }
 
-        let a = &mut self.agents[ai];
-        if spawn {
+    /// Records an applied step.
+    pub(crate) fn commit(
+        &mut self,
+        plan: &StepPlan,
+        step: &AgentStep<'_>,
+        stats: IntegrateStats,
+    ) -> StepReport {
+        let slot = plan.slot;
+        let a = &mut self.agents[plan.agent];
+        if plan.spawn {
             let h = &mut self.headers[slot];
             h.id = SubmapId {
                 agent: a.id,
                 seq: a.next_seq,
             };
-            h.world_from_submap = world_from_submap;
+            h.world_from_submap = plan.world_from_submap;
             h.steps = 0;
             a.next_seq += 1;
             a.active = Some(slot as u32);
@@ -655,11 +673,252 @@ where
         h.steps += 1;
         h.last_used = self.clock;
         a.last_stamp = Some(step.stamp);
-        Ok(StepReport {
+        StepReport {
             submap: h.id,
-            spawned: spawn,
+            spawned: plan.spawn,
             stats,
+        }
+    }
+
+    /// Validates a batch, orders it by `(stamp, agent)` and applies each
+    /// step with `apply` (contract section 11).
+    pub(crate) fn batch<S>(
+        storage: &mut S,
+        book: impl Fn(&mut S) -> &mut Self,
+        ws: &mut TsdfWorkspace,
+        steps: &[AgentStep<'_>],
+        mut apply: impl FnMut(
+            &mut S,
+            &mut TsdfWorkspace,
+            &AgentStep<'_>,
+        ) -> Result<StepReport, TsdfError>,
+    ) -> Result<BatchReport, TsdfError> {
+        let batch = |index: usize, e: TsdfError| TsdfError::Batch {
+            index,
+            source: Box::new(e),
+        };
+        for (i, s) in steps.iter().enumerate() {
+            book(storage).validate_step(s).map_err(|e| batch(i, e))?;
+        }
+        let mut order = std::mem::take(&mut ws.batch_order);
+        order.clear();
+        order.extend(0..steps.len() as u32);
+        order.sort_unstable_by_key(|&i| (steps[i as usize].stamp, steps[i as usize].agent));
+        let res = (|| {
+            for w in order.windows(2) {
+                let (a, b) = (&steps[w[0] as usize], &steps[w[1] as usize]);
+                if (a.stamp, a.agent) == (b.stamp, b.agent) {
+                    let e = TsdfError::DuplicateStep {
+                        agent: b.agent,
+                        stamp: b.stamp,
+                    };
+                    return Err(batch(w[1] as usize, e));
+                }
+            }
+            let mut report = BatchReport {
+                steps: 0,
+                spawned: 0,
+                stats: IntegrateStats::default(),
+            };
+            for &i in &order {
+                let r = apply(storage, ws, &steps[i as usize]).map_err(|e| batch(i as usize, e))?;
+                report.steps += 1;
+                report.spawned += r.spawned as usize;
+                report.stats.accumulate(&r.stats);
+            }
+            Ok(report)
+        })();
+        ws.batch_order = order;
+        res
+    }
+
+    pub(crate) fn set_submap_poses(&mut self, poses: &[SubmapPose]) -> Result<(), TsdfError> {
+        for p in poses {
+            self.slot_of(p.id).ok_or(TsdfError::UnknownSubmap(p.id))?;
+            check_pose(&p.world_from_submap)?;
+        }
+        for p in poses {
+            if let Some(s) = self.slot_of(p.id) {
+                self.headers[s].world_from_submap = p.world_from_submap;
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn submap_ids(&self) -> impl Iterator<Item = SubmapId> + '_ {
+        self.live.iter().map(|&s| self.headers[s as usize].id)
+    }
+
+    pub(crate) fn active_submap(&self, agent: AgentId) -> Option<SubmapId> {
+        let a = &self.agents[self.agent_index(agent).ok()?];
+        a.active.map(|s| self.headers[s as usize].id)
+    }
+
+    /// Checks a raycast's world pose and filter.
+    pub(crate) fn check_view(
+        &self,
+        world_from_camera: &Pose3d,
+        filter: &SubmapFilter<'_>,
+    ) -> Result<(), TsdfError> {
+        check_pose(world_from_camera)?;
+        self.check_filter(filter)
+    }
+
+    /// The resident set under `max_resident_bytes`, `bytes(slot)` giving a
+    /// slot's voxel bytes (see [`SubmapTsdf::resident_submaps_into`]).
+    pub(crate) fn resident_into(&self, out: &mut Vec<SubmapId>, bytes: impl Fn(u32) -> usize) {
+        out.clear();
+        let Some(budget) = self.params.max_resident_bytes else {
+            out.extend(self.submap_ids());
+            return;
+        };
+        let active = |slot: u32| self.agents.iter().any(|a| a.active == Some(slot));
+        let mut used: usize = self
+            .live
+            .iter()
+            .filter(|&&s| active(s))
+            .map(|&s| bytes(s))
+            .sum();
+        out.extend(
+            self.live
+                .iter()
+                .filter(|&&s| active(s))
+                .map(|&s| self.headers[s as usize].id),
+        );
+        // most recent first: last_used is unique per step
+        let mut last = u64::MAX;
+        loop {
+            let next = self
+                .live
+                .iter()
+                .filter(|&&s| !active(s) && self.headers[s as usize].last_used < last)
+                .max_by_key(|&&s| self.headers[s as usize].last_used);
+            let Some(&s) = next else { break };
+            last = self.headers[s as usize].last_used;
+            if used + bytes(s) > budget {
+                break;
+            }
+            used += bytes(s);
+            out.push(self.headers[s as usize].id);
+        }
+        out.sort_unstable();
+    }
+}
+
+/// A multi-agent map of TSDF submaps over one shared voxel arena.
+///
+/// Each agent integrates into its own active submap; a [`SpawnPolicy`]
+/// starts a new one. Loop closure moves submaps with
+/// [`SubmapTsdf::set_submap_poses`] (poses from any optimiser, e.g.
+/// [`crate::pgo`]); queries (mesh, raycast) cover a [`SubmapFilter`] of
+/// the union, each submap in its own pose. Overlapping submaps are never
+/// fused voxel-wise: the raycast keeps the nearest hit.
+pub struct SubmapTsdf<const B: usize = 8>
+where
+    BlockDim<B>: SupportedBlockDim,
+{
+    book: Book<BlockIndex>,
+    arena: Pools,
+    _block: PhantomData<BlockDim<B>>,
+}
+
+impl<const B: usize> SubmapTsdf<B>
+where
+    BlockDim<B>: SupportedBlockDim,
+{
+    const LOG2: u32 = <BlockDim<B> as SupportedBlockDim>::LOG2;
+    const VOXELS: usize = <BlockDim<B> as SupportedBlockDim>::VOXELS;
+
+    /// Creates an empty map and preallocates `max_submaps` submap slots
+    /// (each with a hash for `volume.block_capacity` blocks) and the arena.
+    ///
+    /// # Arguments
+    ///
+    /// * `params` - Layout, voxel parameters and capacities.
+    ///
+    /// # Returns
+    ///
+    /// The map.
+    ///
+    /// # Errors
+    ///
+    /// [`TsdfError::InvalidParameter`] for a zero or oversized capacity.
+    pub fn new(params: SubmapParams) -> Result<Self, TsdfError> {
+        let book = Book::new(params, Self::VOXELS)?;
+        let p = &book.params;
+        Ok(Self {
+            arena: Pools::with_capacity(p.arena_blocks, Self::VOXELS, p.volume.color),
+            book,
+            _block: PhantomData,
         })
+    }
+
+    /// Map parameters.
+    pub fn params(&self) -> &SubmapParams {
+        &self.book.params
+    }
+
+    /// Registers an agent with its rig and spawn policy.
+    ///
+    /// # Arguments
+    ///
+    /// * `agent` - New agent id.
+    /// * `rig` - Its sensors.
+    /// * `spawn` - Its spawn policy.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` once registered.
+    ///
+    /// # Errors
+    ///
+    /// [`TsdfError::DuplicateAgent`], [`TsdfError::InvalidParameter`]
+    /// (policy).
+    pub fn add_agent(
+        &mut self,
+        agent: AgentId,
+        rig: SensorRig,
+        spawn: SpawnPolicy,
+    ) -> Result<(), TsdfError> {
+        self.book.add_agent(agent, rig, spawn)
+    }
+
+    fn view(&self, slot: usize) -> VolumeRef<'_> {
+        VolumeRef {
+            index: &self.book.headers[slot].index,
+            pools: &self.arena,
+            grid: self.book.params.layout.grid(Self::LOG2),
+        }
+    }
+
+    /// Applies one validated step.
+    fn apply_step(
+        &mut self,
+        ws: &mut TsdfWorkspace,
+        step: &AgentStep<'_>,
+    ) -> Result<StepReport, TsdfError> {
+        let plan = self.book.plan(step)?;
+        let mut order = std::mem::take(&mut ws.frame_order);
+        Book::<BlockIndex>::order_frames(step, &mut order);
+        let (book, arena) = (&mut self.book, &mut self.arena);
+        let Book {
+            headers,
+            params,
+            agents,
+            ..
+        } = book;
+        let rig = &agents[plan.agent].rig;
+        let obs = |s: usize| observation(rig, &plan, step, &order, s);
+        let target = StepTarget {
+            index: &mut headers[plan.slot].index,
+            pools: arena,
+            layout: &params.layout,
+            params: &params.volume,
+            log2: Self::LOG2,
+        };
+        let res = integrate_step(target, ws, step.frames.len(), &obs);
+        ws.frame_order = order;
+        Ok(self.book.commit(&plan, step, res?))
     }
 
     /// Integrates one agent step into the agent's active submap, spawning
@@ -691,7 +950,7 @@ where
     ) -> Result<StepReport, TsdfError> {
         check_fp_env()?;
         ws.check_workers_fp_env()?;
-        self.validate_step(step)?;
+        self.book.validate_step(step)?;
         self.apply_step(ws, step)
     }
 
@@ -722,45 +981,13 @@ where
     ) -> Result<BatchReport, TsdfError> {
         check_fp_env()?;
         ws.check_workers_fp_env()?;
-        let batch = |index: usize, e: TsdfError| TsdfError::Batch {
-            index,
-            source: Box::new(e),
-        };
-        for (i, s) in steps.iter().enumerate() {
-            self.validate_step(s).map_err(|e| batch(i, e))?;
-        }
-        let mut order = std::mem::take(&mut ws.batch_order);
-        order.clear();
-        order.extend(0..steps.len() as u32);
-        order.sort_unstable_by_key(|&i| (steps[i as usize].stamp, steps[i as usize].agent));
-        let res = (|| {
-            for w in order.windows(2) {
-                let (a, b) = (&steps[w[0] as usize], &steps[w[1] as usize]);
-                if (a.stamp, a.agent) == (b.stamp, b.agent) {
-                    let e = TsdfError::DuplicateStep {
-                        agent: b.agent,
-                        stamp: b.stamp,
-                    };
-                    return Err(batch(w[1] as usize, e));
-                }
-            }
-            let mut report = BatchReport {
-                steps: 0,
-                spawned: 0,
-                stats: IntegrateStats::default(),
-            };
-            for &i in &order {
-                let r = self
-                    .apply_step(ws, &steps[i as usize])
-                    .map_err(|e| batch(i as usize, e))?;
-                report.steps += 1;
-                report.spawned += r.spawned as usize;
-                report.stats.accumulate(&r.stats);
-            }
-            Ok(report)
-        })();
-        ws.batch_order = order;
-        res
+        Book::batch(
+            self,
+            |m| &mut m.book,
+            ws,
+            steps,
+            |m, ws, s| m.apply_step(ws, s),
+        )
     }
 
     /// Moves submaps (e.g. after a pose-graph optimisation); never
@@ -779,21 +1006,12 @@ where
     /// [`TsdfError::UnknownSubmap`] or [`TsdfError::InvalidTransform`];
     /// nothing is applied then.
     pub fn set_submap_poses(&mut self, poses: &[SubmapPose]) -> Result<(), TsdfError> {
-        for p in poses {
-            self.slot_of(p.id).ok_or(TsdfError::UnknownSubmap(p.id))?;
-            check_pose(&p.world_from_submap)?;
-        }
-        for p in poses {
-            if let Some(s) = self.slot_of(p.id) {
-                self.headers[s].world_from_submap = p.world_from_submap;
-            }
-        }
-        Ok(())
+        self.book.set_submap_poses(poses)
     }
 
     /// Submap ids, ascending.
     pub fn submap_ids(&self) -> impl Iterator<Item = SubmapId> + '_ {
-        self.live.iter().map(|&s| self.headers[s as usize].id)
+        self.book.submap_ids()
     }
 
     /// The agent's active submap.
@@ -806,8 +1024,7 @@ where
     ///
     /// Its active submap, `None` before its first step or if unknown.
     pub fn active_submap(&self, agent: AgentId) -> Option<SubmapId> {
-        let a = &self.agents[self.agent_index(agent).ok()?];
-        a.active.map(|s| self.headers[s as usize].id)
+        self.book.active_submap(agent)
     }
 
     /// A submap's world pose.
@@ -820,14 +1037,23 @@ where
     ///
     /// `world_from_submap`, `None` for an unknown id.
     pub fn submap_pose(&self, id: SubmapId) -> Option<Pose3d> {
-        self.slot_of(id).map(|s| self.headers[s].world_from_submap)
+        self.book
+            .slot_of(id)
+            .map(|s| self.book.headers[s].world_from_submap)
     }
 
     /// Test hook: the local pool order (key per pool index) of a submap.
     #[cfg(test)]
     pub(crate) fn pool_keys(&self, id: SubmapId) -> Option<&[u64]> {
-        self.slot_of(id)
-            .map(|s| self.headers[s].index.pool_keys.as_slice())
+        self.book
+            .slot_of(id)
+            .map(|s| self.book.headers[s].index.pool_keys.as_slice())
+    }
+
+    /// Test hook: a submap's block index (the CUDA parity tests).
+    #[cfg(all(test, feature = "cuda"))]
+    pub(crate) fn submap_index(&self, id: SubmapId) -> Option<&BlockIndex> {
+        self.book.slot_of(id).map(|s| &self.book.headers[s].index)
     }
 
     /// Blocks of a submap.
@@ -840,7 +1066,9 @@ where
     ///
     /// Its allocated block count, `None` for an unknown id.
     pub fn submap_blocks(&self, id: SubmapId) -> Option<usize> {
-        self.slot_of(id).map(|s| self.headers[s].index.len())
+        self.book
+            .slot_of(id)
+            .map(|s| self.book.headers[s].index.len())
     }
 
     /// Extracts the meshes of the selected submaps in the world frame,
@@ -872,10 +1100,10 @@ where
     ) -> Result<(), TsdfError> {
         check_fp_env()?;
         params.validate(self.arena.color)?;
-        self.check_filter(&filter)?;
+        self.book.check_filter(&filter)?;
         mesh.clear();
-        for &slot in &self.live {
-            let h = &self.headers[slot as usize];
+        for &slot in &self.book.live {
+            let h = &self.book.headers[slot as usize];
             if filter.matches(h.id) {
                 let xf = rigid_from_pose(&h.world_from_submap)?;
                 extract_view(&self.view(slot as usize), params, ws, mesh, Some(&xf))?;
@@ -908,18 +1136,10 @@ where
         check_fp_env()?;
         params.validate(self.arena.color)?;
         let mut stats = MeshUpdateStats::default();
-        for &slot in &self.live {
+        for &slot in &self.book.live {
             let s = slot as usize;
-            if cache.caches.len() <= s {
-                cache.caches.resize_with(s + 1, BlockMeshCache::default);
-                cache.ids.resize(s + 1, None);
-            }
-            let id = self.headers[s].id;
-            if cache.ids[s] != Some(id) {
-                cache.caches[s].invalidate();
-                cache.ids[s] = Some(id);
-            }
-            let st = update_cache(&self.view(s), ws, params, &mut cache.caches[s]);
+            let c = cache.slot_cache(s, self.book.headers[s].id);
+            let st = update_cache(&self.view(s), ws, params, c);
             stats.accumulate(&st);
         }
         Ok(stats)
@@ -935,18 +1155,17 @@ where
         params: &RaycastParams,
     ) -> Result<(), TsdfError> {
         let k = check_raycast(camera, size, params, self.arena.color)?;
-        check_pose(world_from_camera)?;
-        self.check_filter(filter)?;
+        self.book.check_view(world_from_camera, filter)?;
         ws.ray_params.clear();
         ws.ray_slots.clear();
-        for &slot in &self.live {
-            let h = &self.headers[slot as usize];
+        for &slot in &self.book.live {
+            let h = &self.book.headers[slot as usize];
             if !filter.matches(h.id) {
                 continue;
             }
             let submap_from_camera = h.world_from_submap.inverse().compose(world_from_camera);
             let rp = core_params(
-                &self.params.layout,
+                &self.book.params.layout,
                 Self::LOG2,
                 &k,
                 &submap_from_camera,
@@ -1055,8 +1274,8 @@ where
     pub fn memory_bytes(&self, agent: Option<AgentId>) -> MemoryReport {
         let mut blocks = 0;
         let mut host = 0;
-        for &slot in &self.live {
-            let h = &self.headers[slot as usize];
+        for &slot in &self.book.live {
+            let h = &self.book.headers[slot as usize];
             if agent.is_none_or(|a| a == h.id.agent) {
                 blocks += h.index.len();
                 if agent.is_some() {
@@ -1065,7 +1284,13 @@ where
             }
         }
         if agent.is_none() {
-            host = self.arena.bytes() + self.headers.iter().map(|h| h.index.bytes()).sum::<usize>();
+            host = self.arena.bytes()
+                + self
+                    .book
+                    .headers
+                    .iter()
+                    .map(|h| h.index.bytes())
+                    .sum::<usize>();
         }
         MemoryReport {
             host_bytes: host,
@@ -1083,45 +1308,10 @@ where
     ///
     /// * `out` - Output ids (cleared first).
     pub fn resident_submaps_into(&self, out: &mut Vec<SubmapId>) {
-        out.clear();
-        let Some(budget) = self.params.max_resident_bytes else {
-            out.extend(self.submap_ids());
-            return;
-        };
-        let bytes = |slot: u32| {
+        self.book.resident_into(out, |slot| {
             self.arena
-                .page_bytes(self.headers[slot as usize].index.len())
-        };
-        let active = |slot: u32| self.agents.iter().any(|a| a.active == Some(slot));
-        let mut used: usize = self
-            .live
-            .iter()
-            .filter(|&&s| active(s))
-            .map(|&s| bytes(s))
-            .sum();
-        out.extend(
-            self.live
-                .iter()
-                .filter(|&&s| active(s))
-                .map(|&s| self.headers[s as usize].id),
-        );
-        // most recent first: last_used is unique per step
-        let mut last = u64::MAX;
-        loop {
-            let next = self
-                .live
-                .iter()
-                .filter(|&&s| !active(s) && self.headers[s as usize].last_used < last)
-                .max_by_key(|&&s| self.headers[s as usize].last_used);
-            let Some(&s) = next else { break };
-            last = self.headers[s as usize].last_used;
-            if used + bytes(s) > budget {
-                break;
-            }
-            used += bytes(s);
-            out.push(self.headers[s as usize].id);
-        }
-        out.sort_unstable();
+                .page_bytes(self.book.headers[slot as usize].index.len())
+        });
     }
 
     /// FNV-1a 64 of one submap's blocks (as
@@ -1135,7 +1325,8 @@ where
     ///
     /// The hash, `None` for an unknown id.
     pub fn content_hash(&self, id: SubmapId) -> Option<u64> {
-        self.slot_of(id)
-            .map(|s| content_hash(&self.headers[s].index, &self.arena))
+        self.book
+            .slot_of(id)
+            .map(|s| content_hash(&self.book.headers[s].index, &self.arena))
     }
 }

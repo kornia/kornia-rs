@@ -6,8 +6,17 @@ pub const ARCH: &str = "sm_75";
 /// PTX ISA: a newer one fails to JIT on older drivers (CUDA 12.6 on JetPack 6).
 pub const PTX_VERSION: &str = "6.3";
 /// Entries allowed to emit `fma`: only kernels whose CPU twin uses an explicit
-/// `mul_add`/`fmaf`. Everything else must be contraction-free for byte parity.
-pub const FMA_ALLOWED: &[&str] = &[];
+/// `mul_add`/`fmaf` (the TSDF core's `F32Ops::fma`, contract G4). Everything
+/// else must be contraction-free for byte parity.
+pub const FMA_ALLOWED: &[&str] = &[
+    "tsdf_integrate_pinhole",
+    "tsdf_integrate_spherical",
+    "tsdf_mc_emit",
+    "tsdf_range_from_points",
+    "tsdf_raycast",
+    "tsdf_touch_pinhole",
+    "tsdf_touch_spherical",
+];
 
 /// Gate the module and every function in it.
 ///
@@ -17,7 +26,15 @@ pub const FMA_ALLOWED: &[&str] = &[];
 /// every `ld`/`ldu`/`st`/`atom`/`red` names a state space (generic access means
 /// address-space inference was lost), no `__nv_` (libdevice) symbol anywhere,
 /// and no `fma` or float `mad` unless it is an entry listed in `FMA_ALLOWED`
-/// (CPU byte parity).
+/// (CPU byte parity). Float rules (kornia-3d TSDF contract, section 18):
+/// - G1: every float `add`/`sub`/`mul` has a rounding modifier (a bare one
+///   is fusable by ptxas or the driver JIT);
+/// - G2: no `.ftz`, `.approx`, `div.full`, `rsqrt`/`sin`/`cos`/`ex2`/`lg2`/
+///   `tanh`, float `min`/`max`, or `.sat` on a float op (`rcp.rn` is IEEE);
+/// - G3: no float `atom`/`red`;
+/// - G4: every `fma` of an `FMA_ALLOWED` entry sits between the inline-asm
+///   markers, i.e. comes from an explicit `fma.rn` (the shared core's
+///   `F32Ops`), never from contraction.
 ///
 /// # Arguments
 ///
@@ -41,7 +58,14 @@ pub fn gate(ptx: &str, scanned: &[String]) -> Result<(), Vec<String>> {
     // (is_entry, name); `None` until the first function header.
     let mut func: Option<(bool, String)> = None;
     let mut names = Vec::new();
+    // inside a `// begin inline asm` .. `// end inline asm` pair
+    let mut in_asm = false;
     for line in ptx.lines() {
+        match line.trim() {
+            "// begin inline asm" => in_asm = true,
+            "// end inline asm" => in_asm = false,
+            _ => {}
+        }
         let code = line.split("//").next().unwrap_or("").trim();
         if code.starts_with(".extern") {
             if code.split_whitespace().nth(1) != Some(".shared") {
@@ -88,12 +112,20 @@ pub fn gate(ptx: &str, scanned: &[String]) -> Result<(), Vec<String>> {
         {
             errs.push(format!("gate: {name}: generic memory op `{op}`"));
         }
-        let float_mad = op.starts_with("mad.") && (op.contains(".f32") || op.contains(".f64"));
+        let float = is_float(op);
+        let float_mad = op.starts_with("mad.") && float;
         let fma_ok = *is_entry && FMA_ALLOWED.contains(&name.as_str());
         if (op.starts_with("fma.") || float_mad) && !fma_ok {
             errs.push(format!(
                 "gate: {name}: contracted `{op}` (not an entry in FMA_ALLOWED)"
             ));
+        } else if op.starts_with("fma.") && !in_asm {
+            errs.push(format!(
+                "gate: {name}: `{op}` outside inline asm (contracted, not an explicit fma.rn)"
+            ));
+        }
+        if let Some(why) = float_violation(op, float) {
+            errs.push(format!("gate: {name}: `{op}` ({why})"));
         }
     }
     names.sort();
@@ -107,6 +139,47 @@ pub fn gate(ptx: &str, scanned: &[String]) -> Result<(), Vec<String>> {
     } else {
         Err(errs)
     }
+}
+
+/// Whether opcode `op` works on floats.
+fn is_float(op: &str) -> bool {
+    op.split('.')
+        .skip(1)
+        .any(|q| matches!(q, "f16" | "f16x2" | "bf16" | "bf16x2" | "f32" | "f64"))
+}
+
+/// Why float rules G1-G3 reject opcode `op`, if they do.
+fn float_violation(op: &str, float: bool) -> Option<&'static str> {
+    let mut parts = op.split('.');
+    let base = parts.next().unwrap_or("");
+    let quals: Vec<&str> = parts.collect();
+    let has = |q: &str| quals.contains(&q);
+    if has("ftz") {
+        return Some("G2: flushes subnormals");
+    }
+    if has("approx") || (base == "div" && has("full")) {
+        return Some("G2: approximate");
+    }
+    if matches!(base, "rsqrt" | "sin" | "cos" | "ex2" | "lg2" | "tanh") {
+        return Some("G2: approximate transcendental");
+    }
+    if !float {
+        return None;
+    }
+    if matches!(base, "min" | "max") {
+        return Some("G2: float min/max differ from the CPU on +-0 and NaN");
+    }
+    if has("sat") {
+        return Some("G2: saturating float op");
+    }
+    if matches!(base, "atom" | "red") {
+        return Some("G3: float atomic");
+    }
+    let rounded = ["rn", "rz", "rm", "rp"].iter().any(|r| has(r));
+    if matches!(base, "add" | "sub" | "mul") && !rounded {
+        return Some("G1: no rounding modifier, fusable by ptxas");
+    }
+    None
 }
 
 /// `(is_entry, name)` if `code` opens an `.entry` or `.func`.

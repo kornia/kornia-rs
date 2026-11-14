@@ -93,7 +93,7 @@ kornia-cpp/         ← C++ bindings
 | `kornia-apriltag` | (standalone) | AprilTag detection |
 | `kornia-calib` | (standalone) | Multi-camera extrinsic calibration (AprilTag BA) |
 | `kornia-bow` | (standalone) | Bag of words |
-| `kornia-oxide-kernels` | (not re-exported; dependency of `kornia-imgproc` `cuda`) | CUDA kernels written in Rust (cuda-oxide), shipped as PTX, with its loader behind `cuda` |
+| `kornia-oxide-kernels` | (not re-exported; dependency of `kornia-imgproc` and `kornia-3d` `cuda`) | CUDA kernels written in Rust (cuda-oxide), shipped as PTX, with its loader behind `cuda` |
 
 ### Feature Flags
 
@@ -102,7 +102,7 @@ kornia-cpp/         ← C++ bindings
 | `turbojpeg` | libjpeg-turbo I/O | Requires `nasm` |
 | `gstreamer` | GStreamer video | — |
 | `v4l` | Video4Linux camera | Requires `clang` |
-| `cuda` | CUDA for VLM + kornia-3d (stereo rectifier, via imgproc remap; depth projector) | In a checkout, `cargo run -p kornia-oxide-kernels --example build_ptx` builds the cuda-oxide PTX; without it the build warns and those kernels run their NVRTC fallback (`docs/cuda-oxide.md`) |
+| `cuda` | CUDA for VLM + kornia-3d (stereo rectifier, via imgproc remap; depth projector; TSDF) | In a checkout, `cargo run -p kornia-oxide-kernels --example build_ptx` builds the cuda-oxide PTX; without it the build warns and those kernels run their NVRTC fallback (`docs/cuda-oxide.md`) |
 | `ci` | All CI-compatible features | Excludes `cuda` |
 | `serde`, `bincode`, `arrow` | Serialization formats | — |
 

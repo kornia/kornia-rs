@@ -22,7 +22,7 @@ kornia-tensor, kornia-tensor itself cannot use oxide kernels (that would be a
 cycle); tensor kernels that migrate go to a crate above it. The PTX is real
 only when a crate in the build turns on `kornia-oxide-kernels/ptx`. Rule: a
 crate's `cuda` feature turns on `kornia-oxide-kernels/cuda` and `ptx` exactly
-when that crate ships oxide kernels (kornia-imgproc today). Users only ever
+when that crate ships oxide kernels (kornia-imgproc and kornia-3d today). Users only ever
 set `cuda`; crates using kornia-tensor for device memory alone stay on stable
 without the toolchain.
 
@@ -37,7 +37,8 @@ without the toolchain.
 | `crates/kornia-imgproc/benches/bench_cuda_oxide.rs` | Every oxide kernel vs its CPU path; one `CASES` row per op and size. |
 | `scripts/cuda-oxide/install-toolchain.sh` | Installs the toolchain below (local and CI share it). |
 | `.github/actions/cuda-oxide-ptx` | CI: cached toolchain + `build_ptx`; used by the lint, wheel and Rust release workflows. |
-| `scripts/cuda-oxide/orin-test-bench.sh` | Jetson: parity tests (names derived from the PTX) + bench; `--base <ref>` A/B. |
+| `scripts/cuda-oxide/orin-test-bench.sh` | Jetson: parity tests (names derived from the PTX; kornia-imgproc and kornia-3d) + bench; `--base <ref>` A/B. |
+| `crates/kornia-oxide-kernels/device/src/tsdf.rs`, `tsdf_ops.rs` | TSDF kernels (allocation, integration, raycast, marching cubes) over the shared `tsdf_core.rs` with `PtxOps` (inline `fma.rn`/`sqrt.rn`); launchers in `crates/kornia-3d/src/tsdf/cuda.rs`. |
 
 ## How it builds
 
@@ -82,9 +83,17 @@ without the toolchain.
   `.extern .shared`; the `.entry` set equals the scanned `#[kernel]` set;
 - per `.entry` and per non-inlined `.func`: every `ld`/`st` names a state
   space (a generic access means address-space inference was lost); no
-  `fma`/float `mad` unless it is an entry in `FMA_ALLOWED` (empty); no
-  libdevice (`__nv_*`) calls. A helper that trips this should be
-  `#[inline(always)]`.
+  `fma`/float `mad` unless it is an entry in `FMA_ALLOWED` (the TSDF
+  kernels whose CPU twin calls `F32Ops::fma`); no libdevice (`__nv_*`)
+  calls. A helper that trips this should be `#[inline(always)]`;
+- float rules (kornia-3d TSDF contract, section 18): every float
+  `add`/`sub`/`mul` carries a rounding modifier (G1: a bare one may be
+  fused by ptxas or the JIT); no `.ftz`, `.approx`, `div.full`,
+  `rsqrt`/`sin`/`cos`/`ex2`/`lg2`/`tanh`, float `min`/`max` or `.sat` (G2;
+  `rcp.rn` is allowed, it is how LLVM lowers `1.0 / x`); no float
+  `atom`/`red` (G3); every `fma` of an allowed entry sits between the
+  `// begin inline asm` markers, i.e. is an explicit `fma.rn` from
+  `PtxOps`, never a contraction (G4).
 
 Errors read `gate: <function>: <reason>`. `kornia-oxide-kernels/tests/ptx_gate.rs`
 covers it in the plain (non-CUDA) test suite.
@@ -199,7 +208,8 @@ A second kernel PR (e.g. bicubic resize) does exactly this; nothing else:
    the branch). Merge bar: at 4K on an Orin with clocks locked, no regression
    beyond ~2%.
 6. **FMA.** Add the entry to `FMA_ALLOWED` only if its CPU twin uses an
-   explicit `mul_add`/`fmaf`.
+   explicit `mul_add`/`fmaf`; on the device that fma must be inline
+   `fma.rn` (the TSDF core's `PtxOps`), which the gate checks.
 7. **Never commit PTX** (`*.ptx`/`*.cubin`); CI fails if one is tracked.
 
 The old spike layout (root-level `oxide-kernels/`, committed `.ptx`, a
