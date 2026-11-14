@@ -1610,16 +1610,44 @@ mod tests {
                     ImageFormat::Rgb8
                 };
                 let mut reader = VideoReader::new(&path, format)?;
+                // Observe the third incoming buffer: earlier samples have reached the sink.
+                // Unlike waiting for EOS without consuming, this also works with backpressure.
+                let sink = reader.0.pipeline.by_name("sink").ok_or("missing sink")?;
+                let pad = sink.static_pad("sink").ok_or("missing sink pad")?;
+                let count = std::sync::atomic::AtomicUsize::new(0);
+                let (queued_tx, queued_rx) = std::sync::mpsc::sync_channel(1);
+                pad.add_probe(gstreamer::PadProbeType::BUFFER, move |_pad, _info| {
+                    if count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 2 {
+                        let _ = queued_tx.try_send(());
+                    }
+                    gstreamer::PadProbeReturn::Ok
+                });
+                let read_value =
+                    |reader: &mut VideoReader| -> Result<u8, Box<dyn std::error::Error>> {
+                        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                        loop {
+                            let value = match grayscale {
+                                false => match reader.try_grab_rgb8()? {
+                                    Grab::Frame(image) => Some(image.as_slice()[0]),
+                                    Grab::Pending => None,
+                                    Grab::Eos => return Err("unexpected EOS".into()),
+                                },
+                                true => match reader.try_grab_gray8()? {
+                                    Grab::Frame(image) => Some(image.as_slice()[0]),
+                                    Grab::Pending => None,
+                                    Grab::Eos => return Err("unexpected EOS".into()),
+                                },
+                            };
+                            if let Some(value) = value {
+                                return Ok(value);
+                            }
+                            assert!(std::time::Instant::now() < deadline, "no frame received");
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                    };
                 reader.start()?;
-                let deadline = std::time::Instant::now() + Duration::from_secs(10);
-                // Wait for the actual EOS signal without draining the application queue.
-                while !reader.is_eos() {
-                    assert!(
-                        std::time::Instant::now() < deadline,
-                        "file never reached EOS"
-                    );
-                    std::thread::sleep(Duration::from_millis(1));
-                }
+                assert_eq!(read_value(&mut reader)?, 0);
+                queued_rx.recv_timeout(Duration::from_secs(10))?;
                 if reset {
                     reader.reset()?;
                 } else {
@@ -1628,29 +1656,15 @@ mod tests {
                         Duration::ZERO,
                     )?;
                 }
-                let first = loop {
-                    let value = match grayscale {
-                        false => match reader.try_grab_rgb8()? {
-                            Grab::Frame(image) => Some(image.as_slice()[0]),
-                            Grab::Pending => None,
-                            Grab::Eos => return Err("unexpected post-seek EOS".into()),
-                        },
-                        true => match reader.try_grab_gray8()? {
-                            Grab::Frame(image) => Some(image.as_slice()[0]),
-                            Grab::Pending => None,
-                            Grab::Eos => return Err("unexpected post-seek EOS".into()),
-                        },
-                    };
-                    if let Some(value) = value {
-                        break value;
-                    }
-                    assert!(std::time::Instant::now() < deadline, "no post-seek frame");
-                    std::thread::sleep(Duration::from_millis(1));
-                };
+                let mut replay = Vec::new();
+                for _ in 0..10 {
+                    replay.push(read_value(&mut reader)?);
+                }
                 reader.close()?;
                 assert_eq!(
-                    first, 0,
-                    "grayscale={grayscale}, reset={reset}: returned a pre-seek frame"
+                    replay,
+                    [0, 20, 40, 60, 80, 100, 120, 140, 160, 180],
+                    "grayscale={grayscale}, reset={reset}: replay retained or reordered old frames"
                 );
             }
         }
