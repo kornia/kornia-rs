@@ -131,11 +131,12 @@ mod tests {
     }
 
     #[test]
-    fn image_error_reaches_video_reader_error_unchanged() {
+    fn image_error_reaches_video_reader_error_unchanged() -> Result<(), Box<dyn std::error::Error>>
+    {
         // A 2x2 RGB image needs 2 * 2 * 3 = 12 bytes; 5 bytes must fail.
-        let Err(err) = image_from_bytes(vec![0u8; 5]) else {
-            panic!("expected an error for 5 bytes of a 2x2 RGB image");
-        };
+        let err = image_from_bytes(vec![0u8; 5])
+            .err()
+            .ok_or("expected an error for 5 bytes of a 2x2 RGB image")?;
 
         assert!(matches!(
             err,
@@ -151,5 +152,6 @@ mod tests {
             VideoReaderError::StreamCaptureError(StreamCaptureError::ImageError(_))
         ));
         assert_eq!(reader_err.to_string(), expected);
+        Ok(())
     }
 }
