@@ -95,9 +95,9 @@ pub enum RgbdIcpError {
     /// initial guess.
     #[error("only {0} correspondences passed the gates; need at least 6")]
     TooFewCorrespondences(usize),
-    /// The point-to-plane normal equations do not constrain all six degrees of freedom
-    /// (degenerate geometry such as a single plane), or their solve is not finite.
-    #[error("point-to-plane normal equations are singular or ill-conditioned")]
+    /// The point-to-plane normal equations or their solve are not finite. Degenerate geometry,
+    /// such as a single plane, is not an error: it is solved along its observed directions.
+    #[error("point-to-plane normal equations or their solve are not finite")]
     SingularNormalEquations,
 }
 
@@ -782,6 +782,126 @@ impl RgbdPyramid {
 
         Ok(Self { levels })
     }
+
+    /// Rebuilds this pyramid in place from a millimetre depth image, reusing its maps.
+    ///
+    /// The same pyramid as [`Self::from_depth_mm`], bit for bit. A level whose size is
+    /// unchanged keeps its images, and `scratch` keeps the halved depths, so once this pyramid
+    /// and `scratch` have seen an image size a call at that size allocates nothing. The input
+    /// is checked before anything is written, so an invalid one leaves the pyramid unchanged.
+    ///
+    /// # Arguments
+    ///
+    /// * `depth` - Depth in millimetres, `0` = invalid.
+    /// * `camera` - Intrinsics of `depth`, without distortion.
+    /// * `num_levels` - Number of levels, at least 1.
+    /// * `scratch` - Halved depths reused across calls.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` once the pyramid holds the levels of `depth`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::from_depth_mm`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_3d::camera::PinholeCamera;
+    /// use kornia_3d::registration::{PyramidScratch, RgbdPyramid};
+    /// use kornia_image::{Image, ImageSize};
+    ///
+    /// let size = ImageSize { width: 64, height: 48 };
+    /// let camera = PinholeCamera { fx: 50.0, fy: 50.0, cx: 31.5, cy: 23.5, ..PinholeCamera::IDENTITY };
+    /// let mut pyramid = RgbdPyramid::from_depth_mm(&Image::from_size_val(size, 1500)?, &camera, 3)?;
+    /// let mut scratch = PyramidScratch::default();
+    /// pyramid.rebuild_from_depth_mm(&Image::from_size_val(size, 1600)?, &camera, 3, &mut scratch)?;
+    /// assert_eq!(pyramid.levels()[0].vertices().as_slice()[2], 1.6);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn rebuild_from_depth_mm(
+        &mut self,
+        depth: &Image<u16, 1>,
+        camera: &PinholeCamera,
+        num_levels: usize,
+        scratch: &mut PyramidScratch,
+    ) -> Result<(), RgbdIcpError> {
+        if num_levels == 0 {
+            return Err(RgbdIcpError::InvalidNumLevels(num_levels));
+        }
+        check_camera(camera)?;
+        // repeated floor halving is a floor division by 2^level
+        let level_size = |level: usize| ImageSize {
+            width: depth.width() >> level,
+            height: depth.height() >> level,
+        };
+        for level in 0..num_levels {
+            let size = level_size(level);
+            if size.width < 3 || size.height < 3 {
+                return Err(RgbdIcpError::ImageTooSmall {
+                    level,
+                    width: size.width,
+                    height: size.height,
+                });
+            }
+        }
+
+        // every pixel of a halved depth and of a vertex map is written, and the normal map is
+        // cleared first, so a reused image carries nothing of the frame before
+        let halved = &mut scratch.halved;
+        halved.truncate(num_levels - 1);
+        for level in 1..num_levels {
+            let size = level_size(level);
+            match halved.get(level - 1) {
+                Some(h) if h.size() == size => {}
+                Some(_) => halved[level - 1] = Image::from_size_val(size, 0)?,
+                None => halved.push(Image::from_size_val(size, 0)?),
+            }
+            let (done, rest) = halved.split_at_mut(level - 1);
+            let src = done.last().unwrap_or(depth);
+            downsample_depth_half(src, &mut rest[0])?;
+        }
+
+        self.levels.truncate(num_levels);
+        let mut level_camera = camera.clone();
+        for level in 0..num_levels {
+            if level > 0 {
+                level_camera = half_camera(&level_camera);
+            }
+            let size = level_size(level);
+            if self.levels.get(level).is_none_or(|l| l.size() != size) {
+                let blank = RgbdLevel {
+                    camera: level_camera.clone(),
+                    vertices: Image::from_size_val(size, 0.0)?,
+                    normals: Image::from_size_val(size, 0.0)?,
+                    depth_sigmas: None,
+                };
+                match self.levels.get_mut(level) {
+                    Some(l) => *l = blank,
+                    None => self.levels.push(blank),
+                }
+            }
+            let cur = if level == 0 {
+                depth
+            } else {
+                &halved[level - 1]
+            };
+            let out = &mut self.levels[level];
+            out.camera = level_camera.clone();
+            out.depth_sigmas = None;
+            vertex_map_from_depth_mm(cur, &level_camera, &mut out.vertices)?;
+            normal_map_from_vertex_map(&out.vertices, &mut out.normals)?;
+        }
+        Ok(())
+    }
+}
+
+/// Reused halved depths for [`RgbdPyramid::rebuild_from_depth_mm`], one per level below the
+/// finest.
+#[derive(Clone, Default)]
+pub struct PyramidScratch {
+    halved: Vec<Image<u16, 1>>,
 }
 
 #[cfg(test)]
@@ -1304,6 +1424,55 @@ mod tests {
                 "level {level}: {agree} of {valid}"
             );
         }
+        Ok(())
+    }
+
+    /// An in-place rebuild equals a fresh build bit for bit, whatever the pyramid held before:
+    /// another size, more levels, a sigma map, or other depth at the same size.
+    #[test]
+    fn rebuild_matches_from_depth_mm() -> Result<(), Box<dyn std::error::Error>> {
+        let camera = test_camera();
+        let render = |t: Vec3F64| {
+            render_depth_mm(
+                &Scene::corner_and_sphere(),
+                &camera,
+                TEST_SIZE,
+                &Mat3F64::IDENTITY,
+                &t,
+            )
+        };
+        let (first, second) = (
+            render(Vec3F64::ZERO)?,
+            render(Vec3F64::new(0.03, 0.0, 0.01))?,
+        );
+        let small = ImageSize {
+            width: 40,
+            height: 30,
+        };
+        let stale = Image::<f32, 1>::from_size_val(small, 1.0)?;
+        let sigma = Image::<f32, 1>::from_size_val(small, 0.004)?;
+        let mut pyr = RgbdPyramid::from_depth_m_with_sigma(&stale, &sigma, &camera, 3)?;
+        let mut scratch = PyramidScratch::default();
+        let bits = |img: &[f32]| img.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        for (depth, num_levels) in [(&first, 3), (&second, 3), (&first, 2)] {
+            pyr.rebuild_from_depth_mm(depth, &camera, num_levels, &mut scratch)?;
+            let fresh = RgbdPyramid::from_depth_mm(depth, &camera, num_levels)?;
+            assert_eq!(pyr.levels.len(), num_levels);
+            for (a, b) in fresh.levels.iter().zip(&pyr.levels) {
+                assert_eq!(a.camera.intrinsics(), b.camera.intrinsics());
+                assert_eq!(bits(a.vertices.as_slice()), bits(b.vertices.as_slice()));
+                assert_eq!(bits(a.normals.as_slice()), bits(b.normals.as_slice()));
+                assert!(b.depth_sigmas.is_none());
+            }
+        }
+        // an invalid input is rejected before anything is written
+        let before = bits(pyr.levels[0].vertices.as_slice());
+        assert!(matches!(
+            pyr.rebuild_from_depth_mm(&first, &camera, 9, &mut scratch),
+            Err(RgbdIcpError::ImageTooSmall { .. })
+        ));
+        assert_eq!(pyr.levels.len(), 2);
+        assert_eq!(bits(pyr.levels[0].vertices.as_slice()), before);
         Ok(())
     }
 }

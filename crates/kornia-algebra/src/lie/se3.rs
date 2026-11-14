@@ -1,9 +1,13 @@
-use super::so3::SO3F32;
+use super::so3::{SO3F32, SO3F64};
 use crate::{
     param::{Param, ParamError},
-    Mat3AF32, Mat4F32, QuatF32, Vec3AF32,
+    Mat3AF32, Mat3F64, Mat4F32, Mat4F64, Mat6F64, QuatF32, QuatF64, Vec3AF32, Vec3F64,
 };
 use rand::RngExt;
+
+/// θ² below which [`SE3F64`] uses the Taylor series of the `V⁻¹` and `Q`
+/// coefficients, whose closed forms lose digits to cancellation there.
+const SERIES_THETA2_F64: f64 = 1.0e-4;
 
 const SMALL_ANGLE_EPSILON: f32 = 1.0e-8;
 
@@ -137,23 +141,37 @@ impl SE3F32 {
         ])
     }
 
+    /// Adjoint for the `[υ; ω]` tangent order of [`Self::exp`]:
+    /// `Ad(T) = [[R, t×R], [0, R]]`, so that `T · Exp(ξ) · T⁻¹ = Exp(Ad(T) · ξ)`.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The transform `T = (R, t)`.
+    ///
+    /// # Returns
+    ///
+    /// The 6×6 adjoint, row-major, acting on twists ordered `[υ; ω]`.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible.
     pub fn adjoint(&self) -> [[f32; 6]; 6] {
         let r = self.r.matrix();
         let t = SO3F32::hat(self.t) * r;
 
         [
-            [r.x_axis.x, r.y_axis.x, r.z_axis.x, 0.0, 0.0, 0.0],
-            [r.x_axis.y, r.y_axis.y, r.z_axis.y, 0.0, 0.0, 0.0],
-            [r.x_axis.z, r.y_axis.z, r.z_axis.z, 0.0, 0.0, 0.0],
             [
-                t.x_axis.x, t.y_axis.x, t.z_axis.x, r.x_axis.x, r.y_axis.x, r.z_axis.x,
+                r.x_axis.x, r.y_axis.x, r.z_axis.x, t.x_axis.x, t.y_axis.x, t.z_axis.x,
             ],
             [
-                t.x_axis.y, t.y_axis.y, t.z_axis.y, r.x_axis.y, r.y_axis.y, r.z_axis.y,
+                r.x_axis.y, r.y_axis.y, r.z_axis.y, t.x_axis.y, t.y_axis.y, t.z_axis.y,
             ],
             [
-                t.x_axis.z, t.y_axis.z, t.z_axis.z, r.x_axis.z, r.y_axis.z, r.z_axis.z,
+                r.x_axis.z, r.y_axis.z, r.z_axis.z, t.x_axis.z, t.y_axis.z, t.z_axis.z,
             ],
+            [0.0, 0.0, 0.0, r.x_axis.x, r.y_axis.x, r.z_axis.x],
+            [0.0, 0.0, 0.0, r.x_axis.y, r.y_axis.y, r.z_axis.y],
+            [0.0, 0.0, 0.0, r.x_axis.z, r.y_axis.z, r.z_axis.z],
         ]
     }
 
@@ -238,44 +256,45 @@ impl SE3F32 {
     /// ```
     /// ref: https://arxiv.org/pdf/1812.01537 (eq 180)
     pub fn left_jacobian(rho: Vec3AF32, omega: Vec3AF32) -> [[f32; 6]; 6] {
+        // θ² below which the Q coefficients use their Taylor series: in f32 the
+        // closed forms lose up to ~40 ulps of Q to cancellation below 0.5 rad, and
+        // the series truncated after θ⁴ stays within ~2 ulps up to there.
+        const Q_SERIES_THETA2: f32 = 0.25;
+        // Taylor coefficients in θ⁰, θ², θ⁴ of c1 = (θ − sinθ)/θ³,
+        // c2 = (θ² + 2cosθ − 2)/(2θ⁴) and c3 = (2θ − 3sinθ + θcosθ)/(2θ⁵).
+        const Q_SERIES: [[f32; 3]; 3] = [
+            [1.0 / 6.0, -1.0 / 120.0, 1.0 / 5040.0],
+            [1.0 / 24.0, -1.0 / 720.0, 1.0 / 40320.0],
+            [1.0 / 120.0, -1.0 / 2520.0, 1.0 / 120960.0],
+        ];
+
         let theta2 = omega.dot(omega);
-        let theta = theta2.sqrt();
 
         let jl_so3 = SO3F32::left_jacobian(omega);
 
         let rho_hat = SO3F32::hat(rho);
         let omega_hat = SO3F32::hat(omega);
-        let omega_hat2 = omega_hat * omega_hat;
+        let wp = omega_hat * rho_hat;
+        let pw = rho_hat * omega_hat;
+        let wpw = wp * omega_hat;
 
-        // Small-angle safeguard
-        const EPS: f32 = 1e-6;
-        let (q_mat, jl_so3) = if theta < EPS {
-            // Series:  Q ≈ ½ρ× + 1/12(ω×ρ× + ρ×ω×) - 1/24 ω×ρ×ω×
-            //          Jₗ_SO3 ≈ I + ½ω× + 1/6 ω×²
-            let q = 0.5 * rho_hat + (1.0 / 12.0) * (omega_hat * rho_hat + rho_hat * omega_hat)
-                - (1.0 / 24.0) * (omega_hat * rho_hat * omega_hat);
-            let j = Mat3AF32::IDENTITY + 0.5 * omega_hat + (1.0 / 6.0) * omega_hat2;
-            (q, j)
+        // The three coefficients of Q above, signs folded in (Barfoot, State
+        // Estimation for Robotics, eq. 7.86).
+        let [c1, c2, c3] = if theta2 < Q_SERIES_THETA2 {
+            Q_SERIES.map(|k| k[0] + theta2 * (k[1] + theta2 * k[2]))
         } else {
-            let theta3 = theta2 * theta;
-            let theta4 = theta2 * theta2;
-            let theta5 = theta4 * theta;
-
-            let a = 0.5;
-            let b = (theta - theta.sin()) / theta3;
-            let c = (1.0 - 0.5 * theta2 - theta.cos()) / theta4;
-            let d = 0.5 * (c - 3.0 * b / theta5);
-
-            let term1 = a * rho_hat;
-            let term2 =
-                b * (omega_hat * rho_hat + rho_hat * omega_hat + omega_hat * rho_hat * omega_hat);
-            let term3 = c
-                * (omega_hat2 * rho_hat + rho_hat * omega_hat2
-                    - 3.0 * omega_hat * rho_hat * omega_hat);
-            let term4 = d * (omega_hat * rho_hat * omega_hat2 + omega_hat2 * rho_hat * omega_hat);
-
-            (term1 + term2 - term3 - term4, jl_so3)
+            let theta = theta2.sqrt();
+            let (s, c) = theta.sin_cos();
+            [
+                (theta - s) / (theta2 * theta),
+                (theta2 + 2.0 * c - 2.0) / (2.0 * theta2 * theta2),
+                (2.0 * theta - 3.0 * s + theta * c) / (2.0 * theta2 * theta2 * theta),
+            ]
         };
+        let q_mat = 0.5 * rho_hat
+            + c1 * (wp + pw + wpw)
+            + c2 * (omega_hat * wp + pw * omega_hat - 3.0 * wpw)
+            + c3 * (wpw * omega_hat + omega_hat * wpw);
 
         let mut jl = [[0.0; 6]; 6];
 
@@ -396,6 +415,364 @@ impl approx::RelativeEq for SE3F32 {
     #[inline]
     fn default_max_relative() -> Self::Epsilon {
         <SO3F32 as approx::RelativeEq>::default_max_relative()
+    }
+
+    #[inline]
+    fn relative_eq(
+        &self,
+        other: &Self,
+        epsilon: Self::Epsilon,
+        max_relative: Self::Epsilon,
+    ) -> bool {
+        self.r.relative_eq(&other.r, epsilon, max_relative)
+            && self.t.relative_eq(&other.t, epsilon, max_relative)
+    }
+}
+
+/// Double-precision rigid-body transform with the [`SE3F32`] conventions:
+/// `[υ; ω]` tangent order, `exp`/`log`, adjoint and Jacobians, over
+/// [`SO3F64`] and [`Vec3F64`].
+///
+/// Like [`SO3F64`], it does not implement [`Param`], which is `f32`-only.
+/// `PartialEq` compares the quaternions exactly, so `q` and `-q` differ.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SE3F64 {
+    pub r: SO3F64,
+    pub t: Vec3F64,
+}
+
+impl SE3F64 {
+    pub const IDENTITY: Self = Self {
+        r: SO3F64::IDENTITY,
+        t: Vec3F64::ZERO,
+    };
+
+    pub fn new(rotation: SO3F64, translation: Vec3F64) -> Self {
+        Self {
+            r: rotation,
+            t: translation,
+        }
+    }
+
+    /// From `[qx, qy, qz, qw, tx, ty, tz]`.
+    pub fn from_array(arr: [f64; 7]) -> Self {
+        Self {
+            r: SO3F64::from_array([arr[0], arr[1], arr[2], arr[3]]),
+            t: Vec3F64::from_array([arr[4], arr[5], arr[6]]),
+        }
+    }
+
+    /// To `[qx, qy, qz, qw, tx, ty, tz]`.
+    pub fn to_array(&self) -> [f64; 7] {
+        let r = self.r.to_array();
+        let t = self.t.to_array();
+        [r[0], r[1], r[2], r[3], t[0], t[1], t[2]]
+    }
+
+    pub fn from_matrix(mat: &Mat4F64) -> Self {
+        Self {
+            r: SO3F64::from_matrix4(mat),
+            t: Vec3F64::new(mat.w_axis.x, mat.w_axis.y, mat.w_axis.z),
+        }
+    }
+
+    /// Uniformly random rotation and a translation in `[0, 1)³`.
+    pub fn from_random() -> Self {
+        let mut rng = rand::rng();
+        Self {
+            r: SO3F64::from_random(),
+            t: Vec3F64::new(rng.random(), rng.random(), rng.random()),
+        }
+    }
+
+    pub fn from_qxyz(quat: QuatF64, xyz: Vec3F64) -> Self {
+        Self {
+            r: SO3F64::from_quaternion(quat),
+            t: xyz,
+        }
+    }
+
+    #[inline]
+    pub fn rplus(&self, upsilon: Vec3F64, omega: Vec3F64) -> Self {
+        *self * SE3F64::exp(upsilon, omega)
+    }
+
+    #[inline]
+    pub fn rminus(&self, other: &Self) -> (Vec3F64, Vec3F64) {
+        (self.inverse() * *other).log()
+    }
+
+    #[inline]
+    pub fn lplus(upsilon: Vec3F64, omega: Vec3F64, x: &Self) -> Self {
+        SE3F64::exp(upsilon, omega) * *x
+    }
+
+    #[inline]
+    pub fn lminus(y: &Self, x: &Self) -> (Vec3F64, Vec3F64) {
+        (*y * x.inverse()).log()
+    }
+
+    pub fn inverse(&self) -> Self {
+        let r_inv = self.r.inverse();
+        Self {
+            r: r_inv,
+            t: r_inv * (-self.t),
+        }
+    }
+
+    pub fn matrix(&self) -> Mat4F64 {
+        let r = self.r.matrix().to_cols_array();
+        Mat4F64::from_cols_array(&[
+            r[0], r[1], r[2], 0.0, // col0
+            r[3], r[4], r[5], 0.0, // col1
+            r[6], r[7], r[8], 0.0, // col2
+            self.t.x, self.t.y, self.t.z, 1.0, // col3
+        ])
+    }
+
+    /// Adjoint for the `[υ; ω]` tangent order of [`Self::exp`]:
+    /// `Ad(T) = [[R, t×R], [0, R]]`, so that `T · Exp(ξ) · T⁻¹ = Exp(Ad(T) · ξ)`.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The transform `T = (R, t)`.
+    ///
+    /// # Returns
+    ///
+    /// The 6×6 adjoint acting on twists ordered `[υ; ω]`; element `(r, c)` is
+    /// row `r`, column `c`.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_algebra::{SE3F64, Vec3F64, Vec6F64};
+    ///
+    /// // A pure translation t = (1, 2, 3): Ad = [[I, t×], [0, I]].
+    /// let t = SE3F64::exp(Vec3F64::new(1.0, 2.0, 3.0), Vec3F64::ZERO);
+    /// let ad = t.adjoint();
+    /// assert_eq!(ad[(0, 4)], -3.0);
+    /// assert_eq!(ad[(0, 5)], 2.0);
+    ///
+    /// // A unit rotation rate about z, moved through the translation.
+    /// let twist = ad * Vec6F64::new(0.0, 0.0, 0.0, 0.0, 0.0, 1.0);
+    /// assert_eq!(twist, Vec6F64::new(2.0, -1.0, 0.0, 0.0, 0.0, 1.0));
+    /// ```
+    pub fn adjoint(&self) -> Mat6F64 {
+        let r = self.r.matrix();
+        block_upper_triangular(&r, &(SO3F64::hat(self.t) * r))
+    }
+
+    /// `Exp(υ, ω)`, with translation `V(ω) · υ` and `V` the SO(3) left Jacobian.
+    pub fn exp(upsilon: Vec3F64, omega: Vec3F64) -> Self {
+        Self {
+            r: SO3F64::exp(omega),
+            t: SO3F64::left_jacobian(omega) * upsilon,
+        }
+    }
+
+    /// Returns `(υ, ω)` with `Exp(υ, ω) = self`.
+    pub fn log(&self) -> (Vec3F64, Vec3F64) {
+        // Taylor coefficients in θ⁰, θ² of c below.
+        const C_SERIES: [f64; 2] = [1.0 / 12.0, 1.0 / 720.0];
+
+        let omega = self.r.log();
+        let theta2 = omega.dot(omega);
+        // V⁻¹ = I − ½ω× + c·ω×², c = (1 − (θ/2)·cot(θ/2)) / θ².
+        let c = if theta2 < SERIES_THETA2_F64 {
+            C_SERIES[0] + theta2 * C_SERIES[1]
+        } else {
+            let half = 0.5 * theta2.sqrt();
+            (1.0 - half * half.cos() / half.sin()) / theta2
+        };
+        let w = SO3F64::hat(omega);
+        let v_inv = Mat3F64::IDENTITY - 0.5 * w + c * (w * w);
+        (v_inv * self.t, omega)
+    }
+
+    pub fn hat(upsilon: Vec3F64, omega: Vec3F64) -> Mat4F64 {
+        let h = SO3F64::hat(omega).to_cols_array();
+        Mat4F64::from_cols_array(&[
+            h[0], h[1], h[2], 0.0, h[3], h[4], h[5], 0.0, h[6], h[7], h[8], 0.0, upsilon.x,
+            upsilon.y, upsilon.z, 0.0,
+        ])
+    }
+
+    pub fn vee(omega: Mat4F64) -> (Vec3F64, Vec3F64) {
+        (
+            Vec3F64::new(omega.w_axis.x, omega.w_axis.y, omega.w_axis.z),
+            SO3F64::vee4(omega),
+        )
+    }
+
+    /// `Jₗ(ρ, ω) = [[Jₗ(ω), Q(ρ, ω)], [0, Jₗ(ω)]]`, with `Jₗ(ω)` the SO(3) left
+    /// Jacobian and `Q` as in [`SE3F32::left_jacobian`].
+    ///
+    /// # Arguments
+    ///
+    /// * `rho` - Translational part `ρ` of the tangent `[ρ; ω]`.
+    /// * `omega` - Rotational part `ω` (axis-angle, radians).
+    ///
+    /// # Returns
+    ///
+    /// The 6×6 left Jacobian for tangents ordered `[ρ; ω]`, rows and columns
+    /// in that order.
+    ///
+    /// # Errors
+    ///
+    /// This function is infallible.
+    pub fn left_jacobian(rho: Vec3F64, omega: Vec3F64) -> Mat6F64 {
+        block_upper_triangular(&SO3F64::left_jacobian(omega), &q_block(rho, omega))
+    }
+
+    /// `Jᵣ(ρ, ω) = Jₗ(−ρ, −ω)`.
+    ///
+    /// # Arguments
+    ///
+    /// * `rho` - Translational part `ρ` of the tangent `[ρ; ω]`.
+    /// * `omega` - Rotational part `ω` (axis-angle, radians).
+    ///
+    /// # Returns
+    ///
+    /// The 6×6 right Jacobian for tangents ordered `[ρ; ω]`.
+    ///
+    /// # Errors
+    ///
+    /// This function is infallible.
+    pub fn right_jacobian(rho: Vec3F64, omega: Vec3F64) -> Mat6F64 {
+        Self::left_jacobian(-rho, -omega)
+    }
+
+    /// `Jₗ⁻¹(ρ, ω) = [[Jₗ⁻¹, −Jₗ⁻¹ Q Jₗ⁻¹], [0, Jₗ⁻¹]]` (Barfoot, State
+    /// Estimation for Robotics, eq. 7.95).
+    ///
+    /// # Arguments
+    ///
+    /// * `rho` - Translational part `ρ` of the tangent `[ρ; ω]`.
+    /// * `omega` - Rotational part `ω` (axis-angle, radians).
+    ///
+    /// # Returns
+    ///
+    /// The 6×6 inverse of [`Self::left_jacobian`], computed in closed form.
+    ///
+    /// # Errors
+    ///
+    /// This function is infallible.
+    pub fn left_jacobian_inverse(rho: Vec3F64, omega: Vec3F64) -> Mat6F64 {
+        let j_inv = SO3F64::left_jacobian(omega).inverse();
+        let upper = j_inv * q_block(rho, omega) * j_inv;
+        block_upper_triangular(&j_inv, &(-1.0 * upper))
+    }
+
+    /// `Jᵣ⁻¹(ρ, ω) = Jₗ⁻¹(−ρ, −ω)`.
+    ///
+    /// # Arguments
+    ///
+    /// * `rho` - Translational part `ρ` of the tangent `[ρ; ω]`.
+    /// * `omega` - Rotational part `ω` (axis-angle, radians).
+    ///
+    /// # Returns
+    ///
+    /// The 6×6 inverse of [`Self::right_jacobian`], computed in closed form.
+    ///
+    /// # Errors
+    ///
+    /// This function is infallible.
+    pub fn right_jacobian_inverse(rho: Vec3F64, omega: Vec3F64) -> Mat6F64 {
+        Self::left_jacobian_inverse(-rho, -omega)
+    }
+}
+
+/// The `Q(ρ, ω)` block of the SE(3) left Jacobian (Barfoot, State Estimation
+/// for Robotics, eq. 7.86).
+fn q_block(rho: Vec3F64, omega: Vec3F64) -> Mat3F64 {
+    // Taylor coefficients in θ⁰, θ² of c1 = (θ − sinθ)/θ³,
+    // c2 = (θ² + 2cosθ − 2)/(2θ⁴) and c3 = (2θ − 3sinθ + θcosθ)/(2θ⁵).
+    const Q_SERIES: [[f64; 2]; 3] = [
+        [1.0 / 6.0, -1.0 / 120.0],
+        [1.0 / 24.0, -1.0 / 720.0],
+        [1.0 / 120.0, -1.0 / 2520.0],
+    ];
+
+    let theta2 = omega.dot(omega);
+    let [c1, c2, c3] = if theta2 < SERIES_THETA2_F64 {
+        Q_SERIES.map(|k| k[0] + theta2 * k[1])
+    } else {
+        let theta = theta2.sqrt();
+        let (s, c) = theta.sin_cos();
+        [
+            (theta - s) / (theta2 * theta),
+            (theta2 + 2.0 * c - 2.0) / (2.0 * theta2 * theta2),
+            (2.0 * theta - 3.0 * s + theta * c) / (2.0 * theta2 * theta2 * theta),
+        ]
+    };
+    let p = SO3F64::hat(rho);
+    let w = SO3F64::hat(omega);
+    let wp = w * p;
+    let pw = p * w;
+    let wpw = wp * w;
+    0.5 * p + c1 * (wp + pw + wpw) + c2 * (w * wp + pw * w - 3.0 * wpw) + c3 * (wpw * w + w * wpw)
+}
+
+/// `[[a, b], [0, a]]`.
+fn block_upper_triangular(a: &Mat3F64, b: &Mat3F64) -> Mat6F64 {
+    let (a, b) = (nalgebra::Matrix3::from(*a), nalgebra::Matrix3::from(*b));
+    let mut m = Mat6F64::zeros();
+    m.fixed_view_mut::<3, 3>(0, 0).copy_from(&a);
+    m.fixed_view_mut::<3, 3>(0, 3).copy_from(&b);
+    m.fixed_view_mut::<3, 3>(3, 3).copy_from(&a);
+    m
+}
+
+impl std::ops::Mul<SE3F64> for SE3F64 {
+    type Output = SE3F64;
+
+    fn mul(self, rhs: SE3F64) -> Self::Output {
+        Self {
+            r: self.r * rhs.r,
+            t: self.t + self.r * rhs.t,
+        }
+    }
+}
+
+impl std::ops::MulAssign<SE3F64> for SE3F64 {
+    #[inline]
+    fn mul_assign(&mut self, rhs: SE3F64) {
+        *self = *self * rhs;
+    }
+}
+
+impl std::ops::Mul<Vec3F64> for SE3F64 {
+    type Output = Vec3F64;
+
+    fn mul(self, rhs: Vec3F64) -> Self::Output {
+        self.r * rhs + self.t
+    }
+}
+
+#[cfg(feature = "approx")]
+impl approx::AbsDiffEq for SE3F64 {
+    type Epsilon = <SO3F64 as approx::AbsDiffEq>::Epsilon;
+
+    #[inline]
+    fn default_epsilon() -> Self::Epsilon {
+        <SO3F64 as approx::AbsDiffEq>::default_epsilon()
+    }
+
+    #[inline]
+    fn abs_diff_eq(&self, other: &Self, epsilon: Self::Epsilon) -> bool {
+        self.r.abs_diff_eq(&other.r, epsilon) && self.t.abs_diff_eq(&other.t, epsilon)
+    }
+}
+
+#[cfg(feature = "approx")]
+impl approx::RelativeEq for SE3F64 {
+    #[inline]
+    fn default_max_relative() -> Self::Epsilon {
+        <SO3F64 as approx::RelativeEq>::default_max_relative()
     }
 
     #[inline]
@@ -1017,6 +1394,394 @@ mod tests {
             for j in 0..6 {
                 assert_relative_eq!(jl[i][j], jr_t[i][j], epsilon = 1e-3);
             }
+        }
+    }
+
+    /// `T · Exp(ξ) · T⁻¹ = Exp(Ad(T) · ξ)` for the `[υ; ω]` order of `exp`.
+    #[test]
+    fn test_adjoint_conjugates_exp() {
+        let t = SE3F32::exp(Vec3AF32::new(0.4, -1.2, 0.7), Vec3AF32::new(0.3, -0.5, 0.9));
+        let (rho, omega) = (
+            Vec3AF32::new(0.2, 0.1, -0.3),
+            Vec3AF32::new(-0.1, 0.25, 0.05),
+        );
+        let xi = [rho.x, rho.y, rho.z, omega.x, omega.y, omega.z];
+        let m = mat6_mul_vec6(&t.adjoint(), &xi);
+        let mapped = SE3F32::exp(
+            Vec3AF32::new(m[0], m[1], m[2]),
+            Vec3AF32::new(m[3], m[4], m[5]),
+        );
+        let conjugated = t * SE3F32::exp(rho, omega) * t.inverse();
+        let (a, b) = (
+            mapped.matrix().to_cols_array(),
+            conjugated.matrix().to_cols_array(),
+        );
+        for k in 0..16 {
+            assert_relative_eq!(a[k], b[k], epsilon = 1e-5);
+        }
+    }
+
+    /// Twists for the Jacobian checks: large and medium rotations, one on each
+    /// side of the `Q` series threshold, a tiny one and a pure translation.
+    fn jacobian_test_twists() -> [(Vec3AF32, Vec3AF32); 6] {
+        [
+            (Vec3AF32::new(0.4, -0.3, 0.8), Vec3AF32::new(0.9, -0.6, 0.5)),
+            (Vec3AF32::new(-0.3, 0.5, 0.1), Vec3AF32::new(0.7, 0.0, 0.0)),
+            (
+                Vec3AF32::new(0.6, 0.2, -0.4),
+                Vec3AF32::new(0.08, -0.05, 0.03),
+            ),
+            (
+                Vec3AF32::new(0.6, 0.2, -0.4),
+                Vec3AF32::new(0.06, -0.08, 0.02),
+            ),
+            (
+                Vec3AF32::new(0.5, -0.4, 0.2),
+                Vec3AF32::new(1e-3, -2e-3, 1.5e-3),
+            ),
+            (Vec3AF32::new(0.5, -0.4, 0.2), Vec3AF32::ZERO),
+        ]
+    }
+
+    /// Column `k` of `∂ Log(f(Exp(ξ + δ))) / ∂δ` at `δ = 0`, by central differences.
+    fn central_difference(
+        rho: Vec3AF32,
+        omega: Vec3AF32,
+        k: usize,
+        f: impl Fn(SE3F32) -> SE3F32,
+    ) -> [f32; 6] {
+        const H: f32 = 1e-2;
+        let at = |h: f32| {
+            let mut xi = [rho.x, rho.y, rho.z, omega.x, omega.y, omega.z];
+            xi[k] += h;
+            let (u, w) = f(SE3F32::exp(
+                Vec3AF32::new(xi[0], xi[1], xi[2]),
+                Vec3AF32::new(xi[3], xi[4], xi[5]),
+            ))
+            .log();
+            [u.x, u.y, u.z, w.x, w.y, w.z]
+        };
+        let (up, down) = (at(H), at(-H));
+        std::array::from_fn(|i| (up[i] - down[i]) / (2.0 * H))
+    }
+
+    /// `Exp(ξ + δ) ≈ Exp(Jₗ(ξ) · δ) · Exp(ξ)`.
+    #[test]
+    fn test_left_jacobian_matches_central_differences() {
+        for (rho, omega) in jacobian_test_twists() {
+            let jl = SE3F32::left_jacobian(rho, omega);
+            let x_inv = SE3F32::exp(rho, omega).inverse();
+            let columns: [[f32; 6]; 6] =
+                std::array::from_fn(|k| central_difference(rho, omega, k, |y| y * x_inv));
+            for (i, row) in jl.iter().enumerate() {
+                for (k, &analytic) in row.iter().enumerate() {
+                    let numeric = columns[k][i];
+                    assert!(
+                        (analytic - numeric).abs() < 2e-3,
+                        "ξ = ({rho:?}, {omega:?}), J[{i}][{k}] = {analytic} vs {numeric}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// `Q` in f64 from the closed-form coefficients, as the accuracy reference.
+    fn q_block_f64(rho: [f64; 3], omega: [f64; 3]) -> [[f64; 3]; 3] {
+        type M = [[f64; 3]; 3];
+        let hat =
+            |v: [f64; 3]| -> M { [[0.0, -v[2], v[1]], [v[2], 0.0, -v[0]], [-v[1], v[0], 0.0]] };
+        let mul = |a: M, b: M| -> M {
+            std::array::from_fn(|i| {
+                std::array::from_fn(|j| (0..3).map(|k| a[i][k] * b[k][j]).sum())
+            })
+        };
+        let lin = |terms: &[(f64, M)]| -> M {
+            std::array::from_fn(|i| {
+                std::array::from_fn(|j| terms.iter().map(|(c, m)| c * m[i][j]).sum())
+            })
+        };
+        let theta2: f64 = omega.iter().map(|w| w * w).sum();
+        let theta = theta2.sqrt();
+        let (s, c) = theta.sin_cos();
+        let c1 = (theta - s) / (theta2 * theta);
+        let c2 = (theta2 + 2.0 * c - 2.0) / (2.0 * theta2 * theta2);
+        let c3 = (2.0 * theta - 3.0 * s + theta * c) / (2.0 * theta2 * theta2 * theta);
+        let (p, w) = (hat(rho), hat(omega));
+        let (wp, pw) = (mul(w, p), mul(p, w));
+        let wpw = mul(wp, w);
+        lin(&[
+            (0.5, p),
+            (c1, lin(&[(1.0, wp), (1.0, pw), (1.0, wpw)])),
+            (
+                c2,
+                lin(&[(1.0, mul(w, wp)), (1.0, mul(pw, w)), (-3.0, wpw)]),
+            ),
+            (c3, lin(&[(1.0, mul(wpw, w)), (1.0, mul(w, wpw))])),
+        ])
+    }
+
+    /// Below 0.5 rad the closed-form `Q` coefficients cancel in f32; large
+    /// translations expose it.
+    #[test]
+    fn test_left_jacobian_q_matches_f64_at_small_angles() {
+        let rhos = [[0.0, 1000.0, 0.0], [1000.0, 2000.0, -3000.0]];
+        let axes = [[1.0, 0.0, 0.0], [0.267_261_24, 0.534_522_5, 0.801_783_7]];
+        for theta in [0.101f32, 0.12, 0.15, 0.2, 0.25, 0.3, 0.45, 0.55] {
+            for axis in axes {
+                for rho in rhos {
+                    let omega = Vec3AF32::from_array(axis) * theta;
+                    let rho32 = Vec3AF32::from_array(rho.map(|x| x as f32));
+                    let jl = SE3F32::left_jacobian(rho32, omega);
+                    let q_ref = q_block_f64(rho, omega.to_array().map(f64::from));
+                    let scale = q_ref.iter().flatten().fold(0.0f64, |m, x| m.max(x.abs()));
+                    for (i, row) in q_ref.iter().enumerate() {
+                        for (j, &expected) in row.iter().enumerate() {
+                            let err = (f64::from(jl[i][j + 3]) - expected).abs() / scale;
+                            assert!(
+                                err < 1e-6,
+                                "θ = {theta}, ρ = {rho:?}: Q[{i}][{j}] off by {err:e}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// `Exp(ξ + δ) ≈ Exp(ξ) · Exp(Jᵣ(ξ) · δ)`.
+    #[test]
+    fn test_right_jacobian_matches_central_differences() {
+        for (rho, omega) in jacobian_test_twists() {
+            let jr = SE3F32::right_jacobian(rho, omega);
+            let x_inv = SE3F32::exp(rho, omega).inverse();
+            let columns: [[f32; 6]; 6] =
+                std::array::from_fn(|k| central_difference(rho, omega, k, |y| x_inv * y));
+            for (i, row) in jr.iter().enumerate() {
+                for (k, &analytic) in row.iter().enumerate() {
+                    let numeric = columns[k][i];
+                    assert!(
+                        (analytic - numeric).abs() < 2e-3,
+                        "ξ = ({rho:?}, {omega:?}), J[{i}][{k}] = {analytic} vs {numeric}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests_f64 {
+    use super::*;
+    use crate::Vec6F64;
+
+    fn twist(xi: [f64; 6]) -> (Vec3F64, Vec3F64) {
+        (
+            Vec3F64::new(xi[0], xi[1], xi[2]),
+            Vec3F64::new(xi[3], xi[4], xi[5]),
+        )
+    }
+
+    fn flat((u, w): (Vec3F64, Vec3F64)) -> [f64; 6] {
+        [u.x, u.y, u.z, w.x, w.y, w.z]
+    }
+
+    fn assert_close(a: &[f64], b: &[f64], tol: f64) {
+        for (k, (x, y)) in a.iter().zip(b).enumerate() {
+            assert!((x - y).abs() <= tol, "entry {k}: {x} vs {y}");
+        }
+    }
+
+    /// Large and medium rotations, one on each side of the series threshold,
+    /// a tiny one and a pure translation.
+    const TWISTS: [[f64; 6]; 6] = [
+        [0.4, -0.3, 0.8, 0.9, -0.6, 0.5],
+        [-1.2, 0.7, 0.3, 0.5, 2.0, -1.3],
+        [0.6, 0.2, -0.4, 8e-3, -5e-3, 3e-3],
+        [0.6, 0.2, -0.4, 6e-3, -9e-3, 2e-3],
+        [0.5, -0.4, 0.2, 1e-6, -2e-6, 1.5e-6],
+        [0.5, -0.4, 0.2, 0.0, 0.0, 0.0],
+    ];
+
+    /// `Exp(ξ)` against scipy 1.15.2 `expm` of the 4×4 twist matrix for
+    /// `ξ = [0.4, -0.3, 0.8, 0.9, -0.6, 0.5]`.
+    #[test]
+    fn exp_matches_matrix_exponential() {
+        let expected_rows = [
+            [
+                0.7294259701953586,
+                -0.629314358515437,
+                -0.26814397657016986,
+                0.2967766087600957,
+            ],
+            [
+                0.15026525656623585,
+                0.5298221777165246,
+                -0.8346908485593949,
+                -0.5520744073079797,
+            ],
+            [
+                0.6673515615278374,
+                0.5685524585876164,
+                0.48103013955503193,
+                0.683312815462252,
+            ],
+        ];
+        let (u, w) = twist(TWISTS[0]);
+        let m = SE3F64::exp(u, w).matrix().to_cols_array();
+        for (row, expected) in expected_rows.iter().enumerate() {
+            let got: [f64; 4] = std::array::from_fn(|col| m[col * 4 + row]);
+            assert_close(&got, expected, 1e-14);
+        }
+    }
+
+    /// `Log` of the pose scipy 1.15.2 `expm` gives for
+    /// `ξ = [-1.2, 0.7, 0.3, 0.5, 2.0, -1.3]` (a 2.44 rad rotation) returns `ξ`.
+    #[test]
+    fn log_inverts_matrix_exponential() {
+        let rows = [
+            [
+                -0.6878536798787738,
+                0.642042568755561,
+                0.3385833058244113,
+                0.15442339118762224,
+            ],
+            [
+                -0.04877238250643101,
+                0.42452791933834433,
+                -0.9041002712127129,
+                0.7056124035610446,
+            ],
+            [
+                -0.7242089268863455,
+                -0.6384022130350239,
+                -0.2606991457794001,
+                0.8295665405506929,
+            ],
+        ];
+        let cols: [f64; 16] = std::array::from_fn(|k| {
+            let (col, row) = (k / 4, k % 4);
+            if row < 3 {
+                rows[row][col]
+            } else if col == 3 {
+                1.0
+            } else {
+                0.0
+            }
+        });
+        let pose = SE3F64::from_matrix(&Mat4F64::from_cols_array(&cols));
+        assert_close(&flat(pose.log()), &TWISTS[1], 1e-13);
+    }
+
+    #[test]
+    fn exp_log_roundtrip() {
+        for xi in TWISTS {
+            let (u, w) = twist(xi);
+            assert_close(&flat(SE3F64::exp(u, w).log()), &xi, 1e-13);
+        }
+    }
+
+    #[test]
+    fn hat_vee_roundtrip() {
+        let (u, w) = twist(TWISTS[0]);
+        assert_close(&flat(SE3F64::vee(SE3F64::hat(u, w))), &TWISTS[0], 0.0);
+    }
+
+    #[test]
+    fn inverse_composition_and_points() {
+        let (a, b) = (twist(TWISTS[0]), twist(TWISTS[1]));
+        let (x, y) = (SE3F64::exp(a.0, a.1), SE3F64::exp(b.0, b.1));
+        let id = (x * x.inverse()).matrix().to_cols_array();
+        assert_close(&id, &Mat4F64::IDENTITY.to_cols_array(), 1e-15);
+        let p = Vec3F64::new(0.3, -1.1, 2.4);
+        assert_close(&((x * y) * p).to_array(), &(x * (y * p)).to_array(), 1e-14);
+        assert_close(&flat(x.rminus(&x.rplus(b.0, b.1))), &TWISTS[1], 1e-13);
+        let round = SE3F64::from_array(x.to_array()).matrix().to_cols_array();
+        assert_close(&round, &x.matrix().to_cols_array(), 0.0);
+    }
+
+    /// `T · Exp(ξ) · T⁻¹ = Exp(Ad(T) · ξ)`.
+    #[test]
+    fn adjoint_conjugates_exp() {
+        let (a, b) = (twist(TWISTS[1]), twist(TWISTS[0]));
+        let t = SE3F64::exp(a.0, a.1);
+        let mapped = twist((t.adjoint() * Vec6F64::from(TWISTS[0])).into());
+        let lhs = SE3F64::exp(mapped.0, mapped.1).matrix().to_cols_array();
+        let rhs = (t * SE3F64::exp(b.0, b.1) * t.inverse())
+            .matrix()
+            .to_cols_array();
+        assert_close(&lhs, &rhs, 1e-13);
+    }
+
+    /// Column `k` of `∂ Log(f(Exp(ξ + δ))) / ∂δ` at `δ = 0`, by central differences.
+    fn central_difference(xi: [f64; 6], k: usize, f: impl Fn(SE3F64) -> SE3F64) -> [f64; 6] {
+        const H: f64 = 1e-6;
+        let at = |h: f64| {
+            let mut x = xi;
+            x[k] += h;
+            let (u, w) = twist(x);
+            flat(f(SE3F64::exp(u, w)).log())
+        };
+        let (up, down) = (at(H), at(-H));
+        std::array::from_fn(|i| (up[i] - down[i]) / (2.0 * H))
+    }
+
+    fn assert_jacobian(analytic: &Mat6F64, xi: [f64; 6], f: impl Fn(SE3F64) -> SE3F64) {
+        for k in 0..6 {
+            for (i, numeric) in central_difference(xi, k, &f).into_iter().enumerate() {
+                let value = analytic[(i, k)];
+                assert!(
+                    (value - numeric).abs() < 1e-8,
+                    "ξ = {xi:?}, J[{i}][{k}] = {value} vs {numeric}"
+                );
+            }
+        }
+    }
+
+    /// `Exp(ξ + δ) ≈ Exp(Jₗ(ξ) · δ) · Exp(ξ)` and `≈ Exp(ξ) · Exp(Jᵣ(ξ) · δ)`.
+    #[test]
+    fn jacobians_match_central_differences() {
+        for xi in TWISTS {
+            let (u, w) = twist(xi);
+            let x_inv = SE3F64::exp(u, w).inverse();
+            assert_jacobian(&SE3F64::left_jacobian(u, w), xi, |y| y * x_inv);
+            assert_jacobian(&SE3F64::right_jacobian(u, w), xi, |y| x_inv * y);
+        }
+    }
+
+    #[test]
+    fn jacobian_inverses_invert() {
+        for xi in TWISTS {
+            let (u, w) = twist(xi);
+            for (j, j_inv) in [
+                (
+                    SE3F64::left_jacobian(u, w),
+                    SE3F64::left_jacobian_inverse(u, w),
+                ),
+                (
+                    SE3F64::right_jacobian(u, w),
+                    SE3F64::right_jacobian_inverse(u, w),
+                ),
+            ] {
+                let error = (j * j_inv - Mat6F64::identity()).amax();
+                assert!(error <= 1e-12, "ξ = {xi:?}: |J · J⁻¹ − I| = {error}");
+            }
+        }
+    }
+
+    /// The f64 and f32 types agree to f32 precision.
+    #[test]
+    fn matches_se3f32() {
+        for xi in TWISTS {
+            let (u, w) = twist(xi);
+            let jl64 = SE3F64::left_jacobian(u, w);
+            let to32 = |v: Vec3F64| Vec3AF32::new(v.x as f32, v.y as f32, v.z as f32);
+            let jl32 = SE3F32::left_jacobian(to32(u), to32(w));
+            let jl32 = Mat6F64::from_fn(|r, c| jl32[r][c] as f64);
+            assert!((jl64 - jl32).amax() <= 1e-5, "ξ = {xi:?}");
+            let t = SE3F64::exp(u, w).matrix().to_cols_array();
+            let t32 = SE3F32::exp(to32(u), to32(w)).matrix().to_cols_array();
+            let t32: [f64; 16] = std::array::from_fn(|k| t32[k] as f64);
+            assert_close(&t, &t32, 1e-5);
         }
     }
 }

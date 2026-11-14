@@ -10,6 +10,7 @@
 //!
 //! - **Vectors**: `Vec2F32`, `Vec3F32`, `Vec3AF32`, `Vec4F32` (and `F64` variants) with arithmetic operations, dot products, and length calculations.
 //! - **Matrices**: `Mat2F32`, `Mat3F32`, `Mat3AF32`, `Mat4F32` (and `F64` variants) with matrix multiplication, transpose, inverse, and diagonal construction.
+//! - **Fixed-size f64 blocks**: `SMatF64<R, C>` and `SVecF64<N>` (nalgebra) past 4x4, named `Mat6F64`, `Mat9F64`, `Mat15F64` (and `Vec` counterparts).
 //! - **Quaternions**: `QuatF32`/`QuatF64` — unit quaternions are isomorphic to SU(2), the
 //!   double cover of SO(3). `q` and `-q` represent the same rotation. See the [`quat`] module
 //!   for the mathematical context.
@@ -168,11 +169,13 @@ pub use param::{Param, ParamError};
 pub mod optim;
 
 // Re-export types at crate root for convenience
-pub use lie::{RxSO3F32, Sim3F32, SE2F32, SE3F32, SO2F32, SO3F32, SO3F64};
+pub use lie::{RxSO3F32, Sim3F32, SE2F32, SE3F32, SE3F64, SO2F32, SO3F32, SO3F64};
 pub use mat::{
-    DMatF32, DMatF64, Mat2F32, Mat2F64, Mat3AF32, Mat3F32, Mat3F64, Mat4F32, Mat4F64, Mat6F64,
+    DMatF32, DMatF64, Mat15F64, Mat2F32, Mat2F64, Mat3AF32, Mat3F32, Mat3F64, Mat4F32, Mat4F64,
+    Mat6F64, Mat9F64, SMatF64,
 };
 pub use quat::{QuatF32, QuatF64};
 pub use vec::{
-    DVecF32, DVecF64, Vec2F32, Vec2F64, Vec3AF32, Vec3F32, Vec3F64, Vec4F32, Vec4F64, Vec6F64,
+    DVecF32, DVecF64, SVecF64, Vec15F64, Vec2F32, Vec2F64, Vec3AF32, Vec3F32, Vec3F64, Vec4F32,
+    Vec4F64, Vec6F64, Vec9F64,
 };

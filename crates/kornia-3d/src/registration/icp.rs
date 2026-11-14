@@ -5,8 +5,9 @@
 //! point-to-plane error of Chen and Medioni ("Object modelling by registration of multiple range
 //! images", 1992). Each valid source pixel `p_s` is moved by the current estimate
 //! `T_target_source = (R, t)`, `p = R p_s + t`, projected into the target image and matched to
-//! the target vertex `v_t` and normal `n_t` of the pixel it lands on (no kd-tree). The residual
-//! is `r = n_t . (p - v_t)` in metres.
+//! the target vertex `v_t` and normal `n_t` read at that projection (no kd-tree): the nearest
+//! pixel by default, or a bilinear blend, as [`IcpPlaneCriteria::association`] selects. The
+//! residual is `r = n_t . (p - v_t)` in metres.
 //!
 //! Pose updates are left-multiplied, `T <- exp(xi) T` with tangent `xi = [w, v]` (rotation first),
 //! so the Jacobian row of a correspondence is `[(p x n_t)^T, n_t^T]` with the target held fixed.
@@ -23,14 +24,24 @@
 //!
 //! The solver runs Gauss-Newton coarse to fine: at each level, starting from the coarsest, it
 //! accumulates `A = J^T W J` and `b = J^T W r`, solves `A x = -b` by Cholesky and applies
-//! `R <- exp(w) R`, `t <- exp(w) t + v`. A system whose Cholesky pivots collapse relative to
-//! their block is rejected as singular rather than solved along its null space. The `J^T W J` of
-//! a final pass at the returned pose is reported as [`IcpPlaneResult::information`].
+//! `R <- exp(w) R`, `t <- exp(w) t + v`. A system that does not constrain all six degrees of
+//! freedom still gets an answer: directions whose eigenvalue is negligible
+//! ([`IcpPlaneCriteria::degeneracy_rtol`]) get a zero update and zero information, and the rest
+//! is solved by eigen pseudo-inverse. The `J^T W J` of a final pass at the returned pose is
+//! reported as [`IcpPlaneResult::information`].
+//!
+//! An optional [`IcpPlaneCriteria::rotation_prior`] adds three weighted rows to each step, and
+//! an optional [`IcpPlaneCriteria::pose_prior`] six, after the unobserved directions are removed
+//! from the data, so they can carry motion the geometry does not observe. They shape the solve
+//! only: the conditioning, the degenerate directions and the information describe the data
+//! alone.
 
 use super::rgbd::{is_valid_normal, is_valid_vertex, RgbdIcpError, RgbdLevel, RgbdPyramid};
 use crate::ransac::{HuberKernel, RobustKernel};
 use kornia_algebra::{Mat3F64, Mat6F64, Vec3F64, Vec6F64, SO3F64};
 use kornia_image::Image;
+
+mod simd;
 
 /// Smallest residual sigma, in metres, whatever its source (a model or a sigma map). A row
 /// weight is `1 / sigma^2`, so a floor near `f64::MIN_POSITIVE` would overflow `J^T W J`; at
@@ -45,13 +56,27 @@ const MIN_SIGMA_M: f64 = 1e-9;
 const MIN_RAY_INCIDENCE: f64 = 0.2;
 
 /// Relative Cholesky pivot threshold: a squared pivot of `J^T W J` below `PIVOT_RTOL` times the
-/// largest diagonal of its block (rotation rows 0-2, translation rows 3-5) marks an unobserved
-/// direction. The blocks are separate because rotation entries grow with depth squared while
-/// translation entries are O(1) from unit normals.
+/// largest diagonal of its block (rotation rows 0-2, translation rows 3-5) skips the Cholesky
+/// solve for the eigen one. The blocks are separate because rotation entries grow with depth
+/// squared while translation entries are O(1) from unit normals.
 const PIVOT_RTOL: f64 = 1e-8;
+
+/// Default of [`IcpPlaneCriteria::degeneracy_rtol`].
+///
+/// Same value as the Cholesky pivot threshold. Smallest over largest eigenvalue of the
+/// depth-scaled `J^T W J` after a 2 cm slide on the synthetic 320x180 test scenes: a bare wall
+/// 0 (three directions), a wall with a 6 cm bump 5.1e-8, corner and sphere 2.8e-2. The default
+/// flags only an exact null space and still solves the bump. Real sensor noise lifts a wall's
+/// null space far above zero; to treat real weak geometry as degenerate, calibrate this on real
+/// data.
+pub const DEFAULT_DEGENERACY_RTOL: f64 = 1e-8;
 
 /// Fewest inliers that can constrain the six pose parameters.
 const MIN_INLIERS: usize = 6;
+
+/// Largest entry of `|R^T R - I|` and of `|det R - 1|` for a prior rotation to count as one.
+/// Loose enough for a rotation rounded through `f32`.
+const ROTATION_TOL: f64 = 1e-6;
 
 /// Parameters of [`icp_projective_plane`].
 ///
@@ -70,9 +95,42 @@ pub struct IcpPlaneCriteria {
     pub max_normal_angle_rad: f64,
     /// Huber threshold on the normalised residual `r / sigma`.
     pub huber_delta: f64,
+    /// How a projected source point reads its target vertex and normal; default
+    /// [`Association::Nearest`].
+    pub association: Association,
     /// Depth noise model that sets each row's `sigma`. A frame's per-pixel sigma map
     /// ([`RgbdLevel::depth_sigmas`]) takes precedence over it point by point.
     pub depth_noise: DepthNoise,
+    /// Relative eigenvalue threshold below which a direction of `J^T W J` counts as unobserved.
+    ///
+    /// The eigen-decomposition scales the rotation rows by the inlier depth (radians to metres
+    /// of arc), so rotation and translation compare in one unit. A direction whose eigenvalue
+    /// is at most `degeneracy_rtol` times the largest gets a zero update and zero information.
+    /// Set it between rounding noise on an exact null space and the weakest geometry still to
+    /// be solved; see [`DEFAULT_DEGENERACY_RTOL`].
+    pub degeneracy_rtol: f64,
+    /// Optional external estimate of the rotation, e.g. integrated gyro rates; `None` by default.
+    ///
+    /// A scene invariant under some rotation, such as a sphere in front of a wall under roll,
+    /// leaves that rotation unobserved while the residual stays perfect. The prior enters each
+    /// step as three rows weighted `1 / sigma_rad^2`, added after the unobserved directions are
+    /// removed from the data: ample geometry outvotes it, weak geometry defers to it, and it
+    /// carries the update along directions the data do not observe. It never enters
+    /// [`IcpPlaneResult::information`], the conditioning or the degenerate directions.
+    ///
+    /// The same as a [`PosePrior`] with zero translation information. Both may be set: their
+    /// rows add, as two independent measurements would, so a rotation must not reach the solve
+    /// through both from one source, or it counts twice.
+    pub rotation_prior: Option<RotationPrior>,
+    /// Optional external estimate of the whole transform, e.g. the motion predicted by a fused
+    /// odometry; `None` by default.
+    ///
+    /// It enters each step as six rows weighted by the inverse of its covariance, added after
+    /// the unobserved directions are removed from the data, like [`Self::rotation_prior`]: it
+    /// shapes the answer where the data are weak and carries the update along directions they
+    /// do not observe, such as the slide along a bare wall. It never enters
+    /// [`IcpPlaneResult::information`], the conditioning or the degenerate directions.
+    pub pose_prior: Option<PosePrior>,
 }
 
 impl Default for IcpPlaneCriteria {
@@ -84,9 +142,87 @@ impl Default for IcpPlaneCriteria {
             max_dist_m: 0.1,
             max_normal_angle_rad: 30.0_f64.to_radians(),
             huber_delta: 2.0,
+            association: Association::Nearest,
             depth_noise: DepthNoise::Constant { sigma_m: 0.01 },
+            degeneracy_rtol: DEFAULT_DEGENERACY_RTOL,
+            rotation_prior: None,
+            pose_prior: None,
         }
     }
+}
+
+/// How [`icp_projective_plane`] reads the target vertex and normal at a source point's
+/// projection, for [`IcpPlaneCriteria::association`].
+///
+/// Bilinear sampling removes the snapping bias of the nearest pixel but smooths the target,
+/// which far from the solution biases the coarse alignment; at the converged finest level it
+/// only removes the snapping. [`Self::Hybrid`] uses each where it helps. Noise-free error of
+/// the solve on the moving corner + sphere pair of the NEES test: nearest 1.75e-4 rad and
+/// 0.30 mm, bilinear and hybrid 2.1e-5 rad and 0.07 mm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum Association {
+    /// The pixel the projection rounds to: biased by up to half a pixel of snapping, with the
+    /// widest convergence range.
+    #[default]
+    Nearest,
+    /// Bilinear blend of the four pixels around the projection, normal renormalised. A pixel
+    /// with zero weight is not read; the sample is dropped when a weighted pixel is invalid,
+    /// when they straddle a depth discontinuity ([`MAX_BILINEAR_DEPTH_JUMP`]) or when their
+    /// normals nearly cancel.
+    Bilinear,
+    /// Nearest on the coarse levels and on the finest until an update falls below
+    /// [`HYBRID_SWITCH_NORM`], then bilinear on the finest for up to as many iterations again.
+    Hybrid,
+}
+
+/// Update size under which [`Association::Hybrid`] switches the finest level to bilinear, in
+/// the units of [`IcpPlaneCriteria::update_tolerance`]: rotation in radians and translation
+/// over the mean inlier depth.
+///
+/// 1e-3 is 0.06 deg and 2 mm at 2 m: well inside the half-pixel snapping it is there to remove
+/// (~5 mm at 2 m and fx = 200) and well above the default 1e-6 tolerance, so the switch comes
+/// before a level is declared converged. Not tuned.
+pub const HYBRID_SWITCH_NORM: f64 = 1e-3;
+
+/// Largest relative depth spread `(z_max - z_min) / z_min` across the weighted pixels of a
+/// bilinear sample; beyond it they straddle a depth discontinuity and the sample is dropped.
+///
+/// A surface 80 deg from fronto-parallel spreads ~3% across one pixel at fx = 200, so 5% keeps
+/// steep surfaces and still drops a foreground/background pair (a 10 cm step at 2 m). Chosen on
+/// that geometry, not tuned on data.
+pub const MAX_BILINEAR_DEPTH_JUMP: f64 = 0.05;
+
+/// An external rotation estimate for [`IcpPlaneCriteria::rotation_prior`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RotationPrior {
+    /// Prior on the rotation of `T_target_source`, the convention of
+    /// [`IcpPlaneResult::rotation`]. Must be a rotation matrix.
+    pub rotation: Mat3F64,
+    /// One-sigma error of [`Self::rotation`] per axis, in radians, over the interval it spans.
+    ///
+    /// Must be finite and positive. Scale it with the elapsed time rather than passing a
+    /// per-frame constant: a prior integrated over a longer interval has drifted further. Size it
+    /// against the sensor's total error, systematic terms such as a camera-to-gyro misalignment
+    /// included: a tight sigma on a biased rotation pulls the solve toward the bias.
+    pub sigma_rad: f64,
+}
+
+/// An external estimate of the whole transform for [`IcpPlaneCriteria::pose_prior`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PosePrior {
+    /// Prior on the rotation of `T_target_source`, the convention of
+    /// [`IcpPlaneResult::rotation`]. Must be a rotation matrix.
+    pub rotation: Mat3F64,
+    /// Prior on the translation of `T_target_source`, in metres. Must be finite.
+    pub translation: Vec3F64,
+    /// Covariance of the prior's error `xi = [w, v]`, rotation first (rad^2, rad m, m^2), with
+    /// the true transform `exp(xi)` applied on the left of the prior: the tangent of the solver
+    /// and of [`IcpPlaneResult::information`].
+    ///
+    /// Must be finite, symmetric and positive definite, with an inverse that does not overflow.
+    /// Scale it with the interval the prior spans, as for [`RotationPrior::sigma_rad`].
+    pub covariance: Mat6F64,
 }
 
 /// Depth noise model for the row weights of [`icp_projective_plane`].
@@ -215,11 +351,24 @@ pub struct IcpPlaneResult {
     /// ([`IcpPlaneCriteria::depth_noise`] or the sigma maps) its inverse is the covariance of
     /// the estimate's error `xi`, the estimate being `exp(xi)` applied on the left of the truth.
     /// It is only as calibrated as those sigmas: the default [`DepthNoise::Constant`] is a
-    /// weighting, not a sensor model. It can be singular when [`Self::observability`] is `0`.
+    /// weighting, not a sensor model. It is zero along [`Self::degenerate_directions`].
     pub information: Mat6F64,
+    /// Unit tangent directions `[w, v]` the data do not observe, in entries
+    /// `0..num_degenerate`; the other entries are zero.
+    ///
+    /// They span the null space of [`Self::information`] and got no update. They come from the
+    /// eigen-decomposition with rotation scaled by [`Self::median_depth_m`] and are mapped back
+    /// to the unscaled tangent, so they are unit but not necessarily orthogonal.
+    pub degenerate_directions: [Vec6F64; 6],
+    /// Number of directions in [`Self::degenerate_directions`]: `0` when the data constrain all
+    /// six degrees of freedom, `3` for a single plane.
+    pub num_degenerate: usize,
 }
 
 /// Projective point-to-plane ICP between two RGB-D pyramids, coarse to fine.
+///
+/// Runs [`IcpKernel::Simd`]; [`icp_projective_plane_with`] takes a workspace that selects the
+/// kernel.
 ///
 /// # Arguments
 ///
@@ -232,19 +381,26 @@ pub struct IcpPlaneResult {
 /// # Returns
 ///
 /// The estimate of `T_target_source` with the residual, match quality, overlap, conditioning
-/// and information matrix of a final pass at that pose.
+/// and information matrix of a final pass at that pose. Geometry that does not constrain all six
+/// degrees of freedom is not an error: the unobserved directions get no update and are reported
+/// in [`IcpPlaneResult::degenerate_directions`].
 ///
 /// # Errors
 ///
 /// * [`RgbdIcpError::PyramidLevelsMismatch`] if the pyramids have different level counts.
 /// * [`RgbdIcpError::IterationsLevelsMismatch`] if `criteria.iters_per_level` does not have one
 ///   entry per level.
-/// * [`RgbdIcpError::InvalidCriteria`] if a threshold of `criteria` or a parameter of its
-///   `depth_noise` is not finite and positive, or `max_normal_angle_rad` exceeds pi.
+/// * [`RgbdIcpError::InvalidCriteria`] if a threshold of `criteria` (`degeneracy_rtol`
+///   included) or a parameter of its `depth_noise` is not finite and positive, if
+///   `max_normal_angle_rad` exceeds pi, or if its `rotation_prior` has a `sigma_rad` that is not
+///   finite and positive (or so small that its weight overflows) or a `rotation` that is not a
+///   finite rotation matrix, or if its `pose_prior` has such a `rotation`, a `translation` that
+///   is not finite, or a `covariance` that is not finite, symmetric and positive definite with a
+///   finite inverse.
 /// * [`RgbdIcpError::TooFewCorrespondences`] if fewer than 6 correspondences pass the gates in
 ///   any pass, the final one included (low overlap or a bad initial guess).
-/// * [`RgbdIcpError::SingularNormalEquations`] if the geometry does not constrain all six
-///   degrees of freedom (for example a single plane), or the solve is not finite.
+/// * [`RgbdIcpError::SingularNormalEquations`] if the normal equations or their solve are not
+///   finite.
 ///
 /// # Example
 ///
@@ -278,6 +434,133 @@ pub fn icp_projective_plane(
     init_translation: &Vec3F64,
     criteria: &IcpPlaneCriteria,
 ) -> Result<IcpPlaneResult, RgbdIcpError> {
+    icp_projective_plane_with(
+        &mut IcpWorkspace::default(),
+        src,
+        tgt,
+        init_rotation,
+        init_translation,
+        criteria,
+    )
+}
+
+/// Implementation of the association passes of [`icp_projective_plane_with`].
+///
+/// Both run the same gates, weights and sums; they differ in precision. Dense RGB-D trackers
+/// accumulate in `f32` too (Open3D's tensor RGB-D odometry, ElasticFusion, InfiniTAM).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum IcpKernel {
+    /// Plain `f64` loops: the reference [`Self::Simd`] is tested against.
+    Scalar,
+    /// Eight `f32` lanes per [`kornia_algebra::simd::F32x8`], the normal equations summed in
+    /// `f32` over 128-point blocks and the blocks in `f64`. Agrees with [`Self::Scalar`] to `f32`
+    /// rounding, not `f64`: about 1e-5 relative on the pose and the information matrix, and a
+    /// projection on a pixel boundary can round to the neighbouring pixel, so correspondence
+    /// counts can differ by a few in 1e4. The 256-bit path needs an `+avx2` build of
+    /// kornia-algebra; the x86-64 baseline runs two 128-bit halves.
+    #[default]
+    Simd,
+}
+
+/// Reusable buffers for [`icp_projective_plane_with`], and the kernel it runs.
+///
+/// Each buffer is reserved by the image size, not by the number of valid pixels or inliers, so
+/// after one call at a given source size a call allocates nothing, however full or sparse the
+/// frames that follow are.
+#[derive(Debug, Default, Clone)]
+pub struct IcpWorkspace {
+    /// Kernel of the association passes.
+    kernel: IcpKernel,
+    /// Valid source points of each level, for [`IcpKernel::Simd`].
+    soa: Vec<simd::SourceSoa>,
+    /// Target depths of the final pass's inliers, for their median.
+    depths: Vec<f32>,
+}
+
+impl IcpWorkspace {
+    /// An empty workspace running `kernel`; [`Default`] runs [`IcpKernel::Simd`].
+    ///
+    /// # Arguments
+    ///
+    /// * `kernel` - Kernel of the association passes.
+    ///
+    /// # Returns
+    ///
+    /// The workspace; its buffers grow on the first call.
+    pub fn new(kernel: IcpKernel) -> Self {
+        Self {
+            kernel,
+            ..Default::default()
+        }
+    }
+
+    /// Kernel of the association passes.
+    pub fn kernel(&self) -> IcpKernel {
+        self.kernel
+    }
+}
+
+/// [`icp_projective_plane`] with reused buffers, for a loop over frames.
+///
+/// With a [`Default`] workspace ([`IcpKernel::Simd`]) the same result as
+/// [`icp_projective_plane`], bit for bit; the workspace holds no state that carries from one
+/// call to the next. [`IcpWorkspace::new`] selects the kernel.
+///
+/// # Arguments
+///
+/// * `workspace` - Buffers reused across calls; grows on the first call at a larger source size.
+/// * `src` - Source frame pyramid.
+/// * `tgt` - Target frame pyramid, with as many levels as `src`.
+/// * `init_rotation` - Initial rotation of `T_target_source`.
+/// * `init_translation` - Initial translation of `T_target_source`, in metres.
+/// * `criteria` - Gates, weighting and iteration budget.
+///
+/// # Returns
+///
+/// As [`icp_projective_plane`].
+///
+/// # Errors
+///
+/// As [`icp_projective_plane`].
+///
+/// # Example
+///
+/// ```
+/// use kornia_3d::camera::PinholeCamera;
+/// use kornia_3d::registration::{
+///     icp_projective_plane_with, IcpPlaneCriteria, IcpWorkspace, RgbdPyramid,
+/// };
+/// use kornia_algebra::{Mat3F64, Vec3F64};
+/// use kornia_image::{Image, ImageSize};
+///
+/// let size = ImageSize { width: 64, height: 48 };
+/// let mut depth = Image::<u16, 1>::from_size_val(size, 0)?;
+/// for (idx, d) in depth.as_slice_mut().iter_mut().enumerate() {
+///     let (u, v) = ((idx % 64) as f64, (idx / 64) as f64);
+///     *d = (1200.0 + 100.0 * (u / 6.0).sin() + 80.0 * (v / 5.0).cos()) as u16;
+/// }
+/// let camera = PinholeCamera { fx: 50.0, fy: 50.0, cx: 31.5, cy: 23.5, ..PinholeCamera::IDENTITY };
+/// let pyramid = RgbdPyramid::from_depth_mm(&depth, &camera, 2)?;
+///
+/// let mut criteria = IcpPlaneCriteria::default();
+/// criteria.iters_per_level = vec![5, 5];
+/// let mut workspace = IcpWorkspace::default();
+/// for _ in 0..2 {
+///     let (r, t) = (Mat3F64::IDENTITY, Vec3F64::ZERO);
+///     let result = icp_projective_plane_with(&mut workspace, &pyramid, &pyramid, &r, &t, &criteria)?;
+///     assert!(result.translation.length() < 1e-6);
+/// }
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+pub fn icp_projective_plane_with(
+    workspace: &mut IcpWorkspace,
+    src: &RgbdPyramid,
+    tgt: &RgbdPyramid,
+    init_rotation: &Mat3F64,
+    init_translation: &Vec3F64,
+    criteria: &IcpPlaneCriteria,
+) -> Result<IcpPlaneResult, RgbdIcpError> {
     let num_levels = src.levels.len();
     if tgt.levels.len() != num_levels {
         return Err(RgbdIcpError::PyramidLevelsMismatch {
@@ -291,18 +574,27 @@ pub fn icp_projective_plane(
             levels: num_levels,
         });
     }
-    let gates = check_criteria(criteria)?;
-    run_icp(src, tgt, init_rotation, init_translation, criteria, &gates)
+    run_icp(
+        workspace,
+        src,
+        tgt,
+        init_rotation,
+        init_translation,
+        criteria,
+    )
 }
 
-/// The gates of `criteria`, or the first threshold out of its range.
-fn check_criteria(criteria: &IcpPlaneCriteria) -> Result<PassGates, RgbdIcpError> {
+/// The gates and prior rows of `criteria`, or the first threshold out of its range.
+fn check_criteria(
+    criteria: &IcpPlaneCriteria,
+) -> Result<(PassGates, [Option<PriorRows>; 2]), RgbdIcpError> {
     let inf = f64::INFINITY;
     let noise = criteria.depth_noise.params().map(|(f, v)| (f, v, inf));
     for (field, value, max) in [
         ("max_dist_m", criteria.max_dist_m, inf),
         ("huber_delta", criteria.huber_delta, inf),
         ("update_tolerance", criteria.update_tolerance, inf),
+        ("degeneracy_rtol", criteria.degeneracy_rtol, inf),
         // above pi the cosine gate wraps round and starts rejecting again
         (
             "max_normal_angle_rad",
@@ -318,17 +610,62 @@ fn check_criteria(criteria: &IcpPlaneCriteria) -> Result<PassGates, RgbdIcpError
             return Err(RgbdIcpError::InvalidCriteria { field, value });
         }
     }
-    Ok(PassGates {
+    if let Some(prior) = &criteria.rotation_prior {
+        check_rotation_prior(prior)?;
+    }
+    let priors = [
+        criteria.rotation_prior.map(PriorRows::from_rotation),
+        criteria
+            .pose_prior
+            .as_ref()
+            .map(PriorRows::from_pose)
+            .transpose()?,
+    ];
+    let gates = PassGates {
+        // Hybrid starts on nearest; `run_icp` switches it
+        bilinear: criteria.association == Association::Bilinear,
         max_dist_m: criteria.max_dist_m,
         cos_max_normal_angle: criteria.max_normal_angle_rad.cos(),
         huber_delta: criteria.huber_delta,
         depth_noise: criteria.depth_noise,
-    })
+    };
+    Ok((gates, priors))
+}
+
+/// `Ok` if `prior` has a finite positive sigma with a finite weight and a finite rotation matrix.
+fn check_rotation_prior(prior: &RotationPrior) -> Result<(), RgbdIcpError> {
+    let sigma = prior.sigma_rad;
+    // written so that NaN fails; a sigma below ~1e-154 would make the weight infinite
+    if !(sigma > 0.0 && sigma.is_finite() && (1.0 / (sigma * sigma)).is_finite()) {
+        return Err(RgbdIcpError::InvalidCriteria {
+            field: "rotation_prior.sigma_rad",
+            value: sigma,
+        });
+    }
+    check_rotation(&prior.rotation, "rotation_prior.rotation")
+}
+
+/// `Ok` if `r` is a finite rotation matrix; `field` names it in the error.
+fn check_rotation(r: &Mat3F64, field: &'static str) -> Result<(), RgbdIcpError> {
+    let orth = (r.transpose() * *r - Mat3F64::IDENTITY).to_cols_array();
+    // `f64::max` drops NaN, hence the separate finiteness check
+    let deviation = orth
+        .iter()
+        .fold((r.determinant() - 1.0).abs(), |m, x| m.max(x.abs()));
+    if !(r.is_finite() && deviation <= ROTATION_TOL) {
+        return Err(RgbdIcpError::InvalidCriteria {
+            field,
+            value: deviation,
+        });
+    }
+    Ok(())
 }
 
 /// Gates and weighting of one association pass.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PassGates {
+    /// Bilinear target sampling ([`sample_target`]) instead of the nearest pixel.
+    pub bilinear: bool,
     /// Largest `|p - v_t|` of a kept correspondence, in metres.
     pub max_dist_m: f64,
     /// Smallest `(R n_s) . n_t` of a kept correspondence (cosine of the largest normal angle).
@@ -459,6 +796,65 @@ fn sample_nearest(tgt: &RgbdLevel, u: f64, v: f64) -> Option<TargetSample> {
     })
 }
 
+/// Bilinear sample of the target vertex and normal maps (and sigma map) at continuous pixel
+/// `(u, v)`.
+///
+/// Nearest-pixel snapping leaves the matched vertex up to half a pixel off the ray, a residual
+/// that on a curved or slanted surface does not average out; interpolating removes it to first
+/// order. A tap with zero weight (integer `u` or `v`, the last row or column) is neither read
+/// nor tested, so it cannot drop the sample. The right and lower neighbours are clamped into
+/// the map, which keeps a 1-pixel-wide or -high level in bounds: there the clamped tap has zero
+/// weight. `None` off the map (NaN and infinite coordinates included), when a weighted pixel is
+/// invalid, when the weighted pixels straddle a depth discontinuity
+/// ([`MAX_BILINEAR_DEPTH_JUMP`]) or when their normals nearly cancel. The sigma is interpolated
+/// only when every weighted pixel has a map value.
+fn sample_target(tgt: &RgbdLevel, u: f64, v: f64) -> Option<TargetSample> {
+    let size = tgt.size();
+    let (tw, th) = (size.width, size.height);
+    // written so that NaN and infinity fail; a 0-pixel map fails too
+    if !(u >= 0.0 && v >= 0.0 && u <= tw as f64 - 1.0 && v <= th as f64 - 1.0) {
+        return None;
+    }
+    // u, v >= 0 here, so truncation is floor (and no libm call)
+    let (u0, v0) = (u as usize, v as usize);
+    let (fu, fv) = (u - u0 as f64, v - v0 as f64);
+    let (u1, v1) = ((u0 + 1).min(tw - 1), (v0 + 1).min(th - 1));
+    let taps = [
+        (v0 * tw + u0, (1.0 - fu) * (1.0 - fv)),
+        (v0 * tw + u1, fu * (1.0 - fv)),
+        (v1 * tw + u0, (1.0 - fu) * fv),
+        (v1 * tw + u1, fu * fv),
+    ];
+    let (mut z_min, mut z_max) = (f64::INFINITY, 0.0f64);
+    let (mut vertex, mut normal) = (Vec3F64::ZERO, Vec3F64::ZERO);
+    let mut sigma = tgt.depth_sigmas.as_ref().map(|_| 0.0);
+    for (idx, w) in taps {
+        if w == 0.0 {
+            continue;
+        }
+        let (vt, nt) = (pixel3(&tgt.vertices, idx), pixel3(&tgt.normals, idx));
+        if !is_valid_vertex(&vt) || !is_valid_normal(&nt) {
+            return None;
+        }
+        let (vt, nt) = (vec3(vt), vec3(nt));
+        z_min = z_min.min(vt.z);
+        z_max = z_max.max(vt.z);
+        vertex += vt * w;
+        normal += nt * w;
+        sigma = sigma.zip(map_sigma(tgt, idx)).map(|(acc, s)| acc + w * s);
+    }
+    let n = normal.length();
+    // written so that NaN fails
+    if !(z_max - z_min <= MAX_BILINEAR_DEPTH_JUMP * z_min && n >= 0.5) {
+        return None;
+    }
+    Some(TargetSample {
+        vertex,
+        normal: normal / n,
+        depth_sigma: sigma,
+    })
+}
+
 /// One projective-association pass: gate each source pixel and hand every surviving
 /// correspondence to `visit`.
 ///
@@ -501,11 +897,16 @@ pub(crate) fn for_each_correspondence(
         let Some(uv) = tgt.camera.project_to_pixel(&p, 0.0) else {
             continue;
         };
+        let sample = if gates.bilinear {
+            sample_target(tgt, uv.x, uv.y)
+        } else {
+            sample_nearest(tgt, uv.x, uv.y)
+        };
         let Some(TargetSample {
             vertex: v_t,
             normal: n_t,
             depth_sigma: tgt_sigma,
-        }) = sample_nearest(tgt, uv.x, uv.y)
+        }) = sample
         else {
             continue;
         };
@@ -531,6 +932,8 @@ pub(crate) fn for_each_correspondence(
             // the one floor for every source of sigma, sigma maps included
             var.sqrt().max(MIN_SIGMA_M)
         });
+        // the interpolated target is held fixed within an iteration, as the nearest one is;
+        // see the re-associating half of `information_matches_finite_difference_hessian`
         let pxn = p.cross(n_t);
         visit(&Correspondence {
             src_idx,
@@ -595,30 +998,264 @@ fn check_inliers(eqs: &NormalEquations) -> Result<(), RgbdIcpError> {
     Ok(())
 }
 
-/// Solves `A x = -b` by Cholesky, rejecting a collapsed pivot (see [`PIVOT_RTOL`]) or a
-/// non-finite step.
-fn solve_step(a: &Mat6F64, b: &Vec6F64) -> Result<Vec6F64, RgbdIcpError> {
-    let chol = a.cholesky().ok_or(RgbdIcpError::SingularNormalEquations)?;
+/// Solves `A x = -b` by Cholesky, or `None` on a collapsed pivot (see [`PIVOT_RTOL`]).
+fn cholesky_step(a: &Mat6F64, b: &Vec6F64) -> Option<Vec6F64> {
+    let chol = a.cholesky()?;
     // the pivots of the factorisation are the squared diagonal of L
     let l = chol.l_dirty();
     let block_ok = |rows: std::ops::Range<usize>| {
-        let diag_finite = rows.clone().all(|i| a[(i, i)].is_finite());
         let max_diag = rows.clone().map(|i| a[(i, i)]).fold(0.0, f64::max);
         // `>=` so that a NaN pivot fails
-        diag_finite
-            && max_diag > 0.0
+        max_diag > 0.0
             && rows
                 .into_iter()
                 .all(|i| l[(i, i)] * l[(i, i)] >= PIVOT_RTOL * max_diag)
     };
-    if !(block_ok(0..3) && block_ok(3..6)) {
-        return Err(RgbdIcpError::SingularNormalEquations);
+    (block_ok(0..3) && block_ok(3..6)).then(|| chol.solve(&(-b)))
+}
+
+/// Prior rows in information form, at the estimate `(R, t)` of `T_target_source`.
+///
+/// The error is `e = [log(R R_p^T), t - R R_p^T t_p]`, weighted by `info`. Under the solver's
+/// left update `R <- exp(w) R`, `t <- exp(w) t + v` it becomes
+/// `[log(exp(w) exp(e_r)), exp(w) e_t + v]`, so its Jacobian at `w = v = 0` is
+/// `[[Jl(e_r)^-1, 0], [-[e_t]x, I]]`, with `Jl` the left Jacobian of SO(3). A rotation prior is
+/// the case `t_p = 0` with zero translation information.
+#[derive(Debug, Clone, Copy)]
+struct PriorRows {
+    rotation: Mat3F64,
+    translation: Vec3F64,
+    info: Mat6F64,
+}
+
+impl PriorRows {
+    /// Rows of a rotation prior already checked by [`check_rotation_prior`].
+    fn from_rotation(p: RotationPrior) -> Self {
+        let w = 1.0 / (p.sigma_rad * p.sigma_rad);
+        Self {
+            rotation: p.rotation,
+            translation: Vec3F64::ZERO,
+            info: Mat6F64::from_diagonal(&Vec6F64::new(w, w, w, 0.0, 0.0, 0.0)),
+        }
     }
-    let x = chol.solve(&(-b));
+
+    /// Rows of a pose prior, whose information is the inverse of its covariance.
+    ///
+    /// # Errors
+    ///
+    /// [`RgbdIcpError::InvalidCriteria`] if the rotation is not a finite rotation matrix, the
+    /// translation is not finite, or the covariance is not finite, symmetric and positive
+    /// definite with a finite inverse.
+    fn from_pose(p: &PosePrior) -> Result<Self, RgbdIcpError> {
+        check_rotation(&p.rotation, "pose_prior.rotation")?;
+        if !p.translation.to_array().iter().all(|v| v.is_finite()) {
+            return Err(RgbdIcpError::InvalidCriteria {
+                field: "pose_prior.translation",
+                value: p.translation.length(),
+            });
+        }
+        let c = p.covariance;
+        let field = "pose_prior.covariance";
+        if let Some(&value) = c.iter().find(|v| !v.is_finite()) {
+            return Err(RgbdIcpError::InvalidCriteria { field, value });
+        }
+        // relative, so that a covariance in any unit passes; the entries are finite here, so
+        // `>` cannot let a NaN through
+        let asymmetry = (c - c.transpose()).amax();
+        if asymmetry > 1e-9 * c.amax() {
+            return Err(RgbdIcpError::InvalidCriteria {
+                field,
+                value: asymmetry,
+            });
+        }
+        let info = c.cholesky().map(|l| l.inverse());
+        match info {
+            // a near-singular covariance can factor and still overflow its inverse
+            Some(info) if info.iter().all(|v| v.is_finite()) => Ok(Self {
+                rotation: p.rotation,
+                translation: p.translation,
+                // symmetrise away the rounding of the inverse
+                info: (info + info.transpose()) * 0.5,
+            }),
+            // the smallest eigenvalue says how far from positive definite it is
+            _ => Err(RgbdIcpError::InvalidCriteria {
+                field,
+                value: c.symmetric_eigen().eigenvalues.min(),
+            }),
+        }
+    }
+
+    /// The error `e` and its Jacobian at `(rotation, translation)`.
+    fn error_and_jacobian(&self, rotation: &Mat3F64, translation: &Vec3F64) -> (Vec6F64, Mat6F64) {
+        let rr = *rotation * self.rotation.transpose();
+        // SO3F64's log keeps the sign right up to pi
+        let e_r = SO3F64::from_matrix(&rr).log();
+        let e_t = *translation - rr * self.translation;
+        let jl_inv = SO3F64::left_jacobian(e_r).inverse();
+        let skew = SO3F64::hat(e_t);
+        let mut jac = Mat6F64::identity();
+        for i in 0..3 {
+            for k in 0..3 {
+                jac[(i, k)] = jl_inv.col(k)[i];
+                jac[(3 + i, k)] = -skew.col(k)[i];
+            }
+        }
+        let e = Vec6F64::new(e_r.x, e_r.y, e_r.z, e_t.x, e_t.y, e_t.z);
+        (e, jac)
+    }
+
+    /// Adds `J^T info J` to `a` and `J^T info e` to `b` at `(rotation, translation)`.
+    fn add_to(&self, rotation: &Mat3F64, translation: &Vec3F64, a: &mut Mat6F64, b: &mut Vec6F64) {
+        let (e, jac) = self.error_and_jacobian(rotation, translation);
+        let jt_info = jac.transpose() * self.info;
+        *a += jt_info * jac;
+        *b += jt_info * e;
+    }
+}
+
+/// One Gauss-Newton step `x = [w, v]` from `A = J^T W J`, `b = J^T W r` and the priors at the
+/// estimate `(rotation, translation)`.
+///
+/// Full-rank data take the Cholesky path on `A` plus the priors. Otherwise the unobserved
+/// directions of `split` are removed from both `A` and `b`, so that a rounding-noise gradient
+/// cannot push along them, the priors are added, and the sum is solved by eigen pseudo-inverse
+/// in the depth-scaled tangent: a direction neither the data nor a prior observes gets a zero
+/// update.
+fn solve_step(
+    a: &Mat6F64,
+    b: &Vec6F64,
+    split: &DegenerateSplit,
+    priors: &[Option<PriorRows>],
+    rotation: &Mat3F64,
+    translation: &Vec3F64,
+    rtol: f64,
+) -> Result<Vec6F64, RgbdIcpError> {
+    let (mut a, mut b) = if split.num_degenerate == 0 {
+        (*a, *b)
+    } else {
+        let s = tangent_scale(split.scale);
+        let b_observed = (split.projector * b.component_div(&s)).component_mul(&s);
+        (split.a_observed, b_observed)
+    };
+    for p in priors.iter().flatten() {
+        p.add_to(rotation, translation, &mut a, &mut b);
+    }
+    let x = if split.num_degenerate == 0 {
+        // a weak pivot the eigen test still counts as observed falls back to the eigen solve
+        cholesky_step(&a, &b).unwrap_or_else(|| pseudo_solve(&a, &(-b), split.scale, rtol))
+    } else {
+        pseudo_solve(&a, &(-b), split.scale, rtol)
+    };
     if !x.iter().all(|v| v.is_finite()) {
         return Err(RgbdIcpError::SingularNormalEquations);
     }
     Ok(x)
+}
+
+/// Eigen split of `J^T W J` into observed and unobserved directions.
+struct DegenerateSplit {
+    /// Rotation scale of the decomposition, metres (see [`depth_scale`]).
+    scale: f64,
+    /// `J^T W J` with the unobserved eigen-directions removed, unscaled tangent.
+    a_observed: Mat6F64,
+    /// Projector onto the observed eigen-directions, in the scaled tangent.
+    projector: Mat6F64,
+    /// Unit unobserved directions in the unscaled tangent, entries `0..num_degenerate`.
+    directions: [Vec6F64; 6],
+    /// Number of unobserved directions.
+    num_degenerate: usize,
+}
+
+impl DegenerateSplit {
+    /// `a`, the matrix this split came from, with its unobserved directions removed: `a`
+    /// itself when there are none, so full-rank data keep their exact entries.
+    fn observed(&self, a: &Mat6F64) -> Mat6F64 {
+        if self.num_degenerate == 0 {
+            *a
+        } else {
+            self.a_observed
+        }
+    }
+}
+
+/// Rotation scale of the degeneracy test: `depth_m` when finite and positive, else 1 m.
+#[inline]
+fn depth_scale(depth_m: f64) -> f64 {
+    if depth_m.is_finite() && depth_m > 0.0 {
+        depth_m
+    } else {
+        1.0
+    }
+}
+
+/// Diagonal of `S = diag(d, d, d, 1, 1, 1)`: radians of rotation to metres of arc at depth `d`.
+#[inline]
+fn tangent_scale(d: f64) -> Vec6F64 {
+    Vec6F64::new(d, d, d, 1.0, 1.0, 1.0)
+}
+
+/// Symmetric eigen-decomposition of `S^-1 A S^-1` (see [`tangent_scale`]): eigenpairs in
+/// ascending order and the largest eigenvalue. `a` must be finite: the eigen iteration does not
+/// terminate on NaN.
+fn scaled_eigen(a: &Mat6F64, d: f64) -> ([(f64, Vec6F64); 6], f64) {
+    let s = tangent_scale(d);
+    // symmetric by construction, as `a` is
+    let m = Mat6F64::from_fn(|i, k| a[(i, k)] / (s[i] * s[k]));
+    let eig = m.symmetric_eigen();
+    let mut pairs: [(f64, Vec6F64); 6] =
+        std::array::from_fn(|c| (eig.eigenvalues[c], eig.eigenvectors.column(c).into_owned()));
+    pairs.sort_unstable_by(|x, y| x.0.total_cmp(&y.0));
+    (pairs, pairs[5].0)
+}
+
+/// Splits `a` at `rtol` times its largest eigenvalue, rotation scaled by `depth_m`.
+///
+/// # Errors
+///
+/// [`RgbdIcpError::SingularNormalEquations`] if `a` is not finite.
+fn split_degenerate(a: &Mat6F64, depth_m: f64, rtol: f64) -> Result<DegenerateSplit, RgbdIcpError> {
+    if !a.iter().all(|v| v.is_finite()) {
+        return Err(RgbdIcpError::SingularNormalEquations);
+    }
+    let d = depth_scale(depth_m);
+    let s = tangent_scale(d);
+    let (pairs, lmax) = scaled_eigen(a, d);
+    let mut out = DegenerateSplit {
+        scale: d,
+        a_observed: Mat6F64::zeros(),
+        projector: Mat6F64::zeros(),
+        directions: [Vec6F64::zeros(); 6],
+        num_degenerate: 0,
+    };
+    for (lambda, v) in pairs {
+        // `lambda > ..` so that an all-zero system counts as unobserved
+        if lambda > rtol * lmax && lmax > 0.0 {
+            let vs = v.component_mul(&s);
+            out.a_observed += vs * vs.transpose() * lambda;
+            out.projector += v * v.transpose();
+        } else {
+            out.directions[out.num_degenerate] = v.component_div(&s).normalize();
+            out.num_degenerate += 1;
+        }
+    }
+    Ok(out)
+}
+
+/// Minimum-norm solve of `A x = rhs` in the depth-scaled tangent, dropping the eigen-directions
+/// at or below `rtol` times the largest eigenvalue.
+fn pseudo_solve(a: &Mat6F64, rhs: &Vec6F64, d: f64, rtol: f64) -> Vec6F64 {
+    let s = tangent_scale(d);
+    let rhs_scaled = rhs.component_div(&s);
+    let (pairs, lmax) = scaled_eigen(a, d);
+    let mut y = Vec6F64::zeros();
+    if lmax > 0.0 {
+        for (lambda, v) in pairs {
+            if lambda > rtol * lmax {
+                y += v * (v.dot(&rhs_scaled) / lambda);
+            }
+        }
+    }
+    y.component_div(&s)
 }
 
 /// Conditioning of each 3x3 block of `a`, `(rotation, translation)`: the weakest Cholesky pivot
@@ -648,26 +1285,67 @@ fn median_depth_m(depths: &mut [f32]) -> f64 {
     *m as f64
 }
 
-/// Coarse-to-fine Gauss-Newton from the initial pose; inputs already checked.
+/// Coarse-to-fine Gauss-Newton from the initial pose; level counts already checked.
 fn run_icp(
+    workspace: &mut IcpWorkspace,
     src: &RgbdPyramid,
     tgt: &RgbdPyramid,
     init_rotation: &Mat3F64,
     init_translation: &Vec3F64,
     criteria: &IcpPlaneCriteria,
-    gates: &PassGates,
 ) -> Result<IcpPlaneResult, RgbdIcpError> {
+    // Hybrid starts on nearest and switches once, on the finest level
+    let (mut gates, priors) = check_criteria(criteria)?;
     let (mut rotation, mut translation) = (*init_rotation, *init_translation);
     let mut iterations = 0;
+    let hybrid = criteria.association == Association::Hybrid;
+    let kernel = workspace.kernel;
+    if kernel == IcpKernel::Simd {
+        workspace
+            .soa
+            .resize_with(src.levels.len(), Default::default);
+        for (buf, level) in workspace.soa.iter_mut().zip(&src.levels) {
+            buf.fill(level, &gates.depth_noise);
+        }
+    }
+    let soa = &workspace.soa;
+    let pass = |level: usize,
+                rotation: &Mat3F64,
+                translation: &Vec3F64,
+                gates: &PassGates,
+                depths: Option<&mut Vec<f32>>| {
+        let (s, t) = (&src.levels[level], &tgt.levels[level]);
+        match kernel {
+            IcpKernel::Scalar => accumulate_level(s, t, rotation, translation, gates, depths),
+            IcpKernel::Simd => {
+                simd::accumulate(&soa[level], s, t, rotation, translation, gates, depths)
+            }
+        }
+    };
 
     // iters_per_level is coarsest first; levels[0] is the finest
     let levels = (0..src.levels.len()).rev();
     for (&iters, level) in criteria.iters_per_level.iter().zip(levels) {
-        let (s, t) = (&src.levels[level], &tgt.levels[level]);
-        for _ in 0..iters {
-            let eqs = accumulate_level(s, t, &rotation, &translation, gates, None);
+        // the switch to bilinear brings its own budget of `iters` more iterations
+        let (mut it, mut budget) = (0, iters);
+        while it < budget {
+            it += 1;
+            let eqs = pass(level, &rotation, &translation, &gates, None);
             check_inliers(&eqs)?;
-            let x = solve_step(&eqs.a, &eqs.b)?;
+            // the mean, not the median: a select per iteration costs more than the scale needs
+            let mean_depth = eqs.sum_depth_m / eqs.num_inliers as f64;
+            let rtol = criteria.degeneracy_rtol;
+            // unobserved directions are decided on the data alone, before any prior is added
+            let split = split_degenerate(&eqs.a, mean_depth, rtol)?;
+            let x = solve_step(
+                &eqs.a,
+                &eqs.b,
+                &split,
+                &priors,
+                &rotation,
+                &translation,
+                rtol,
+            )?;
             let (w, v) = (
                 Vec3F64::new(x[0], x[1], x[2]),
                 Vec3F64::new(x[3], x[4], x[5]),
@@ -678,28 +1356,31 @@ fn run_icp(
             iterations += 1;
 
             // relative to the scene depth so that one tolerance fits any scale
-            let mean_depth = eqs.sum_depth_m / eqs.num_inliers as f64;
-            let tol = criteria.update_tolerance;
-            if w.length() < tol && v.length() < tol * mean_depth {
+            let below = |tol: f64| w.length() < tol && v.length() < tol * mean_depth;
+            if hybrid && level == 0 && !gates.bilinear && below(HYBRID_SWITCH_NORM) {
+                gates.bilinear = true;
+                budget = it + iters;
+                continue;
+            }
+            if below(criteria.update_tolerance) {
                 break;
             }
         }
     }
 
-    // the reported figures come from the returned pose, not the last pre-update pass; the one
-    // allocation of a call, sized by the image so that it never regrows
+    // the reported figures come from the returned pose, not the last pre-update pass, and from
+    // the data alone: a prior must not make weak geometry look observed
     let finest = &src.levels[0];
-    let mut depths = Vec::with_capacity(finest.size().width * finest.size().height);
-    let eqs = accumulate_level(
-        finest,
-        &tgt.levels[0],
-        &rotation,
-        &translation,
-        gates,
-        Some(&mut depths),
-    );
+    let depths = &mut workspace.depths;
+    depths.clear();
+    // by the image, not the inlier count, so a fuller frame after a sparse one never regrows it
+    depths.reserve(finest.size().width * finest.size().height);
+    let eqs = pass(0, &rotation, &translation, &gates, Some(&mut *depths));
     check_inliers(&eqs)?;
     let (rotation_conditioning, translation_conditioning) = block_conditioning(&eqs.a);
+    let median_depth_m = median_depth_m(depths);
+    let split = split_degenerate(&eqs.a, median_depth_m, criteria.degeneracy_rtol)?;
+    let information = split.observed(&eqs.a);
     // num_valid >= num_associated >= num_inliers >= MIN_INLIERS, so no ratio divides by zero
     let PassCounts {
         num_valid,
@@ -717,8 +1398,10 @@ fn run_icp(
         rotation_conditioning,
         translation_conditioning,
         observability: rotation_conditioning.min(translation_conditioning),
-        median_depth_m: median_depth_m(&mut depths),
-        information: eqs.a,
+        median_depth_m,
+        information,
+        degenerate_directions: split.directions,
+        num_degenerate: split.num_degenerate,
     })
 }
 
@@ -734,6 +1417,7 @@ mod tests {
     use kornia_image::ImageSize;
 
     const GATES: PassGates = PassGates {
+        bilinear: false,
         max_dist_m: 0.1,
         cos_max_normal_angle: 0.866, // 30 deg
         huber_delta: 1.345,
@@ -1065,6 +1749,14 @@ mod tests {
                 max_normal_angle_rad: 4.0,
                 ..ok.clone()
             },
+            IcpPlaneCriteria {
+                degeneracy_rtol: f64::NAN,
+                ..ok.clone()
+            },
+            IcpPlaneCriteria {
+                degeneracy_rtol: 0.0,
+                ..ok.clone()
+            },
         ];
         // every DepthNoise parameter is checked, NaN and infinity included
         let stereo = |i: usize, x: f64| {
@@ -1113,9 +1805,11 @@ mod tests {
         Ok(())
     }
 
-    /// One fronto-parallel plane leaves in-plane translation and rotation unobserved.
+    /// One fronto-parallel plane leaves in-plane translation and the rotation about its normal
+    /// unobserved. It used to be rejected as singular; it now converges along the three observed
+    /// directions and reports the other three, with zero information along them.
     #[test]
-    fn test_single_plane_is_singular() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_single_plane_is_degenerate() -> Result<(), Box<dyn std::error::Error>> {
         let scene = Scene {
             planes: vec![Plane {
                 normal: Vec3F64::new(0.0, 0.0, 1.0),
@@ -1124,26 +1818,111 @@ mod tests {
             spheres: vec![],
         };
         let pyr = pyramid(&scene, &Mat3F64::IDENTITY, &Vec3F64::ZERO)?;
-        let result = icp_from_identity(&pyr, &pyr, &IcpPlaneCriteria::default());
-        assert!(
-            matches!(result, Err(RgbdIcpError::SingularNormalEquations)),
-            "{result:?}"
-        );
+        let result = icp_from_identity(&pyr, &pyr, &IcpPlaneCriteria::default())?;
+        assert_eq!(result.num_degenerate, 3, "{result:?}");
+        // nothing moved: the observed directions have nothing to correct, the others no update
+        assert!(rotation_error_deg(&result.rotation, &Mat3F64::IDENTITY) < 1e-6);
+        assert!(result.translation.length() < 1e-9);
+        assert!(result.observability < 1e-6);
+        // in-plane x, y translation and z rotation, each with zero information
+        for d in &result.degenerate_directions[..3] {
+            assert!((d.norm() - 1.0).abs() < 1e-12);
+            // in the span of w_z, v_x and v_y
+            assert!(d[0].abs() + d[1].abs() + d[5].abs() < 1e-6, "{d:?}");
+            let info = d.dot(&(result.information * d)) / result.information.amax();
+            assert!(info.abs() < 1e-12, "information along {d:?}: {info:.3e}");
+        }
+        assert!(result.degenerate_directions[3..]
+            .iter()
+            .all(|d| *d == Vec6F64::zeros()));
         Ok(())
     }
 
     #[test]
-    fn solve_step_rejects_nan_and_collapsed_pivots() {
+    fn solve_step_zeroes_unobserved_directions_and_rejects_nan() -> Result<(), RgbdIcpError> {
+        let rtol = DEFAULT_DEGENERACY_RTOL;
         let b = Vec6F64::from_element(1.0);
-        let x = solve_step(&Mat6F64::identity(), &b);
-        assert!(matches!(x, Ok(x) if x == -b));
+        let full = Mat6F64::identity();
+        let id = (Mat3F64::IDENTITY, Vec3F64::ZERO);
+        let x = solve_step(
+            &full,
+            &b,
+            &split_degenerate(&full, 1.0, rtol)?,
+            &[],
+            &id.0,
+            &id.1,
+            rtol,
+        )?;
+        assert_eq!(x, -b);
         let mut nan = Mat6F64::identity();
         nan[(4, 4)] = f64::NAN;
-        assert!(solve_step(&nan, &b).is_err());
-        // positive definite, but one translation pivot is 1e-10 of its block
+        assert!(split_degenerate(&nan, 1.0, rtol).is_err());
+        // positive definite, but one translation eigenvalue is 1e-10 of the largest
         let mut weak = Mat6F64::identity();
         weak[(5, 5)] = 1e-10;
-        assert!(solve_step(&weak, &b).is_err());
+        let split = split_degenerate(&weak, 1.0, rtol)?;
+        assert_eq!(split.num_degenerate, 1);
+        assert_eq!(split.directions[0][5].abs(), 1.0);
+        let x = solve_step(&weak, &b, &split, &[], &id.0, &id.1, rtol)?;
+        assert!((x - Vec6F64::new(-1.0, -1.0, -1.0, -1.0, -1.0, 0.0)).amax() < 1e-12);
+        Ok(())
+    }
+
+    /// The default degeneracy threshold sits between an exact null space and the weakest
+    /// geometry the solver has always solved.
+    ///
+    /// Smallest over largest eigenvalue of the depth-scaled `J^T W J` after a 2 cm slide: a
+    /// wall has three null directions, a wall with a 6 cm bump does not, and neither does the
+    /// corner and sphere.
+    #[test]
+    fn default_degeneracy_rtol_separates_null_space_from_weak_geometry(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let plane = || Plane {
+            normal: Vec3F64::new(0.0, 0.0, 1.0),
+            d: 2.0,
+        };
+        let wall = Scene {
+            planes: vec![plane()],
+            spheres: vec![],
+        };
+        let bump = Scene {
+            planes: vec![plane()],
+            spheres: vec![Sphere {
+                center: Vec3F64::new(0.0, 0.0, 1.9),
+                radius: 0.06,
+            }],
+        };
+        let slide = Vec3F64::new(0.02, 0.0, 0.0);
+        let mut smallest = Vec::new();
+        for scene in [&wall, &bump, &Scene::corner_and_sphere()] {
+            let s = pyramid(scene, &Mat3F64::IDENTITY, &Vec3F64::ZERO)?;
+            let t = pyramid(scene, &Mat3F64::IDENTITY, &slide)?;
+            let c = IcpPlaneCriteria::default();
+            let r = icp_from_identity(&s, &t, &c)?;
+            let (gates, _) = check_criteria(&c)?;
+            let eqs = accumulate_level(
+                &s.levels[0],
+                &t.levels[0],
+                &r.rotation,
+                &r.translation,
+                &gates,
+                None,
+            );
+            let (pairs, lmax) = scaled_eigen(&eqs.a, r.median_depth_m);
+            smallest.push((pairs[0].0 / lmax, pairs[3].0 / lmax, r.num_degenerate));
+        }
+        let (wall, bump, rich) = (smallest[0], smallest[1], smallest[2]);
+        assert!(wall.0 < 1e-12 && wall.2 == 3, "wall: {wall:?}");
+        assert!(
+            wall.1 > 1e-3,
+            "wall keeps three observed directions: {wall:?}"
+        );
+        assert!(
+            bump.0 > DEFAULT_DEGENERACY_RTOL && bump.2 == 0,
+            "bump must still be solved: {bump:?}"
+        );
+        assert!(rich.0 > 1e-3 && rich.2 == 0, "rich: {rich:?}");
+        Ok(())
     }
 
     /// Pyramid of `levels` levels of `scene` through `camera` at `size`, the camera translated
@@ -1404,6 +2183,100 @@ mod tests {
         Ok(())
     }
 
+    /// A `width` x `height` target level for the samplers: vertex `(u, v, z(u, v))` with a
+    /// normal facing the camera, invalid where `z` is 0, and a sigma map of `0.01 * z`.
+    fn sample_level(
+        width: usize,
+        height: usize,
+        z: impl Fn(usize, usize) -> f32,
+    ) -> Result<RgbdLevel, Box<dyn std::error::Error>> {
+        let size = ImageSize { width, height };
+        let (mut vs, mut ns, mut ss) = (Vec::new(), Vec::new(), Vec::new());
+        for v in 0..height {
+            for u in 0..width {
+                let d = z(u, v);
+                let ok = if d > 0.0 { 1.0 } else { 0.0 };
+                vs.extend([u as f32 * ok, v as f32 * ok, d]);
+                ns.extend([0.0, 0.0, -ok]);
+                ss.push(0.01 * d);
+            }
+        }
+        Ok(RgbdLevel {
+            camera: test_camera(),
+            vertices: Image::new(size, vs)?,
+            normals: Image::new(size, ns)?,
+            depth_sigmas: Some(Image::new(size, ss)?),
+        })
+    }
+
+    /// A bilinear sample needs only the pixels it weights: at integer `u` or on the last row
+    /// and column, an invalid or far neighbour with zero weight must not drop it.
+    #[test]
+    fn bilinear_ignores_zero_weight_taps() -> Result<(), Box<dyn std::error::Error>> {
+        // column 2 is a hole
+        let holed = sample_level(
+            4,
+            3,
+            |u, _| if u == 2 { 0.0 } else { 1.0 + 0.01 * u as f32 },
+        )?;
+        let s = sample_target(&holed, 1.0, 0.5).ok_or("integer u next to a hole dropped")?;
+        assert!((s.vertex - Vec3F64::new(1.0, 0.5, 1.01)).length() < 1e-6);
+        assert_eq!(s.normal, Vec3F64::new(0.0, 0.0, -1.0));
+        assert!((s.depth_sigma.ok_or("no sigma")? - 0.0101).abs() < 1e-8);
+        assert!(
+            sample_target(&holed, 1.5, 0.5).is_none(),
+            "weighted hole kept"
+        );
+        assert!(
+            sample_target(&holed, 3.0, 2.0).is_some(),
+            "last pixel dropped"
+        );
+        // a 2x depth step from column 2 on
+        let step = sample_level(4, 3, |u, _| if u >= 2 { 2.0 } else { 1.0 })?;
+        assert!(
+            sample_target(&step, 1.0, 1.0).is_some(),
+            "zero-weight jump dropped"
+        );
+        assert!(
+            sample_target(&step, 1.5, 1.0).is_none(),
+            "weighted jump kept"
+        );
+        Ok(())
+    }
+
+    /// Pyramid levels are at least 3x3, so this is defence in depth, on the sampler itself: a
+    /// 1-pixel-wide or -high map must read only its own pixels, and non-finite coordinates
+    /// give no sample.
+    #[test]
+    fn bilinear_handles_one_pixel_maps_and_non_finite_coordinates(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let column = sample_level(1, 3, |_, v| 1.0 + 0.01 * v as f32)?;
+        let s = sample_target(&column, 0.0, 1.5).ok_or("1-wide map dropped")?;
+        assert!((s.vertex - Vec3F64::new(0.0, 1.5, 1.015)).length() < 1e-6);
+        assert!(sample_target(&column, 0.5, 1.0).is_none());
+        let row = sample_level(3, 1, |u, _| 1.0 + 0.01 * u as f32)?;
+        let s = sample_target(&row, 1.5, 0.0).ok_or("1-high map dropped")?;
+        assert!((s.vertex - Vec3F64::new(1.5, 0.0, 1.015)).length() < 1e-6);
+        assert!(sample_target(&row, 1.0, 0.5).is_none());
+        let single = sample_level(1, 1, |_, _| 1.0)?;
+        assert!(sample_target(&single, 0.0, 0.0).is_some());
+
+        let lvl = sample_level(4, 3, |_, _| 1.0)?;
+        let (nan, inf) = (f64::NAN, f64::INFINITY);
+        for (u, v) in [
+            (nan, 1.0),
+            (1.0, nan),
+            (inf, 1.0),
+            (-inf, 1.0),
+            (1.0, inf),
+            (1.0, -inf),
+        ] {
+            assert!(sample_target(&lvl, u, v).is_none(), "({u}, {v}) sampled");
+            assert!(sample_nearest(&lvl, u, v).is_none(), "({u}, {v}) snapped");
+        }
+        Ok(())
+    }
+
     /// The reported information must be the Hessian of the cost the solver minimises.
     ///
     /// Fixes the final pass's correspondences and their weights, perturbs the estimate in the
@@ -1411,7 +2284,23 @@ mod tests {
     /// converged, noise-free solve the residuals are near zero, so the Gauss-Newton `J^T W J`
     /// and the true Hessian agree; a wrong Jacobian, sign, axis order or weight would not.
     #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "about 4.5 min in a debug build; runs in the release test job"
+    )]
     fn information_matches_finite_difference_hessian() -> Result<(), Box<dyn std::error::Error>> {
+        for association in [
+            Association::Nearest,
+            Association::Bilinear,
+            Association::Hybrid,
+        ] {
+            fd_check(association)?;
+        }
+        Ok(())
+    }
+
+    /// One association of [`information_matches_finite_difference_hessian`].
+    fn fd_check(association: Association) -> Result<(), Box<dyn std::error::Error>> {
         let (camera, scene) = (test_camera(), Scene::corner_and_sphere());
         let w = Vec3F64::new(1.0, 1.0, 1.0) * (1.5f64.to_radians() / 3f64.sqrt());
         let rot_wc = SO3F64::exp(w).matrix();
@@ -1424,15 +2313,19 @@ mod tests {
         let tgt = RgbdPyramid::from_depth_m(&depth_m(&scene, &rot_wc, &t_wc)?, &camera, 3)?;
         let criteria = IcpPlaneCriteria {
             depth_noise: TEST_STEREO,
+            association,
             ..Default::default()
         };
         let res = icp_from_identity(&src, &tgt, &criteria)?;
         let info = &res.information;
         assert!((info - info.transpose()).amax() == 0.0);
 
-        let gates = check_criteria(&criteria)?;
+        let (mut gates, _) = check_criteria(&criteria)?;
+        // the final pass of Hybrid is bilinear once it has switched, which it does here
+        gates.bilinear = association != Association::Nearest;
         let (rot, t) = (res.rotation, res.translation);
-        let rows = gated_rows(&src.levels[0], &tgt.levels[0], &rot, &t, &gates);
+        let (s0, t0) = (&src.levels[0], &tgt.levels[0]);
+        let rows = gated_rows(s0, t0, &rot, &t, &gates);
         assert_eq!(rows.len(), res.num_inliers);
         let cost = |xi: &[f64; 6]| -> f64 {
             rows.iter()
@@ -1459,13 +2352,831 @@ mod tests {
                 worst = worst.max((fd - info[(j, k)]).abs() / norm);
             }
         }
-        // nearest-pixel association is piecewise constant, so finite differences that
-        // re-associate at each perturbed pose would only see snapping jumps: none here
         assert!(
             worst < 1e-3,
-            "information disagrees with the fixed-target Hessian: {worst:.3e} over {} rows",
+            "{association:?}: information disagrees with the fixed-target Hessian: {worst:.3e} \
+             over {} rows",
             rows.len()
         );
+        if !gates.bilinear {
+            // nearest-pixel association is piecewise constant: finite differences that
+            // re-associate at each perturbed pose only see snapping jumps
+            return Ok(());
+        }
+
+        // Re-associating at every perturbed pose, weights frozen as Gauss-Newton holds them,
+        // so the interpolated target moves with the estimate: this measures what holding the
+        // target fixed in the Jacobian costs: worst entry (t_y, t_y) 7.4%, from 8.9% at
+        // h = 1e-3 to 7.4% at 3e-5, so not step noise. Modelling the target's motion needs
+        // derivatives of the noisy maps; it is left out, so the gap is bounded here, not closed.
+        let mut w_fixed = vec![f64::NAN; s0.size().width * s0.size().height];
+        for_each_correspondence(s0, t0, &rot, &t, &gates, |c| {
+            w_fixed[c.src_idx] = row_weight(c.r, c.sigma, gates.huber_delta);
+        });
+        let reassoc = |xi: &[f64; 6]| -> f64 {
+            let d = SO3F64::exp(Vec3F64::new(xi[0], xi[1], xi[2])).matrix();
+            let (rp, tp) = (d * rot, d * t + Vec3F64::new(xi[3], xi[4], xi[5]));
+            let mut e = 0.0;
+            for_each_correspondence(s0, t0, &rp, &tp, &gates, |c| {
+                let w = w_fixed[c.src_idx];
+                if w.is_finite() {
+                    e += 0.5 * w * c.r * c.r;
+                }
+            });
+            e
+        };
+        let mut worst_re = 0.0;
+        for hh in [1e-3, 3e-4, 1e-4, 3e-5] {
+            let (mut worst_h, mut worst_at): (f64, _) = (0.0, (0, 0));
+            for j in 0..6 {
+                for k in 0..6 {
+                    let at = |sj: f64, sk: f64| {
+                        let mut xi = [0.0; 6];
+                        xi[j] += sj * hh;
+                        xi[k] += sk * hh;
+                        reassoc(&xi)
+                    };
+                    let fd = (at(1.0, 1.0) - at(1.0, -1.0) - at(-1.0, 1.0) + at(-1.0, -1.0))
+                        / (4.0 * hh * hh);
+                    let err = (fd - info[(j, k)]).abs() / (info[(j, j)] * info[(k, k)]).sqrt();
+                    if err > worst_h {
+                        (worst_h, worst_at) = (err, (j, k));
+                    }
+                }
+            }
+            eprintln!("{association:?} re-associating FD, h={hh:.0e}: worst {worst_h:.3e} at {worst_at:?}");
+            if hh == 1e-4 {
+                worst_re = worst_h;
+            }
+        }
+        assert!(
+            worst_re < 0.1,
+            "{association:?}: fixed-target information is off the re-associated cost by \
+             {worst_re:.3e}"
+        );
+        Ok(())
+    }
+
+    /// Error of an estimate against the truth in the solver's tangent: the estimate is
+    /// `exp(xi)` on the left of the truth, `xi = [log(R R_gt^T), t - R R_gt^T t_gt]`.
+    fn tangent_error(rot: &Mat3F64, t: &Vec3F64, rot_gt: &Mat3F64, t_gt: &Vec3F64) -> Vec6F64 {
+        let rr = *rot * rot_gt.transpose();
+        let w = SO3F64::from_matrix(&rr).log();
+        let v = *t - rr * *t_gt;
+        Vec6F64::new(w.x, w.y, w.z, v.x, v.y, v.z)
+    }
+
+    /// Deterministic standard normal samples (splitmix64 and Box-Muller).
+    struct Gauss(u64);
+
+    impl Gauss {
+        fn uniform(&mut self) -> f64 {
+            self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^= z >> 31;
+            ((z >> 11) as f64 + 0.5) / (1u64 << 53) as f64
+        }
+
+        fn sample(&mut self) -> f64 {
+            let (u1, u2) = (self.uniform(), self.uniform());
+            (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
+        }
+    }
+
+    /// The information is a covariance to trust: the NEES of the estimate over independent
+    /// noisy frames must average the 6 of a chi-square with 6 degrees of freedom.
+    ///
+    /// Against the truth on a moving pair, most of the NEES is there with no noise at all: the
+    /// noise-free solve is off by 0.30 mm with nearest-pixel snapping and 0.07 mm with bilinear
+    /// sampling, many sigmas of a 57k-row solve. The information describes the depth noise, not that bias, so the noise is
+    /// judged against the truth where the bias is zero (identical poses), and against the
+    /// noise-free solve where it is not.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "several minutes in a debug build; runs in the release test job"
+    )]
+    fn nees_is_six_on_noisy_stereo_depth() -> Result<(), Box<dyn std::error::Error>> {
+        for association in [
+            Association::Nearest,
+            Association::Bilinear,
+            Association::Hybrid,
+        ] {
+            nees_for(association)?;
+        }
+        Ok(())
+    }
+
+    /// One association of [`nees_is_six_on_noisy_stereo_depth`]; the same noise seed for each.
+    fn nees_for(association: Association) -> Result<(), Box<dyn std::error::Error>> {
+        let (camera, scene) = (test_camera(), Scene::corner_and_sphere());
+        let criteria = IcpPlaneCriteria {
+            depth_noise: TEST_STEREO,
+            association,
+            ..Default::default()
+        };
+        let mut g = Gauss(7);
+        let mut noisy = |clean: &Image<f32, 1>| {
+            let s = clean.as_slice().iter().map(|&z| {
+                if z > 0.0 {
+                    z + (TEST_STEREO.depth_sigma(z as f64) * g.sample()) as f32
+                } else {
+                    0.0
+                }
+            });
+            Image::<f32, 1>::new(clean.size(), s.collect())
+        };
+        let axis = Vec3F64::new(0.3, 1.0, 0.2).normalize();
+        let moving = (
+            SO3F64::exp(axis * 1f64.to_radians()).matrix(),
+            Vec3F64::new(0.02, 0.0, 0.01),
+        );
+        let trials = 40;
+        let still = (Mat3F64::IDENTITY, Vec3F64::ZERO);
+        for (name, (rot_wc, t_wc)) in [("static", still), ("moving", moving)] {
+            let (rot_gt, t_gt) = (rot_wc.transpose(), -(rot_wc.transpose() * t_wc));
+            let clean_src = depth_m(&scene, &Mat3F64::IDENTITY, &Vec3F64::ZERO)?;
+            let clean_tgt = depth_m(&scene, &rot_wc, &t_wc)?;
+            let clean = icp_from_identity(
+                &RgbdPyramid::from_depth_m(&clean_src, &camera, 3)?,
+                &RgbdPyramid::from_depth_m(&clean_tgt, &camera, 3)?,
+                &criteria,
+            )?;
+            let e0 = tangent_error(&clean.rotation, &clean.translation, &rot_gt, &t_gt);
+            let (mut vs_truth, mut vs_clean) = (0.0, 0.0);
+            for _ in 0..trials {
+                let src = RgbdPyramid::from_depth_m(&noisy(&clean_src)?, &camera, 3)?;
+                let tgt = RgbdPyramid::from_depth_m(&noisy(&clean_tgt)?, &camera, 3)?;
+                let r = icp_from_identity(&src, &tgt, &criteria)?;
+                assert_eq!(r.num_degenerate, 0);
+                let e = tangent_error(&r.rotation, &r.translation, &rot_gt, &t_gt);
+                let d = e - e0;
+                vs_truth += e.dot(&(r.information * e)) / trials as f64;
+                vs_clean += d.dot(&(r.information * d)) / trials as f64;
+            }
+            let (w0, v0) = (e0.fixed_rows::<3>(0).norm(), e0.fixed_rows::<3>(3).norm());
+            eprintln!(
+                "NEES {association:?} {name}: vs truth {vs_truth:.2}, vs noise-free solve \
+                 {vs_clean:.2}; noise-free bias {w0:.2e} rad / {:.3} mm",
+                v0 * 1e3
+            );
+            // chi2(6): mean 6, sd of a 40-trial mean ~0.55
+            assert!(
+                (4.0..9.0).contains(&vs_clean),
+                "{association:?} {name}: NEES {vs_clean:.2} about the noise-free solve is not consistent with 6"
+            );
+            if name == "static" {
+                assert!(
+                    (4.0..9.0).contains(&vs_truth),
+                    "{association:?} static: NEES {vs_truth:.2} against the truth is not consistent with 6"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// `PriorRows` must add `J^T info J` and `J^T info e` with `J` the derivative of its error
+    /// under the solver's left perturbation `exp(xi) T`, also far from the prior and near pi,
+    /// where a first-order identity Jacobian or a sign-flipped log would break the match.
+    #[test]
+    fn prior_rows_match_finite_differences() {
+        // symmetric positive definite, coupling rotation and translation
+        let l = Mat6F64::from_fn(|i, k| match i.cmp(&k) {
+            std::cmp::Ordering::Equal => 2.0 + i as f64,
+            std::cmp::Ordering::Greater => 0.3 * (i + 2 * k) as f64 / 7.0,
+            std::cmp::Ordering::Less => 0.0,
+        });
+        let axis = Vec3F64::new(0.2, -0.5, 0.84).normalize();
+        for angle in [1e-3, 1.0, 3.1] {
+            let prior = PriorRows {
+                rotation: SO3F64::exp(Vec3F64::new(0.1, 0.4, -0.2)).matrix(),
+                translation: Vec3F64::new(0.3, -0.1, 0.2),
+                info: l * l.transpose(),
+            };
+            let rot = SO3F64::exp(axis * angle).matrix() * prior.rotation;
+            let t = Vec3F64::new(-0.2, 0.05, 0.4);
+            let (e, _) = prior.error_and_jacobian(&rot, &t);
+            // the error is the left difference itself, sign included
+            let e_r = Vec3F64::new(e[0], e[1], e[2]);
+            assert!((e_r - axis * angle).length() < 1e-9, "{angle}: {e_r:?}");
+
+            let (mut a, mut b) = (Mat6F64::zeros(), Vec6F64::zeros());
+            prior.add_to(&rot, &t, &mut a, &mut b);
+            let error_at = |xi: &Vec6F64| {
+                let d = SO3F64::exp(Vec3F64::new(xi[0], xi[1], xi[2])).matrix();
+                let dt = Vec3F64::new(xi[3], xi[4], xi[5]);
+                prior.error_and_jacobian(&(d * rot), &(d * t + dt)).0
+            };
+            let h = 1e-6;
+            let mut jac = Mat6F64::zeros();
+            for k in 0..6 {
+                let mut xi = Vec6F64::zeros();
+                xi[k] = h;
+                let plus = error_at(&xi);
+                xi[k] = -h;
+                jac.set_column(k, &((plus - error_at(&xi)) / (2.0 * h)));
+            }
+            let a_fd = jac.transpose() * prior.info * jac;
+            let b_fd = jac.transpose() * prior.info * e;
+            assert!((a - a_fd).amax() < 1e-6 * a.amax(), "{angle}: A off");
+            assert!((b - b_fd).amax() < 1e-6 * b.amax(), "{angle}: b off");
+        }
+    }
+
+    /// Bad sigmas and non-rotations in a rotation prior are errors, not weights.
+    #[test]
+    fn invalid_rotation_prior_is_an_error() -> Result<(), Box<dyn std::error::Error>> {
+        let pyr = pyramid(
+            &Scene::corner_and_sphere(),
+            &Mat3F64::IDENTITY,
+            &Vec3F64::ZERO,
+        )?;
+        let with = |rotation: Mat3F64, sigma_rad: f64| IcpPlaneCriteria {
+            rotation_prior: Some(RotationPrior {
+                rotation,
+                sigma_rad,
+            }),
+            ..Default::default()
+        };
+        let id = Mat3F64::IDENTITY;
+        let mut nan = id;
+        nan.x_axis.y = f64::NAN;
+        let reflection = Mat3F64::from_diagonal(Vec3F64::new(1.0, 1.0, -1.0));
+        let cases = [
+            (with(id, 0.0), "rotation_prior.sigma_rad"),
+            (with(id, -1e-3), "rotation_prior.sigma_rad"),
+            (with(id, f64::NAN), "rotation_prior.sigma_rad"),
+            (with(id, f64::INFINITY), "rotation_prior.sigma_rad"),
+            // positive, but 1 / sigma^2 overflows
+            (with(id, 1e-200), "rotation_prior.sigma_rad"),
+            (with(nan, 1e-3), "rotation_prior.rotation"),
+            (
+                with(Mat3F64::from_diagonal(Vec3F64::new(2.0, 2.0, 2.0)), 1e-3),
+                "rotation_prior.rotation",
+            ),
+            (with(reflection, 1e-3), "rotation_prior.rotation"),
+        ];
+        for (c, expected) in &cases {
+            let result = icp_from_identity(&pyr, &pyr, c);
+            assert!(
+                matches!(result, Err(RgbdIcpError::InvalidCriteria { field, .. }) if field == *expected),
+                "{c:?}: {result:?}"
+            );
+        }
+        // a rotation rounded through f32 is still a rotation
+        let rounded = SO3F64::exp(Vec3F64::new(0.3, -0.2, 0.1))
+            .matrix()
+            .as_mat3()
+            .as_dmat3();
+        icp_from_identity(&pyr, &pyr, &with(rounded.into(), 1e-3))?;
+        Ok(())
+    }
+
+    /// A wall with a sphere centred on the optical axis in front of it: both are invariant
+    /// under roll, so rotation about the viewing axis is unobserved, while the sphere's normals
+    /// pin all three translations.
+    fn roll_blind_scene() -> Scene {
+        Scene {
+            planes: vec![Plane {
+                normal: Vec3F64::new(0.0, 0.0, 1.0),
+                d: 2.5,
+            }],
+            spheres: vec![Sphere {
+                center: Vec3F64::new(0.0, 0.0, 1.8),
+                radius: 0.55,
+            }],
+        }
+    }
+
+    /// A rotation prior must not flatter the figures it is reported alongside.
+    ///
+    /// The prior carries the roll the geometry cannot see, but the conditioning, the
+    /// observability, the degenerate directions and the information must still describe the
+    /// data alone: the same as a prior-free final pass at the returned pose. Blocks coupled
+    /// through elimination would otherwise let a rotation prior lift the translation pivots too,
+    /// and silently disarm a gate on unobservable geometry.
+    #[test]
+    fn rotation_prior_does_not_inflate_reported_conditioning(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let scene = roll_blind_scene();
+        let roll = SO3F64::exp(Vec3F64::new(0.0, 0.0, 3f64.to_radians())).matrix();
+        let t_wc = Vec3F64::new(0.01, 0.0, 0.0);
+        let src = pyramid(&scene, &Mat3F64::IDENTITY, &Vec3F64::ZERO)?;
+        let tgt = pyramid(&scene, &roll, &t_wc)?;
+        let rot_gt = roll.transpose();
+        let criteria = IcpPlaneCriteria {
+            rotation_prior: Some(RotationPrior {
+                rotation: rot_gt,
+                sigma_rad: 0.1f64.to_radians(),
+            }),
+            ..Default::default()
+        };
+        let (gates, _) = check_criteria(&criteria)?;
+        let (s0, t0) = (&src.levels[0], &tgt.levels[0]);
+        // each kernel against a prior-free pass of the same kernel, so the comparison is exact
+        for kernel in [IcpKernel::Scalar, IcpKernel::Simd] {
+            let (r, t) = (Mat3F64::IDENTITY, Vec3F64::ZERO);
+            let mut ws = IcpWorkspace::new(kernel);
+            let with = icp_projective_plane_with(&mut ws, &src, &tgt, &r, &t, &criteria)?;
+            // the prior did carry the roll
+            assert!(rotation_error_deg(&with.rotation, &rot_gt) < 0.1);
+            assert!(
+                with.rotation_conditioning < 1e-3 && with.observability < 1e-3,
+                "{kernel:?}: prior inflated the reported conditioning: {with:?}"
+            );
+
+            // the figures equal a prior-free pass at the returned pose
+            let (rot, t) = (&with.rotation, &with.translation);
+            let eqs = match kernel {
+                IcpKernel::Scalar => accumulate_level(s0, t0, rot, t, &gates, None),
+                _ => {
+                    let mut soa = simd::SourceSoa::default();
+                    soa.fill(s0, &gates.depth_noise);
+                    simd::accumulate(&soa, s0, t0, rot, t, &gates, None)
+                }
+            };
+            let split = split_degenerate(&eqs.a, with.median_depth_m, criteria.degeneracy_rtol)?;
+            assert_eq!(split.num_degenerate, with.num_degenerate);
+            assert_eq!(with.information, split.observed(&eqs.a));
+            let (rot_cond, trans_cond) = block_conditioning(&eqs.a);
+            assert_eq!(
+                (with.rotation_conditioning, with.translation_conditioning),
+                (rot_cond, trans_cond)
+            );
+        }
+        Ok(())
+    }
+
+    /// The rotation prior must rescue weak geometry without harming good geometry, from a prior
+    /// that is itself wrong: a real gyro carries bias, noise and a camera misalignment, and a
+    /// prior fed the exact answer would prove nothing.
+    #[test]
+    fn rotation_prior_rescues_weak_geometry_without_harming_good(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let roll = SO3F64::exp(Vec3F64::new(0.0, 0.0, 3f64.to_radians())).matrix();
+        let t_wc = Vec3F64::new(0.01, 0.0, 0.0);
+        // 0.15 deg off about an oblique axis, well beyond a MEMS gyro over one frame
+        let prior_err = 0.15f64.to_radians();
+        let tilt = Vec3F64::new(0.3, 0.6, 0.74).normalize() * prior_err;
+        let prior_rot = (SO3F64::exp(tilt).matrix() * roll).transpose();
+        let rot_gt = roll.transpose();
+        let mut errors = Vec::new();
+        for scene in [roll_blind_scene(), Scene::corner_and_sphere()] {
+            let src = pyramid(&scene, &Mat3F64::IDENTITY, &Vec3F64::ZERO)?;
+            let tgt = pyramid(&scene, &roll, &t_wc)?;
+            let solve = |rotation_prior| -> Result<f64, RgbdIcpError> {
+                let c = IcpPlaneCriteria {
+                    rotation_prior,
+                    ..Default::default()
+                };
+                let r = icp_from_identity(&src, &tgt, &c)?;
+                Ok(rotation_error_deg(&r.rotation, &rot_gt))
+            };
+            let prior = RotationPrior {
+                rotation: prior_rot,
+                sigma_rad: prior_err,
+            };
+            errors.push((solve(None)?, solve(Some(prior))?));
+        }
+        let ((weak_without, weak_with), (rich_without, rich_with)) = (errors[0], errors[1]);
+        // weak: without the prior the roll gets no update and stays 3 deg off; with it, the
+        // answer lands near the prior's own accuracy
+        assert!(
+            weak_without > 2.5 && weak_with < 0.3,
+            "weak: {weak_without:.3} deg without, {weak_with:.3} with"
+        );
+        // rich: the data outvote the wrong prior
+        assert!(
+            rich_with < rich_without.max(0.05) * 3.0,
+            "rich: {rich_without:.4} deg without, {rich_with:.4} with"
+        );
+        Ok(())
+    }
+
+    /// A wall gives exactly its three blind directions zero information, and the solve takes
+    /// the pose prior along them instead of leaving them where they started.
+    #[test]
+    fn wall_takes_prior_along_its_null_space() -> Result<(), Box<dyn std::error::Error>> {
+        let wall = Scene {
+            planes: vec![Plane {
+                normal: Vec3F64::new(0.0, 0.0, 1.0),
+                d: 2.0,
+            }],
+            spheres: vec![],
+        };
+        // roll and in-plane slide are invisible, the approach along z is not
+        let rot_wc = SO3F64::exp(Vec3F64::new(0.0, 0.0, 1f64.to_radians())).matrix();
+        let t_wc = Vec3F64::new(0.02, -0.01, 0.005);
+        let rot_gt = rot_wc.transpose();
+        let t_gt = -(rot_gt * t_wc);
+        let src = pyramid(&wall, &Mat3F64::IDENTITY, &Vec3F64::ZERO)?;
+        let tgt = pyramid(&wall, &rot_wc, &t_wc)?;
+
+        let check_null_space = |r: &IcpPlaneResult| {
+            assert_eq!(r.num_degenerate, 3, "wall must have three blind directions");
+            let dirs = &r.degenerate_directions;
+            for d in &dirs[..3] {
+                // only rotation about the normal and in-plane translation
+                assert!(d[0].abs() + d[1].abs() + d[5].abs() < 1e-6, "{d:?}");
+                let info = d.dot(&(r.information * d)) / r.information.amax();
+                assert!(info.abs() < 1e-12, "information along {d:?}: {info:.3e}");
+            }
+            let basis = Mat3F64::from_cols(
+                Vec3F64::new(dirs[0][2], dirs[0][3], dirs[0][4]),
+                Vec3F64::new(dirs[1][2], dirs[1][3], dirs[1][4]),
+                Vec3F64::new(dirs[2][2], dirs[2][3], dirs[2][4]),
+            );
+            let det = basis.determinant();
+            assert!(
+                det.abs() > 0.5,
+                "directions do not span w_z, v_x, v_y: {det}"
+            );
+            assert!(r.information[(5, 5)] > 0.0, "v_z is observed");
+        };
+
+        // no prior: the blind directions get no update at all, the observed one is solved
+        let bare = icp_from_identity(&src, &tgt, &IcpPlaneCriteria::default())?;
+        check_null_space(&bare);
+        assert!(bare.translation.x.abs() < 1e-6 && bare.translation.y.abs() < 1e-6);
+        assert!(SO3F64::from_matrix(&bare.rotation).log().z.abs() < 1e-6);
+        assert!((bare.translation.z - t_gt.z).abs() < 1e-4, "{bare:?}");
+
+        // a prior 3 mm off along x: the blind directions follow it, z still follows the data
+        let prior_t = t_gt + Vec3F64::new(0.003, 0.0, 0.004);
+        let (var_r, var_t) = (0.2f64.to_radians().powi(2), 0.01f64.powi(2));
+        let diag = Vec6F64::new(var_r, var_r, var_r, var_t, var_t, var_t);
+        let criteria = IcpPlaneCriteria {
+            pose_prior: Some(PosePrior {
+                rotation: rot_gt,
+                translation: prior_t,
+                covariance: Mat6F64::from_diagonal(&diag),
+            }),
+            ..Default::default()
+        };
+        let with = icp_from_identity(&src, &tgt, &criteria)?;
+        check_null_space(&with);
+        let e = tangent_error(&with.rotation, &with.translation, &rot_gt, &prior_t);
+        assert!(e[3].abs() < 1e-5 && e[4].abs() < 1e-5, "slide: {e:?}");
+        assert!(e[2].abs() < 1e-5, "roll: {e:?}");
+        // the prior is 4 mm off along the observed z too: the data must win there
+        let dz = with.translation.z - t_gt.z;
+        assert!(dz.abs() < 2e-4, "z follows the 4 mm-off prior: {dz}");
+        Ok(())
+    }
+
+    /// A rotation prior is a pose prior with no translation information: the same weighted
+    /// rows, so the same answer.
+    #[test]
+    fn rotation_prior_equals_pose_prior_without_translation(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let scene = roll_blind_scene();
+        let roll = SO3F64::exp(Vec3F64::new(0.0, 0.0, 3f64.to_radians())).matrix();
+        let src = pyramid(&scene, &Mat3F64::IDENTITY, &Vec3F64::ZERO)?;
+        let tgt = pyramid(&scene, &roll, &Vec3F64::new(0.01, 0.0, 0.0))?;
+        let rot_gt = roll.transpose();
+        let sigma = 0.1f64.to_radians();
+        let a = icp_from_identity(
+            &src,
+            &tgt,
+            &IcpPlaneCriteria {
+                rotation_prior: Some(RotationPrior {
+                    rotation: rot_gt,
+                    sigma_rad: sigma,
+                }),
+                ..Default::default()
+            },
+        )?;
+        // translation variance (1 km)^2: its information is negligible, not zero
+        let diag = Vec6F64::new(sigma * sigma, sigma * sigma, sigma * sigma, 1e6, 1e6, 1e6);
+        let b = icp_from_identity(
+            &src,
+            &tgt,
+            &IcpPlaneCriteria {
+                pose_prior: Some(PosePrior {
+                    rotation: rot_gt,
+                    // irrelevant at that variance
+                    translation: Vec3F64::new(5.0, -3.0, 1.0),
+                    covariance: Mat6F64::from_diagonal(&diag),
+                }),
+                ..Default::default()
+            },
+        )?;
+        assert!(rotation_error_deg(&a.rotation, &b.rotation) < 1e-4);
+        assert!((a.translation - b.translation).length() < 1e-6);
+        // and the prior never shows in the reported conditioning
+        assert!(a.rotation_conditioning < 1e-3 && b.rotation_conditioning < 1e-3);
+        Ok(())
+    }
+
+    /// Bad rotations, translations and covariances in a pose prior are errors, not weights;
+    /// both priors at once are not.
+    #[test]
+    fn invalid_pose_prior_is_an_error() -> Result<(), Box<dyn std::error::Error>> {
+        let pyr = pyramid(
+            &Scene::corner_and_sphere(),
+            &Mat3F64::IDENTITY,
+            &Vec3F64::ZERO,
+        )?;
+        let with =
+            |rotation: Mat3F64, translation: Vec3F64, covariance: Mat6F64| IcpPlaneCriteria {
+                pose_prior: Some(PosePrior {
+                    rotation,
+                    translation,
+                    covariance,
+                }),
+                ..Default::default()
+            };
+        let (id, zero) = (Mat3F64::IDENTITY, Vec3F64::ZERO);
+        let cov = Mat6F64::from_diagonal(&Vec6F64::from_element(1e-4));
+        let edit = |i: usize, k: usize, v: f64| {
+            let mut c = cov;
+            c[(i, k)] = v;
+            c
+        };
+        let reflection = Mat3F64::from_diagonal(Vec3F64::new(1.0, 1.0, -1.0));
+        let cases = [
+            (with(reflection, zero, cov), "pose_prior.rotation"),
+            (
+                with(id, Vec3F64::new(0.0, f64::NAN, 0.0), cov),
+                "pose_prior.translation",
+            ),
+            (
+                with(id, Vec3F64::new(f64::INFINITY, 0.0, 0.0), cov),
+                "pose_prior.translation",
+            ),
+            (
+                with(id, zero, edit(2, 2, f64::NAN)),
+                "pose_prior.covariance",
+            ),
+            (with(id, zero, edit(0, 4, 1e-5)), "pose_prior.covariance"),
+            (with(id, zero, edit(0, 0, -1e-4)), "pose_prior.covariance"),
+            (with(id, zero, edit(5, 5, 0.0)), "pose_prior.covariance"),
+            (with(id, zero, Mat6F64::zeros()), "pose_prior.covariance"),
+            // positive definite, but the inverse overflows
+            (with(id, zero, edit(3, 3, 1e-320)), "pose_prior.covariance"),
+        ];
+        for (c, expected) in &cases {
+            let result = icp_from_identity(&pyr, &pyr, c);
+            assert!(
+                matches!(result, Err(RgbdIcpError::InvalidCriteria { field, .. }) if field == *expected),
+                "{c:?}: {result:?}"
+            );
+        }
+        // coupled, symmetric and positive definite passes, with a rotation prior beside it
+        let mut coupled = edit(0, 4, 2e-5);
+        coupled[(4, 0)] = 2e-5;
+        let mut both = with(id, zero, coupled);
+        both.rotation_prior = Some(RotationPrior {
+            rotation: id,
+            sigma_rad: 1e-3,
+        });
+        let r = icp_from_identity(&pyr, &pyr, &both)?;
+        assert!(rotation_error_deg(&r.rotation, &id) < 1e-6 && r.translation.length() < 1e-9);
+        Ok(())
+    }
+
+    /// Every field of two results, compared bit for bit.
+    fn assert_bit_identical(a: &IcpPlaneResult, b: &IcpPlaneResult) {
+        let bits = |r: &IcpPlaneResult| {
+            let mut v: Vec<u64> = r.rotation.to_cols_array().map(f64::to_bits).to_vec();
+            v.extend(r.translation.to_array().map(f64::to_bits));
+            v.extend(r.information.iter().map(|x| x.to_bits()));
+            v.extend(
+                r.degenerate_directions
+                    .iter()
+                    .flatten()
+                    .map(|x| x.to_bits()),
+            );
+            let scalars = [
+                r.rmse,
+                r.inlier_fraction,
+                r.overlap_fraction,
+                r.rotation_conditioning,
+                r.translation_conditioning,
+                r.observability,
+                r.median_depth_m,
+            ];
+            v.extend(scalars.map(f64::to_bits));
+            let counts = [
+                r.iterations,
+                r.num_inliers,
+                r.num_associated,
+                r.num_degenerate,
+            ];
+            v.extend(counts.map(|c| c as u64));
+            v
+        };
+        assert_eq!(bits(a), bits(b));
+    }
+
+    /// A reused workspace carries nothing from one call to the next: each call equals a fresh
+    /// one, whichever frame came before it.
+    #[test]
+    fn workspace_matches_fresh_call() -> Result<(), Box<dyn std::error::Error>> {
+        let scene = Scene::corner_and_sphere();
+        let src = pyramid(&scene, &Mat3F64::IDENTITY, &Vec3F64::ZERO)?;
+        let rot_wc = SO3F64::exp(Vec3F64::new(0.015, -0.01, 0.02)).matrix();
+        let moved = pyramid(&scene, &rot_wc, &Vec3F64::new(0.02, -0.01, 0.015))?;
+        // Hybrid runs both samplers
+        let criteria = IcpPlaneCriteria {
+            association: Association::Hybrid,
+            ..Default::default()
+        };
+        let (r, t) = (Mat3F64::IDENTITY, Vec3F64::ZERO);
+        for kernel in [IcpKernel::Scalar, IcpKernel::Simd] {
+            let mut workspace = IcpWorkspace::new(kernel);
+            for tgt in [&moved, &src, &moved] {
+                let mut fresh_ws = IcpWorkspace::new(kernel);
+                let fresh = icp_projective_plane_with(&mut fresh_ws, &src, tgt, &r, &t, &criteria)?;
+                let reused =
+                    icp_projective_plane_with(&mut workspace, &src, tgt, &r, &t, &criteria)?;
+                assert_bit_identical(&fresh, &reused);
+            }
+        }
+        // the default workspace is the one `icp_projective_plane` runs
+        let plain = icp_from_identity(&src, &moved, &criteria)?;
+        let with = icp_projective_plane_with(
+            &mut IcpWorkspace::default(),
+            &src,
+            &moved,
+            &r,
+            &t,
+            &criteria,
+        )?;
+        assert_bit_identical(&plain, &with);
+        Ok(())
+    }
+
+    /// Largest `|a - b|` over the larger of `floor` and the largest `|a|`.
+    fn rel_diff(a: &[f64], b: &[f64], floor: f64) -> f64 {
+        let scale = a.iter().fold(floor, |m, x| m.max(x.abs()));
+        let diff = a
+            .iter()
+            .zip(b)
+            .fold(0.0f64, |m, (x, y)| m.max((x - y).abs()));
+        diff / scale
+    }
+
+    /// One SIMD pass gives the scalar pass's sums to `f32` rounding, both samplers, both noise
+    /// models, with and without sigma maps.
+    ///
+    /// 1e-5 relative: `f32` lanes round at ~6e-8 per operation over ~100 operations per row and
+    /// sum 128 rows per block, with no Gauss-Newton amplification in a single pass. Counts may
+    /// differ where an `f32` projection rounds to the neighbouring pixel. The pose is 1 cm and
+    /// 0.5 deg off the truth so that Huber downweights some rows.
+    #[test]
+    fn level_pass_matches_scalar() -> Result<(), Box<dyn std::error::Error>> {
+        let (camera, scene) = (test_camera(), Scene::corner_and_sphere());
+        let rot_wc = SO3F64::exp(Vec3F64::new(0.015, -0.01, 0.02)).matrix();
+        let t_wc = Vec3F64::new(0.02, -0.01, 0.015);
+        let ds = depth_m(&scene, &Mat3F64::IDENTITY, &Vec3F64::ZERO)?;
+        let dt = depth_m(&scene, &rot_wc, &t_wc)?;
+        let sig = |d: &Image<f32, 1>| {
+            let s = d.as_slice().iter();
+            Image::<f32, 1>::new(
+                d.size(),
+                s.map(|&z| 1.5 * TEST_STEREO.depth_sigma(z as f64) as f32)
+                    .collect(),
+            )
+        };
+        let plain = (
+            RgbdPyramid::from_depth_m(&ds, &camera, 1)?,
+            RgbdPyramid::from_depth_m(&dt, &camera, 1)?,
+        );
+        let mapped = (
+            RgbdPyramid::from_depth_m_with_sigma(&ds, &sig(&ds)?, &camera, 1)?,
+            RgbdPyramid::from_depth_m_with_sigma(&dt, &sig(&dt)?, &camera, 1)?,
+        );
+        let (rot_gt, t_gt) = (rot_wc.transpose(), -(rot_wc.transpose() * t_wc));
+        let dr = SO3F64::exp(Vec3F64::new(0.0, 0.5f64.to_radians(), 0.0)).matrix();
+        let (rot, t) = (dr * rot_gt, dr * t_gt + Vec3F64::new(0.01, 0.0, -0.005));
+
+        let mut worst: f64 = 0.0;
+        for (pair, has_map) in [(&plain, false), (&mapped, true)] {
+            let (s0, t0) = (&pair.0.levels[0], &pair.1.levels[0]);
+            for bilinear in [false, true] {
+                for noise in [GATES.depth_noise, TEST_STEREO] {
+                    let gates = PassGates {
+                        bilinear,
+                        depth_noise: noise,
+                        ..GATES
+                    };
+                    let mut soa = simd::SourceSoa::default();
+                    soa.fill(s0, &noise);
+                    let (mut da, mut db) = (Vec::new(), Vec::new());
+                    let a = accumulate_level(s0, t0, &rot, &t, &gates, Some(&mut da));
+                    let b = simd::accumulate(&soa, s0, t0, &rot, &t, &gates, Some(&mut db));
+                    let case = format!("bilinear {bilinear}, {noise:?}, sigma map {has_map}");
+
+                    // some rows past the Huber threshold, so the downweighting is compared too
+                    let mut huber_rows = 0;
+                    for_each_correspondence(s0, t0, &rot, &t, &gates, |c| {
+                        huber_rows += usize::from((c.r / c.sigma).abs() > gates.huber_delta);
+                    });
+                    assert!(huber_rows > 100, "{case}: {huber_rows} rows past Huber");
+
+                    assert_eq!(a.counts.num_valid, b.counts.num_valid, "{case}");
+                    let (na, nb) = (a.counts.num_associated, b.counts.num_associated);
+                    assert!(
+                        na.abs_diff(nb) * 1000 <= na,
+                        "{case}: associated {na} vs {nb}"
+                    );
+                    let (ia, ib) = (a.num_inliers, b.num_inliers);
+                    assert!(ia.abs_diff(ib) * 1000 <= ia, "{case}: inliers {ia} vs {ib}");
+
+                    let d = [
+                        rel_diff(a.a.as_slice(), b.a.as_slice(), 0.0),
+                        rel_diff(a.b.as_slice(), b.b.as_slice(), 0.0),
+                        rel_diff(&[a.sum_sq_residual], &[b.sum_sq_residual], 0.0),
+                        rel_diff(&[a.sum_depth_m], &[b.sum_depth_m], 0.0),
+                    ];
+                    let m = d.iter().fold(0.0f64, |m, v| m.max(*v));
+                    let ds = d.map(|x| format!("{x:.2e}"));
+                    eprintln!("{case}: inliers {ia} vs {ib}, relative differences {ds:?}");
+                    assert!(m < 1e-5, "{case}: passes differ by {d:?}");
+                    worst = worst.max(m);
+
+                    // one depth per inlier, and the median they serve agrees; equal counts can
+                    // still hold a different pixel where an f32 projection rounded across
+                    assert_eq!((da.len(), db.len()), (ia, ib), "{case}");
+                    let (ma, mb) = (median_depth_m(&mut da), median_depth_m(&mut db));
+                    assert!((ma - mb).abs() <= 1e-5 * ma, "{case}: median {ma} vs {mb}");
+                }
+            }
+        }
+        eprintln!("SIMD vs scalar pass: worst relative difference {worst:.2e}");
+        Ok(())
+    }
+
+    /// The SIMD kernel gives the scalar kernel's solve to `f32` rounding: pose and information
+    /// within 1e-4 relative, every association mode, both noise models, with and without a
+    /// prior.
+    ///
+    /// Looser than one pass (`level_pass_matches_scalar`, 1e-5): Gauss-Newton converges to a
+    /// fixed point whose sensitivity to the sums grows with the system's conditioning, and the
+    /// iteration count can differ by one where a step lands on the stopping tolerance. Both stay
+    /// as close to the truth.
+    #[test]
+    fn simd_kernel_matches_scalar() -> Result<(), Box<dyn std::error::Error>> {
+        let scene = Scene::corner_and_sphere();
+        let axis = Vec3F64::new(0.3, 1.0, 0.2).normalize();
+        let rot_wc = SO3F64::exp(axis * 1.5f64.to_radians()).matrix();
+        let t_wc = Vec3F64::new(0.02, -0.01, 0.015);
+        let src = pyramid(&scene, &Mat3F64::IDENTITY, &Vec3F64::ZERO)?;
+        let tgt = pyramid(&scene, &rot_wc, &t_wc)?;
+        let (rot_gt, t_gt) = (rot_wc.transpose(), -(rot_wc.transpose() * t_wc));
+        let mut worst: f64 = 0.0;
+        for association in [
+            Association::Nearest,
+            Association::Bilinear,
+            Association::Hybrid,
+        ] {
+            for noise in [DepthNoise::Constant { sigma_m: 0.01 }, TEST_STEREO] {
+                for prior in [false, true] {
+                    let criteria = IcpPlaneCriteria {
+                        association,
+                        depth_noise: noise,
+                        rotation_prior: prior.then_some(RotationPrior {
+                            rotation: rot_gt,
+                            sigma_rad: 0.2f64.to_radians(),
+                        }),
+                        ..Default::default()
+                    };
+                    let run = |kernel| {
+                        let (r, t) = (Mat3F64::IDENTITY, Vec3F64::ZERO);
+                        let mut ws = IcpWorkspace::new(kernel);
+                        icp_projective_plane_with(&mut ws, &src, &tgt, &r, &t, &criteria)
+                    };
+                    let (a, b) = (run(IcpKernel::Scalar)?, run(IcpKernel::Simd)?);
+                    let d = [
+                        rel_diff(
+                            &a.rotation.to_cols_array(),
+                            &b.rotation.to_cols_array(),
+                            1.0,
+                        ),
+                        rel_diff(&a.translation.to_array(), &b.translation.to_array(), 1e-2),
+                        rel_diff(a.information.as_slice(), b.information.as_slice(), 0.0),
+                        rel_diff(&[a.rmse], &[b.rmse], 0.0),
+                        rel_diff(&[a.median_depth_m], &[b.median_depth_m], 0.0),
+                    ];
+                    let m = d.iter().fold(0.0f64, |m, v| m.max(*v));
+                    let (na, nb) = (a.num_associated, b.num_associated);
+                    let ds = d.map(|x| format!("{x:.2e}"));
+                    eprintln!(
+                        "{association:?} {noise:?} prior {prior}: {ds:?}, associated {na} vs \
+                         {nb}, iterations {} vs {}",
+                        a.iterations, b.iterations
+                    );
+                    assert!(na.abs_diff(nb) * 1000 <= na, "associated {na} vs {nb}");
+                    assert!(m < 1e-4, "{association:?} {noise:?} prior {prior}: {d:?}");
+                    assert!((b.translation - t_gt).length() < 5e-3);
+                    worst = worst.max(m);
+                }
+            }
+        }
+        eprintln!("SIMD vs scalar ICP: worst relative difference {worst:.2e}");
         Ok(())
     }
 }

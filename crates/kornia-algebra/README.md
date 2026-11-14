@@ -16,6 +16,7 @@
 *   **Manifold Operations:** Exp/Log maps, adjoints, and tangent space operations.
 *   **Optimization Ready:** Analytical Jacobians for all group operations.
 *   **Linear Algebra:** Typed vectors and matrices (`Vec3F32`, `Mat4F32`) with SIMD acceleration (via `glam`).
+*   **Fixed-size f64 blocks:** `SMatF64<R, C>` / `SVecF64<N>` past 4x4 (`Mat6F64`, `Mat9F64`, `Mat15F64`), via `nalgebra`, for pose and IMU-state Jacobians and covariances.
 *   **Quaternions:** Robust unit quaternion support for 3D rotations.
 
 ## 📦 Installation
@@ -74,7 +75,7 @@ fn main() {
 *   **`vec`**: Vector types (`Vec2`, `Vec3`, `Vec4`, and dynamic `DVec`).
 *   **`mat`**: Matrix types (`Mat2`, `Mat3`, `Mat4`, and dynamic `DMat`).
 *   **`quat`**: Quaternion types.
-*   **`linalg`**: General linear algebra helpers.
+*   **`linalg`**: General linear algebra helpers (`svd3`, `cholesky`, and Umeyama rigid/similarity alignment including the outlier-robust `umeyama_f64_robust`).
 *   **`optim`**: Factor graph optimization module.
 *   **`param`**: Parameterization utilities.
 
