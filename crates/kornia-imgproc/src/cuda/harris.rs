@@ -79,6 +79,10 @@ fn get_kernel(ctx: &Arc<CudaContext>) -> Result<Arc<CudaKernel>, CudaHarrisError
 
 /// Launch the fused Harris kernel on device-resident f32 images.
 ///
+/// Matches [`crate::features::HarrisResponse`] (Harris and Stephens, "A Combined
+/// Corner and Edge Detector", 1988): 3x3 Sobel gradients scaled by 1/8, summed
+/// over a 3x3 window.
+///
 /// # Arguments
 ///
 /// * `ctx`, `stream` - Owning context and execution stream.
