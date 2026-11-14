@@ -120,6 +120,7 @@ pub enum VideoReaderError {
 mod tests {
     use super::{StreamCaptureError, VideoReaderError};
     use kornia_image::{Image, ImageError, ImageSize};
+    use std::error::Error as _;
 
     /// Builds a 2x2 RGB image; `?` converts an `ImageError` into a `StreamCaptureError`.
     fn image_from_bytes(data: Vec<u8>) -> Result<Image<u8, 3>, StreamCaptureError> {
@@ -130,6 +131,9 @@ mod tests {
         Ok(Image::<u8, 3>::new(size, data)?)
     }
 
+    // Exercises the From/Display/source() mechanics directly: `InvalidChannelShape` cannot be
+    // produced through the capture path, because `image_from_gst_buffer` rejects short buffers
+    // with `BufferSizeMismatch` (gstreamer/mod.rs:381) before building the image.
     #[test]
     fn image_error_reaches_video_reader_error_unchanged() -> Result<(), Box<dyn std::error::Error>>
     {
@@ -145,6 +149,8 @@ mod tests {
 
         let expected = ImageError::InvalidChannelShape(5, 12).to_string();
         assert_eq!(err.to_string(), expected);
+        // `transparent` forwards source() to the inner error, which has none: no extra chain link.
+        assert!(err.source().is_none());
 
         let reader_err = VideoReaderError::from(err);
         assert!(matches!(
@@ -152,6 +158,7 @@ mod tests {
             VideoReaderError::StreamCaptureError(StreamCaptureError::ImageError(_))
         ));
         assert_eq!(reader_err.to_string(), expected);
+        assert!(reader_err.source().is_none());
         Ok(())
     }
 }
