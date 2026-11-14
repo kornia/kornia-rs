@@ -17,6 +17,7 @@ use crate::registration::RgbdPyramid;
 
 type R = Result<(), Box<dyn std::error::Error>>;
 
+mod neon;
 mod pin_core;
 mod pin_integrate;
 mod pin_ray_mesh;

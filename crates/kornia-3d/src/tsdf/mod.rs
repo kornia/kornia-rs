@@ -49,6 +49,8 @@
 
 mod alloc;
 mod integrate;
+#[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
+mod integrate_neon;
 mod mesh;
 mod raycast;
 mod sensor;
@@ -513,10 +515,14 @@ pub enum PoolGrowth {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub enum TsdfKernel {
-    /// Portable scalar reference.
+    /// Portable scalar reference, single-threaded.
     Scalar,
-    /// SIMD where available (NEON on aarch64), scalar elsewhere; the same
-    /// bits as `Scalar`.
+    /// The voxel update of each observation runs one block per rayon task
+    /// (current pool), with NEON on aarch64 and the scalar code elsewhere;
+    /// the same bits as `Scalar`. Each observation pass enters the pool
+    /// once; from outside a pool, rayon's job injector allocates one small
+    /// block every 63 entries. Call from inside a rayon pool
+    /// (`ThreadPool::install`) for zero allocations.
     #[default]
     Simd,
 }
@@ -633,7 +639,7 @@ pub(crate) fn check_fp_env() -> Result<(), TsdfError> {
 
 #[cfg(target_arch = "aarch64")]
 #[allow(unsafe_code)]
-fn fp_env_is_default() -> bool {
+pub(crate) fn fp_env_is_default() -> bool {
     // FZ (24), RMode (22-23), AH (1), FIZ (0)
     const MASK: u64 = (1 << 24) | (0b11 << 22) | (1 << 1) | 1;
     let fpcr: u64;
@@ -646,7 +652,7 @@ fn fp_env_is_default() -> bool {
 
 #[cfg(target_arch = "x86_64")]
 #[allow(unsafe_code)]
-fn fp_env_is_default() -> bool {
+pub(crate) fn fp_env_is_default() -> bool {
     // FTZ (15), RC (13-14), DAZ (6)
     const MASK: u32 = (1 << 15) | (0b11 << 13) | (1 << 6);
     let mut csr = 0u32;
@@ -659,7 +665,7 @@ fn fp_env_is_default() -> bool {
 }
 
 #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
-fn fp_env_is_default() -> bool {
+pub(crate) fn fp_env_is_default() -> bool {
     true
 }
 

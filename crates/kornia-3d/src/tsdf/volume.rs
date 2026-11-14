@@ -163,6 +163,16 @@ impl Pools {
         self.weight.len() / self.voxels
     }
 
+    /// The voxels of page `page` (allocated).
+    pub(crate) fn page_mut(&mut self, page: u32) -> super::integrate::PageMut<'_> {
+        let r = page as usize * self.voxels..(page as usize + 1) * self.voxels;
+        super::integrate::PageMut {
+            tsdf: &mut self.tsdf[r.clone()],
+            weight: &mut self.weight[r.clone()],
+            rgbw: self.color.then(|| &mut self.rgbw[r]),
+        }
+    }
+
     /// Appends `m` zeroed pages (within capacity); returns the first.
     pub(crate) fn alloc(&mut self, m: usize) -> u32 {
         let first = self.pages();

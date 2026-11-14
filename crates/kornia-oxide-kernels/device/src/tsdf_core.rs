@@ -2,7 +2,8 @@
 //! GPU. The host lib loads this file through `#[path]` (edition 2021, stable,
 //! `no_std`); the device crate compiles it as `mod tsdf_core` (edition 2024,
 //! cuda-oxide). The op order is normative (kornia-3d TSDF contract): each
-//! `+ - * /` is one IEEE binary32 op, fma and sqrt come only from `F32Ops`.
+//! `+ - * /` is one IEEE binary32 op, fma and sqrt come only from `F32Ops`
+//! (one lane) or `LaneOps` (a SIMD register, same bits per lane).
 //!
 //! Rules for this file:
 //! - no `std`, no `alloc`, no `unsafe`, no nested file modules (the two
@@ -19,6 +20,8 @@
     clippy::needless_range_loop
 )]
 
+use core::ops::{Add, BitAnd, Div, Mul, Sub};
+
 /// Float ops the shared core cannot spell itself (stable `no_std` has no
 /// `f32::mul_add`/`sqrt`). Every impl must be correctly rounded.
 pub trait F32Ops {
@@ -34,6 +37,157 @@ pub fn floor_i32(x: f32) -> i32 {
     let t = x as i32;
     t - (((t as f32) > x) as i32)
 }
+
+// --------------------------------------------------------------- lanes ----
+
+/// A register of lanes with the contract's ops that need no fma or sqrt,
+/// lane by lane: IEEE `+ - * /`, ordered compares (false on NaN), selects,
+/// sign-bit `abs`/`neg`, exact int-to-float conversions. `f32` is the
+/// one-lane case (mask `bool`); a SIMD backend supplies a vector type with
+/// the same bits in every lane, so the per-voxel math below is written once.
+pub trait Lanes:
+    Copy + Add<Output = Self> + Sub<Output = Self> + Mul<Output = Self> + Div<Output = Self>
+{
+    /// Lane mask.
+    type M: Copy + BitAnd<Output = Self::M>;
+    /// `u32` lanes; callers keep sums in range.
+    type U: Copy + Add<Output = Self::U>;
+    /// `i32` lanes.
+    type I: Copy;
+    /// `x` in every lane.
+    fn splat(x: f32) -> Self;
+    /// `x` in every lane.
+    fn splat_u(x: u32) -> Self::U;
+    /// `a < b`.
+    fn lt(a: Self, b: Self) -> Self::M;
+    /// `a <= b`.
+    fn le(a: Self, b: Self) -> Self::M;
+    /// `a > b`.
+    fn gt(a: Self, b: Self) -> Self::M;
+    /// `a >= b`.
+    fn ge(a: Self, b: Self) -> Self::M;
+    /// `a > b` on `u32` lanes.
+    fn gt_u(a: Self::U, b: Self::U) -> Self::M;
+    /// `a` where `m` is set, else `b`.
+    fn select(m: Self::M, a: Self, b: Self) -> Self;
+    /// `a` where `m` is set, else `b`.
+    fn select_u(m: Self::M, a: Self::U, b: Self::U) -> Self::U;
+    /// Sign bit cleared.
+    fn abs(x: Self) -> Self;
+    /// Sign bit flipped.
+    fn neg(x: Self) -> Self;
+    /// `x as f32`, exact below `2^24`.
+    fn from_u32(x: Self::U) -> Self;
+    /// `x as f32`, exact for `|x| <= 2^24`.
+    fn from_i32(x: Self::I) -> Self;
+}
+
+impl Lanes for f32 {
+    type M = bool;
+    type U = u32;
+    type I = i32;
+
+    #[inline(always)]
+    fn splat(x: f32) -> f32 {
+        x
+    }
+
+    #[inline(always)]
+    fn splat_u(x: u32) -> u32 {
+        x
+    }
+
+    #[inline(always)]
+    fn lt(a: f32, b: f32) -> bool {
+        a < b
+    }
+
+    #[inline(always)]
+    fn le(a: f32, b: f32) -> bool {
+        a <= b
+    }
+
+    #[inline(always)]
+    fn gt(a: f32, b: f32) -> bool {
+        a > b
+    }
+
+    #[inline(always)]
+    fn ge(a: f32, b: f32) -> bool {
+        a >= b
+    }
+
+    #[inline(always)]
+    fn gt_u(a: u32, b: u32) -> bool {
+        a > b
+    }
+
+    #[inline(always)]
+    fn select(m: bool, a: f32, b: f32) -> f32 {
+        if m {
+            a
+        } else {
+            b
+        }
+    }
+
+    #[inline(always)]
+    fn select_u(m: bool, a: u32, b: u32) -> u32 {
+        if m {
+            a
+        } else {
+            b
+        }
+    }
+
+    #[inline(always)]
+    fn abs(x: f32) -> f32 {
+        f32::from_bits(x.to_bits() & 0x7fff_ffff)
+    }
+
+    #[inline(always)]
+    fn neg(x: f32) -> f32 {
+        -x
+    }
+
+    #[inline(always)]
+    fn from_u32(x: u32) -> f32 {
+        x as f32
+    }
+
+    #[inline(always)]
+    fn from_i32(x: i32) -> f32 {
+        x as f32
+    }
+}
+
+/// Correctly rounded fma and sqrt over the lanes `V`; every [`F32Ops`] is
+/// the one-lane case.
+pub trait LaneOps {
+    /// The lane register.
+    type V: Lanes;
+    /// `RN(a * b + c)` per lane, one rounding.
+    fn fma(a: Self::V, b: Self::V, c: Self::V) -> Self::V;
+    /// Correctly rounded square root per lane.
+    fn sqrt(x: Self::V) -> Self::V;
+}
+
+impl<O: F32Ops> LaneOps for O {
+    type V = f32;
+
+    #[inline(always)]
+    fn fma(a: f32, b: f32, c: f32) -> f32 {
+        O::fma(a, b, c)
+    }
+
+    #[inline(always)]
+    fn sqrt(x: f32) -> f32 {
+        O::sqrt(x)
+    }
+}
+
+/// Lane mask of [`LaneOps`] `O`.
+pub type Mask<O> = <<O as LaneOps>::V as Lanes>::M;
 
 // ---------------------------------------------------------------- grid ----
 
@@ -110,10 +264,18 @@ pub fn voxel_from_point(p: [f32; 3], inv_voxel: f32) -> Option<[i32; 3]> {
 #[inline(always)]
 pub fn voxel_centre<O: F32Ops>(g: [i32; 3], voxel_size: f32, half_voxel: f32) -> [f32; 3] {
     [
-        O::fma(g[0] as f32, voxel_size, half_voxel),
-        O::fma(g[1] as f32, voxel_size, half_voxel),
-        O::fma(g[2] as f32, voxel_size, half_voxel),
+        voxel_axis::<O>(g[0], voxel_size, half_voxel),
+        voxel_axis::<O>(g[1], voxel_size, half_voxel),
+        voxel_axis::<O>(g[2], voxel_size, half_voxel),
     ]
+}
+
+/// One centre coordinate of voxel coordinates `g`:
+/// `fma(g, voxel_size, half_voxel)`.
+#[inline(always)]
+pub fn voxel_axis<O: LaneOps>(g: <O::V as Lanes>::I, voxel_size: f32, half_voxel: f32) -> O::V {
+    let s = O::V::splat;
+    O::fma(O::V::from_i32(g), s(voxel_size), s(half_voxel))
 }
 
 /// In-block index `lx + B * (ly + B * lz)` of local coordinates.
@@ -137,11 +299,30 @@ pub struct Rigid {
 /// `R * p + t`; x (the fastest voxel index) is the outermost fma, so a
 /// hoisted per-row partial gives the same bits.
 #[inline(always)]
-pub fn xform<O: F32Ops>(r: &[f32; 9], t: &[f32; 3], p: [f32; 3]) -> [f32; 3] {
+pub fn xform<O: LaneOps>(r: &[f32; 9], t: &[f32; 3], p: [O::V; 3]) -> [O::V; 3] {
+    xform_x::<O>(r, xform_yz::<O>(r, t, p[1], p[2]), p[0])
+}
+
+/// The inner part of [`xform`] per row, `fma(r[3i+1], p1, fma(r[3i+2], p2,
+/// t[i]))`: constant along a voxel x-row, so callers may hoist it.
+#[inline(always)]
+pub fn xform_yz<O: LaneOps>(r: &[f32; 9], t: &[f32; 3], p1: O::V, p2: O::V) -> [O::V; 3] {
+    let s = O::V::splat;
     [
-        O::fma(r[0], p[0], O::fma(r[1], p[1], O::fma(r[2], p[2], t[0]))),
-        O::fma(r[3], p[0], O::fma(r[4], p[1], O::fma(r[5], p[2], t[1]))),
-        O::fma(r[6], p[0], O::fma(r[7], p[1], O::fma(r[8], p[2], t[2]))),
+        O::fma(s(r[1]), p1, O::fma(s(r[2]), p2, s(t[0]))),
+        O::fma(s(r[4]), p1, O::fma(s(r[5]), p2, s(t[1]))),
+        O::fma(s(r[7]), p1, O::fma(s(r[8]), p2, s(t[2]))),
+    ]
+}
+
+/// Finishes [`xform`] from its inner part `a`: `fma(r[3i], p0, a[i])`.
+#[inline(always)]
+pub fn xform_x<O: LaneOps>(r: &[f32; 9], a: [O::V; 3], p0: O::V) -> [O::V; 3] {
+    let s = O::V::splat;
+    [
+        O::fma(s(r[0]), p0, a[0]),
+        O::fma(s(r[3]), p0, a[1]),
+        O::fma(s(r[6]), p0, a[2]),
     ]
 }
 
@@ -157,7 +338,7 @@ pub fn rot<O: F32Ops>(r: &[f32; 9], v: [f32; 3]) -> [f32; 3] {
 
 /// Squared length, `fma(x, x, fma(y, y, z * z))`.
 #[inline(always)]
-pub fn norm2<O: F32Ops>(v: [f32; 3]) -> f32 {
+pub fn norm2<O: LaneOps>(v: [O::V; 3]) -> O::V {
     O::fma(v[0], v[0], O::fma(v[1], v[1], v[2] * v[2]))
 }
 
@@ -255,20 +436,38 @@ pub struct PinholeParams {
 /// the pixel rule `floor(coord + 0.5)` inside the image.
 #[inline(always)]
 pub fn pinhole_pixel<O: F32Ops>(p: &PinholeParams, s: [f32; 3]) -> Option<u32> {
-    if !(s[2] >= p.range_min) {
+    let (ok, uh, vh) = pinhole_coords::<O>(p, s);
+    if !ok {
         return None;
     }
-    let iz = 1.0 / s[2];
-    let u = O::fma(p.fx, s[0] * iz, p.cx);
-    let v = O::fma(p.fy, s[1] * iz, p.cy);
-    let uh = u + 0.5;
-    let vh = v + 0.5;
-    if !(uh >= 0.0 && uh < p.width_f && vh >= 0.0 && vh < p.height_f) {
-        return None;
-    }
-    // trunc == floor for non-negative, range-checked values
+    Some(pinhole_index(p, uh, vh))
+}
+
+/// The gates and `coord + 0.5` of sensor-frame points `s`: the mask of
+/// `z >= range_min` and inside the image, and `(uh, vh)`. Lanes failing
+/// cheirality divide `1 / 1`, never by their own `z`.
+#[inline(always)]
+pub fn pinhole_coords<O: LaneOps>(p: &PinholeParams, s: [O::V; 3]) -> (Mask<O>, O::V, O::V) {
+    let f = O::V::splat;
+    let ok = O::V::ge(s[2], f(p.range_min));
+    let iz = f(1.0) / O::V::select(ok, s[2], f(1.0));
+    let u = O::fma(f(p.fx), s[0] * iz, f(p.cx));
+    let v = O::fma(f(p.fy), s[1] * iz, f(p.cy));
+    let uh = u + f(0.5);
+    let vh = v + f(0.5);
+    let inside = O::V::ge(uh, f(0.0))
+        & O::V::lt(uh, f(p.width_f))
+        & O::V::ge(vh, f(0.0))
+        & O::V::lt(vh, f(p.height_f));
+    (ok & inside, uh, vh)
+}
+
+/// Pixel index of gated `(uh, vh)`: trunc == floor for these non-negative,
+/// range-checked values.
+#[inline(always)]
+pub fn pinhole_index(p: &PinholeParams, uh: f32, vh: f32) -> u32 {
     let (px, py) = (uh as i32, vh as i32);
-    Some((py as u32) * p.width + (px as u32))
+    (py as u32) * p.width + (px as u32)
 }
 
 /// Projective signed distance `d - z` of the voxel centre `c` (volume frame)
@@ -280,9 +479,26 @@ pub fn pinhole_sdf<O: F32Ops, D: RawDepth>(
     c: [f32; 3],
 ) -> Option<(f32, u32)> {
     let s = xform::<O>(&p.sensor_from_volume.r, &p.sensor_from_volume.t, c);
-    let idx = pinhole_pixel::<O>(p, s)?;
+    let (ok, uh, vh) = pinhole_coords::<O>(p, s);
+    if !ok {
+        return None;
+    }
+    pinhole_sample(p, depth, uh, vh, s[2])
+}
+
+/// The depth sample of a gated point (`uh`, `vh` from [`pinhole_coords`],
+/// camera z `z`): `(d - z, pixel index)`, `None` without a kept sample.
+#[inline(always)]
+pub fn pinhole_sample<D: RawDepth>(
+    p: &PinholeParams,
+    depth: &[D],
+    uh: f32,
+    vh: f32,
+    z: f32,
+) -> Option<(f32, u32)> {
+    let idx = pinhole_index(p, uh, vh);
     let d = depth[idx as usize].metres(p.mpu, p.range_min, p.range_max)?;
-    Some((d - s[2], idx))
+    Some((d - z, idx))
 }
 
 /// Sensor-frame point of pixel `(px, py)` at depth `d`.
@@ -359,33 +575,27 @@ pub const PI: f32 = f32::from_bits(0x4049_0fdb);
 /// `t + t^3 Q(t^2)` (minimax, degree 15). `(±0, x < 0)` gives `+pi`,
 /// `(0, 0)` gives `0`.
 #[inline(always)]
-pub fn atan2_det<O: F32Ops>(y: f32, x: f32) -> f32 {
-    let ax = f32::from_bits(x.to_bits() & 0x7fff_ffff);
-    let ay = f32::from_bits(y.to_bits() & 0x7fff_ffff);
-    let swap = ay > ax;
-    let mx = if swap { ay } else { ax };
-    let mn = if swap { ax } else { ay };
-    let den = if mx > 0.0 { mx } else { 1.0 };
+pub fn atan2_det<O: LaneOps>(y: O::V, x: O::V) -> O::V {
+    let f = O::V::splat;
+    let ax = O::V::abs(x);
+    let ay = O::V::abs(y);
+    let swap = O::V::gt(ay, ax);
+    let mx = O::V::select(swap, ay, ax);
+    let mn = O::V::select(swap, ax, ay);
+    let den = O::V::select(O::V::gt(mx, f(0.0)), mx, f(1.0));
     let t = mn / den;
     let s = t * t;
-    let mut q = ATAN_C7;
-    q = O::fma(q, s, ATAN_C6);
-    q = O::fma(q, s, ATAN_C5);
-    q = O::fma(q, s, ATAN_C4);
-    q = O::fma(q, s, ATAN_C3);
-    q = O::fma(q, s, ATAN_C2);
-    q = O::fma(q, s, ATAN_C1);
-    let mut r = O::fma(t * s, q, t);
-    if swap {
-        r = HALF_PI - r;
-    }
-    if x < 0.0 {
-        r = PI - r;
-    }
-    if y < 0.0 {
-        r = -r;
-    }
-    r
+    let mut q = f(ATAN_C7);
+    q = O::fma(q, s, f(ATAN_C6));
+    q = O::fma(q, s, f(ATAN_C5));
+    q = O::fma(q, s, f(ATAN_C4));
+    q = O::fma(q, s, f(ATAN_C3));
+    q = O::fma(q, s, f(ATAN_C2));
+    q = O::fma(q, s, f(ATAN_C1));
+    let r = O::fma(t * s, q, t);
+    let r = O::V::select(swap, f(HALF_PI) - r, r);
+    let r = O::V::select(O::V::lt(x, f(0.0)), f(PI) - r, r);
+    O::V::select(O::V::lt(y, f(0.0)), O::V::neg(r), r)
 }
 
 /// Range and range-image index of sensor-frame point `s`: range gate, then
@@ -397,23 +607,52 @@ pub fn spherical_pixel<O: F32Ops>(
     bnd: &[f32],
     s: [f32; 3],
 ) -> Option<(f32, u32)> {
+    let c = spherical_coords::<O>(p, s);
+    if !c.ok {
+        return None;
+    }
+    Some((c.r, spherical_index(p, bnd, c.sz, c.uh)?))
+}
+
+/// The float part of the spherical projection of sensor-frame points.
+#[derive(Debug, Clone, Copy)]
+pub struct SphericalCoords<V: Lanes> {
+    /// Range, field-of-view and column-domain gates.
+    pub ok: V::M,
+    /// Range `|s|`.
+    pub r: V,
+    /// `z / r`, the beam-row coordinate.
+    pub sz: V,
+    /// Column coordinate plus `0.5` (column = floor).
+    pub uh: V,
+}
+
+/// Range, `z / r` and column coordinate of sensor-frame points `s`, with
+/// their gates. The range gate comes before any division or `atan2_det`:
+/// lanes failing it divide by `1` and take `atan2_det(0, 1)`.
+#[inline(always)]
+pub fn spherical_coords<O: LaneOps>(p: &SphericalParams, s: [O::V; 3]) -> SphericalCoords<O::V> {
+    let f = O::V::splat;
     let r = O::sqrt(norm2::<O>(s));
-    // range gate before any division or atan2_det
-    if !(r >= p.range_min) {
-        return None;
-    }
-    let sz = s[2] / r;
-    if !(p.fov_low <= sz && sz < p.fov_high) {
-        return None;
-    }
+    let ok = O::V::ge(r, f(p.range_min));
+    let sz = s[2] / O::V::select(ok, r, f(1.0));
+    let ok = ok & O::V::le(f(p.fov_low), sz) & O::V::lt(sz, f(p.fov_high));
+    let phi = atan2_det::<O>(
+        O::V::select(ok, s[1], f(0.0)),
+        O::V::select(ok, s[0], f(1.0)),
+    );
+    let u = O::fma(phi, f(p.inv_az_step), f(p.az_offset));
+    let uh = u + f(0.5);
+    let ok = ok & O::V::ge(uh, f(-16_777_216.0)) & O::V::lt(uh, f(16_777_216.0));
+    SphericalCoords { ok, r, sz, uh }
+}
+
+/// Range-image index of gated `(sz, uh)`: the beam row by `count_le` over
+/// `bnd`, the column by `floor_i32` and the wrap or column gate.
+#[inline(always)]
+pub fn spherical_index(p: &SphericalParams, bnd: &[f32], sz: f32, uh: f32) -> Option<u32> {
     let k = count_le(bnd, sz);
     let row = (p.height - 1) - k;
-    let phi = atan2_det::<O>(s[1], s[0]);
-    let u = O::fma(phi, p.inv_az_step, p.az_offset);
-    let uh = u + 0.5;
-    if !(uh >= -16_777_216.0 && uh < 16_777_216.0) {
-        return None;
-    }
     let ci = floor_i32(uh);
     let w = p.width as i32;
     let col = if p.wrap != 0 {
@@ -423,7 +662,7 @@ pub fn spherical_pixel<O: F32Ops>(
     } else {
         return None;
     };
-    Some((r, row * p.width + col as u32))
+    Some(row * p.width + col as u32)
 }
 
 /// Range-space signed distance `rho - |s|` of voxel centre `c` and its
@@ -436,7 +675,25 @@ pub fn spherical_sdf<O: F32Ops, D: RawDepth>(
     c: [f32; 3],
 ) -> Option<(f32, u32)> {
     let s = xform::<O>(&p.sensor_from_volume.r, &p.sensor_from_volume.t, c);
-    let (r, idx) = spherical_pixel::<O>(p, bnd, s)?;
+    let sc = spherical_coords::<O>(p, s);
+    if !sc.ok {
+        return None;
+    }
+    spherical_sample(p, bnd, range, sc.r, sc.sz, sc.uh)
+}
+
+/// The range sample of a gated point (`r`, `sz`, `uh` from
+/// [`spherical_coords`]): `(rho - r, index)`, `None` without a kept sample.
+#[inline(always)]
+pub fn spherical_sample<D: RawDepth>(
+    p: &SphericalParams,
+    bnd: &[f32],
+    range: &[D],
+    r: f32,
+    sz: f32,
+    uh: f32,
+) -> Option<(f32, u32)> {
+    let idx = spherical_index(p, bnd, sz, uh)?;
     let rho = range[idx as usize].metres(p.mpu, p.range_min, p.range_max)?;
     Some((rho - r, idx))
 }
@@ -473,32 +730,47 @@ pub fn touch_box(pv: [f32; 3], g: &Grid) -> Option<([i32; 3], [i32; 3])> {
 /// (`sdf < -trunc`) or NaN. Free space (`sdf >= trunc`) is exactly `1.0`.
 #[inline(always)]
 pub fn truncate(sdf: f32, trunc: f32, inv_trunc: f32) -> Option<f32> {
-    if !(sdf >= -trunc) {
-        return None;
-    }
-    let x = if sdf < trunc { sdf * inv_trunc } else { 1.0 };
-    Some(if x > 1.0 {
-        1.0
-    } else if x < -1.0 {
-        -1.0
+    let (ok, x) = truncate_lanes::<f32>(sdf, trunc, inv_trunc);
+    if ok {
+        Some(x)
     } else {
-        x
-    })
+        None
+    }
+}
+
+/// [`truncate`] per lane: the mask of `sdf >= -trunc` and the clamped value.
+#[inline(always)]
+pub fn truncate_lanes<V: Lanes>(sdf: V, trunc: f32, inv_trunc: f32) -> (V::M, V) {
+    let one = V::splat(1.0);
+    let ok = V::ge(sdf, V::splat(-trunc));
+    let x = V::select(V::lt(sdf, V::splat(trunc)), sdf * V::splat(inv_trunc), one);
+    let x = V::select(V::gt(x, one), one, x);
+    let x = V::select(V::lt(x, V::splat(-1.0)), V::splat(-1.0), x);
+    (ok, x)
 }
 
 /// Running mean with the uncapped count `n = w0 + 1`:
 /// `fma(tsd - old, 1 / n, old)`, weight capped at `max_weight`.
 #[inline(always)]
 pub fn update_tsdf<O: F32Ops>(old: f32, w0: u16, tsd: f32, max_weight: u16) -> (f32, u16) {
-    let n = w0 as u32 + 1;
-    let rc = 1.0 / (n as f32);
+    let (t, w) = update_tsdf_lanes::<O>(old, w0 as u32, tsd, max_weight);
+    // w <= max_weight
+    (t, w as u16)
+}
+
+/// [`update_tsdf`] per lane, weights as `u32` lanes.
+#[inline(always)]
+pub fn update_tsdf_lanes<O: LaneOps>(
+    old: O::V,
+    w0: <O::V as Lanes>::U,
+    tsd: O::V,
+    max_weight: u16,
+) -> (O::V, <O::V as Lanes>::U) {
+    let n = w0 + O::V::splat_u(1);
+    let rc = O::V::splat(1.0) / O::V::from_u32(n);
     let t = O::fma(tsd - old, rc, old);
-    let w = if n > max_weight as u32 {
-        max_weight
-    } else {
-        n as u16
-    };
-    (t, w)
+    let cap = O::V::splat_u(max_weight as u32);
+    (t, O::V::select_u(O::V::gt_u(n, cap), cap, n))
 }
 
 /// `c + 0.5` rounded down, clamped to 255 explicitly (`c` in `[0, 255]`).

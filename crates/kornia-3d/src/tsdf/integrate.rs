@@ -1,15 +1,22 @@
 //! One integration step: validation, allocation over the union of the
-//! observations, then one update pass per observation in fold order.
+//! observations, then one update pass per observation in fold order. The
+//! `Scalar` kernel walks an observation's blocks serially; `Simd` runs them
+//! as parallel tasks (rayon), NEON per block on aarch64 and scalar
+//! elsewhere. A block is written by one task only, so every kernel stores
+//! the same bits.
+
+use std::marker::PhantomData;
 
 use kornia_oxide_kernels::tsdf_core::{self as tc, RawDepth};
+use rayon::prelude::*;
 
 use super::alloc::{allocate, prepare, touch, Obs, ObsKind};
 use super::sensor::{DepthRef, SensorObservation};
 use super::volume::{BlockIndex, Pools};
 use super::workspace::TsdfWorkspace;
 use super::{
-    check_fp_env, BlockDim, IntegrateStats, StdOps, SupportedBlockDim, TsdfError, TsdfLayout,
-    TsdfParams, TsdfVolume,
+    check_fp_env, BlockDim, IntegrateStats, StdOps, SupportedBlockDim, TsdfError, TsdfKernel,
+    TsdfLayout, TsdfParams, TsdfVolume,
 };
 
 /// The storage one step writes.
@@ -51,111 +58,211 @@ pub(crate) fn integrate_step<'o>(
     for s in 0..n {
         let o = obs(s)?;
         let r = ws.ranges[s];
-        let pools_v = ws.visible[r.visible.0..r.visible.1].iter();
-        let pools_n = ws.visible_new[r.new.0..r.new.1].iter();
-        for &p in pools_v.chain(pools_n) {
-            stats.updated_voxels += integrate_block(&o, &grid, t.params, t.index, t.pools, p);
-        }
+        let pass = Pass {
+            obs: &o,
+            grid: &grid,
+            params: t.params,
+            index: t.index,
+            hits: &ws.visible[r.visible.0..r.visible.1],
+            new: &ws.visible_new[r.new.0..r.new.1],
+        };
+        stats.updated_voxels += match ws.kernel() {
+            TsdfKernel::Scalar => pass.serial(t.pools),
+            TsdfKernel::Simd => pass.parallel(t.pools),
+        };
     }
     Ok(stats)
 }
 
-/// Updates the voxels of local pool `p` from one observation; returns the
-/// number of voxels updated.
-fn integrate_block(
-    o: &Obs<'_>,
-    grid: &tc::Grid,
-    params: &TsdfParams,
-    index: &BlockIndex,
-    pools: &mut Pools,
-    p: u32,
-) -> u64 {
-    let key = index.pool_keys[p as usize];
-    let base = index.pages[p as usize] as usize * pools.voxels;
-    let color = if pools.color { o.color } else { None };
-    match o.depth {
-        DepthRef::U16(d) => block_pass(
-            o,
-            d.image().as_slice(),
-            color,
-            grid,
-            params,
-            pools,
-            key,
-            base,
-        ),
-        DepthRef::F32(d) => block_pass(
-            o,
-            d.image().as_slice(),
-            color,
-            grid,
-            params,
-            pools,
-            key,
-            base,
-        ),
+/// The `B³` voxels of one block; `rgbw` iff the pools store colour.
+pub(crate) struct PageMut<'a> {
+    pub(crate) tsdf: &'a mut [f32],
+    pub(crate) weight: &'a mut [u16],
+    pub(crate) rgbw: Option<&'a mut [u32]>,
+}
+
+/// The pools as raw pages, so that parallel tasks each borrow one page.
+struct PagesMut<'a> {
+    tsdf: *mut f32,
+    weight: *mut u16,
+    rgbw: Option<*mut u32>,
+    voxels: usize,
+    pages: usize,
+    _pools: PhantomData<&'a mut Pools>,
+}
+
+// SAFETY: `PagesMut` is `&mut Pools` split by page: it hands out a page only
+// to a caller that holds no other borrow of it (`page`), and the pools are
+// plain numbers.
+#[allow(unsafe_code)]
+unsafe impl Send for PagesMut<'_> {}
+// SAFETY: as above; shared use only reaches disjoint pages.
+#[allow(unsafe_code)]
+unsafe impl Sync for PagesMut<'_> {}
+
+impl<'a> PagesMut<'a> {
+    fn new(pools: &'a mut Pools) -> Self {
+        Self {
+            tsdf: pools.tsdf.as_mut_ptr(),
+            weight: pools.weight.as_mut_ptr(),
+            rgbw: pools.color.then_some(pools.rgbw.as_mut_ptr()),
+            voxels: pools.voxels,
+            pages: pools.pages(),
+            _pools: PhantomData,
+        }
+    }
+
+    /// Page `page`, `None` past the allocated pages.
+    ///
+    /// # Safety
+    ///
+    /// No other borrow of page `page` may be alive while the result is.
+    #[allow(unsafe_code)]
+    unsafe fn page(&self, page: u32) -> Option<PageMut<'a>> {
+        let page = page as usize;
+        if page >= self.pages {
+            return None;
+        }
+        let (base, v) = (page * self.voxels, self.voxels);
+        // SAFETY: every pool holds `pages * voxels` entries, so
+        // `base..base + v` is in bounds; the caller guarantees it is not
+        // borrowed elsewhere.
+        unsafe {
+            Some(PageMut {
+                tsdf: std::slice::from_raw_parts_mut(self.tsdf.add(base), v),
+                weight: std::slice::from_raw_parts_mut(self.weight.add(base), v),
+                rgbw: self
+                    .rgbw
+                    .map(|r| std::slice::from_raw_parts_mut(r.add(base), v)),
+            })
+        }
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn block_pass<D: RawDepth>(
-    o: &Obs<'_>,
-    depth: &[D],
-    color: Option<&[u8]>,
-    grid: &tc::Grid,
-    params: &TsdfParams,
-    pools: &mut Pools,
-    key: u64,
-    base: usize,
-) -> u64 {
-    match &o.kind {
-        ObsKind::Pinhole(p) => voxel_loop(grid, params, pools, key, base, color, |c| {
+/// One observation's update pass over the blocks it touched (hit pools,
+/// then new pools, each pool once).
+struct Pass<'a, 'o> {
+    obs: &'a Obs<'o>,
+    grid: &'a tc::Grid,
+    params: &'a TsdfParams,
+    index: &'a BlockIndex,
+    hits: &'a [u32],
+    new: &'a [u32],
+}
+
+impl Pass<'_, '_> {
+    fn serial(&self, pools: &mut Pools) -> u64 {
+        let mut updated = 0;
+        for &p in self.hits.iter().chain(self.new) {
+            let page = pools.page_mut(self.index.pages[p as usize]);
+            updated += self.block(p, page, false);
+        }
+        updated
+    }
+
+    /// One task per block; the counts are integers, so their sum is exact.
+    #[allow(unsafe_code)]
+    fn parallel(&self, pools: &mut Pools) -> u64 {
+        let pages = PagesMut::new(pools);
+        let task = |&p: &u32| {
+            // SAFETY: `touch` and `allocate` list each pool of an
+            // observation once (observation mark), hits and new pools are
+            // disjoint, and the page table is injective (each new pool gets
+            // a freshly appended page), so no two tasks share a page.
+            match unsafe { pages.page(self.index.pages[p as usize]) } {
+                Some(page) => self.block(p, page, true),
+                None => 0,
+            }
+        };
+        self.hits
+            .par_iter()
+            .chain(self.new.par_iter())
+            .map(task)
+            .sum()
+    }
+
+    /// Updates the voxels of local pool `p`; returns how many it updated.
+    #[inline(always)]
+    fn block(&self, p: u32, page: PageMut<'_>, simd: bool) -> u64 {
+        let b = Block {
+            kind: &self.obs.kind,
+            color: self.obs.color.filter(|_| page.rgbw.is_some()),
+            grid: self.grid,
+            params: self.params,
+            key: self.index.pool_keys[p as usize],
+        };
+        match self.obs.depth {
+            DepthRef::U16(d) => block_pass(&b, d.image().as_slice(), page, simd),
+            DepthRef::F32(d) => block_pass(&b, d.image().as_slice(), page, simd),
+        }
+    }
+}
+
+/// One block of one observation, without its samples and storage.
+pub(crate) struct Block<'a, 'o> {
+    pub(crate) kind: &'a ObsKind<'o>,
+    /// Interleaved RGB to fold in (pinhole with colour stored).
+    pub(crate) color: Option<&'a [u8]>,
+    pub(crate) grid: &'a tc::Grid,
+    pub(crate) params: &'a TsdfParams,
+    pub(crate) key: u64,
+}
+
+#[inline(always)]
+fn block_pass<D: RawDepth>(b: &Block<'_, '_>, depth: &[D], page: PageMut<'_>, simd: bool) -> u64 {
+    #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
+    if simd {
+        return super::integrate_neon::block(b, depth, page);
+    }
+    #[cfg(not(all(target_arch = "aarch64", target_feature = "neon")))]
+    let _ = simd;
+    match b.kind {
+        ObsKind::Pinhole(p) => voxel_loop(b, page, b.color, |c| {
             tc::pinhole_sdf::<StdOps, D>(p, depth, c)
         }),
         ObsKind::Spherical(p, lidar) => {
             let bnd = lidar.boundaries();
-            voxel_loop(grid, params, pools, key, base, None, |c| {
+            voxel_loop(b, page, None, |c| {
                 tc::spherical_sdf::<StdOps, D>(p, bnd, depth, c)
             })
         }
     }
 }
 
-/// The per-voxel update over one block, `x` fastest.
+/// The scalar per-voxel update over one block, `x` fastest.
 #[inline(always)]
 fn voxel_loop(
-    grid: &tc::Grid,
-    params: &TsdfParams,
-    pools: &mut Pools,
-    key: u64,
-    base: usize,
+    b: &Block<'_, '_>,
+    page: PageMut<'_>,
     color: Option<&[u8]>,
     sdf: impl Fn([f32; 3]) -> Option<(f32, u32)>,
 ) -> u64 {
-    let b = 1i32 << grid.log2;
-    let bc = tc::unpack_block_key(key);
-    let g0 = [bc[0] * b, bc[1] * b, bc[2] * b];
+    let (grid, params) = (b.grid, b.params);
+    let e = 1i32 << grid.log2;
+    let bc = tc::unpack_block_key(b.key);
+    let g0 = [bc[0] * e, bc[1] * e, bc[2] * e];
+    let PageMut {
+        tsdf,
+        weight,
+        mut rgbw,
+    } = page;
     let mut updated = 0u64;
-    let mut i = base;
-    for lz in 0..b {
-        for ly in 0..b {
-            for lx in 0..b {
+    let mut i = 0;
+    for lz in 0..e {
+        for ly in 0..e {
+            for lx in 0..e {
                 let g = [g0[0] + lx, g0[1] + ly, g0[2] + lz];
                 let c = tc::voxel_centre::<StdOps>(g, grid.voxel_size, grid.half_voxel);
                 if let Some((d, idx)) = sdf(c) {
                     if let Some(tsd) = tc::truncate(d, grid.trunc, grid.inv_trunc) {
-                        let (t, w) = tc::update_tsdf::<StdOps>(
-                            pools.tsdf[i],
-                            pools.weight[i],
-                            tsd,
-                            params.max_weight,
-                        );
-                        pools.tsdf[i] = t;
-                        pools.weight[i] = w;
-                        if let Some(rgb) = color {
+                        let (t, w) =
+                            tc::update_tsdf::<StdOps>(tsdf[i], weight[i], tsd, params.max_weight);
+                        tsdf[i] = t;
+                        weight[i] = w;
+                        if let (Some(rgb), Some(rgbw)) = (color, rgbw.as_deref_mut()) {
                             let k = 3 * idx as usize;
-                            pools.rgbw[i] = tc::update_color::<StdOps>(
-                                pools.rgbw[i],
+                            rgbw[i] = tc::update_color::<StdOps>(
+                                rgbw[i],
                                 [rgb[k], rgb[k + 1], rgb[k + 2]],
                                 params.max_color_weight,
                             );
@@ -228,6 +335,7 @@ where
         observations: &[SensorObservation<'_>],
     ) -> Result<IntegrateStats, TsdfError> {
         check_fp_env()?;
+        ws.check_workers_fp_env()?;
         for o in observations {
             prepare(o.sensor, &o.volume_from_sensor, o.depth, o.color)?;
         }

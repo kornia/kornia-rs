@@ -2,7 +2,7 @@
 
 use kornia_oxide_kernels::tsdf_core as tc;
 
-use super::TsdfKernel;
+use super::{fp_env_is_default, TsdfError, TsdfKernel};
 
 /// Entries of the direct-mapped filter that drops repeated misses of one
 /// observation before the sort (a power of two).
@@ -27,6 +27,8 @@ pub(crate) struct ObsRange {
 #[derive(Debug, Default)]
 pub struct TsdfWorkspace {
     kernel: TsdfKernel,
+    /// The rayon workers' FP environment was found default.
+    workers_fp_checked: bool,
     // integration
     pub(crate) visible: Vec<u32>,
     pub(crate) visible_new: Vec<u32>,
@@ -90,6 +92,23 @@ impl TsdfWorkspace {
     /// The CPU kernel choice.
     pub fn kernel(&self) -> TsdfKernel {
         self.kernel
+    }
+
+    /// `Err(FpEnvironment)` unless every rayon worker of the current pool
+    /// rounds to nearest without flush-to-zero; checked once per workspace
+    /// (cold), and only for the parallel kernel.
+    pub(crate) fn check_workers_fp_env(&mut self) -> Result<(), TsdfError> {
+        if self.kernel == TsdfKernel::Scalar || self.workers_fp_checked {
+            return Ok(());
+        }
+        if !rayon::broadcast(|_| fp_env_is_default())
+            .iter()
+            .all(|&ok| ok)
+        {
+            return Err(TsdfError::FpEnvironment);
+        }
+        self.workers_fp_checked = true;
+        Ok(())
     }
 
     /// Pre-sizes the buffers so that the first calls of this shape do not

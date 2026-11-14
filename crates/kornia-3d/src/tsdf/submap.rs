@@ -690,6 +690,7 @@ where
         step: &AgentStep<'_>,
     ) -> Result<StepReport, TsdfError> {
         check_fp_env()?;
+        ws.check_workers_fp_env()?;
         self.validate_step(step)?;
         self.apply_step(ws, step)
     }
@@ -720,6 +721,7 @@ where
         steps: &[AgentStep<'_>],
     ) -> Result<BatchReport, TsdfError> {
         check_fp_env()?;
+        ws.check_workers_fp_env()?;
         let batch = |index: usize, e: TsdfError| TsdfError::Batch {
             index,
             source: Box::new(e),
