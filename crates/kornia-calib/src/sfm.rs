@@ -557,6 +557,7 @@ fn reconstruct_inner(
                 // same command on EuRoC MH01. A transient PnP failure marks a camera
                 // unregisterable, so that randomness changes the map, not merely its timing.
                 random_seed: Some(0x00C0_FFEE ^ c as u64),
+                sprt: config.sprt,
                 ..Default::default()
             },
         );
@@ -2700,6 +2701,45 @@ mod tests {
         assert!(
             open.views[2].is_some(),
             "lowering the gate below the available support must admit the view"
+        );
+    }
+
+    /// `sprt: Some(..)` must be accepted and must not change which views register.
+    #[test]
+    fn sprt_config_is_accepted_and_keeps_registration() {
+        let (cams, _, tracks) = converging_rig(500.0, 1.0);
+        let plain = reconstruct(&cams, &[], &tracks, &ReconstructionConfig::new(0.0), None)
+            .expect("solves without SPRT");
+
+        let with_sprt = reconstruct(
+            &cams,
+            &[],
+            &tracks,
+            &ReconstructionConfig {
+                sprt: Some(kornia_3d::ransac::SPRTConfig::default()),
+                ..ReconstructionConfig::new(0.0)
+            },
+            None,
+        )
+        .expect("solves with SPRT enabled");
+
+        let registered = |r: &Reconstruction| r.views.iter().filter(|v| v.is_some()).count();
+        assert_eq!(
+            registered(&with_sprt),
+            registered(&plain),
+            "SPRT must not change which views register on a clean rig"
+        );
+        // All three views must register: a two-view result would only prove the
+        // bootstrap pair, which never exercises the PnP path SPRT changes.
+        assert_eq!(
+            registered(&plain),
+            cams.len(),
+            "the plain run must register every camera"
+        );
+        assert_eq!(
+            registered(&with_sprt),
+            cams.len(),
+            "the SPRT run must register every camera"
         );
     }
 
