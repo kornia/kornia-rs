@@ -9,9 +9,9 @@
 //! (within the reserved capacity), so a buffer sized by the block count rather than the
 //! capacity regrows inside the window.
 //!
-//! The `Simd` kernel runs its voxel passes on rayon, so its frames are measured from a worker
-//! of a pool (warm-up included). Entering a pool from outside allocates inside rayon at a fixed
-//! cadence; one row pins that cadence from the main thread.
+//! The `Simd` kernel runs its voxel passes on rayon inside a pool, so those rows are
+//! measured from a worker of a pool (warm-up included); outside any pool it runs serially,
+//! and one row pins that this allocates nothing either.
 
 use kornia_3d::camera::PinholeCamera;
 use kornia_3d::depth::DepthImage;
@@ -519,15 +519,11 @@ where
 
 /// Workers of the pool the `Simd` rows run in.
 const SIMD_THREADS: usize = 4;
-/// Pushes per block of crossbeam-deque's `Injector` (`BLOCK_CAP`): rayon-core's
-/// `Registry::inject`, reached from `in_worker_cold` on every entry from outside the pool,
-/// allocates the next block every 63 pushes.
-const INJECTOR_BLOCK: usize = 63;
 /// Warmed single-sensor `Simd` steps measured from outside any pool.
-const OUTSIDE_STEPS: usize = 2 * INJECTOR_BLOCK;
+const OUTSIDE_STEPS: usize = 126;
 
 /// Allocations of `OUTSIDE_STEPS` warmed one-observation `Simd` steps called from this
-/// (non-rayon) thread: one pool entry each.
+/// (non-rayon) thread, where the kernel must not enter a pool.
 fn outside_pool_steps() -> R<(usize, usize)> {
     let sensor = pinhole()?;
     let f = frames()?;
@@ -579,12 +575,11 @@ fn warmed_tsdf_frame_does_not_allocate() -> R {
     pool.install(|| cases(TsdfKernel::Simd, &mut audit).map_err(|e| e.to_string()))?;
     lidar_cases(&mut audit)?;
 
-    // from outside a pool only rayon's injector allocates: at most one block per 63 entries,
-    // where an allocation of ours would cost at least one per step
+    // outside a pool the kernel stays on this thread: entering rayon's pool would allocate
     let (total, local) = outside_pool_steps()?;
     eprintln!("Simd B=8 integrate x{OUTSIDE_STEPS} outside a pool: {total} allocations");
     assert!(
-        total <= OUTSIDE_STEPS / INJECTOR_BLOCK + 1 && local == total,
+        total == 0 && local == 0,
         "{OUTSIDE_STEPS} steps outside a pool: {total} allocations ({local} on this thread)"
     );
 

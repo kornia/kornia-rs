@@ -1,8 +1,8 @@
 //! One integration step: validation, allocation over the union of the
 //! observations, then one update pass per observation in fold order. The
 //! `Scalar` kernel walks an observation's blocks serially; `Simd` runs them
-//! as parallel tasks (rayon), NEON per block on aarch64 and scalar
-//! elsewhere. A block is written by one task only, so every kernel stores
+//! as parallel tasks (rayon) inside a pool and serially outside one, NEON
+//! per block on aarch64 and scalar elsewhere. A block is written by one task only, so every kernel stores
 //! the same bits.
 
 use std::marker::PhantomData;
@@ -67,7 +67,11 @@ pub(crate) fn integrate_step<'o>(
             new: &ws.visible_new[r.new.0..r.new.1],
         };
         stats.updated_voxels += match ws.kernel() {
-            TsdfKernel::Scalar => pass.serial(t.pools),
+            TsdfKernel::Scalar => pass.serial(t.pools, false),
+            // outside a pool rayon's injector would allocate: run serially
+            TsdfKernel::Simd if rayon::current_thread_index().is_none() => {
+                pass.serial(t.pools, true)
+            }
             TsdfKernel::Simd => pass.parallel(t.pools),
         };
     }
@@ -151,11 +155,11 @@ struct Pass<'a, 'o> {
 }
 
 impl Pass<'_, '_> {
-    fn serial(&self, pools: &mut Pools) -> u64 {
+    fn serial(&self, pools: &mut Pools, simd: bool) -> u64 {
         let mut updated = 0;
         for &p in self.hits.iter().chain(self.new) {
             let page = pools.page_mut(self.index.pages[p as usize]);
-            updated += self.block(p, page, false);
+            updated += self.block(p, page, simd);
         }
         updated
     }
@@ -169,10 +173,13 @@ impl Pass<'_, '_> {
             // observation once (observation mark), hits and new pools are
             // disjoint, and the page table is injective (each new pool gets
             // a freshly appended page), so no two tasks share a page.
-            match unsafe { pages.page(self.index.pages[p as usize]) } {
-                Some(page) => self.block(p, page, true),
-                None => 0,
-            }
+            let page = unsafe { pages.page(self.index.pages[p as usize]) };
+            // a page past the table is corruption: panic like `serial`
+            self.block(
+                p,
+                page.expect("page index within the allocated pages"),
+                true,
+            )
         };
         self.hits
             .par_iter()

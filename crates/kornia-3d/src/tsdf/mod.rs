@@ -517,12 +517,11 @@ pub enum PoolGrowth {
 pub enum TsdfKernel {
     /// Portable scalar reference, single-threaded.
     Scalar,
-    /// The voxel update of each observation runs one block per rayon task
-    /// (current pool), with NEON on aarch64 and the scalar code elsewhere;
-    /// the same bits as `Scalar`. Each observation pass enters the pool
-    /// once; from outside a pool, rayon's job injector allocates one small
-    /// block every 63 entries. Call from inside a rayon pool
-    /// (`ThreadPool::install`) for zero allocations.
+    /// NEON on aarch64 (scalar elsewhere), the same bits as `Scalar`. Inside
+    /// a rayon pool (`ThreadPool::install`) each observation's blocks run
+    /// one per task in the current pool. Outside any pool the blocks run
+    /// serially on the calling thread, because entering a pool from outside
+    /// allocates in rayon's job injector; install a pool for parallelism.
     #[default]
     Simd,
 }

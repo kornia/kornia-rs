@@ -270,6 +270,14 @@ fn block_rows(
     const IOTA: [i32; LANES] = [0, 1, 2, 3];
     // SAFETY: `IOTA` holds `LANES` readable `i32`.
     let iota = unsafe { vld1q_s32(IOTA.as_ptr()) };
+    // a short page would silently skip voxels; `B³` is a multiple of LANES
+    let voxels = (b as usize).pow(3);
+    assert!(
+        page.tsdf.len() == voxels
+            && page.weight.len() == voxels
+            && page.rgbw.as_ref().is_none_or(|c| c.len() == voxels),
+        "page of {voxels} voxels expected"
+    );
     let mut tsdf = page.tsdf.as_chunks_mut::<LANES>().0.iter_mut();
     let mut weight = page.weight.as_chunks_mut::<LANES>().0.iter_mut();
     let mut rgbw = page.rgbw.map(|c| c.as_chunks_mut::<LANES>().0.iter_mut());
@@ -281,9 +289,11 @@ fn block_rows(
             let a = tc::xform_yz::<StdOps>(r, t, cy, cz).map(Vf::splat);
             for x0 in (0..b).step_by(LANES) {
                 let (Some(tc4), Some(wc4)) = (tsdf.next(), weight.next()) else {
-                    return updated;
+                    unreachable!("page lengths checked above");
                 };
-                let rc4 = rgbw.as_mut().and_then(|it| it.next());
+                let rc4 = rgbw
+                    .as_mut()
+                    .map(|it| it.next().expect("page lengths checked above"));
                 let gx = Vi(neon!(vaddq_s32(vdupq_n_s32(g0[0] + x0), iota)));
                 let cx = tc::voxel_axis::<NeonOps>(gx, vs, hv);
                 let s = tc::xform_x::<NeonOps>(r, a, cx);
@@ -431,4 +441,63 @@ fn spherical_block<D: RawDepth>(
             None,
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const GRID: tc::Grid = tc::Grid {
+        voxel_size: 0.1,
+        half_voxel: 0.05,
+        inv_voxel: 10.0,
+        trunc: 0.4,
+        inv_trunc: 2.5,
+        log2: 3,
+    };
+
+    /// Runs `block_rows` over a page with the given lengths; returns the
+    /// number of chunks visited.
+    fn walk(tsdf: usize, weight: usize, rgbw: Option<usize>) -> usize {
+        let (mut t, mut w) = (vec![0f32; tsdf], vec![0u16; weight]);
+        let mut c = rgbw.map(|n| vec![0u32; n]);
+        let page = PageMut {
+            tsdf: &mut t,
+            weight: &mut w,
+            rgbw: c.as_deref_mut(),
+        };
+        let id = tc::Rigid {
+            r: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            t: [0.0; 3],
+        };
+        let mut chunks = 0;
+        block_rows(&GRID, tc::pack_block_key([0, 0, 0]), &id, page, |_, _| {
+            chunks += 1;
+            0
+        });
+        chunks
+    }
+
+    #[test]
+    fn block_rows_visits_every_chunk_of_a_full_page() {
+        assert_eq!(walk(512, 512, Some(512)), 512 / LANES);
+    }
+
+    #[test]
+    #[should_panic(expected = "page of 512 voxels expected")]
+    fn block_rows_rejects_a_short_tsdf_page() {
+        walk(5, 512, None);
+    }
+
+    #[test]
+    #[should_panic(expected = "page of 512 voxels expected")]
+    fn block_rows_rejects_a_short_weight_page() {
+        walk(512, 508, None);
+    }
+
+    #[test]
+    #[should_panic(expected = "page of 512 voxels expected")]
+    fn block_rows_rejects_a_short_colour_page() {
+        walk(512, 512, Some(256));
+    }
 }

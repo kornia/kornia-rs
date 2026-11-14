@@ -39,7 +39,19 @@ where
     None
 }
 
-/// Integrates `steps` with both kernels into fresh volumes and checks the
+/// A shared 4-worker pool: `Simd` runs one block per task inside it.
+fn shared_pool() -> &'static rayon::ThreadPool {
+    static POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .expect("rayon pool")
+    })
+}
+
+/// Integrates `steps` into fresh volumes with `Scalar`, `Simd` outside a
+/// pool (serial NEON) and `Simd` inside one (parallel), and checks the
 /// counters of every step and the final bits match; returns the voxel
 /// updates (so callers can require a non-vacuous scene).
 fn same<const B: usize>(
@@ -50,20 +62,25 @@ fn same<const B: usize>(
 where
     BlockDim<B>: SupportedBlockDim,
 {
-    let (mut a, mut b) = (volume(), volume());
+    let (mut a, mut b, mut c) = (volume(), volume(), volume());
     let mut wa = TsdfWorkspace::new(TsdfKernel::Scalar);
     let mut wb = TsdfWorkspace::new(TsdfKernel::Simd);
+    let mut wc = TsdfWorkspace::new(TsdfKernel::Simd);
     let mut updated = 0;
     for (k, s) in steps.iter().enumerate() {
         let sa = a.integrate(&mut wa, s)?;
         let sb = b.integrate(&mut wb, s)?;
-        assert_eq!(sa, sb, "{label} B{B} step {k}: counters");
+        let sc = shared_pool().install(|| c.integrate(&mut wc, s))?;
+        assert_eq!(sa, sb, "{label} B{B} step {k}: counters (serial)");
+        assert_eq!(sa, sc, "{label} B{B} step {k}: counters (pool)");
         updated += sa.updated_voxels;
     }
-    if let Some(d) = first_diff(&a, &b) {
-        panic!("{label} B{B}: {d}");
+    for (name, v) in [("serial", &b), ("pool", &c)] {
+        if let Some(d) = first_diff(&a, v) {
+            panic!("{label} B{B} {name}: {d}");
+        }
+        assert_eq!(a.content_hash(), v.content_hash(), "{label} B{B} {name}");
     }
-    assert_eq!(a.content_hash(), b.content_hash(), "{label} B{B}");
     assert!(a.num_blocks() > 0, "{label} B{B}: no blocks");
     eprintln!(
         "{label} B{B}: {} blocks, {updated} voxel updates",
@@ -362,10 +379,11 @@ fn tsdf_integrate_neon_matches_scalar_multi_agent() -> R {
     };
     let (a, ra) = run(TsdfKernel::Scalar)?;
     let (b, rb) = run(TsdfKernel::Simd)?;
+    let (c, rc) = shared_pool().install(|| run(TsdfKernel::Simd))?;
     assert_eq!(a.len(), 6);
     assert!(ra.stats.updated_voxels > 10_000);
-    assert_eq!(ra, rb);
-    assert_eq!(a, b);
+    assert_eq!((&ra, &a), (&rb, &b), "serial");
+    assert_eq!((&ra, &a), (&rc, &c), "pool");
     Ok(())
 }
 
@@ -566,5 +584,108 @@ mod lanes {
                 assert_eq!((t[l].to_bits(), w[l]), (st.to_bits(), u32::from(sw)));
             }
         }
+    }
+}
+
+/// A pool of `n` workers; `start` runs on each worker thread first.
+fn pool(
+    n: usize,
+    start: impl Fn(usize) + Send + Sync + 'static,
+) -> Result<rayon::ThreadPool, Box<dyn std::error::Error>> {
+    Ok(rayon::ThreadPoolBuilder::new()
+        .num_threads(n)
+        .start_handler(start)
+        .build()?)
+}
+
+/// Both kernels fail alike on a page index past the allocated pages (no
+/// silent 0-update).
+#[test]
+fn tsdf_corrupt_page_table_panics_in_both_kernels() -> R {
+    let cam = pinhole(32, 24, 30.0, (0.1, 4.0));
+    let d = render(&cam, &Pose3d::IDENTITY, &[tilted_plane()]);
+    let pool = pool(2, |_| {})?;
+    for kernel in [TsdfKernel::Scalar, TsdfKernel::Simd] {
+        let mut vol = volume::<8>(256);
+        let mut ws = TsdfWorkspace::new(kernel);
+        let o = [obs(&cam, Pose3d::IDENTITY, &d)];
+        pool.install(|| vol.integrate(&mut ws, &o))?;
+        vol.index.pages[0] = u32::MAX;
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            pool.install(|| vol.integrate(&mut ws, &o))
+        }));
+        assert!(
+            r.is_err(),
+            "{kernel:?}: integrate over a corrupt page table"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(target_arch = "aarch64")]
+mod fp_env {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// Sets FPCR RMode = round-towards-zero on the calling thread.
+    #[allow(unsafe_code)]
+    fn round_to_zero() {
+        // SAFETY: reads FPCR, then sets RMode on this (pool worker) thread only.
+        unsafe {
+            let old: u64;
+            std::arch::asm!("mrs {}, fpcr", out(reg) old);
+            std::arch::asm!("msr fpcr, {}", in(reg) old | (0b11 << 22));
+        }
+    }
+
+    /// `integrate` on worker 0 of `pool` (the caller thread is default).
+    fn on_worker_0(
+        pool: &rayon::ThreadPool,
+        vol: &mut TsdfVolume<8>,
+        ws: &mut TsdfWorkspace,
+        o: &[SensorObservation<'_>],
+    ) -> Option<Result<IntegrateStats, TsdfError>> {
+        let cell = Mutex::new((vol, ws));
+        pool.broadcast(|c| {
+            (c.index() == 0).then(|| {
+                let mut g = cell.lock().unwrap();
+                let (v, w) = &mut *g;
+                v.integrate(w, o)
+            })
+        })
+        .into_iter()
+        .flatten()
+        .next()
+    }
+
+    /// A workspace that already ran outside a pool, then runs in a pool whose
+    /// other workers round to zero: the workers are checked, not the
+    /// workspace.
+    #[test]
+    fn tsdf_workers_of_a_later_pool_are_checked() -> R {
+        let cam = pinhole(32, 24, 30.0, (0.1, 4.0));
+        let d = render(&cam, &Pose3d::IDENTITY, &[tilted_plane()]);
+        let o = [obs(&cam, Pose3d::IDENTITY, &d)];
+        let mut ws = TsdfWorkspace::new(TsdfKernel::Simd);
+        let mut warm = volume::<8>(256);
+        warm.integrate(&mut ws, &o)?;
+
+        let bad = pool(4, |i| {
+            if i != 0 {
+                round_to_zero();
+            }
+        })?;
+        let mut vol = volume::<8>(256);
+        let r = on_worker_0(&bad, &mut vol, &mut ws, &o).ok_or("worker 0 did not run")?;
+        assert!(matches!(r, Err(TsdfError::FpEnvironment)), "{r:?}");
+        assert_eq!(vol.num_blocks(), 0);
+        // the refusal is not cached
+        let r = on_worker_0(&bad, &mut vol, &mut ws, &o).ok_or("worker 0 did not run")?;
+        assert!(matches!(r, Err(TsdfError::FpEnvironment)), "{r:?}");
+
+        let good = pool(4, |_| {})?;
+        let r = on_worker_0(&good, &mut vol, &mut ws, &o).ok_or("worker 0 did not run")?;
+        assert!(r?.updated_voxels > 0);
+        Ok(())
     }
 }

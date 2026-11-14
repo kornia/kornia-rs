@@ -1,5 +1,7 @@
 //! Reusable scratch for integration, meshing and raycasting.
 
+use std::cell::Cell;
+
 use kornia_oxide_kernels::tsdf_core as tc;
 
 use super::{fp_env_is_default, TsdfError, TsdfKernel};
@@ -7,6 +9,12 @@ use super::{fp_env_is_default, TsdfError, TsdfKernel};
 /// Entries of the direct-mapped filter that drops repeated misses of one
 /// observation before the sort (a power of two).
 pub(crate) const MISS_FILTER: usize = 1024;
+
+thread_local! {
+    /// Set on a rayon worker once every worker of its pool passed the FP
+    /// check (a worker never changes pool).
+    static POOL_VERIFIED: Cell<bool> = const { Cell::new(false) };
+}
 
 /// Per-observation slices of the step buffers.
 #[derive(Debug, Clone, Copy, Default)]
@@ -27,8 +35,6 @@ pub(crate) struct ObsRange {
 #[derive(Debug, Default)]
 pub struct TsdfWorkspace {
     kernel: TsdfKernel,
-    /// The rayon workers' FP environment was found default.
-    workers_fp_checked: bool,
     // integration
     pub(crate) visible: Vec<u32>,
     pub(crate) visible_new: Vec<u32>,
@@ -94,11 +100,17 @@ impl TsdfWorkspace {
         self.kernel
     }
 
-    /// `Err(FpEnvironment)` unless every rayon worker of the current pool
-    /// rounds to nearest without flush-to-zero; checked once per workspace
-    /// (cold), and only for the parallel kernel.
-    pub(crate) fn check_workers_fp_env(&mut self) -> Result<(), TsdfError> {
-        if self.kernel == TsdfKernel::Scalar || self.workers_fp_checked {
+    /// `Err(FpEnvironment)` unless every worker of the current rayon pool
+    /// rounds to nearest without flush-to-zero. Only the parallel kernel
+    /// inside a pool uses workers; elsewhere it is `Ok`. The first call from
+    /// a pool broadcasts (cold, allocates) and marks its workers verified,
+    /// so later calls from that pool are free whichever workspace they use.
+    /// A worker whose environment changes after that is not detected.
+    pub(crate) fn check_workers_fp_env(&self) -> Result<(), TsdfError> {
+        if self.kernel == TsdfKernel::Scalar
+            || rayon::current_thread_index().is_none()
+            || POOL_VERIFIED.with(Cell::get)
+        {
             return Ok(());
         }
         if !rayon::broadcast(|_| fp_env_is_default())
@@ -107,7 +119,8 @@ impl TsdfWorkspace {
         {
             return Err(TsdfError::FpEnvironment);
         }
-        self.workers_fp_checked = true;
+        // marked only after every worker passed
+        rayon::broadcast(|_| POOL_VERIFIED.with(|v| v.set(true)));
         Ok(())
     }
 
