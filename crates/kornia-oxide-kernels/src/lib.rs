@@ -30,6 +30,12 @@ pub const IS_STUB: bool = PTX.is_empty();
 // `ENTRIES` and `entry::<NAME>`, generated from device/src.
 include!(concat!(env!("OUT_DIR"), "/entries.rs"));
 
+/// Not public API: the TSDF per-voxel math, the same file the device crate
+/// compiles, so kornia-3d's CPU path and the kernels share one source.
+#[doc(hidden)]
+#[path = "../device/src/tsdf_core.rs"]
+pub mod tsdf_core;
+
 #[cfg(test)]
 mod tests {
     use super::*;

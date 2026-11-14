@@ -1,8 +1,10 @@
 mod parser;
 mod properties;
+mod writer;
 
 pub use parser::*;
 pub use properties::*;
+pub use writer::*;
 
 /// Error types for the PLY module.
 #[derive(Debug, thiserror::Error)]

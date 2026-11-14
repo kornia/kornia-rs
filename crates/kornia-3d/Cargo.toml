@@ -55,7 +55,9 @@ kiddo = { workspace = true }
 kornia-algebra = { workspace = true }
 kornia-image = { workspace = true }
 kornia-imgproc = { workspace = true }
+kornia-oxide-kernels = { workspace = true }
 kornia-tensor = { workspace = true, optional = true }
+libm = { workspace = true }
 log = { workspace = true }
 nalgebra = { workspace = true }
 rand = { workspace = true }

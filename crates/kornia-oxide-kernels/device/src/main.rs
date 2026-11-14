@@ -6,6 +6,9 @@
 //! keeps the name of the NVRTC kernel it replaces.
 
 mod color;
+// Shared TSDF math (also the host lib's `tsdf_core`); its kernels come later.
+#[allow(dead_code)]
+mod tsdf_core;
 
 /// PTX-only crate: `main` exists so the codegen backend has a binary to compile.
 fn main() {

@@ -558,6 +558,97 @@ impl RgbdLevel {
     }
 }
 
+impl RgbdLevel {
+    /// A level of `size` whose maps are all invalid (zero), for producers that refill them in
+    /// place, such as a TSDF raycast (`TsdfVolume::raycast_level_into`).
+    ///
+    /// # Arguments
+    ///
+    /// * `camera` - Intrinsics at this level's resolution, without distortion.
+    /// * `size` - Size of the maps.
+    ///
+    /// # Returns
+    ///
+    /// The level, without depth sigmas.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RgbdIcpError::DistortedCamera`] or [`RgbdIcpError::InvalidIntrinsics`] as
+    /// [`RgbdPyramid::from_depth_mm`], and [`RgbdIcpError::Image`] if a map cannot be allocated.
+    pub fn zeroed(camera: &PinholeCamera, size: ImageSize) -> Result<RgbdLevel, RgbdIcpError> {
+        check_camera(camera)?;
+        Ok(Self {
+            camera: camera.clone(),
+            vertices: Image::from_size_val(size, 0.0)?,
+            normals: Image::from_size_val(size, 0.0)?,
+            depth_sigmas: None,
+        })
+    }
+}
+
+impl RgbdPyramid {
+    /// A pyramid with the level sizes and intrinsics of [`Self::from_depth_mm`] for a `size`
+    /// depth image, all maps invalid (zero), for producers that refill them in place.
+    ///
+    /// # Arguments
+    ///
+    /// * `camera` - Intrinsics of the finest level, without distortion.
+    /// * `size` - Size of the finest level.
+    /// * `num_levels` - Number of levels, at least 1.
+    ///
+    /// # Returns
+    ///
+    /// The pyramid, finest level first, without depth sigmas.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::from_depth_mm`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_3d::camera::PinholeCamera;
+    /// use kornia_3d::registration::RgbdPyramid;
+    /// use kornia_image::ImageSize;
+    ///
+    /// let camera = PinholeCamera { fx: 50.0, fy: 50.0, cx: 31.5, cy: 23.5, ..PinholeCamera::IDENTITY };
+    /// let pyramid = RgbdPyramid::zeroed(&camera, ImageSize { width: 64, height: 48 }, 3)?;
+    /// assert_eq!(pyramid.levels()[2].size(), ImageSize { width: 16, height: 12 });
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn zeroed(
+        camera: &PinholeCamera,
+        size: ImageSize,
+        num_levels: usize,
+    ) -> Result<RgbdPyramid, RgbdIcpError> {
+        if num_levels == 0 {
+            return Err(RgbdIcpError::InvalidNumLevels(num_levels));
+        }
+        check_camera(camera)?;
+        let mut levels = Vec::with_capacity(num_levels);
+        let mut level_camera = camera.clone();
+        let mut level_size = size;
+        for level in 0..num_levels {
+            if level > 0 {
+                level_size = ImageSize {
+                    width: level_size.width / 2,
+                    height: level_size.height / 2,
+                };
+                level_camera = half_camera(&level_camera);
+            }
+            if level_size.width < 3 || level_size.height < 3 {
+                return Err(RgbdIcpError::ImageTooSmall {
+                    level,
+                    width: level_size.width,
+                    height: level_size.height,
+                });
+            }
+            levels.push(RgbdLevel::zeroed(&level_camera, level_size)?);
+        }
+        Ok(Self { levels })
+    }
+}
+
 /// Coarse-to-fine pyramid of vertex and normal maps built from one depth image.
 ///
 /// `levels[0]` is the input resolution; each further level halves the depth with
