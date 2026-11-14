@@ -236,27 +236,6 @@ mod tests {
     }
 
     #[test]
-    fn distance_transform_empty_image() -> Result<(), ImageError> {
-        let mut executor = DistanceTransformExecutor::new();
-
-        for (width, height) in [(0, 5), (5, 0), (0, 0)] {
-            let image = Image::<f32, 1>::new(ImageSize { width, height }, vec![])?;
-            let result = executor.execute(&image);
-            assert!(
-                result.is_ok(),
-                "case {width}x{height}: got {:?}",
-                result.as_ref().err()
-            );
-            let output = result?;
-            assert_eq!(output.width(), width, "case {width}x{height}");
-            assert_eq!(output.height(), height, "case {width}x{height}");
-            assert!(output.as_slice().is_empty(), "case {width}x{height}");
-        }
-
-        Ok(())
-    }
-
-    #[test]
     fn distance_transform_foreground_is_zero_at_large_sizes() -> Result<(), ImageError> {
         let mut executor = DistanceTransformExecutor::new();
 
@@ -322,6 +301,27 @@ mod tests {
             bad.len(),
             bad.first()
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn distance_transform_empty_image() -> Result<(), ImageError> {
+        let mut executor = DistanceTransformExecutor::new();
+
+        for (width, height) in [(0, 5), (5, 0), (0, 0)] {
+            let image = Image::<f32, 1>::new(ImageSize { width, height }, vec![])?;
+            let result = executor.execute(&image);
+            assert!(
+                result.is_ok(),
+                "case {width}x{height}: got {:?}",
+                result.as_ref().err()
+            );
+            let output = result?;
+            assert_eq!(output.width(), width, "case {width}x{height}");
+            assert_eq!(output.height(), height, "case {width}x{height}");
+            assert!(output.as_slice().is_empty(), "case {width}x{height}");
+        }
 
         Ok(())
     }
