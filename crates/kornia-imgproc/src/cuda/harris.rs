@@ -8,6 +8,7 @@ use kornia_tensor::CudaKernel;
 
 super::define_cuda_error!(
     /// Error type for the CUDA Harris launcher.
+    #[non_exhaustive]
     CudaHarrisError,
     "CUDA Harris error: {0}"
 );
@@ -57,7 +58,9 @@ extern "C" __global__ void harris_fused_f32(
 
 type KernelMap = Mutex<HashMap<usize, Arc<CudaKernel>>>;
 static KERNELS: OnceLock<KernelMap> = OnceLock::new();
+const KERNEL_CACHE_CAP: usize = 16;
 
+/// Return the Harris kernel compiled in `ctx`, compiling it on first use.
 fn get_kernel(ctx: &Arc<CudaContext>) -> Result<Arc<CudaKernel>, CudaHarrisError> {
     let cache = KERNELS.get_or_init(Default::default);
     let key = ctx.cu_ctx() as usize;
@@ -69,12 +72,14 @@ fn get_kernel(ctx: &Arc<CudaContext>) -> Result<Arc<CudaKernel>, CudaHarrisError
         super::try_compile_with_l1(ctx, HARRIS_SRC, "harris_fused_f32")
             .map_err(CudaHarrisError::Cuda)?,
     );
-    Ok(cache
-        .lock()
-        .map_err(lock_error)?
-        .entry(key)
-        .or_insert(kernel)
-        .clone())
+    let mut map = cache.lock().map_err(lock_error)?;
+    if map.len() >= KERNEL_CACHE_CAP && !map.contains_key(&key) {
+        // Each kernel keeps its context alive; evict one so dropped contexts are released.
+        if let Some(old) = map.keys().next().copied() {
+            map.remove(&old);
+        }
+    }
+    Ok(map.entry(key).or_insert(kernel).clone())
 }
 
 /// Launch the fused Harris kernel on device-resident f32 images.
