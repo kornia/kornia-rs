@@ -41,8 +41,24 @@ impl std::fmt::Display for GrabFormat {
 /// The terminal state a capture pipeline reports on its bus.
 #[derive(Default)]
 struct StreamStatus {
-    eos: bool,
+    eos: EosStatus,
+    previous_eos: Option<EosStatus>,
     error: Option<gstreamer::glib::Error>,
+}
+
+/// EOS belongs to the segment selected by the last seek, not just to the pipeline.
+#[derive(Clone, Copy, Default)]
+struct EosStatus {
+    seqnum: Option<gstreamer::Seqnum>,
+    received: bool,
+}
+
+impl EosStatus {
+    fn record(&mut self, seqnum: gstreamer::Seqnum) {
+        if self.seqnum.is_none_or(|expected| expected == seqnum) {
+            self.received = true;
+        }
+    }
 }
 
 /// The outcome of [`StreamCapture::try_grab_rgb8`] and [`StreamCapture::try_grab_gray8`].
@@ -95,6 +111,8 @@ pub struct StreamCapture {
     fps: Arc<Mutex<gstreamer::Fraction>>,
     /// End-of-stream and errors seen on the bus, updated by its sync handler.
     status: Arc<Mutex<StreamStatus>>,
+    /// Serialize seeks without blocking the bus handler on the status lock.
+    seek_lock: Mutex<()>,
 }
 
 impl StreamCapture {
@@ -135,7 +153,15 @@ impl StreamCapture {
             move |_bus, msg| {
                 if let Ok(mut status) = status.lock() {
                     match msg.view() {
-                        gstreamer::MessageView::Eos(_) => status.eos = true,
+                        gstreamer::MessageView::Eos(_) => {
+                            status.eos.record(msg.seqnum());
+                            // Preserve old-segment EOS received during a rejected seek.
+                            if status.eos.seqnum != Some(msg.seqnum()) {
+                                if let Some(previous) = &mut status.previous_eos {
+                                    previous.record(msg.seqnum());
+                                }
+                            }
+                        }
                         gstreamer::MessageView::Error(err) => {
                             let error = detailed_error(msg, err);
                             log::error!("{error}");
@@ -188,6 +214,7 @@ impl StreamCapture {
             circular_buffer,
             fps,
             status,
+            seek_lock: Mutex::new(()),
         })
     }
 
@@ -221,7 +248,7 @@ impl StreamCapture {
     /// remain buffered for the `try_grab_*` methods.
     pub fn is_eos(&self) -> bool {
         self.drain_bus();
-        self.status.lock().is_ok_and(|status| status.eos)
+        self.status.lock().is_ok_and(|status| status.eos.received)
     }
 
     /// Returns the first error the pipeline posted on its bus, if any.
@@ -459,7 +486,7 @@ impl StreamCapture {
                 .status
                 .lock()
                 .map_err(|_| StreamCaptureError::MutexPoisonError)?;
-            (status.error.clone(), status.eos)
+            (status.error.clone(), status.eos.received)
         };
         // The final frame can land between the empty check above and the terminal state below:
         // take one more look before reporting the end.
@@ -497,18 +524,70 @@ impl StreamCapture {
         Ok(())
     }
 
-    /// Forgets end-of-stream after a flushing seek, which clears EOS in GStreamer and lets the
-    /// pipeline deliver frames again. Pipeline errors are kept: they do not recover.
-    pub(crate) fn clear_eos(&self) {
-        if let Ok(mut status) = self.status.lock() {
-            status.eos = false;
+    /// Sends a seek while tracking the EOS sequence number of its segment.
+    ///
+    /// GStreamer propagates the seek seqnum to the segment's EOS message:
+    /// <https://gstreamer.freedesktop.org/documentation/additional/design/seqnums.html>.
+    /// The status lock must not be held across send_event: its sync bus handler can run there.
+    ///
+    /// # Arguments
+    ///
+    /// * `rate` - Playback rate.
+    /// * `flags` - Seek flags; only `FLUSH` clears the previous EOS state.
+    /// * `position` - Start position in stream time.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` when the pipeline accepts the seek.
+    ///
+    /// # Errors
+    ///
+    /// Returns a seek error if rejected, or a capture error if a lock is poisoned.
+    pub(crate) fn seek(
+        &self,
+        rate: f64,
+        flags: gstreamer::SeekFlags,
+        position: gstreamer::ClockTime,
+    ) -> Result<(), super::error::VideoReaderError> {
+        let _seek = self
+            .seek_lock
+            .lock()
+            .map_err(|_| StreamCaptureError::MutexPoisonError)?;
+        let event = gstreamer::event::Seek::new(
+            rate,
+            flags,
+            gstreamer::SeekType::Set,
+            position,
+            gstreamer::SeekType::None,
+            gstreamer::ClockTime::NONE,
+        );
+        {
+            let mut status = self
+                .status
+                .lock()
+                .map_err(|_| StreamCaptureError::MutexPoisonError)?;
+            status.previous_eos = Some(status.eos);
+            status.eos = EosStatus {
+                seqnum: Some(event.seqnum()),
+                received: !flags.contains(gstreamer::SeekFlags::FLUSH) && status.eos.received,
+            };
         }
-    }
-
-    /// Restores end-of-stream after a failed seek, which did not clear it in GStreamer.
-    pub(crate) fn mark_eos(&self) {
-        if let Ok(mut status) = self.status.lock() {
-            status.eos = true;
+        let accepted = self.pipeline.send_event(event);
+        let mut status = self
+            .status
+            .lock()
+            .map_err(|_| StreamCaptureError::MutexPoisonError)?;
+        if let Some(previous) = status.previous_eos.take() {
+            if !accepted {
+                status.eos = previous;
+            } else if !flags.contains(gstreamer::SeekFlags::FLUSH) {
+                status.eos.received |= previous.received;
+            }
+        }
+        if accepted {
+            Ok(())
+        } else {
+            Err(super::error::VideoReaderError::SeekError)
         }
     }
 
