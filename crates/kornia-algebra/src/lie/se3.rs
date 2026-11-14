@@ -1,7 +1,7 @@
 use super::so3::{SO3F32, SO3F64};
 use crate::{
     param::{Param, ParamError},
-    Mat3AF32, Mat3F64, Mat4F32, Mat4F64, QuatF32, QuatF64, Vec3AF32, Vec3F64,
+    Mat3AF32, Mat3F64, Mat4F32, Mat4F64, Mat6F64, QuatF32, QuatF64, Vec3AF32, Vec3F64,
 };
 use rand::RngExt;
 
@@ -532,7 +532,36 @@ impl SE3F64 {
 
     /// Adjoint for the `[υ; ω]` tangent order of [`Self::exp`]:
     /// `Ad(T) = [[R, t×R], [0, R]]`, so that `T · Exp(ξ) · T⁻¹ = Exp(Ad(T) · ξ)`.
-    pub fn adjoint(&self) -> [[f64; 6]; 6] {
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The transform `T = (R, t)`.
+    ///
+    /// # Returns
+    ///
+    /// The 6×6 adjoint acting on twists ordered `[υ; ω]`; element `(r, c)` is
+    /// row `r`, column `c`.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_algebra::{SE3F64, Vec3F64, Vec6F64};
+    ///
+    /// // A pure translation t = (1, 2, 3): Ad = [[I, t×], [0, I]].
+    /// let t = SE3F64::exp(Vec3F64::new(1.0, 2.0, 3.0), Vec3F64::ZERO);
+    /// let ad = t.adjoint();
+    /// assert_eq!(ad[(0, 4)], -3.0);
+    /// assert_eq!(ad[(0, 5)], 2.0);
+    ///
+    /// // A unit rotation rate about z, moved through the translation.
+    /// let twist = ad * Vec6F64::new(0.0, 0.0, 0.0, 0.0, 0.0, 1.0);
+    /// assert_eq!(twist, Vec6F64::new(2.0, -1.0, 0.0, 0.0, 0.0, 1.0));
+    /// ```
+    pub fn adjoint(&self) -> Mat6F64 {
         let r = self.r.matrix();
         block_upper_triangular(&r, &(SO3F64::hat(self.t) * r))
     }
@@ -581,25 +610,78 @@ impl SE3F64 {
 
     /// `Jₗ(ρ, ω) = [[Jₗ(ω), Q(ρ, ω)], [0, Jₗ(ω)]]`, with `Jₗ(ω)` the SO(3) left
     /// Jacobian and `Q` as in [`SE3F32::left_jacobian`].
-    pub fn left_jacobian(rho: Vec3F64, omega: Vec3F64) -> [[f64; 6]; 6] {
+    ///
+    /// # Arguments
+    ///
+    /// * `rho` - Translational part `ρ` of the tangent `[ρ; ω]`.
+    /// * `omega` - Rotational part `ω` (axis-angle, radians).
+    ///
+    /// # Returns
+    ///
+    /// The 6×6 left Jacobian for tangents ordered `[ρ; ω]`, rows and columns
+    /// in that order.
+    ///
+    /// # Errors
+    ///
+    /// This function is infallible.
+    pub fn left_jacobian(rho: Vec3F64, omega: Vec3F64) -> Mat6F64 {
         block_upper_triangular(&SO3F64::left_jacobian(omega), &q_block(rho, omega))
     }
 
     /// `Jᵣ(ρ, ω) = Jₗ(−ρ, −ω)`.
-    pub fn right_jacobian(rho: Vec3F64, omega: Vec3F64) -> [[f64; 6]; 6] {
+    ///
+    /// # Arguments
+    ///
+    /// * `rho` - Translational part `ρ` of the tangent `[ρ; ω]`.
+    /// * `omega` - Rotational part `ω` (axis-angle, radians).
+    ///
+    /// # Returns
+    ///
+    /// The 6×6 right Jacobian for tangents ordered `[ρ; ω]`.
+    ///
+    /// # Errors
+    ///
+    /// This function is infallible.
+    pub fn right_jacobian(rho: Vec3F64, omega: Vec3F64) -> Mat6F64 {
         Self::left_jacobian(-rho, -omega)
     }
 
     /// `Jₗ⁻¹(ρ, ω) = [[Jₗ⁻¹, −Jₗ⁻¹ Q Jₗ⁻¹], [0, Jₗ⁻¹]]` (Barfoot, State
     /// Estimation for Robotics, eq. 7.95).
-    pub fn left_jacobian_inverse(rho: Vec3F64, omega: Vec3F64) -> [[f64; 6]; 6] {
+    ///
+    /// # Arguments
+    ///
+    /// * `rho` - Translational part `ρ` of the tangent `[ρ; ω]`.
+    /// * `omega` - Rotational part `ω` (axis-angle, radians).
+    ///
+    /// # Returns
+    ///
+    /// The 6×6 inverse of [`Self::left_jacobian`], computed in closed form.
+    ///
+    /// # Errors
+    ///
+    /// This function is infallible.
+    pub fn left_jacobian_inverse(rho: Vec3F64, omega: Vec3F64) -> Mat6F64 {
         let j_inv = SO3F64::left_jacobian(omega).inverse();
         let upper = j_inv * q_block(rho, omega) * j_inv;
         block_upper_triangular(&j_inv, &(-1.0 * upper))
     }
 
     /// `Jᵣ⁻¹(ρ, ω) = Jₗ⁻¹(−ρ, −ω)`.
-    pub fn right_jacobian_inverse(rho: Vec3F64, omega: Vec3F64) -> [[f64; 6]; 6] {
+    ///
+    /// # Arguments
+    ///
+    /// * `rho` - Translational part `ρ` of the tangent `[ρ; ω]`.
+    /// * `omega` - Rotational part `ω` (axis-angle, radians).
+    ///
+    /// # Returns
+    ///
+    /// The 6×6 inverse of [`Self::right_jacobian`], computed in closed form.
+    ///
+    /// # Errors
+    ///
+    /// This function is infallible.
+    pub fn right_jacobian_inverse(rho: Vec3F64, omega: Vec3F64) -> Mat6F64 {
         Self::left_jacobian_inverse(-rho, -omega)
     }
 }
@@ -635,17 +717,13 @@ fn q_block(rho: Vec3F64, omega: Vec3F64) -> Mat3F64 {
     0.5 * p + c1 * (wp + pw + wpw) + c2 * (w * wp + pw * w - 3.0 * wpw) + c3 * (wpw * w + w * wpw)
 }
 
-/// `[[a, b], [0, a]]` as a row-major 6×6 array.
-fn block_upper_triangular(a: &Mat3F64, b: &Mat3F64) -> [[f64; 6]; 6] {
-    let (a, b) = (a.to_cols_array(), b.to_cols_array());
-    let mut m = [[0.0; 6]; 6];
-    for c in 0..3 {
-        for r in 0..3 {
-            m[r][c] = a[c * 3 + r];
-            m[r][c + 3] = b[c * 3 + r];
-            m[r + 3][c + 3] = a[c * 3 + r];
-        }
-    }
+/// `[[a, b], [0, a]]`.
+fn block_upper_triangular(a: &Mat3F64, b: &Mat3F64) -> Mat6F64 {
+    let (a, b) = (nalgebra::Matrix3::from(*a), nalgebra::Matrix3::from(*b));
+    let mut m = Mat6F64::zeros();
+    m.fixed_view_mut::<3, 3>(0, 0).copy_from(&a);
+    m.fixed_view_mut::<3, 3>(0, 3).copy_from(&b);
+    m.fixed_view_mut::<3, 3>(3, 3).copy_from(&a);
     m
 }
 
@@ -1494,6 +1572,7 @@ mod tests {
 #[cfg(test)]
 mod tests_f64 {
     use super::*;
+    use crate::Vec6F64;
 
     fn twist(xi: [f64; 6]) -> (Vec3F64, Vec3F64) {
         (
@@ -1504,14 +1583,6 @@ mod tests_f64 {
 
     fn flat((u, w): (Vec3F64, Vec3F64)) -> [f64; 6] {
         [u.x, u.y, u.z, w.x, w.y, w.z]
-    }
-
-    fn mat6_mul(a: &[[f64; 6]; 6], b: &[[f64; 6]; 6]) -> [[f64; 6]; 6] {
-        std::array::from_fn(|i| std::array::from_fn(|j| (0..6).map(|k| a[i][k] * b[k][j]).sum()))
-    }
-
-    fn mat6_mul_vec6(a: &[[f64; 6]; 6], v: &[f64; 6]) -> [f64; 6] {
-        std::array::from_fn(|i| (0..6).map(|k| a[i][k] * v[k]).sum())
     }
 
     fn assert_close(a: &[f64], b: &[f64], tol: f64) {
@@ -1633,7 +1704,7 @@ mod tests_f64 {
     fn adjoint_conjugates_exp() {
         let (a, b) = (twist(TWISTS[1]), twist(TWISTS[0]));
         let t = SE3F64::exp(a.0, a.1);
-        let mapped = twist(mat6_mul_vec6(&t.adjoint(), &TWISTS[0]));
+        let mapped = twist((t.adjoint() * Vec6F64::from(TWISTS[0])).into());
         let lhs = SE3F64::exp(mapped.0, mapped.1).matrix().to_cols_array();
         let rhs = (t * SE3F64::exp(b.0, b.1) * t.inverse())
             .matrix()
@@ -1654,11 +1725,10 @@ mod tests_f64 {
         std::array::from_fn(|i| (up[i] - down[i]) / (2.0 * H))
     }
 
-    fn assert_jacobian(analytic: &[[f64; 6]; 6], xi: [f64; 6], f: impl Fn(SE3F64) -> SE3F64) {
-        let columns: [[f64; 6]; 6] = std::array::from_fn(|k| central_difference(xi, k, &f));
-        for (i, row) in analytic.iter().enumerate() {
-            for (k, &value) in row.iter().enumerate() {
-                let numeric = columns[k][i];
+    fn assert_jacobian(analytic: &Mat6F64, xi: [f64; 6], f: impl Fn(SE3F64) -> SE3F64) {
+        for k in 0..6 {
+            for (i, numeric) in central_difference(xi, k, &f).into_iter().enumerate() {
+                let value = analytic[(i, k)];
                 assert!(
                     (value - numeric).abs() < 1e-8,
                     "ξ = {xi:?}, J[{i}][{k}] = {value} vs {numeric}"
@@ -1680,8 +1750,6 @@ mod tests_f64 {
 
     #[test]
     fn jacobian_inverses_invert() {
-        let identity: [[f64; 6]; 6] =
-            std::array::from_fn(|i| std::array::from_fn(|j| if i == j { 1.0 } else { 0.0 }));
         for xi in TWISTS {
             let (u, w) = twist(xi);
             for (j, j_inv) in [
@@ -1694,10 +1762,8 @@ mod tests_f64 {
                     SE3F64::right_jacobian_inverse(u, w),
                 ),
             ] {
-                let product = mat6_mul(&j, &j_inv);
-                for (row, expected) in product.iter().zip(&identity) {
-                    assert_close(row, expected, 1e-12);
-                }
+                let error = (j * j_inv - Mat6F64::identity()).amax();
+                assert!(error <= 1e-12, "ξ = {xi:?}: |J · J⁻¹ − I| = {error}");
             }
         }
     }
@@ -1710,10 +1776,8 @@ mod tests_f64 {
             let jl64 = SE3F64::left_jacobian(u, w);
             let to32 = |v: Vec3F64| Vec3AF32::new(v.x as f32, v.y as f32, v.z as f32);
             let jl32 = SE3F32::left_jacobian(to32(u), to32(w));
-            for (r64, r32) in jl64.iter().zip(&jl32) {
-                let r32: [f64; 6] = std::array::from_fn(|k| r32[k] as f64);
-                assert_close(r64, &r32, 1e-5);
-            }
+            let jl32 = Mat6F64::from_fn(|r, c| jl32[r][c] as f64);
+            assert!((jl64 - jl32).amax() <= 1e-5, "ξ = {xi:?}");
             let t = SE3F64::exp(u, w).matrix().to_cols_array();
             let t32 = SE3F32::exp(to32(u), to32(w)).matrix().to_cols_array();
             let t32: [f64; 16] = std::array::from_fn(|k| t32[k] as f64);
