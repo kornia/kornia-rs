@@ -688,14 +688,22 @@ impl VideoReader {
 
     /// Seeks to a specific position in the video.
     ///
+    /// A flushing seek discards buffered frames from the previous segment. A non-flushing
+    /// seek preserves them.
+    ///
     /// # Arguments
     ///
+    /// * `seek_flags` - GStreamer seek flags; `FLUSH` discards pre-seek buffered frames.
     /// * `pos` - The position to seek to, as a Duration from the start of the video.
     ///
     /// # Returns
     ///
     /// * `Ok(())` - If the seek operation was successful.
     /// * `Err(VideoReaderError)` - If the seek operation failed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VideoReaderError::SeekError`] if the pipeline rejects the seek.
     pub fn seek(
         &self,
         seek_flags: gstreamer::SeekFlags,
@@ -729,6 +737,8 @@ impl VideoReader {
 
     /// Sets the playback speed of the video.
     ///
+    /// This performs a flushing seek and discards buffered pre-seek frames.
+    ///
     /// # Arguments
     ///
     /// * `speed` - The playback speed factor. 1.0 is normal speed, 0.5 is half speed, 2.0 is
@@ -736,7 +746,13 @@ impl VideoReader {
     ///
     /// # Returns
     ///
-    /// `true` if the speed change operation was successful, `false` otherwise.
+    /// `Ok(())` if the speed change operation was successful.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VideoReaderError::InvalidPlaybackSpeed`] for a non-positive speed,
+    /// [`VideoReaderError::CurrentPosError`] if the position is unavailable, or
+    /// [`VideoReaderError::SeekError`] if the pipeline rejects the rate change.
     pub fn set_playback_speed(&self, speed: f64) -> Result<(), VideoReaderError> {
         if speed <= 0.0 {
             return Err(VideoReaderError::InvalidPlaybackSpeed); // Speed must be positive
@@ -765,6 +781,19 @@ impl VideoReader {
     /// Resets the video to the beginning without changing its state.
     ///
     /// This function seeks the video to the origin (start) but does not stop or start the pipeline.
+    /// Buffered frames from before the reset are discarded at the flushing seek boundary.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The video reader to reset.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if the reset seek was accepted.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VideoReaderError::SeekError`] if the pipeline rejects the reset.
     pub fn reset(&self) -> Result<(), VideoReaderError> {
         let pipeline = &self.0.pipeline;
         // Clear EOS before the seek: a flushing seek clears it in GStreamer, and an EOS the seek
@@ -1557,6 +1586,150 @@ mod tests {
             "frames read back from {file_path:?}"
         );
 
+        Ok(())
+    }
+    /// Buffered frames from the old segment must not survive seek/reset for either format.
+    #[test]
+    fn video_reader_flushing_seek_discards_old_frames() -> Result<(), Box<dyn std::error::Error>> {
+        for grayscale in [false, true] {
+            for reset in [false, true] {
+                let tmp = tempfile::tempdir()?;
+                let path = tmp.path().join("seek-buffered.mov");
+                let mut writer = VideoWriter::from_pipeline_description(
+                    RAW_MOV,
+                    &path,
+                    ImageFormat::Rgb8,
+                    30,
+                    SIZE,
+                )?;
+                writer.start()?;
+                write_and_close(writer, &[0, 20, 40, 60, 80, 100, 120, 140, 160, 180])?;
+                let format = if grayscale {
+                    ImageFormat::Mono8
+                } else {
+                    ImageFormat::Rgb8
+                };
+                let mut reader = VideoReader::new(&path, format)?;
+                // Observe the third incoming buffer: earlier samples have reached the sink.
+                // Unlike waiting for EOS without consuming, this also works with backpressure.
+                let sink = reader.0.pipeline.by_name("sink").ok_or("missing sink")?;
+                let pad = sink.static_pad("sink").ok_or("missing sink pad")?;
+                let count = std::sync::atomic::AtomicUsize::new(0);
+                let (queued_tx, queued_rx) = std::sync::mpsc::sync_channel(1);
+                pad.add_probe(gstreamer::PadProbeType::BUFFER, move |_pad, _info| {
+                    if count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 2 {
+                        let _ = queued_tx.try_send(());
+                    }
+                    gstreamer::PadProbeReturn::Ok
+                });
+                let read_value =
+                    |reader: &mut VideoReader| -> Result<u8, Box<dyn std::error::Error>> {
+                        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                        loop {
+                            let value = match grayscale {
+                                false => match reader.try_grab_rgb8()? {
+                                    Grab::Frame(image) => Some(image.as_slice()[0]),
+                                    Grab::Pending => None,
+                                    Grab::Eos => return Err("unexpected EOS".into()),
+                                },
+                                true => match reader.try_grab_gray8()? {
+                                    Grab::Frame(image) => Some(image.as_slice()[0]),
+                                    Grab::Pending => None,
+                                    Grab::Eos => return Err("unexpected EOS".into()),
+                                },
+                            };
+                            if let Some(value) = value {
+                                return Ok(value);
+                            }
+                            assert!(std::time::Instant::now() < deadline, "no frame received");
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                    };
+                reader.start()?;
+                assert_eq!(read_value(&mut reader)?, 0);
+                queued_rx.recv_timeout(Duration::from_secs(10))?;
+                if reset {
+                    reader.reset()?;
+                } else {
+                    reader.seek(
+                        gstreamer::SeekFlags::FLUSH | gstreamer::SeekFlags::ACCURATE,
+                        Duration::ZERO,
+                    )?;
+                }
+                let mut replay = Vec::new();
+                for _ in 0..10 {
+                    replay.push(read_value(&mut reader)?);
+                }
+                reader.close()?;
+                assert_eq!(
+                    replay,
+                    [0, 20, 40, 60, 80, 100, 120, 140, 160, 180],
+                    "grayscale={grayscale}, reset={reset}: replay retained or reordered old frames"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Only actual flush events invalidate queued frames, including rate-change seeks.
+    #[test]
+    fn video_reader_flush_preserves_other_seek_behaviour() -> Result<(), Box<dyn std::error::Error>>
+    {
+        for operation in ["non-flushing", "failed", "speed"] {
+            let tmp = tempfile::tempdir()?;
+            let path = tmp.path().join("seek-controls.mov");
+            let mut writer = VideoWriter::from_pipeline_description(
+                RAW_MOV,
+                &path,
+                ImageFormat::Rgb8,
+                30,
+                SIZE,
+            )?;
+            writer.start()?;
+            write_and_close(writer, &[0, 20, 40, 60, 80, 100, 120, 140, 160, 180])?;
+            let mut reader = VideoReader::new(&path, ImageFormat::Rgb8)?;
+            reader.start()?;
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while !reader.is_eos() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "file never reached EOS"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            // All ten frames were decoded; the five-frame ring holds values 100..=180.
+            match operation {
+                "failed" => {
+                    reader.0.pipeline.set_state(gstreamer::State::Null)?;
+                    assert!(reader
+                        .seek(gstreamer::SeekFlags::FLUSH, Duration::ZERO)
+                        .is_err());
+                }
+                "non-flushing" => {
+                    let _ = reader.seek(gstreamer::SeekFlags::ACCURATE, Duration::ZERO);
+                }
+                "speed" => reader.set_playback_speed(2.0)?,
+                _ => unreachable!(),
+            }
+            let first = reader.try_grab_rgb8()?;
+            reader.close()?;
+            if operation == "speed" {
+                // The rate change seeks at EOS: no pre-seek frame may be returned.
+                assert!(
+                    !matches!(first, Grab::Frame(_)),
+                    "rate change retained an old frame"
+                );
+            } else {
+                let Grab::Frame(image) = first else {
+                    panic!("{operation} seek discarded buffered data");
+                };
+                assert_eq!(
+                    image.as_slice()[0],
+                    100,
+                    "{operation} seek changed buffered data"
+                );
+            }
+        }
         Ok(())
     }
 }
