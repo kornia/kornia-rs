@@ -265,6 +265,7 @@ define_cross_product!(Vec3F64, glam::DVec3);
 define_cross_product!(Vec3AF32, glam::Vec3A);
 
 impl From<Vec3F64> for nalgebra::Vector3<f64> {
+    /// Converts to a `nalgebra::Vector3<f64>` with the same components.
     #[inline]
     fn from(v: Vec3F64) -> Self {
         Self::new(v.x, v.y, v.z)
@@ -272,6 +273,7 @@ impl From<Vec3F64> for nalgebra::Vector3<f64> {
 }
 
 impl From<nalgebra::Vector3<f64>> for Vec3F64 {
+    /// Converts from a `nalgebra::Vector3<f64>` with the same components.
     #[inline]
     fn from(v: nalgebra::Vector3<f64>) -> Self {
         Self::new(v.x, v.y, v.z)

@@ -327,6 +327,7 @@ impl Mat3F64 {
 }
 
 impl From<Mat3F64> for nalgebra::Matrix3<f64> {
+    /// Converts to a `nalgebra::Matrix3<f64>` with the same rows and columns.
     #[inline]
     fn from(m: Mat3F64) -> Self {
         Self::from_column_slice(&m.to_cols_array())
@@ -334,6 +335,7 @@ impl From<Mat3F64> for nalgebra::Matrix3<f64> {
 }
 
 impl From<nalgebra::Matrix3<f64>> for Mat3F64 {
+    /// Converts from a `nalgebra::Matrix3<f64>` with the same rows and columns.
     #[inline]
     fn from(m: nalgebra::Matrix3<f64>) -> Self {
         Self(glam::DMat3::from_cols_array_2d(&m.data.0))

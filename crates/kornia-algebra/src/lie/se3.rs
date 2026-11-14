@@ -532,6 +532,35 @@ impl SE3F64 {
 
     /// Adjoint for the `[υ; ω]` tangent order of [`Self::exp`]:
     /// `Ad(T) = [[R, t×R], [0, R]]`, so that `T · Exp(ξ) · T⁻¹ = Exp(Ad(T) · ξ)`.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The transform `T = (R, t)`.
+    ///
+    /// # Returns
+    ///
+    /// The 6×6 adjoint acting on twists ordered `[υ; ω]`; element `(r, c)` is
+    /// row `r`, column `c`.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_algebra::{SE3F64, Vec3F64, Vec6F64};
+    ///
+    /// // A pure translation t = (1, 2, 3): Ad = [[I, t×], [0, I]].
+    /// let t = SE3F64::exp(Vec3F64::new(1.0, 2.0, 3.0), Vec3F64::ZERO);
+    /// let ad = t.adjoint();
+    /// assert_eq!(ad[(0, 4)], -3.0);
+    /// assert_eq!(ad[(0, 5)], 2.0);
+    ///
+    /// // A unit rotation rate about z, moved through the translation.
+    /// let twist = ad * Vec6F64::new(0.0, 0.0, 0.0, 0.0, 0.0, 1.0);
+    /// assert_eq!(twist, Vec6F64::new(2.0, -1.0, 0.0, 0.0, 0.0, 1.0));
+    /// ```
     pub fn adjoint(&self) -> Mat6F64 {
         let r = self.r.matrix();
         block_upper_triangular(&r, &(SO3F64::hat(self.t) * r))
@@ -581,17 +610,57 @@ impl SE3F64 {
 
     /// `Jₗ(ρ, ω) = [[Jₗ(ω), Q(ρ, ω)], [0, Jₗ(ω)]]`, with `Jₗ(ω)` the SO(3) left
     /// Jacobian and `Q` as in [`SE3F32::left_jacobian`].
+    ///
+    /// # Arguments
+    ///
+    /// * `rho` - Translational part `ρ` of the tangent `[ρ; ω]`.
+    /// * `omega` - Rotational part `ω` (axis-angle, radians).
+    ///
+    /// # Returns
+    ///
+    /// The 6×6 left Jacobian for tangents ordered `[ρ; ω]`, rows and columns
+    /// in that order.
+    ///
+    /// # Errors
+    ///
+    /// This function is infallible.
     pub fn left_jacobian(rho: Vec3F64, omega: Vec3F64) -> Mat6F64 {
         block_upper_triangular(&SO3F64::left_jacobian(omega), &q_block(rho, omega))
     }
 
     /// `Jᵣ(ρ, ω) = Jₗ(−ρ, −ω)`.
+    ///
+    /// # Arguments
+    ///
+    /// * `rho` - Translational part `ρ` of the tangent `[ρ; ω]`.
+    /// * `omega` - Rotational part `ω` (axis-angle, radians).
+    ///
+    /// # Returns
+    ///
+    /// The 6×6 right Jacobian for tangents ordered `[ρ; ω]`.
+    ///
+    /// # Errors
+    ///
+    /// This function is infallible.
     pub fn right_jacobian(rho: Vec3F64, omega: Vec3F64) -> Mat6F64 {
         Self::left_jacobian(-rho, -omega)
     }
 
     /// `Jₗ⁻¹(ρ, ω) = [[Jₗ⁻¹, −Jₗ⁻¹ Q Jₗ⁻¹], [0, Jₗ⁻¹]]` (Barfoot, State
     /// Estimation for Robotics, eq. 7.95).
+    ///
+    /// # Arguments
+    ///
+    /// * `rho` - Translational part `ρ` of the tangent `[ρ; ω]`.
+    /// * `omega` - Rotational part `ω` (axis-angle, radians).
+    ///
+    /// # Returns
+    ///
+    /// The 6×6 inverse of [`Self::left_jacobian`], computed in closed form.
+    ///
+    /// # Errors
+    ///
+    /// This function is infallible.
     pub fn left_jacobian_inverse(rho: Vec3F64, omega: Vec3F64) -> Mat6F64 {
         let j_inv = SO3F64::left_jacobian(omega).inverse();
         let upper = j_inv * q_block(rho, omega) * j_inv;
@@ -599,6 +668,19 @@ impl SE3F64 {
     }
 
     /// `Jᵣ⁻¹(ρ, ω) = Jₗ⁻¹(−ρ, −ω)`.
+    ///
+    /// # Arguments
+    ///
+    /// * `rho` - Translational part `ρ` of the tangent `[ρ; ω]`.
+    /// * `omega` - Rotational part `ω` (axis-angle, radians).
+    ///
+    /// # Returns
+    ///
+    /// The 6×6 inverse of [`Self::right_jacobian`], computed in closed form.
+    ///
+    /// # Errors
+    ///
+    /// This function is infallible.
     pub fn right_jacobian_inverse(rho: Vec3F64, omega: Vec3F64) -> Mat6F64 {
         Self::left_jacobian_inverse(-rho, -omega)
     }
