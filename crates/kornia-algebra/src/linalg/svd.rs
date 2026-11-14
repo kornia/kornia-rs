@@ -498,7 +498,10 @@ mod impl_f64 {
     use super::*;
 
     const EPSILON: f64 = 1e-15;
-    const JACOBI_TOLERANCE: f64 = 1e-12;
+    // Off-diagonal magnitude of AᵀA, relative to its diagonal magnitude, below
+    // which the Jacobi sweeps stop. Relative so the result does not depend on
+    // the scale of the input matrix.
+    const JACOBI_TOLERANCE: f64 = 1e-15;
     // Standard Jacobi rotation requires more sweeps for f64 Exact Givens
     // to ensure convergence without hitting the limit prematurely.
     const MAX_SWEEPS: usize = 20;
@@ -529,9 +532,11 @@ mod impl_f64 {
         }
     }
 
+    /// Cosine and sine of the Jacobi rotation that zeroes the off-diagonal
+    /// `apq` of the symmetric 2×2 block `[[app, apq], [apq, aqq]]`.
     #[inline(always)]
     fn exact_givens(app: f64, aqq: f64, apq: f64) -> (f64, f64) {
-        if apq.abs() < EPSILON {
+        if apq.abs() <= EPSILON * (app.abs() + aqq.abs()) {
             return (1.0, 0.0);
         }
         let tau = (aqq - app) / (2.0 * apq);
@@ -649,9 +654,10 @@ mod impl_f64 {
             );
             q_accum = q_accum.normalize();
 
-            let off_diag_sq =
-                s_mat.m_10 * s_mat.m_10 + s_mat.m_20 * s_mat.m_20 + s_mat.m_21 * s_mat.m_21;
-            if off_diag_sq < JACOBI_TOLERANCE {
+            // Sums of magnitudes, not squares, so large inputs do not overflow.
+            let off_diag = s_mat.m_10.abs() + s_mat.m_20.abs() + s_mat.m_21.abs();
+            let diag = s_mat.m_00.abs() + s_mat.m_11.abs() + s_mat.m_22.abs();
+            if off_diag <= JACOBI_TOLERANCE * diag {
                 break;
             }
         }
@@ -673,19 +679,25 @@ mod impl_f64 {
 
     #[inline(always)]
     fn qr_givens_quaternion(a1: f64, a2: f64) -> GivensF64 {
-        let rho = (a1 * a1 + a2 * a2).sqrt();
+        // `hypot` and an exact-zero test instead of an absolute threshold, so
+        // small inputs are rotated like large ones.
+        let rho = a1.hypot(a2);
+        if rho == 0.0 {
+            return GivensF64 {
+                cos_theta: 1.0,
+                sin_theta: 0.0,
+            };
+        }
         let mut g = GivensF64 {
-            cos_theta: a1.abs() + f64::max(rho, EPSILON),
-            sin_theta: if rho > EPSILON { a2 } else { 0.0 },
+            cos_theta: a1.abs() + rho,
+            sin_theta: a2,
         };
 
         if a1 < 0.0 {
             std::mem::swap(&mut g.sin_theta, &mut g.cos_theta);
         }
 
-        let w = (g.cos_theta * g.cos_theta + g.sin_theta * g.sin_theta)
-            .sqrt()
-            .recip();
+        let w = g.cos_theta.hypot(g.sin_theta).recip();
         g.cos_theta *= w;
         g.sin_theta *= w;
         g
@@ -815,7 +827,8 @@ mod impl_f64 {
     }
 
     pub fn svd3(mat: &Mat3F64) -> SVD3Set {
-        let mut s_mat = Symmetric3x3::from_mat3x3(&(mat.transpose() * *mat));
+        // `from_mat3x3` already forms the Gram matrix AᵀA from the columns of A.
+        let mut s_mat = Symmetric3x3::from_mat3x3(mat);
         let q = compute_v_quat(&mut s_mat);
         let mut v_mat = Mat3F64::from_quat(q);
 
@@ -1111,6 +1124,52 @@ mod tests {
         assert!((s_vec.x - 1.0).abs() < TEST_EPSILON_F64);
         assert!((s_vec.y - 1.0).abs() < TEST_EPSILON_F64);
         assert!((s_vec.z - 1.0).abs() < TEST_EPSILON_F64);
+    }
+
+    #[test]
+    fn test_svd3_f64_accuracy_is_scale_independent() {
+        // A = U · diag(sigma) · Vᵀ with known rotations, so the singular values
+        // are known independently of the solver.
+        let u = Mat3F64::from_quat(QuatF64::from_xyzw(0.3, -0.5, 0.2, 0.8).normalize());
+        let v = Mat3F64::from_quat(QuatF64::from_xyzw(-0.6, 0.1, 0.4, 0.7).normalize());
+        for s_ref in [[3.0, 2.0, 0.5], [3.0, 2.0, 0.0]] {
+            let a = u
+                * Mat3F64::from_diagonal(Vec3F64::new(s_ref[0], s_ref[1], s_ref[2]))
+                * v.transpose();
+            for scale in [1e-100, 1e-13, 1e-6, 1e-3, 1.0, 1e3, 1e50, 1e100] {
+                let m = a * scale;
+                let svd = svd3_f64(&m);
+                let diff = *svd.u() * *svd.s() * svd.v().transpose() - m;
+                let err = diff.x_axis().length() + diff.y_axis().length() + diff.z_axis().length();
+                let norm = m.x_axis().length() + m.y_axis().length() + m.z_axis().length();
+                assert!(
+                    err / norm < 1e-12,
+                    "scale {scale}: relative reconstruction error {}",
+                    err / norm
+                );
+                // Errors relative to the largest singular value, so a zero one is checked too.
+                let s = svd.s();
+                let got = [s.x_axis().x, s.y_axis().y, s.z_axis().z];
+                for i in 0..3 {
+                    let err = (got[i] / scale - s_ref[i]).abs() / s_ref[0];
+                    assert!(
+                        err < 1e-12,
+                        "scale {scale}: singular value {i} error {err} (relative to the largest)"
+                    );
+                }
+                // S must be diagonal: reconstruction alone holds for any orthonormal V.
+                let off_diag = s.x_axis().y.abs()
+                    + s.x_axis().z.abs()
+                    + s.y_axis().x.abs()
+                    + s.y_axis().z.abs()
+                    + s.z_axis().x.abs()
+                    + s.z_axis().y.abs();
+                assert!(
+                    off_diag / (s_ref[0] * scale) < 1e-12,
+                    "scale {scale}: off-diagonal of S {off_diag}"
+                );
+            }
+        }
     }
 
     #[test]

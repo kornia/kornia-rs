@@ -1106,6 +1106,32 @@ mod tests {
     }
 
     #[test]
+    fn test_umeyama_f64_small_cloud_recovers_rotation() -> Result<(), UmeyamaError> {
+        // A 10 cm object: the cross-covariance is ~1e-3, where the SVD used to
+        // stop its Jacobi sweeps early and return a rotation 25 degrees off.
+        let src = [
+            Vec3F64::new(0.0, 0.0, 0.0),
+            Vec3F64::new(0.1, 0.0, 0.0),
+            Vec3F64::new(0.0, 0.07, 0.0),
+            Vec3F64::new(0.0, 0.0, 0.04),
+            Vec3F64::new(0.1, 0.07, 0.0),
+            Vec3F64::new(0.03, 0.02, 0.04),
+        ];
+        let (c, s) = (30f64.to_radians().cos(), 30f64.to_radians().sin());
+        let r_true = Mat3F64::from_cols(
+            Vec3F64::new(c, s, 0.0),
+            Vec3F64::new(-s, c, 0.0),
+            Vec3F64::new(0.0, 0.0, 1.0),
+        );
+        let t_true = Vec3F64::new(0.5, -0.3, 2.0);
+        let dst: Vec<Vec3F64> = src.iter().map(|p| r_true * *p + t_true).collect();
+
+        let got = umeyama_f64(&src, &dst, None, false)?;
+        assert_matches_true(&got, &r_true, &t_true, 1.0, 1e-9);
+        Ok(())
+    }
+
+    #[test]
     fn test_umeyama_f64_zero_weight_point_ignored() -> Result<(), UmeyamaError> {
         let src = [
             Vec3F64::new(0.0, 0.0, 0.0),
