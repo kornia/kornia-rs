@@ -1513,3 +1513,64 @@ fn tsdf_cuda_failed_extract_leaves_no_partial_mesh() {
         "{fired} faults, {errors} errors"
     );
 }
+
+/// A full block hash fails the step with `HashFull` instead of dropping a
+/// block, and the volume stays as before the step (test hook: a table of
+/// `slots` slots, not twice the capacity, which no volume uses).
+#[test]
+fn tsdf_cuda_full_hash_fails_the_step_and_keeps_the_volume() {
+    let run = pinhole_run(64, 48, 5);
+    let o = |k: usize| obs(&run.sensor, run.poses[k], &run.depth[k]);
+    let mut probe = CudaTsdfVolume::<8>::new(layout(), params(1 << 13), stream()).unwrap();
+    let blocks: Vec<usize> = (0..run.poses.len())
+        .map(|k| {
+            probe.integrate(&[o(k)]).unwrap();
+            probe.num_blocks()
+        })
+        .collect();
+    let slots = blocks[0].next_power_of_two();
+    let fail = blocks
+        .iter()
+        .position(|&n| n > slots)
+        .expect("no step outgrows the table");
+    fault::set_hash_slots(Some(slots));
+    let mut pair = Pair::<8>::new(params(1 << 13));
+    fault::set_hash_slots(None);
+    for k in 0..fail {
+        pair.step("full hash", &[o(k)]).unwrap();
+    }
+    let e = pair
+        .gpu
+        .integrate(&[o(fail)])
+        .expect_err("a full hash took the step");
+    assert!(
+        matches!(e, TsdfError::HashFull { slots: s } if s == slots),
+        "{e:?}"
+    );
+    pair.same("after HashFull");
+    // the rebuilt hash still finds every block
+    pair.step("full hash, no new blocks", &[o(0)]).unwrap();
+    pair.same("after a step on the rebuilt hash");
+}
+
+/// A regrowth whose new table is full fails with `HashFull` and keeps the
+/// old index, which a retry then grows.
+#[test]
+fn tsdf_cuda_full_hash_on_growth_keeps_the_old_index() {
+    let run = pinhole_run(64, 48, 2);
+    let o = |k: usize| obs(&run.sensor, run.poses[k], &run.depth[k]);
+    let mut pair = Pair::<8>::new(params(1 << 16));
+    pair.step("growth", &[o(0)]).unwrap();
+    assert!(pair.gpu.num_blocks() > 2, "vacuous scene");
+    let stride = pair.gpu.dims().2;
+    fault::set_hash_slots(Some(2));
+    let e = pair.gpu.reserve(5000).expect_err("a full table was kept");
+    fault::set_hash_slots(None);
+    assert!(matches!(e, TsdfError::HashFull { slots: 2 }), "{e:?}");
+    assert_eq!(pair.gpu.dims().2, stride, "the old index was replaced");
+    pair.same("after a failed growth");
+    pair.gpu.reserve(5000).unwrap();
+    assert!(pair.gpu.dims().2 >= 5000, "stride");
+    pair.step("growth, retried", &[o(1)]).unwrap();
+    pair.same("after the retried growth");
+}

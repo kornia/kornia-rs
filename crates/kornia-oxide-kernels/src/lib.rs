@@ -47,4 +47,58 @@ mod tests {
         assert!(ENTRIES.contains(&entry::GRAY_FROM_RGB_U8));
         assert!(IS_STUB || ENTRIES.iter().all(|e| PTX.contains(e)));
     }
+
+    /// Every by-value kernel parameter (`.param .align A .b8 p[N]`) is one of
+    /// the `tsdf_core` structs, with the host's size and alignment: the
+    /// launcher passes `&T` and the driver copies `N` bytes from it.
+    #[test]
+    fn byval_params_match_the_host_layout() {
+        use core::mem::{align_of, size_of};
+        use tsdf_core as tc;
+        let layout = |s: usize, a: usize| (s, a);
+        let step = layout(size_of::<tc::StepParams>(), align_of::<tc::StepParams>());
+        let pin = layout(
+            size_of::<tc::PinholeParams>(),
+            align_of::<tc::PinholeParams>(),
+        );
+        let sph = layout(
+            size_of::<tc::SphericalParams>(),
+            align_of::<tc::SphericalParams>(),
+        );
+        let want = [
+            ("tsdf_assign_misses", 0, step),
+            ("tsdf_integrate_pinhole", 0, step),
+            ("tsdf_integrate_pinhole", 1, pin),
+            ("tsdf_integrate_spherical", 0, step),
+            ("tsdf_integrate_spherical", 1, sph),
+            ("tsdf_merge_keys", 0, step),
+            ("tsdf_rank_misses", 0, step),
+            ("tsdf_touch_pinhole", 0, step),
+            ("tsdf_touch_pinhole", 1, pin),
+            ("tsdf_touch_spherical", 0, step),
+            ("tsdf_touch_spherical", 1, sph),
+        ];
+        let mut got: Vec<(&str, usize, (usize, usize))> = PTX
+            .lines()
+            .filter_map(|l| {
+                // `.param .align 8 .b8 tsdf_rank_misses_param_0[64],`
+                let rest = l.trim().strip_prefix(".param .align ")?;
+                let (align, rest) = rest.split_once(' ')?;
+                let (name, n) = rest.strip_prefix(".b8 ")?.split_once('[')?;
+                let (entry, idx) = name.rsplit_once("_param_")?;
+                let n = n.split(']').next()?;
+                Some((
+                    entry,
+                    idx.parse().ok()?,
+                    (n.parse().ok()?, align.parse().ok()?),
+                ))
+            })
+            .collect();
+        got.sort();
+        if IS_STUB {
+            assert!(got.is_empty());
+        } else {
+            assert_eq!(got, want);
+        }
+    }
 }

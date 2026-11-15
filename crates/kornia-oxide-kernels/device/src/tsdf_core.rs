@@ -967,9 +967,15 @@ pub fn lerp<O: F32Ops>(a: f32, b: f32, t: f32) -> f32 {
 /// Edge vertex: the owner centre `ca` moved `t * voxel_size` along `axis`.
 #[inline(always)]
 pub fn edge_vertex<O: F32Ops>(ca: [f32; 3], axis: usize, voxel_size: f32, t: f32) -> [f32; 3] {
-    let mut p = ca;
-    p[axis] = O::fma(t, voxel_size, ca[axis]);
-    p
+    // selects, not `p[axis]`: a runtime index keeps `p` on the device stack
+    let at = |k: usize| {
+        if k == axis {
+            O::fma(t, voxel_size, ca[k])
+        } else {
+            ca[k]
+        }
+    };
+    [at(0), at(1), at(2)]
 }
 
 /// Per-channel colour interpolation, rounded half up.
@@ -1019,15 +1025,19 @@ pub trait MeshVoxels {
 /// Gradient at valid voxel `v` (value `c`): [`grad_axis`] per axis.
 #[inline(always)]
 pub fn mesh_gradient<G: MeshVoxels>(g: &G, v: [i32; 3], c: f32) -> [f32; 3] {
-    let mut out = [0f32; 3];
-    for k in 0..3 {
-        let mut p = v;
-        p[k] += 1;
-        let mut m = v;
-        m[k] -= 1;
-        out[k] = grad_axis(g.value(p), c, g.value(m));
-    }
-    out
+    let axis = |k: usize| grad_axis(g.value(shifted(v, k, 1)), c, g.value(shifted(v, k, -1)));
+    [axis(0), axis(1), axis(2)]
+}
+
+/// `v` with `d` added to component `axis` (selects, no runtime index: the
+/// device keeps it in registers).
+#[inline(always)]
+fn shifted(v: [i32; 3], axis: usize, d: i32) -> [i32; 3] {
+    [
+        v[0] + if axis == 0 { d } else { 0 },
+        v[1] + if axis == 1 { d } else { 0 },
+        v[2] + if axis == 2 { d } else { 0 },
+    ]
 }
 
 /// Vertex on the edge from local voxel `a` along `axis` (both ends valid,
@@ -1045,8 +1055,7 @@ pub fn mesh_edge_point<O: F32Ops, G: MeshVoxels>(
     normals: bool,
     colors: bool,
 ) -> ([f32; 3], [u8; 3], [f32; 3]) {
-    let mut b = a;
-    b[axis] += 1;
+    let b = shifted(a, axis, 1);
     // valid ends, so never the fallback
     let fa = g.value(a).unwrap_or(0.0);
     let fb = g.value(b).unwrap_or(0.0);
@@ -1204,18 +1213,31 @@ pub fn raycast_normal<O: F32Ops, S: VoxelSampler>(
         g0[a] = floor_i32(q);
         al[a] = q - g0[a] as f32;
     }
-    let mut f = [0f32; 8];
-    for i in 0..8 {
+    // an array literal, not `f[i] = ..` in a loop: a runtime index keeps
+    // `f` on the device stack
+    let at = |i: i32| {
         let g = [
-            g0[0] + (i & 1) as i32,
-            g0[1] + ((i >> 1) & 1) as i32,
-            g0[2] + ((i >> 2) & 1) as i32,
+            g0[0] + (i & 1),
+            g0[1] + ((i >> 1) & 1),
+            g0[2] + ((i >> 2) & 1),
         ];
-        match valid_sample(s, g, rp.weight_threshold) {
-            Some(v) => f[i] = v,
-            None => return [0.0; 3],
-        }
-    }
+        valid_sample(s, g, rp.weight_threshold)
+    };
+    let corners = || {
+        Some([
+            at(0)?,
+            at(1)?,
+            at(2)?,
+            at(3)?,
+            at(4)?,
+            at(5)?,
+            at(6)?,
+            at(7)?,
+        ])
+    };
+    let Some(f) = corners() else {
+        return [0.0; 3];
+    };
     let gc = rot::<O>(&rp.camera_from_volume_r, trilinear_gradient::<O>(&f, al));
     let mut n = normalize::<O>(gc);
     if O::fma(n[0], vertex[0], O::fma(n[1], vertex[1], n[2] * vertex[2])) > 0.0 {
@@ -1318,14 +1340,15 @@ pub fn raycast_pixel<O: F32Ops, S: VoxelSampler>(
 // --------------------------------------------------------- device ABI ----
 
 // The CUDA kernels' parameter blocks and counters, laid out once for the
-// host launcher and the device (`#[repr(C)]`, read through a pointer).
+// host launcher and the device (`#[repr(C)]`, passed by value).
 
 /// Threads per block of every TSDF kernel.
 pub const THREADS: u32 = 256;
 
 /// Step counter: distinct missing blocks (the miss list length).
 pub const SC_MISSES: usize = 0;
-/// Step counter: abort bits ([`ABORT_MISS_SET`], [`ABORT_POOL_FULL`]).
+/// Step counter: abort bits ([`ABORT_MISS_SET`], [`ABORT_POOL_FULL`],
+/// [`ABORT_HASH_FULL`]).
 pub const SC_ABORT: usize = 1;
 /// Step counter: kept depth samples.
 pub const SC_VALID: usize = 2;
@@ -1341,6 +1364,9 @@ pub const SC_LEN: usize = 8;
 pub const ABORT_MISS_SET: u64 = 1;
 /// Abort bit: the step needs more blocks than the pool holds.
 pub const ABORT_POOL_FULL: u64 = 2;
+/// Abort bit: a block hash insert found no free slot (the table holds at
+/// least twice the capacity, so only a sizing bug sets it).
+pub const ABORT_HASH_FULL: u64 = 4;
 
 /// Constants of one device integration step.
 #[repr(C)]

@@ -48,10 +48,12 @@ use crate::registration::{RgbdLevel, RgbdPyramid};
 
 /// Oldest compute capability the PTX runs on.
 const MIN_SM: (i32, i32) = (7, 5);
-/// Resident 256-thread blocks per SM of the grid-stride kernels.
+/// 256-thread blocks per SM in a grid-stride grid. Not all are resident:
+/// registers allow 2 (raycast, mc_emit, ~90-120 regs) to 6 (touch,
+/// integrate, ~40) at once (ptxas -v, sm_87); the others wait their turn.
 const BLOCKS_PER_SM: u32 = 8;
-/// Byte stride of the per-observation parameter blocks (and the size of
-/// the step and mesh parameter buffers).
+/// Initial size of the raycast-view and mesh parameter buffers (step and
+/// observation parameters are passed by value).
 const PARAM_STRIDE: usize = 256;
 /// Alignment of staged images inside their buffers.
 const STAGE_ALIGN: usize = 256;
@@ -91,6 +93,20 @@ pub(crate) mod fault {
         ARMED.take().is_some()
     }
 
+    thread_local! {
+        static HASH_SLOTS: Cell<Option<usize>> = const { Cell::new(None) };
+    }
+
+    /// Sizes every block hash built on this thread at `slots` (a power of
+    /// two) instead of twice its capacity; `None` restores the rule.
+    pub(crate) fn set_hash_slots(slots: Option<usize>) {
+        HASH_SLOTS.set(slots);
+    }
+
+    pub(crate) fn hash_slots() -> Option<usize> {
+        HASH_SLOTS.get()
+    }
+
     pub(crate) fn hit(op: Op) -> Result<(), TsdfError> {
         match ARMED.get() {
             Some((o, 0)) if o == op => {
@@ -110,9 +126,6 @@ pub(crate) mod fault {
 const DEPTH_U16: u32 = 0;
 const DEPTH_F32: u32 = 1;
 
-const _: () = assert!(size_of::<tc::PinholeParams>() <= PARAM_STRIDE);
-const _: () = assert!(size_of::<tc::SphericalParams>() <= PARAM_STRIDE);
-const _: () = assert!(size_of::<tc::StepParams>() <= PARAM_STRIDE);
 const _: () = assert!(size_of::<tc::MeshParamsDev>() <= PARAM_STRIDE);
 
 fn cuda(e: DriverError) -> TsdfError {
@@ -350,11 +363,15 @@ struct DevIndex {
     modified: DevBuf<u64>,
     mark: DevBuf<u32>,
     dirty_mark: DevBuf<u32>,
+    /// Abort word of `tsdf_rehash` (`ABORT_HASH_FULL`).
+    abort: DevBuf<u64>,
 }
 
 impl DevIndex {
     fn new(dev: &Dev, headers: usize, stride: usize) -> Result<Self, TsdfError> {
         let slots = hash_slots(stride);
+        #[cfg(test)]
+        let slots = fault::hash_slots().unwrap_or(slots);
         let n = headers * stride;
         let keys = dev.alloc::<u64>(headers * slots)?;
         dev.fill(keys.ptr, 0xff, headers * slots * 8)?;
@@ -372,7 +389,53 @@ impl DevIndex {
             modified: dev.alloc(n)?,
             mark: dev.alloc(n)?,
             dirty_mark: dev.alloc(n)?,
+            abort: dev.alloc(1)?,
         })
+    }
+
+    /// Re-inserts header `h`'s first `n` pool keys into its cleared hash.
+    fn rehash(&self, dev: &Dev, h: usize, n: usize) -> Result<(), TsdfError> {
+        if n == 0 {
+            return Ok(());
+        }
+        let (keys, vals, log2, pk, len, abort) = (
+            self.keys(h),
+            self.vals(h),
+            self.log2_cap,
+            self.pool(&self.pool_keys, h),
+            n as u32,
+            self.abort.ptr,
+        );
+        // SAFETY: tsdf_rehash(keys, vals, log2_cap, pool_keys, len, abort)
+        // over header h's table and its `n` pool keys.
+        unsafe {
+            dev.launch(
+                dev.k.rehash,
+                dev.grid_for(n),
+                &mut args![keys, vals, log2, pk, len, abort],
+            )
+        }
+    }
+
+    /// `HashFull` if a `rehash` since the index was built dropped a key
+    /// (syncs).
+    fn check_rehash(&self, dev: &Dev) -> Result<(), TsdfError> {
+        let mut abort = [0u64];
+        dev.dtoh(&mut abort, self.abort.ptr)?;
+        dev.sync()?;
+        if abort[0] & tc::ABORT_HASH_FULL != 0 {
+            return Err(TsdfError::HashFull { slots: self.slots });
+        }
+        Ok(())
+    }
+
+    /// Rebuilds header `h`'s hash from its first `len` pools, dropping the
+    /// entries of a failed step's inserts.
+    fn rebuild_hash(&self, dev: &Dev, h: usize, len: usize) -> Result<(), TsdfError> {
+        dev.fill(self.keys(h), 0xff, self.slots * 8)?;
+        dev.fill(self.abort.ptr, 0, 8)?;
+        self.rehash(dev, h, len)?;
+        self.check_rehash(dev)
     }
 
     fn keys(&self, h: usize) -> u64 {
@@ -424,25 +487,10 @@ impl DevIndex {
                 self.pool(&self.modified, h),
                 8,
             )?;
-            if n > 0 {
-                let (keys, vals, log2, pk, len) = (
-                    next.keys(h),
-                    next.vals(h),
-                    next.log2_cap,
-                    next.pool(&next.pool_keys, h),
-                    n as u32,
-                );
-                // SAFETY: tsdf_rehash(keys, vals, log2_cap, pool_keys, len)
-                // over header h's fresh table and its `n` pool keys.
-                unsafe {
-                    dev.launch(
-                        dev.k.rehash,
-                        dev.grid_for(n),
-                        &mut args![keys, vals, log2, pk, len],
-                    )?;
-                }
-            }
+            next.rehash(dev, h, n)?;
         }
+        // a full table keeps the old index
+        next.check_rehash(dev)?;
         *self = next;
         Ok(())
     }
@@ -517,12 +565,18 @@ impl DevPools {
 
 // -------------------------------------------------------------- scratch ----
 
+/// One observation's sensor constants, passed to its kernels by value.
+#[derive(Clone, Copy)]
+enum ObsParams {
+    Pinhole(tc::PinholeParams),
+    Spherical(tc::SphericalParams),
+}
+
 /// One staged observation of a step.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 struct Staged {
-    spherical: bool,
+    params: ObsParams,
     pixels: usize,
-    params: u64,
     depth: u64,
     depth_kind: u32,
     color: u64,
@@ -531,10 +585,8 @@ struct Staged {
 
 /// Reused device scratch and host staging.
 struct Scratch {
-    step: DevBuf<u8>,
     counters: DevBuf<u64>,
     host_counters: [u64; tc::SC_LEN],
-    obs_params: DevBuf<u8>,
     list_counts: DevBuf<u32>,
     hits: DevBuf<u32>,
     news: DevBuf<u32>,
@@ -588,10 +640,8 @@ impl Scratch {
     fn new(dev: &Dev, stride: usize) -> Result<Self, TsdfError> {
         let miss_slots = hash_slots(stride).max(MIN_MISS_SLOTS);
         Ok(Self {
-            step: dev.alloc(PARAM_STRIDE)?,
             counters: dev.alloc(tc::SC_LEN)?,
             host_counters: [0; tc::SC_LEN],
-            obs_params: dev.alloc(PARAM_STRIDE)?,
             list_counts: dev.alloc(2)?,
             hits: dev.alloc(stride)?,
             news: dev.alloc(miss_slots)?,
@@ -766,7 +816,7 @@ impl Engine {
         Ok(self.s.seq)
     }
 
-    /// Uploads the step's depth, colour, LiDAR tables and parameters.
+    /// Uploads the step's depth, colour and LiDAR tables.
     fn stage(&mut self, input: &StepInput<'_, '_>) -> Result<(), TsdfError> {
         let (mut depth, mut color, mut tables) = (0usize, 0usize, 0usize);
         for s in 0..input.n {
@@ -792,7 +842,6 @@ impl Engine {
         ensure(dev, &mut self.s.depth, depth)?;
         ensure(dev, &mut self.s.color, color)?;
         ensure(dev, &mut self.s.tables, tables)?;
-        ensure(dev, &mut self.s.obs_params, input.n * PARAM_STRIDE)?;
         ensure(dev, &mut self.s.list_counts, 2 * input.n)?;
         ensure(dev, &mut self.s.hits, input.n * self.index.stride)?;
         ensure(dev, &mut self.s.news, input.n * self.s.miss_slots)?;
@@ -801,9 +850,15 @@ impl Engine {
         for s in 0..input.n {
             let o = (input.obs)(s)?;
             let mut st = Staged {
-                params: self.s.obs_params.at(s * PARAM_STRIDE),
+                params: match o.kind {
+                    ObsKind::Pinhole(p) => ObsParams::Pinhole(p),
+                    ObsKind::Spherical(p, _) => ObsParams::Spherical(p),
+                },
+                pixels: 0,
                 depth: self.s.depth.at(depth),
-                ..Staged::default()
+                depth_kind: DEPTH_U16,
+                color: 0,
+                tables: 0,
             };
             match o.depth {
                 DepthRef::U16(d) => {
@@ -822,17 +877,14 @@ impl Engine {
                 }
             }
             match o.kind {
-                ObsKind::Pinhole(p) => {
-                    dev.htod(st.params, std::slice::from_ref(&p))?;
+                ObsKind::Pinhole(_) => {
                     if let (Some(c), true) = (o.color, self.pools.color) {
                         st.color = self.s.color.at(color);
                         dev.htod(st.color, c)?;
                         color += round_up(c.len(), STAGE_ALIGN);
                     }
                 }
-                ObsKind::Spherical(p, lidar) => {
-                    st.spherical = true;
-                    dev.htod(st.params, std::slice::from_ref(&p))?;
+                ObsKind::Spherical(_, lidar) => {
                     let t = lidar.tables();
                     st.tables = self.s.tables.at(tables);
                     let mut at = st.tables;
@@ -869,6 +921,13 @@ impl Engine {
             self.run_step(h, input.n, epoch)?;
             let c = self.s.host_counters;
             let abort = c[tc::SC_ABORT];
+            if abort & tc::ABORT_HASH_FULL != 0 {
+                // drop the step's inserts: the index is as before the step
+                self.index.rebuild_hash(&self.dev, h, self.heads[h].len)?;
+                return Err(TsdfError::HashFull {
+                    slots: self.index.slots,
+                });
+            }
             if abort & tc::ABORT_MISS_SET != 0 {
                 // A full set holds more misses than the pool can ever
                 // take: past `MAX_EXACT_MISS_SLOTS` fail now, not after
@@ -920,7 +979,6 @@ impl Engine {
             epoch,
         };
         let dev = &self.dev;
-        dev.htod(self.s.step.ptr, std::slice::from_ref(&st))?;
         dev.fill(self.s.counters.ptr, 0, tc::SC_LEN * 8)?;
         dev.fill(self.s.list_counts.ptr, 0, 2 * n * 4)?;
         dev.fill(self.s.miss_keys.ptr, 0xff, self.s.miss_slots * 8)?;
@@ -932,7 +990,7 @@ impl Engine {
             ix.pool(&ix.mark, h),
         );
         let s = &self.s;
-        let (step, counters) = (s.step.ptr, s.counters.ptr);
+        let counters = s.counters.ptr;
         let (miss_keys, miss_mark, miss_list, miss_rank, new_keys) = (
             s.miss_keys.ptr,
             s.miss_mark.ptr,
@@ -955,13 +1013,13 @@ impl Engine {
             // tsdf.rs; every buffer is sized for this step by `stage` and
             // the index layout.
             unsafe {
-                if o.spherical {
-                    dev.launch(
+                match o.params {
+                    ObsParams::Spherical(p) => dev.launch(
                         dev.k.touch_spherical,
                         grid,
                         &mut args![
-                            step,
-                            o.params,
+                            st,
+                            p,
                             o.tables,
                             o.depth,
                             o.depth_kind,
@@ -977,14 +1035,13 @@ impl Engine {
                             lc,
                             counters
                         ],
-                    )?;
-                } else {
-                    dev.launch(
+                    )?,
+                    ObsParams::Pinhole(p) => dev.launch(
                         dev.k.touch_pinhole,
                         grid,
                         &mut args![
-                            step,
-                            o.params,
+                            st,
+                            p,
                             o.depth,
                             o.depth_kind,
                             keys,
@@ -999,7 +1056,7 @@ impl Engine {
                             lc,
                             counters
                         ],
-                    )?;
+                    )?,
                 }
             }
         }
@@ -1018,17 +1075,17 @@ impl Engine {
             dev.launch(
                 dev.k.rank,
                 g,
-                &mut args![step, miss_keys, miss_list, miss_rank, new_keys, counters],
+                &mut args![st, miss_keys, miss_list, miss_rank, new_keys, counters],
             )?;
             dev.launch(
                 dev.k.assign,
                 g,
-                &mut args![step, new_keys, keys, vals, pool_keys, pages, modified, mark, counters],
+                &mut args![st, new_keys, keys, vals, pool_keys, pages, modified, mark, counters],
             )?;
             dev.launch(
                 dev.k.merge,
                 g,
-                &mut args![step, new_keys, old_keys, old_pools, out_keys, out_pools, counters],
+                &mut args![st, new_keys, old_keys, old_pools, out_keys, out_pools, counters],
             )?;
         }
         let s = &self.s;
@@ -1046,13 +1103,13 @@ impl Engine {
             );
             // SAFETY: as above.
             unsafe {
-                if o.spherical {
-                    dev.launch(
+                match o.params {
+                    ObsParams::Spherical(p) => dev.launch(
                         dev.k.integrate_spherical,
                         g,
                         &mut args![
-                            step,
-                            o.params,
+                            st,
+                            p,
                             o.tables,
                             o.depth,
                             o.depth_kind,
@@ -1067,14 +1124,13 @@ impl Engine {
                             modified,
                             counters
                         ],
-                    )?;
-                } else {
-                    dev.launch(
+                    )?,
+                    ObsParams::Pinhole(p) => dev.launch(
                         dev.k.integrate_pinhole,
                         g,
                         &mut args![
-                            step,
-                            o.params,
+                            st,
+                            p,
                             o.depth,
                             o.depth_kind,
                             o.color,
@@ -1090,7 +1146,7 @@ impl Engine {
                             modified,
                             counters
                         ],
-                    )?;
+                    )?,
                 }
             }
         }
@@ -1833,6 +1889,7 @@ where
     /// # Errors
     ///
     /// [`TsdfError::PoolFull`] beyond `u32` voxel indices,
+    /// [`TsdfError::HashFull`] (internal; the volume is unchanged),
     /// [`TsdfError::Cuda`].
     pub fn reserve(&mut self, additional_blocks: usize) -> Result<(), TsdfError> {
         let e = &mut self.e;
@@ -1862,8 +1919,9 @@ where
     ///
     /// # Errors
     ///
-    /// As [`TsdfVolume::integrate`], plus [`TsdfError::Cuda`]; on error the
-    /// volume is unchanged (a driver error leaves it unspecified).
+    /// As [`TsdfVolume::integrate`], plus [`TsdfError::HashFull`]
+    /// (internal) and [`TsdfError::Cuda`]; on error the volume is unchanged
+    /// (a driver error leaves it unspecified).
     pub fn integrate(
         &mut self,
         observations: &[SensorObservation<'_>],
@@ -2299,7 +2357,8 @@ where
     ///
     /// # Errors
     ///
-    /// As [`super::SubmapTsdf::integrate`], plus [`TsdfError::Cuda`].
+    /// As [`super::SubmapTsdf::integrate`], plus [`TsdfError::HashFull`]
+    /// (internal) and [`TsdfError::Cuda`].
     pub fn integrate(&mut self, step: &AgentStep<'_>) -> Result<StepReport, TsdfError> {
         check_fp_env()?;
         self.book.validate_step(step)?;

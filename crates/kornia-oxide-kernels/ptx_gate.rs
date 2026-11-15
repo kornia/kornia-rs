@@ -18,6 +18,12 @@ pub const FMA_ALLOWED: &[&str] = &[
     "tsdf_touch_spherical",
 ];
 
+/// Entry-name prefixes of kernels sized for a fixed block (`SharedArray<_,
+/// 256>`, 8-warp loops) and the `.maxntid` each must declare
+/// (`#[launch_bounds]`): without it another block size corrupts memory
+/// instead of failing the launch.
+pub const MAXNTID: &[(&str, &str)] = &[("tsdf_", "256, 1, 1")];
+
 /// Gate the module and every function in it.
 ///
 /// Module: `.version` is `PTX_VERSION`, `.target` is `ARCH`, no `.extern` other than `.extern .shared`
@@ -26,7 +32,7 @@ pub const FMA_ALLOWED: &[&str] = &[
 /// every `ld`/`ldu`/`st`/`atom`/`red` names a state space (generic access means
 /// address-space inference was lost), no `__nv_` (libdevice) symbol anywhere,
 /// and no `fma` or float `mad` unless it is an entry listed in `FMA_ALLOWED`
-/// (CPU byte parity). Float rules (kornia-3d TSDF contract, section 18):
+/// (CPU byte parity); an entry matching `MAXNTID` declares that `.maxntid`. Float rules (kornia-3d TSDF contract, section 18):
 /// - G1: every float `add`/`sub`/`mul` has a rounding modifier (a bare one
 ///   is fusable by ptxas or the driver JIT);
 /// - G2: no `.ftz`, `.approx`, `div.full`, `rsqrt`/`sin`/`cos`/`ex2`/`lg2`/
@@ -58,6 +64,8 @@ pub fn gate(ptx: &str, scanned: &[String]) -> Result<(), Vec<String>> {
     // (is_entry, name); `None` until the first function header.
     let mut func: Option<(bool, String)> = None;
     let mut names = Vec::new();
+    // entries with their `.maxntid` operands, if any
+    let mut bounds: Vec<(String, Option<String>)> = Vec::new();
     // inside a `// begin inline asm` .. `// end inline asm` pair
     let mut in_asm = false;
     for line in ptx.lines() {
@@ -82,6 +90,7 @@ pub fn gate(ptx: &str, scanned: &[String]) -> Result<(), Vec<String>> {
             }
             if is_entry {
                 names.push(name.clone());
+                bounds.push((name.clone(), None));
             }
             func = Some((is_entry, name));
             continue;
@@ -89,6 +98,12 @@ pub fn gate(ptx: &str, scanned: &[String]) -> Result<(), Vec<String>> {
         let Some((is_entry, name)) = &func else {
             continue;
         };
+        if let Some(dims) = code.strip_prefix(".maxntid") {
+            if let Some((_, b)) = bounds.last_mut().filter(|(n, _)| *is_entry && n == name) {
+                *b = Some(dims.trim().to_string());
+            }
+            continue;
+        }
         // Checked on every body line: a multi-line `call` puts the callee on a
         // line of its own.
         if code.contains("__nv_") {
@@ -126,6 +141,15 @@ pub fn gate(ptx: &str, scanned: &[String]) -> Result<(), Vec<String>> {
         }
         if let Some(why) = float_violation(op, float) {
             errs.push(format!("gate: {name}: `{op}` ({why})"));
+        }
+    }
+    for (name, got) in &bounds {
+        for (prefix, want) in MAXNTID {
+            if name.starts_with(prefix) && got.as_deref() != Some(*want) {
+                errs.push(format!(
+                    "gate: {name}: `.maxntid` is {got:?}, expected `{want}` (#[launch_bounds])"
+                ));
+            }
         }
     }
     names.sort();

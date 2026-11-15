@@ -14,7 +14,7 @@
 use core::slice;
 
 use cuda_device::atomic::{AtomicOrdering, DeviceAtomicU32, DeviceAtomicU64};
-use cuda_device::{SharedArray, kernel, thread, warp};
+use cuda_device::{SharedArray, kernel, launch_bounds, thread, warp};
 
 use crate::tsdf_core::{self as tc, MeshVoxels, RawDepth, VoxelSampler};
 use crate::tsdf_ops::PtxOps;
@@ -68,6 +68,38 @@ fn warp_sum(v: u32) -> u32 {
     s += warp::shuffle_down_sync(FULL, s, 2);
     s += warp::shuffle_down_sync(FULL, s, 1);
     s
+}
+
+/// Warps per block.
+const WARPS: usize = (T / 32) as usize;
+
+/// Half of the `2 * WARPS` per-warp totals that round `r` uses: alternating
+/// lets round `r + 1` write while slow warps still read round `r`.
+#[inline(always)]
+fn warp_half(r: u32) -> usize {
+    WARPS * (r & 1) as usize
+}
+
+/// Block-wide exclusive scan over warps: `(sum of earlier warps' totals,
+/// block total)`. Every thread calls it with its warp's total; `half` holds
+/// `WARPS` shared slots that no thread reads until the next barrier.
+#[inline(always)]
+unsafe fn block_scan(half: *mut u32, warp_total: u32) -> (u32, u32) {
+    let w = (thread::threadIdx_x() / 32) as usize;
+    // SAFETY: `w < WARPS` (`T` threads per block).
+    unsafe {
+        if warp::lane_id() == 0 {
+            *half.add(w) = warp_total;
+        }
+        thread::sync_threads();
+        let (mut before, mut total) = (0u32, 0u32);
+        for k in 0..WARPS {
+            let t = *half.add(k);
+            before += if k < w { t } else { 0 };
+            total += t;
+        }
+        (before, total)
+    }
 }
 
 /// `#{ i < n : a[i] < k }` of ascending `a`.
@@ -214,15 +246,16 @@ unsafe fn depth_metres(
 ///
 /// # Safety
 ///
-/// `step`, `obs` hold one parameter block each; `depth` holds `width *
-/// height` samples of `depth_kind`; `keys`/`vals` are the block hash of
-/// `2^log2_cap` slots, `mark` one entry per pool; `miss_keys`, `miss_mark`,
-/// `miss_list` hold `2^log2_miss` entries; `hits` the index capacity,
-/// `news` `2^log2_miss` entries; `list_counts` 2, `counters` `SC_LEN`.
+/// `depth` holds `width * height` samples of `depth_kind`; `keys`/`vals`
+/// are the block hash of `2^log2_cap` slots, `mark` one entry per pool;
+/// `miss_keys`, `miss_mark`, `miss_list` hold `2^log2_miss` entries; `hits`
+/// the index capacity, `news` `2^log2_miss` entries; `list_counts` 2,
+/// `counters` `SC_LEN`.
+#[launch_bounds(T)]
 #[kernel]
 pub unsafe fn tsdf_touch_pinhole(
-    step: *const tc::StepParams,
-    obs: *const tc::PinholeParams,
+    st: tc::StepParams,
+    p: tc::PinholeParams,
     depth: *const u8,
     depth_kind: u32,
     keys: *const u64,
@@ -239,8 +272,6 @@ pub unsafe fn tsdf_touch_pinhole(
 ) {
     // SAFETY: the launcher upholds the layout above.
     unsafe {
-        let st = *step;
-        let p = *obs;
         let t = Touch {
             keys,
             vals,
@@ -282,10 +313,11 @@ pub unsafe fn tsdf_touch_pinhole(
 /// # Safety
 ///
 /// As [`tsdf_touch_pinhole`], plus `tables` as above.
+#[launch_bounds(T)]
 #[kernel]
 pub unsafe fn tsdf_touch_spherical(
-    step: *const tc::StepParams,
-    obs: *const tc::SphericalParams,
+    st: tc::StepParams,
+    p: tc::SphericalParams,
     tables: *const f32,
     depth: *const u8,
     depth_kind: u32,
@@ -303,8 +335,6 @@ pub unsafe fn tsdf_touch_spherical(
 ) {
     // SAFETY: the launcher upholds the layout above.
     unsafe {
-        let st = *step;
-        let p = *obs;
         let t = Touch {
             keys,
             vals,
@@ -353,6 +383,30 @@ pub unsafe fn tsdf_touch_spherical(
 
 // ---------------------------------------------------------- allocation ----
 
+/// Linear-probe CAS insert of a key absent from the table, from slot `i`
+/// (`mask + 1` slots); `None` when a full cycle finds no free slot.
+#[inline(always)]
+unsafe fn hash_insert(keys: *mut u64, mask: usize, mut i: usize, key: u64) -> Option<usize> {
+    let mut probes = 0usize;
+    while probes <= mask {
+        // SAFETY: `i <= mask`, a slot of the table.
+        let cell = unsafe { DeviceAtomicU64::from_ptr(keys.add(i)) };
+        if cell.compare_exchange(tc::EMPTY_KEY, key, R, R).is_ok() {
+            return Some(i);
+        }
+        i = (i + 1) & mask;
+        probes += 1;
+    }
+    None
+}
+
+/// Sets `ABORT_HASH_FULL` in the abort word `*abort`.
+#[inline(always)]
+unsafe fn hash_full(abort: *mut u64) {
+    // SAFETY: `abort` is a live, 8-byte aligned device word.
+    unsafe { DeviceAtomicU64::from_ptr(abort).fetch_or(tc::ABORT_HASH_FULL, R) };
+}
+
 /// Ranks the step's misses: `new_keys[rank] = key` and `miss_rank[slot] =
 /// rank`, `rank = #{ misses < key }` (keys are distinct, so ranks are a
 /// permutation in ascending key order). Sets `ABORT_POOL_FULL` instead when
@@ -362,9 +416,10 @@ pub unsafe fn tsdf_touch_spherical(
 ///
 /// `miss_keys`/`miss_rank` hold `2^log2_miss` entries, `miss_list` and
 /// `new_keys` as many; `counters` `SC_LEN`.
+#[launch_bounds(T)]
 #[kernel]
 pub unsafe fn tsdf_rank_misses(
-    step: *const tc::StepParams,
+    st: tc::StepParams,
     miss_keys: *const u64,
     miss_list: *const u32,
     miss_rank: *mut u32,
@@ -374,7 +429,6 @@ pub unsafe fn tsdf_rank_misses(
     static mut TILE: SharedArray<u64, 256> = SharedArray::UNINIT;
     // SAFETY: the launcher upholds the layout above; TILE indices < T.
     unsafe {
-        let st = *step;
         if *counters.add(tc::SC_ABORT) != 0 {
             return;
         }
@@ -427,15 +481,18 @@ pub unsafe fn tsdf_rank_misses(
 
 /// Allocates the ranked misses: pool `len + r` gets key `new_keys[r]`,
 /// page `pages + r`, cleared epochs, and a hash entry (CAS insert; slots
-/// may differ from the CPU's, lookups do not).
+/// may differ from the CPU's, lookups do not). Sets `ABORT_HASH_FULL` if
+/// an insert finds no free slot (the launcher sizes the table at least
+/// twice the capacity, so never in practice).
 ///
 /// # Safety
 ///
 /// `keys`/`vals` hold `2^log2_cap` slots, the pool arrays `index_cap`
 /// entries; `counters` `SC_LEN`.
+#[launch_bounds(T)]
 #[kernel]
 pub unsafe fn tsdf_assign_misses(
-    step: *const tc::StepParams,
+    st: tc::StepParams,
     new_keys: *const u64,
     keys: *mut u64,
     vals: *mut u32,
@@ -443,12 +500,11 @@ pub unsafe fn tsdf_assign_misses(
     pages: *mut u32,
     modified: *mut u64,
     mark: *mut u32,
-    counters: *const u64,
+    counters: *mut u64,
 ) {
     // SAFETY: the launcher upholds the layout above; the rank kernel
     // checked `len + m <= index_cap` and `pages + m <= arena_cap`.
     unsafe {
-        let st = *step;
         if *counters.add(tc::SC_ABORT) != 0 {
             return;
         }
@@ -462,16 +518,9 @@ pub unsafe fn tsdf_assign_misses(
             *pages.add(pool) = st.pages + r;
             *modified.add(pool) = 0;
             *mark.add(pool) = 0;
-            let mut i = tc::hash_slot(key, st.log2_cap);
-            let mut probes = 0usize;
-            while probes <= mask {
-                let cell = DeviceAtomicU64::from_ptr(keys.add(i));
-                if cell.compare_exchange(tc::EMPTY_KEY, key, R, R).is_ok() {
-                    *vals.add(i) = pool as u32;
-                    break;
-                }
-                i = (i + 1) & mask;
-                probes += 1;
+            match hash_insert(keys, mask, tc::hash_slot(key, st.log2_cap), key) {
+                Some(i) => *vals.add(i) = pool as u32,
+                None => hash_full(counters.add(tc::SC_ABORT)),
             }
             r += gstride();
         }
@@ -486,9 +535,10 @@ pub unsafe fn tsdf_assign_misses(
 ///
 /// `old_*` hold `len`, `new_keys` the misses, `out_*` `len + misses`
 /// entries; `counters` `SC_LEN`.
+#[launch_bounds(T)]
 #[kernel]
 pub unsafe fn tsdf_merge_keys(
-    step: *const tc::StepParams,
+    st: tc::StepParams,
     new_keys: *const u64,
     old_keys: *const u64,
     old_pools: *const u32,
@@ -498,7 +548,6 @@ pub unsafe fn tsdf_merge_keys(
 ) {
     // SAFETY: the launcher upholds the layout above.
     unsafe {
-        let st = *step;
         if *counters.add(tc::SC_ABORT) != 0 {
             return;
         }
@@ -527,12 +576,14 @@ pub unsafe fn tsdf_merge_keys(
 }
 
 /// Rebuilds a block hash from `pool_keys` (`len` pools) into cleared
-/// `keys`/`vals` (a grown table).
+/// `keys`/`vals` (a grown table); sets `ABORT_HASH_FULL` in `*abort` if an
+/// insert finds no free slot.
 ///
 /// # Safety
 ///
 /// `keys`/`vals` hold `2^log2_cap` slots, all `EMPTY_KEY`; `pool_keys`
-/// `len` entries.
+/// `len` entries; `abort` one word.
+#[launch_bounds(T)]
 #[kernel]
 pub unsafe fn tsdf_rehash(
     keys: *mut u64,
@@ -540,6 +591,7 @@ pub unsafe fn tsdf_rehash(
     log2_cap: u32,
     pool_keys: *const u64,
     len: u32,
+    abort: *mut u64,
 ) {
     // SAFETY: the launcher upholds the layout above.
     unsafe {
@@ -547,18 +599,9 @@ pub unsafe fn tsdf_rehash(
         let mut p = gtid();
         while p < len {
             let key = *pool_keys.add(p as usize);
-            let mut i = tc::hash_slot(key, log2_cap);
-            let mut probes = 0usize;
-            while probes <= mask {
-                if DeviceAtomicU64::from_ptr(keys.add(i))
-                    .compare_exchange(tc::EMPTY_KEY, key, R, R)
-                    .is_ok()
-                {
-                    *vals.add(i) = p;
-                    break;
-                }
-                i = (i + 1) & mask;
-                probes += 1;
+            match hash_insert(keys, mask, tc::hash_slot(key, log2_cap), key) {
+                Some(i) => *vals.add(i) = p,
+                None => hash_full(abort),
             }
             p += gstride();
         }
@@ -673,10 +716,11 @@ impl Pass {
 ///
 /// As the touch pass; pools hold `arena_cap * B³` voxels (`rgbw` too when
 /// `color` is not null), `color` `3 * width * height` bytes.
+#[launch_bounds(T)]
 #[kernel]
 pub unsafe fn tsdf_integrate_pinhole(
-    step: *const tc::StepParams,
-    obs: *const tc::PinholeParams,
+    st: tc::StepParams,
+    p: tc::PinholeParams,
     depth: *const u8,
     depth_kind: u32,
     color: *const u8,
@@ -694,8 +738,6 @@ pub unsafe fn tsdf_integrate_pinhole(
 ) {
     // SAFETY: the launcher upholds the layout above.
     unsafe {
-        let st = *step;
-        let p = *obs;
         let pass = Pass {
             tsdf,
             weight,
@@ -727,10 +769,11 @@ pub unsafe fn tsdf_integrate_pinhole(
 /// # Safety
 ///
 /// As [`tsdf_integrate_pinhole`].
+#[launch_bounds(T)]
 #[kernel]
 pub unsafe fn tsdf_integrate_spherical(
-    step: *const tc::StepParams,
-    obs: *const tc::SphericalParams,
+    st: tc::StepParams,
+    p: tc::SphericalParams,
     tables: *const f32,
     depth: *const u8,
     depth_kind: u32,
@@ -747,8 +790,6 @@ pub unsafe fn tsdf_integrate_spherical(
 ) {
     // SAFETY: the launcher upholds the layout above.
     unsafe {
-        let st = *step;
-        let p = *obs;
         let pass = Pass {
             tsdf,
             weight,
@@ -830,6 +871,7 @@ impl VoxelSampler for View {
 /// `keys/vals + h * hash_stride` (`2^log2_cap` slots), its page table at
 /// `pages + h * pool_stride`; outputs hold `width * height` pixels (3
 /// values each for vertices, normals and colours).
+#[launch_bounds(T)]
 #[kernel]
 pub unsafe fn tsdf_raycast(
     views: *const tc::RaycastParams,
@@ -926,10 +968,11 @@ pub unsafe fn tsdf_raycast(
 // ------------------------------------------------------ marching cubes ----
 
 /// The voxels `[-1, B + 1]^3` around one block: its 27 neighbour blocks'
-/// pool offsets (`NONE` = unallocated) and the pools.
+/// pool offsets (`NONE` = unallocated, read in place from shared memory: a
+/// copy indexed at runtime would live on the stack) and the pools.
 #[derive(Clone, Copy)]
 struct Hood {
-    bases: [u32; 27],
+    bases: *const u32,
     tsdf: *const f32,
     weight: *const u16,
     rgbw: *const u32,
@@ -942,7 +985,9 @@ impl Hood {
     fn slot(&self, v: [i32; 3]) -> Option<usize> {
         let l = self.log2;
         let ni = ((v[0] >> l) + 1) + 3 * (((v[1] >> l) + 1) + 3 * ((v[2] >> l) + 1));
-        let b = self.bases[ni as usize];
+        // SAFETY: `bases` holds 27 entries and `ni < 27` for `v` in
+        // `[-B, 2B)^3`.
+        let b = unsafe { *self.bases.add(ni as usize) };
         if b == NONE {
             return None;
         }
@@ -951,18 +996,19 @@ impl Hood {
     }
 
     /// Configuration of the cube with min corner `l0` (0 unless all 8
-    /// corners are valid).
+    /// corners are valid): `tc::cube_index` without its `[f32; 8]`, which
+    /// would live on the stack.
     #[inline(always)]
     fn conf(&self, l0: [i32; 3]) -> usize {
-        let mut f = [0f32; 8];
+        let mut ci = 0usize;
         for c in 0..8 {
             let o = tc::CORNER[c];
             match self.value([l0[0] + o[0], l0[1] + o[1], l0[2] + o[2]]) {
-                Some(v) => f[c] = v,
+                Some(v) => ci |= ((v < 0.0) as usize) << c,
                 None => return 0,
             }
         }
-        tc::cube_index(&f)
+        ci
     }
 }
 
@@ -1031,6 +1077,7 @@ unsafe fn neighbour_base(
 ///
 /// `list` holds `n` pools of the index; `out_nv`/`out_nt` `n` entries;
 /// hash, page table and pools as in the raycast (one header).
+#[launch_bounds(T)]
 #[kernel]
 pub unsafe fn tsdf_mc_count(
     mp: *const tc::MeshParamsDev,
@@ -1052,6 +1099,7 @@ pub unsafe fn tsdf_mc_count(
     // below their sizes (B <= 16, 8 warps).
     unsafe {
         let p = *mp;
+        let bases = SharedArray::as_raw_mut_ptr(&raw mut BASES);
         let b = 1u32 << p.log2;
         let cubes = b * b * b;
         let edges = 3 * (b + 1) * (b + 1) * (b + 1);
@@ -1061,21 +1109,18 @@ pub unsafe fn tsdf_mc_count(
             let pool = *list.add(e as usize) as usize;
             let key = *pool_keys.add(pool);
             if tid < 27 {
-                BASES[tid as usize] =
+                *bases.add(tid as usize) =
                     neighbour_base(keys, vals, p.log2_cap, pages, key, tid, p.log2);
             }
             thread::sync_threads();
-            let mut hood = Hood {
-                bases: [NONE; 27],
+            let hood = Hood {
+                bases: bases.cast_const(),
                 tsdf,
                 weight,
                 rgbw: core::ptr::null(),
                 threshold: p.weight_threshold,
                 log2: p.log2,
             };
-            for k in 0..27 {
-                hood.bases[k] = BASES[k];
-            }
             let mut nt = 0u32;
             let mut c = tid;
             while c < cubes {
@@ -1126,6 +1171,7 @@ pub unsafe fn tsdf_mc_count(
 /// As [`tsdf_mc_count`]; outputs hold the counted vertices (3 values each)
 /// and triangles (3 indices) at the given offsets; `rgbw` is null unless
 /// colours are requested.
+#[launch_bounds(T)]
 #[kernel]
 pub unsafe fn tsdf_mc_emit(
     mp: *const tc::MeshParamsDev,
@@ -1148,11 +1194,13 @@ pub unsafe fn tsdf_mc_emit(
     static mut BASES: SharedArray<u32, 32> = SharedArray::UNINIT;
     static mut CONF: SharedArray<u8, MAX_CUBES> = SharedArray::UNINIT;
     static mut IDS: SharedArray<u16, MAX_EDGES> = SharedArray::UNINIT;
-    static mut CHUNK: SharedArray<u32, 256> = SharedArray::UNINIT;
+    static mut WSUM: SharedArray<u32, 16> = SharedArray::UNINIT;
     // SAFETY: the launcher upholds the layout above; shared indices are
     // below their sizes (B <= 16, 256 threads).
     unsafe {
         let p = *mp;
+        let bases = SharedArray::as_raw_mut_ptr(&raw mut BASES);
+        let wsum = SharedArray::as_raw_mut_ptr(&raw mut WSUM);
         let b = 1u32 << p.log2;
         let cubes = b * b * b;
         let edges = 3 * (b + 1) * (b + 1) * (b + 1);
@@ -1167,21 +1215,18 @@ pub unsafe fn tsdf_mc_emit(
             let vb = *v_off.add(e as usize);
             let tb = *t_off.add(e as usize);
             if tid < 27 {
-                BASES[tid as usize] =
+                *bases.add(tid as usize) =
                     neighbour_base(keys, vals, p.log2_cap, pages, key, tid, p.log2);
             }
             thread::sync_threads();
-            let mut hood = Hood {
-                bases: [NONE; 27],
+            let hood = Hood {
+                bases: bases.cast_const(),
                 tsdf,
                 weight,
                 rgbw,
                 threshold: p.weight_threshold,
                 log2: p.log2,
             };
-            for k in 0..27 {
-                hood.bases[k] = BASES[k];
-            }
             let mut c = tid;
             while c < cubes {
                 CONF[c as usize] = hood.conf(tc::local_coords(c, p.log2)) as u8;
@@ -1189,42 +1234,25 @@ pub unsafe fn tsdf_mc_emit(
             }
             thread::sync_threads();
 
-            // vertices: one per used edge, ids in ascending edge index
+            // Vertices: one per used edge, ids in ascending edge index.
+            // Round r takes edges r * T + tid; a vertex id is the used edges
+            // before it: earlier rounds, earlier warps, earlier lanes.
             let conf_at = |l: [i32; 3]| CONF[tc::local_index(l, p.log2)] as usize;
-            let ce = edges.div_ceil(T);
-            let (e0, e1) = (
-                tid * ce,
-                if (tid + 1) * ce < edges {
-                    (tid + 1) * ce
-                } else {
-                    edges
-                },
-            );
-            let mut cnt = 0u32;
-            let mut ei = e0;
-            while ei < e1 {
-                let (o, axis) = edge_of(ei, b);
-                let used = tc::edge_used(o, axis, b as i32, conf_at);
-                IDS[ei as usize] = if used { 0 } else { NO_VERTEX };
-                cnt += used as u32;
-                ei += 1;
-            }
-            CHUNK[tid as usize] = cnt;
-            thread::sync_threads();
-            if tid == 0 {
-                let mut acc = 0u32;
-                for k in 0..T as usize {
-                    let x = CHUNK[k];
-                    CHUNK[k] = acc;
-                    acc += x;
+            let mut base = 0u32;
+            let mut r = 0u32;
+            while r < edges.div_ceil(T) {
+                let ei = r * T + tid;
+                let used = ei < edges && {
+                    let (o, axis) = edge_of(ei, b);
+                    tc::edge_used(o, axis, b as i32, conf_at)
+                };
+                let vote = warp::ballot_sync(FULL, used);
+                let (before, total) = block_scan(wsum.add(warp_half(r)), vote.count_ones());
+                let id = base + before + (vote & warp::lanemask_lt()).count_ones();
+                if ei < edges {
+                    IDS[ei as usize] = if used { id as u16 } else { NO_VERTEX };
                 }
-            }
-            thread::sync_threads();
-            let mut id = CHUNK[tid as usize];
-            let mut ei = e0;
-            while ei < e1 {
-                if IDS[ei as usize] != NO_VERTEX {
-                    IDS[ei as usize] = id as u16;
+                if used {
                     let (o, axis) = edge_of(ei, b);
                     let (pos, rgb, nrm) = tc::mesh_edge_point::<O, Hood>(
                         &hood,
@@ -1255,66 +1283,59 @@ pub unsafe fn tsdf_mc_emit(
                         *out_colors.add(k + 1) = rgb[1];
                         *out_colors.add(k + 2) = rgb[2];
                     }
-                    id += 1;
                 }
-                ei += 1;
+                base += total;
+                r += 1;
             }
             thread::sync_threads();
 
-            // triangles in cube order, then table order
-            let cc = cubes.div_ceil(T);
-            let (c0, c1) = (
-                tid * cc,
-                if (tid + 1) * cc < cubes {
-                    (tid + 1) * cc
-                } else {
-                    cubes
-                },
-            );
-            let mut cnt = 0u32;
-            let mut c = c0;
-            while c < c1 {
-                cnt += tc::tri_count(CONF[c as usize] as usize);
-                c += 1;
-            }
-            CHUNK[tid as usize] = cnt;
-            thread::sync_threads();
-            if tid == 0 {
-                let mut acc = 0u32;
-                for k in 0..T as usize {
-                    let x = CHUNK[k];
-                    CHUNK[k] = acc;
-                    acc += x;
-                }
-            }
-            thread::sync_threads();
+            // Triangles in cube order, then table order; the same scan over
+            // the per-cube counts (0..=5: one ballot per bit).
             let ib = if p.global_index != 0 {
                 p.index_base + vb as u32
             } else {
                 0
             };
-            let mut ti = tb + CHUNK[tid as usize] as u64;
-            let mut c = c0;
-            while c < c1 {
-                let conf = CONF[c as usize] as usize;
-                let l0 = tc::local_coords(c, p.log2);
-                let row = &tc::TRI_TABLE[conf];
-                let vid = |ek: i8| {
-                    let ek = ek as usize;
-                    let ow = tc::EDGE_OWNER[ek];
-                    let o = [l0[0] + ow[0], l0[1] + ow[1], l0[2] + ow[2]];
-                    ib + IDS[tc::edge_key(o, tc::EDGE_AXIS[ek], b as i32)] as u32
+            let mut base = 0u32;
+            let mut r = 0u32;
+            while r < cubes.div_ceil(T) {
+                let c = r * T + tid;
+                let conf = if c < cubes {
+                    CONF[c as usize] as usize
+                } else {
+                    0
                 };
-                let mut j = 0;
-                while j + 2 < 16 && row[j] >= 0 {
-                    let k = 3 * ti as usize;
-                    *out_triangles.add(k) = vid(row[j]);
-                    *out_triangles.add(k + 1) = vid(row[j + 2]);
-                    *out_triangles.add(k + 2) = vid(row[j + 1]);
-                    ti += 1;
-                    j += 3;
+                let cnt = tc::tri_count(conf);
+                let lt = warp::lanemask_lt();
+                let (mut lane_before, mut warp_total) = (0u32, 0u32);
+                for bit in 0..3 {
+                    let vote = warp::ballot_sync(FULL, cnt & (1 << bit) != 0);
+                    lane_before += (vote & lt).count_ones() << bit;
+                    warp_total += vote.count_ones() << bit;
                 }
-                c += 1;
+                let (before, total) = block_scan(wsum.add(warp_half(r)), warp_total);
+                let mut ti = tb + (base + before + lane_before) as u64;
+                if cnt > 0 {
+                    let l0 = tc::local_coords(c, p.log2);
+                    let row = &tc::TRI_TABLE[conf];
+                    let vid = |ek: i8| {
+                        let ek = ek as usize;
+                        let ow = tc::EDGE_OWNER[ek];
+                        let o = [l0[0] + ow[0], l0[1] + ow[1], l0[2] + ow[2]];
+                        ib + IDS[tc::edge_key(o, tc::EDGE_AXIS[ek], b as i32)] as u32
+                    };
+                    let mut j = 0;
+                    while j + 2 < 16 && row[j] >= 0 {
+                        let k = 3 * ti as usize;
+                        *out_triangles.add(k) = vid(row[j]);
+                        *out_triangles.add(k + 1) = vid(row[j + 2]);
+                        *out_triangles.add(k + 2) = vid(row[j + 1]);
+                        ti += 1;
+                        j += 3;
+                    }
+                }
+                base += total;
+                r += 1;
             }
             thread::sync_threads();
             e += thread::gridDim_x();
@@ -1332,6 +1353,7 @@ pub unsafe fn tsdf_mc_emit(
 ///
 /// Hash as in the raycast (one header); `pool_keys`/`modified`/
 /// `dirty_mark`/`dirty_list` hold `len` entries; `dirty_count` one.
+#[launch_bounds(T)]
 #[kernel]
 pub unsafe fn tsdf_mc_dirty(
     keys: *const u64,

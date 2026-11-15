@@ -3,12 +3,17 @@
 
 #[path = "../ptx_gate.rs"]
 mod ptx_gate;
-use ptx_gate::{gate, FMA_ALLOWED};
+use ptx_gate::{gate, FMA_ALLOWED, MAXNTID};
 
 const HEAD: &str = ".version 6.3\n.target sm_75\n.address_size 64\n";
 
 fn entry(name: &str, body: &str) -> String {
-    format!(".visible .entry {name}(\n\t.param .u64 .ptr .align 1 {name}_param_0\n)\n{{\n{body}\tret;\n}}\n")
+    bounded_entry(name, ".maxntid 256, 1, 1\n", body)
+}
+
+/// An entry whose header ends with `bounds` (directive lines).
+fn bounded_entry(name: &str, bounds: &str, body: &str) -> String {
+    format!(".visible .entry {name}(\n\t.param .u64 .ptr .align 1 {name}_param_0\n)\n{bounds}{{\n{body}\tret;\n}}\n")
 }
 
 fn helper(body: &str) -> String {
@@ -250,4 +255,29 @@ fn fma_allowed_is_the_contract_set() {
             "tsdf_touch_spherical",
         ]
     );
+}
+
+/// A fixed-block (`MAXNTID`) entry must declare exactly that `.maxntid`;
+/// other entries need none.
+#[test]
+fn maxntid_required_on_fixed_block_entries() {
+    let (prefix, want) = MAXNTID[0];
+    let name = format!("{prefix}k");
+    let names = vec![name.clone()];
+    let ok = format!("{HEAD}{}", entry(&name, ""));
+    assert_eq!(gate(&ok, &names), Ok(()));
+    let commented = format!(".maxntid {want}                      // @{name}\n");
+    let ok_commented = format!("{HEAD}{}", bounded_entry(&name, &commented, ""));
+    assert_eq!(gate(&ok_commented, &names), Ok(()));
+    for bounds in ["", ".maxntid 1024, 1, 1\n", ".reqntid 256, 1, 1\n"] {
+        let ptx = format!("{HEAD}{}", bounded_entry(&name, bounds, ""));
+        let errs = gate(&ptx, &names).expect_err(bounds);
+        assert!(errs.iter().any(|e| e.contains(".maxntid")), "{errs:?}");
+    }
+    // a `.maxntid` in a helper does not count for the entry after it
+    let h = format!(".func _RNvCs0_4kern6helper()\n.maxntid {want}\n{{\n\tret;\n}}\n");
+    let ptx = format!("{HEAD}{h}{}", bounded_entry(&name, "", ""));
+    assert!(gate(&ptx, &names).is_err());
+    let free = format!("{HEAD}{}", bounded_entry("k", "", ""));
+    assert_eq!(gate(&free, &k()), Ok(()));
 }

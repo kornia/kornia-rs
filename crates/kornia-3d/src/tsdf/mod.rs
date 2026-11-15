@@ -271,6 +271,16 @@ pub enum TsdfError {
     #[cfg(feature = "cuda")]
     #[error("built without the cuda-oxide PTX (stub)")]
     KernelsUnavailable,
+
+    /// A device block-hash insert found no free slot. Tables hold at least
+    /// twice their block capacity, so this is an internal sizing error; the
+    /// step or growth that hit it is not applied.
+    #[cfg(feature = "cuda")]
+    #[error("device block hash full ({slots} slots)")]
+    HashFull {
+        /// Slots of the full table.
+        slots: usize,
+    },
 }
 
 /// Opaque agent (robot, rig) id.
