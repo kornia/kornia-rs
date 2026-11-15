@@ -358,10 +358,14 @@ mod tests {
         }
     }
 
+    /// Closed-form values of Ceres' `HuberLoss` and `CauchyLoss` (`a² = c²`),
+    /// and twice its `TukeyLoss`, which is normalised to `ρ'(0) = ½`.
     #[test]
-    fn huber_rho_value() {
+    fn rho_reference_values() {
         assert!((HuberKernel.rho(100.0, 25.0) - 75.0).abs() < 1e-12);
         assert!((HuberKernel.rho(16.0, 25.0) - 16.0).abs() < 1e-12);
+        assert!((CauchyKernel.rho(4.0, 4.0) - 4.0 * std::f64::consts::LN_2).abs() < 1e-12);
+        assert!((TukeyKernel.rho(2.0, 4.0) - 7.0 / 6.0).abs() < 1e-12);
     }
 
     /// Tukey saturates at `c²/3` beyond the scale.
