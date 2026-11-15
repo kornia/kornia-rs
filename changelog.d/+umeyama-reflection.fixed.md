@@ -1,0 +1,1 @@
+`kornia_algebra::linalg::rigid::umeyama` now returns the least-squares rotation when the cross-covariance has `det(U·Vᵀ) < 0` (noisy or outlier-contaminated samples, e.g. EPnP inside RANSAC). It negated a column of `R`, which gave a proper rotation with a higher residual; it now negates the column of `U` for the smallest singular value, as `umeyama_f64` and Kabsch do.
