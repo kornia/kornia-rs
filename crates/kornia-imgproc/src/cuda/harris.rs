@@ -161,7 +161,7 @@ mod tests {
     use kornia_image::{Image, ImageSize};
 
     #[test]
-    fn harris_f32_close_to_cpu() {
+    fn harris_f32_bit_exact_vs_cpu() {
         let stream = default_stream();
         for (width, height) in [(2, 2), (2, 9), (9, 2), (3, 3), (17, 33), (65, 23)] {
             let size = ImageSize { width, height };
@@ -192,8 +192,9 @@ mod tests {
                     let gpu = stream.clone_dtoh(&d_dst).unwrap();
                     stream.synchronize().unwrap();
                     for (p, (&actual, &expected)) in gpu.iter().zip(cpu.as_slice()).enumerate() {
-                        assert!(
-                            (actual - expected).abs() <= 1e-6 + 1e-4 * expected.abs(),
+                        assert_eq!(
+                            actual.to_bits(),
+                            expected.to_bits(),
                             "{width}x{height}, k={k}, pixel {p}: gpu={actual}, cpu={expected}"
                         );
                     }
