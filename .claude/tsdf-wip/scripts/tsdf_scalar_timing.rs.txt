@@ -1,0 +1,142 @@
+//! Rough scalar TSDF timing on Replica (scratch, not committed).
+use std::time::Instant;
+
+use kornia_3d::camera::PinholeCamera;
+use kornia_3d::depth::DepthImage;
+use kornia_3d::mesh::TriangleMesh;
+use kornia_3d::pose::Pose3d;
+use kornia_3d::tsdf::*;
+use kornia_algebra::{Mat3F64, Vec3F64};
+use kornia_image::{Image, ImageSize};
+
+fn run<const B: usize>(
+    kernel: TsdfKernel,
+    label: &str,
+    voxel: f32,
+    sensor: &RangeSensor,
+    frames: &[(DepthImage<u16>, Image<u8, 3>, Pose3d)],
+) where
+    BlockDim<B>: SupportedBlockDim,
+{
+    let params = TsdfParams {
+        max_weight: 64,
+        block_capacity: 1 << 14,
+        growth: PoolGrowth::Geometric,
+        ..TsdfParams::default()
+    };
+    let mut vol = TsdfVolume::<B>::new(TsdfLayout::new(voxel, 4.0).unwrap(), params).unwrap();
+    let mut ws = TsdfWorkspace::new(kernel);
+    let mut ms = Vec::new();
+    for (d, c, p) in frames {
+        let o = [SensorObservation {
+            sensor,
+            volume_from_sensor: *p,
+            depth: d.into(),
+            color: Some(c),
+        }];
+        let t = Instant::now();
+        vol.integrate(&mut ws, &o).unwrap();
+        ms.push(t.elapsed().as_secs_f64() * 1e3);
+    }
+    let warm = &ms[1..];
+    let mut s = warm.to_vec();
+    s.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let mean = s.iter().sum::<f64>() / s.len() as f64;
+    let mut mesh = TriangleMesh::default();
+    let mp = MeshParams {
+        weight_threshold: 1,
+        normals: true,
+        colors: true,
+    };
+    let t = Instant::now();
+    vol.extract_mesh_into(&mut ws, &mp, &mut mesh).unwrap();
+    let mesh_ms = t.elapsed().as_secs_f64() * 1e3;
+    println!(
+        "{:12} voxel {:.2} B={:2}: integrate first {:7.1} ms | warm mean {:7.1} median {:7.1} min {:7.1} max {:7.1} ms | blocks {:6} | full mesh {:7.1} ms, {} tris",
+        label, voxel, B, ms[0], mean, s[s.len() / 2], s[0], s[s.len() - 1], vol.num_blocks(), mesh_ms, mesh.triangles.len()
+    );
+}
+
+fn main() {
+    let root = "/mnt/data/datasets/replica/Replica/room0";
+    let n: usize = std::env::args()
+        .nth(1)
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(30);
+    let traj = std::fs::read_to_string(format!("{root}/traj.txt")).unwrap();
+    let cam = PinholeCamera {
+        fx: 600.0,
+        fy: 600.0,
+        cx: 599.5,
+        cy: 339.5,
+        ..PinholeCamera::IDENTITY
+    };
+    let size = ImageSize {
+        width: 1200,
+        height: 680,
+    };
+    let sensor: RangeSensor = PinholeSensor::new(&cam, size, DepthRange::new(0.1, 7.0).unwrap())
+        .unwrap()
+        .into();
+    let frames: Vec<_> = traj
+        .lines()
+        .take(n)
+        .enumerate()
+        .map(|(i, l)| {
+            let v: Vec<f64> = l.split_whitespace().map(|x| x.parse().unwrap()).collect();
+            // row-major camera-to-world; from_cols_array takes columns
+            let r =
+                Mat3F64::from_cols_array(&[v[0], v[4], v[8], v[1], v[5], v[9], v[2], v[6], v[10]]);
+            let p = Pose3d::new(r, Vec3F64::new(v[3], v[7], v[11]));
+            let d =
+                kornia_io::png::read_image_png_mono16(format!("{root}/results/depth{i:06}.png"))
+                    .unwrap()
+                    .into_inner();
+            let c =
+                kornia_io::jpeg::read_image_jpeg_rgb8(format!("{root}/results/frame{i:06}.jpg"))
+                    .unwrap()
+                    .into_inner();
+            (DepthImage::new(d, 6553.5).unwrap(), c, p)
+        })
+        .collect();
+    println!("room0, {n} frames, 1200x680, colour on, trunc 4 vox, depth [0.1, 7)");
+    // optional: <mode scalar|neon1|neon6> <voxel> <B 8|16>, for profiling one config
+    let mode = std::env::args().nth(2);
+    if let Some(m) = mode {
+        let v: f32 = std::env::args().nth(3).unwrap().parse().unwrap();
+        let b: usize = std::env::args().nth(4).unwrap().parse().unwrap();
+        let (k, t) = match m.as_str() {
+            "scalar" => (TsdfKernel::Scalar, 1),
+            "neon1" => (TsdfKernel::Simd, 1),
+            _ => (TsdfKernel::Simd, 6),
+        };
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(t)
+            .build()
+            .unwrap();
+        pool.install(|| {
+            if b == 8 {
+                run::<8>(k, &m, v, &sensor, &frames)
+            } else {
+                run::<16>(k, &m, v, &sensor, &frames)
+            }
+        });
+        return;
+    }
+    let p1 = rayon::ThreadPoolBuilder::new()
+        .num_threads(1)
+        .build()
+        .unwrap();
+    let p6 = rayon::ThreadPoolBuilder::new()
+        .num_threads(6)
+        .build()
+        .unwrap();
+    for &v in &[0.05f32, 0.02] {
+        run::<8>(TsdfKernel::Scalar, "scalar", v, &sensor, &frames);
+        p1.install(|| run::<8>(TsdfKernel::Simd, "neon 1t", v, &sensor, &frames));
+        p6.install(|| run::<8>(TsdfKernel::Simd, "neon 6t", v, &sensor, &frames));
+        run::<16>(TsdfKernel::Scalar, "scalar", v, &sensor, &frames);
+        p1.install(|| run::<16>(TsdfKernel::Simd, "neon 1t", v, &sensor, &frames));
+        p6.install(|| run::<16>(TsdfKernel::Simd, "neon 6t", v, &sensor, &frames));
+    }
+}

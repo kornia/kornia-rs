@@ -1,0 +1,35 @@
+{
+ "convention_check": {
+  "note": "room0, voxel 0.05, first 50 frames, Row M mesh, scorer culled to frames 0:50. VDBFusion integrate takes WORLD points + uses extrinsic[:3,3] only as ray origin; the supplied /mnt/data/kr-tsdf-spikes/vdbfusion_smoke.py passed CAMERA-frame points and flipped y/z, both wrong.",
+  "as_is": {
+   "run": "/mnt/data/kr-tsdf-spikes/results/baselines/vdbfusion/runs/room0_v0.05_n50_conv_asis",
+   "accuracy_cm": 1.685,
+   "completeness_cm": 0.9887,
+   "completion_ratio_pct": 99.119
+  },
+  "flip_yz": {
+   "run": "/mnt/data/kr-tsdf-spikes/results/baselines/vdbfusion/runs/room0_v0.05_n50_conv_flip",
+   "accuracy_cm": 480.3956,
+   "completeness_cm": 480.0664,
+   "completion_ratio_pct": 0.0
+  }
+ },
+ "pilot_2cm_50f": {
+  "run": "/mnt/data/kr-tsdf-spikes/results/baselines/vdbfusion/runs/room0_v0.02_n50_pilot",
+  "e2e_median_ms": 809.573640988674
+ },
+ "subset_decision": "not needed: ~0.81 s/frame -> ~29.6 min wall per 2000-frame run (< 60 min), all 2000 frames run for every config",
+ "deviations": [
+  "no weight cap (Row M cap 64 not expressible; constant +1 uncapped, same as Open3D VBG)",
+  "no colour",
+  "single-threaded integrate (upstream sequential std::for_each)",
+  "trunc fixed 4 voxels for Row R too (upstream RGB-D configs 3/7 voxels)",
+  "depth filter on camera z [0.1,7.0) (upstream filters ray norm)",
+  "Row M and Row R share ONE integration run per scene x voxel (identical integration params; only mesh min_weight 1 vs 5 differs)",
+  "Row R mesh 'cold' call follows Row M's three calls in the same process"
+ ],
+ "sampling_floor_cm": {
+  "room0": 1.45,
+  "office0": 1.12
+ }
+}

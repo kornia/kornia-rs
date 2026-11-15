@@ -1,0 +1,20 @@
+# Replica room0 -> InfiniTAM CLI inputs: rgb %04i.ppm, depth %04i.pgm (16-bit P5, big-endian), calib.txt.
+# InfiniTAM reads depth as SIGNED short, so raw uint16 at 6553.5/m would wrap beyond 5 m.
+# We store raw = round(depth_m * 3276.75) (max 10 m fits int16) and set calib affine a = 1/3276.75.
+import sys, os, numpy as np, cv2
+R = "/mnt/data/datasets/replica/Replica/room0"
+O = "/mnt/data/datasets/replica/infinitam/room0"
+N = int(sys.argv[1]) if len(sys.argv) > 1 else 50
+os.makedirs(O, exist_ok=True)
+SC = 3276.75
+for i in range(N):
+    d = cv2.imread(f"{R}/results/depth{i:06d}.png", cv2.IMREAD_UNCHANGED).astype(np.float64) / 6553.5
+    raw = np.clip(np.round(d * SC), 0, 32767).astype(">u2")
+    with open(f"{O}/{i:04d}.pgm", "wb") as f:
+        f.write(b"P5\n%d %d\n65535\n" % (raw.shape[1], raw.shape[0])); f.write(raw.tobytes())
+    c = cv2.imread(f"{R}/results/frame{i:06d}.jpg")[:, :, ::-1]
+    with open(f"{O}/{i:04d}.ppm", "wb") as f:
+        f.write(b"P6\n%d %d\n255\n" % (c.shape[1], c.shape[0])); f.write(np.ascontiguousarray(c).tobytes())
+with open(f"{O}/calib.txt", "w") as f:
+    f.write("1200 680\n600 600\n599.5 339.5\n\n1200 680\n600 600\n599.5 339.5\n\n"
+            "1 0 0 0\n0 1 0 0\n0 0 1 0\n\naffine %.10g 0\n" % (1.0 / SC))
