@@ -145,6 +145,7 @@ def cases():
         out.append(("dilate (3x3, u8)", "", res, _morph_builder(w, h, "dilate")))
         out.append(("erode (3x3, u8)", "", res, _morph_builder(w, h, "erode")))
         out.append(("sobel (3x3, f32)", "", res, _sobel_builder(w, h)))
+        out.append(("harris (3x3, f32)", "", res, _harris_builder(w, h)))
         out.append(("laplacian (3x3, u8)", "", res, _laplacian_builder(w, h)))
         out.append(("integral (u8)", "", res, _integral_builder(w, h)))
     return out
@@ -398,6 +399,40 @@ def _sobel_builder(w, h):
             try:
                 flt = cv2.cuda.createSobelFilter(cv2.CV_32F, cv2.CV_32F, 1, 0, 3)
                 d["cv_cuda"] = (lambda: flt.apply(g), cuda_sync)
+            except Exception:                             # noqa: BLE001
+                pass
+        return d
+    return build
+
+
+def _harris_builder(w, h):
+    """Dense response map, Sobel 3x3 and a 3x3 window, k = 0.04. VPI has no
+    response map: its harriscorners takes S16 and also runs NMS and emits
+    keypoints, so its cell is not like for like. Outputs are allocated once,
+    as kornia's bench does."""
+    def build():
+        a = _src(w, h, np.float32, 1)[:, :, 0]
+        d = {}
+        if HAS_CV:
+            out = np.empty_like(a)
+            d["cv_cpu"] = (lambda: cv2.cornerHarris(a, 3, 3, 0.04, dst=out), nosync)
+        if HAS_CV_CUDA:
+            g = _gpumat(a)
+            try:
+                hc = cv2.cuda.createHarrisCorner(cv2.CV_32FC1, 3, 3, 0.04)
+                gout = cv2.cuda_GpuMat(h, w, cv2.CV_32FC1)
+                d["cv_cuda"] = (lambda: hc.compute(g, gout), cuda_sync)
+            except Exception:                             # noqa: BLE001
+                pass
+        if HAS_VPI:
+            try:
+                v = vpi.asimage((a * 255).astype(np.int16)).convert(
+                    vpi.Format.S16, backend=vpi.Backend.CUDA)
+                s = vpi.Stream()
+                def run(v=v, s=s):
+                    v.harriscorners(sensitivity=0.04, stream=s,
+                                    backend=vpi.Backend.CUDA)
+                d["vpi"] = (run, s.sync)
             except Exception:                             # noqa: BLE001
                 pass
         return d

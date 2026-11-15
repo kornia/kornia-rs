@@ -70,7 +70,7 @@ fn bench_harris_response(c: &mut Criterion) {
     let mut group = c.benchmark_group("Features");
     let mut rng = rand::rng();
 
-    for (width, height) in [(224, 224), (1920, 1080)].iter() {
+    for (width, height) in [(224, 224), (1920, 1080), (3840, 2160)].iter() {
         group.throughput(criterion::Throughput::Elements((*width * *height) as u64));
 
         let parameter_string = format!("{width}x{height}");
