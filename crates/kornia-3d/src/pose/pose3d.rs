@@ -1,6 +1,6 @@
 //! Pose representation utilities.
 
-use kornia_algebra::{Mat3F64, Vec3F64};
+use kornia_algebra::{Mat3F64, Vec3F64, SO3F64};
 
 /// A rigid 3D pose that maps points from world frame to camera frame.
 ///
@@ -40,6 +40,12 @@ impl Pose3d {
     }
 
     /// Inverse transform (camera-to-world).
+    ///
+    /// Assumes a rigid pose: the rotation is inverted by its transpose, which
+    /// equals the inverse only when `RᵀR = I`. A rotation with scale `s`
+    /// comes back with scale `s` instead of `1/s`, so a drifted pose composed
+    /// with its inverse is not the identity. Call [`Pose3d::orthonormalized`]
+    /// first on a pose whose [`Pose3d::rotation_defect`] is not negligible.
     pub fn inverse(&self) -> Self {
         let r_inv = self.rotation.transpose();
         Self {
@@ -62,6 +68,66 @@ impl Pose3d {
     /// Relative transform from `from` to `to`.
     pub fn between(from: &Self, to: &Self) -> Self {
         to.compose(&from.inverse())
+    }
+
+    /// Largest absolute entry of `RᵀR - I`, a measure of how far the rotation
+    /// is from orthonormal.
+    ///
+    /// Repeated composition in floating point lets a rotation drift off
+    /// `SO(3)`; this reports by how much.
+    ///
+    /// # Returns
+    ///
+    /// `0.0` for an exact rotation, about `2ε` for a rotation scaled by
+    /// `1 + ε`, and `f64::INFINITY` when the rotation has a non-finite entry.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_3d::pose::Pose3d;
+    /// use kornia_algebra::{Mat3F64, Vec3F64};
+    ///
+    /// let pose = Pose3d::new(Mat3F64::IDENTITY * 1.001, Vec3F64::ZERO);
+    /// assert!((pose.rotation_defect() - 2.001e-3).abs() < 1e-12);
+    /// ```
+    pub fn rotation_defect(&self) -> f64 {
+        let residual =
+            (self.rotation.transpose() * self.rotation - Mat3F64::IDENTITY).to_cols_array();
+        if !residual.iter().all(|v| v.is_finite()) {
+            return f64::INFINITY;
+        }
+        residual.iter().fold(0.0, |acc, v| acc.max(v.abs()))
+    }
+
+    /// The pose with its rotation projected back onto `SO(3)`; the
+    /// translation is kept.
+    ///
+    /// The rotation goes through its quaternion, which is renormalised in
+    /// `f64`, as Sophus does after every `SO3` product. A rigid pose comes back
+    /// unchanged up to rounding. A scaled or drifted rotation comes back as a
+    /// proper rotation near it: for `s·R` the result lies within about
+    /// `|s - 1|` radians of `R`. This is not the SVD (polar) projection.
+    ///
+    /// # Returns
+    ///
+    /// A pose whose [`Pose3d::rotation_defect`] is at rounding level.
+    /// A non-finite rotation gives a non-finite result.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_3d::pose::Pose3d;
+    /// use kornia_algebra::{Vec3F64, SO3F64};
+    ///
+    /// let r = SO3F64::exp(Vec3F64::new(0.3, -0.2, 0.9)).matrix();
+    /// let drifted = Pose3d::new(r * 1.001, Vec3F64::new(1.0, 2.0, 3.0));
+    /// let rigid = drifted.orthonormalized();
+    /// assert!(rigid.rotation_defect() < 1e-12);
+    /// assert_eq!(rigid.translation, drifted.translation);
+    /// ```
+    pub fn orthonormalized(&self) -> Self {
+        let q = SO3F64::from_matrix(&self.rotation).q.normalize();
+        Self::new(SO3F64::from_quaternion(q).matrix(), self.translation)
     }
 
     /// Transform a world-frame point into camera frame.
@@ -92,7 +158,7 @@ impl std::ops::Mul<Vec3F64> for Pose3d {
 #[cfg(test)]
 mod tests {
     use super::Pose3d;
-    use kornia_algebra::{Mat3F64, Vec3F64};
+    use kornia_algebra::{Mat3F64, Vec3F64, SO3F64};
 
     #[test]
     fn test_identity() {
@@ -109,6 +175,65 @@ mod tests {
         let cam = pose.transform_point(&point);
         let world = inv.transform_point(&cam);
         assert!((world - point).length() < 1e-10);
+    }
+
+    fn rotation() -> Mat3F64 {
+        SO3F64::exp(Vec3F64::new(0.3, -0.2, 0.9)).matrix()
+    }
+
+    #[test]
+    fn test_rotation_defect() {
+        assert_eq!(Pose3d::IDENTITY.rotation_defect(), 0.0);
+        let pose = Pose3d::new(rotation(), Vec3F64::ZERO);
+        assert!(pose.rotation_defect() < 1e-15);
+        // (1.001)^2 - 1 on the diagonal of RᵀR.
+        let scaled = Pose3d::new(rotation() * 1.001, Vec3F64::ZERO).rotation_defect();
+        assert!((scaled - 2.001e-3).abs() < 1e-9, "{scaled}");
+        let mut broken = pose;
+        broken.rotation.x_axis.x = f64::NAN;
+        assert_eq!(broken.rotation_defect(), f64::INFINITY);
+    }
+
+    #[test]
+    fn test_orthonormalized_restores_a_scaled_rotation() {
+        let t = Vec3F64::new(4.0, -1.5, 12.0);
+        for scale in [0.999, 1.001, 1.0 + 1e-7] {
+            let pose = Pose3d::new(rotation() * scale, t).orthonormalized();
+            assert!(pose.rotation_defect() < 1e-12, "scale {scale}");
+            assert_eq!(pose.translation, t);
+            let angle = SO3F64::from_matrix(&(rotation().transpose() * pose.rotation))
+                .log()
+                .length();
+            assert!(
+                angle <= 1.1 * (scale - 1.0f64).abs(),
+                "scale {scale}: {angle}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_orthonormalized_keeps_a_rigid_pose() {
+        let pose = Pose3d::new(rotation(), Vec3F64::new(4.0, -1.5, 12.0));
+        let rigid = pose.orthonormalized();
+        assert_eq!(rigid.translation, pose.translation);
+        for (a, b) in rigid
+            .rotation
+            .to_cols_array()
+            .iter()
+            .zip(pose.rotation.to_cols_array())
+        {
+            assert!((a - b).abs() <= 1e-15, "{a} vs {b}");
+        }
+    }
+
+    #[test]
+    fn test_inverse_of_a_scaled_pose_is_not_its_inverse() {
+        // Documents the rigid assumption of `inverse`: the scale survives the
+        // transpose, so pose ∘ pose⁻¹ carries scale² until orthonormalized.
+        let pose = Pose3d::new(rotation() * 1.001, Vec3F64::new(1.0, 2.0, 3.0));
+        assert!(pose.compose(&pose.inverse()).rotation_defect() > 1e-3);
+        let rigid = pose.orthonormalized();
+        assert!(rigid.compose(&rigid.inverse()).rotation_defect() < 1e-12);
     }
 
     #[test]
