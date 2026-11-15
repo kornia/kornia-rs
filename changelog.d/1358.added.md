@@ -1,0 +1,1 @@
+`kornia_3d::pose::Pose3d::orthonormalized` projects a drifted rotation back onto SO(3) through its renormalised quaternion (as Sophus does), and `Pose3d::rotation_defect` reports `max|RᵀR - I|`. `Pose3d::inverse` now documents that it assumes a rigid pose: on a scaled rotation the transpose keeps the scale instead of inverting it.
