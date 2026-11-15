@@ -4,7 +4,8 @@
 //! during iterated least-squares refinement (LM normal equations, BA, the
 //! eventual MAGSAC++ scorer). Each kernel takes a *squared residual* and a
 //! *squared scale* (the kernel's transition point, sometimes called `c²`)
-//! and returns a non-negative weight in `[0, 1]`.
+//! and returns a non-negative weight in `[0, 1]`, plus the robust objective
+//! `ρ` that weight is the derivative of.
 //!
 //! The squared-units convention matches the rest of `kornia-3d`
 //! (`sampson_distance`, transfer error, reprojection RMSE all return
@@ -25,16 +26,32 @@
 //!   gross outliers but needs a decent initialisation or it can lock into
 //!   a wrong basin.
 
-/// A pluggable robust weight function.
+/// A pluggable robust weight function and its objective.
 ///
 /// `weight(r², c²)` returns a non-negative scalar in `[0, 1]` that scales
 /// the contribution of a residual to a quadratic loss. Multiplying both
 /// sides of the normal equations by this weight implements iteratively
 /// reweighted least squares (IRLS).
+///
+/// `rho(r², c²)` is the objective those weights minimise: the cost of a
+/// residual is `½ρ(r²)`, and its gradient is the weighted `w·r` of the IRLS
+/// normal equations. Use it wherever the cost itself is compared, e.g. to
+/// accept or reject a Levenberg–Marquardt step.
 pub trait RobustKernel {
     /// Compute the weight for a residual whose squared magnitude is `r_sq`,
     /// given the kernel's squared scale parameter `c_sq`.
     fn weight(&self, r_sq: f64, c_sq: f64) -> f64;
+
+    /// Robust objective `ρ(s)` at `s = r_sq`, in squared units, given the
+    /// kernel's squared scale parameter `c_sq`.
+    ///
+    /// Defined by `ρ(0) = 0` and `dρ/ds = weight(s, c_sq)`, so `ρ(s) ≤ s`
+    /// and `ρ(s) = s` while the weight stays 1 (Huber inside the knee, and
+    /// every kernel at a degenerate `c² ≤ 0` or infinite scale).
+    ///
+    /// The reweighted cost `½·w·s` is NOT this objective: for Huber past
+    /// the knee it is `½√(c² s)`, with half the slope of `½ρ`.
+    fn rho(&self, r_sq: f64, c_sq: f64) -> f64;
 }
 
 /// Pass-through kernel: every residual gets weight 1.
@@ -49,12 +66,19 @@ impl RobustKernel for IdentityKernel {
     fn weight(&self, _r_sq: f64, _c_sq: f64) -> f64 {
         1.0
     }
+
+    #[inline]
+    fn rho(&self, r_sq: f64, _c_sq: f64) -> f64 {
+        r_sq
+    }
 }
 
 /// Huber's M-estimator: quadratic loss inside `|r| ≤ c`, linear outside.
 ///
 /// Weight: `1` if `r² ≤ c²` else `c / |r|`. Implemented via squared
 /// quantities to avoid a `sqrt` in the inlier branch.
+///
+/// Objective: `ρ = r²` if `r² ≤ c²` else `2·c·|r| − c²`.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct HuberKernel;
 
@@ -72,12 +96,23 @@ impl RobustKernel for HuberKernel {
             (c_sq / r_sq).sqrt()
         }
     }
+
+    #[inline]
+    fn rho(&self, r_sq: f64, c_sq: f64) -> f64 {
+        if r_sq <= c_sq || c_sq <= 0.0 {
+            r_sq
+        } else {
+            2.0 * (c_sq * r_sq).sqrt() - c_sq
+        }
+    }
 }
 
 /// Cauchy / Lorentzian kernel — strictly redescending.
 ///
 /// Weight: `1 / (1 + r²/c²)`. Smooth; never reaches zero. Good middle
 /// ground between Huber (bounded influence) and Tukey (hard rejection).
+///
+/// Objective: `ρ = c² · ln(1 + r²/c²)`.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CauchyKernel;
 
@@ -89,6 +124,15 @@ impl RobustKernel for CauchyKernel {
         }
         1.0 / (1.0 + r_sq / c_sq)
     }
+
+    #[inline]
+    fn rho(&self, r_sq: f64, c_sq: f64) -> f64 {
+        // `c² = ∞` has weight 1, but `∞ · ln_1p(0)` is NaN.
+        if c_sq <= 0.0 || c_sq == f64::INFINITY {
+            return r_sq;
+        }
+        c_sq * (r_sq / c_sq).ln_1p()
+    }
 }
 
 /// Tukey biweight — hard redescender. Weight reaches 0 at `|r| = c`.
@@ -97,6 +141,8 @@ impl RobustKernel for CauchyKernel {
 /// contribute zero gradient — makes Tukey effective at gross outliers but
 /// sensitive to the initial estimate (a bad initialisation can leave good
 /// observations marked as zero-weight).
+///
+/// Objective: `ρ = (c²/3)·(1 − (1 − r²/c²)³)` for `r² ≤ c²`, else `c²/3`.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TukeyKernel;
 
@@ -111,6 +157,20 @@ impl RobustKernel for TukeyKernel {
         }
         let u = 1.0 - r_sq / c_sq;
         u * u
+    }
+
+    #[inline]
+    fn rho(&self, r_sq: f64, c_sq: f64) -> f64 {
+        if c_sq <= 0.0 {
+            return r_sq;
+        }
+        if r_sq >= c_sq {
+            return c_sq / 3.0;
+        }
+        // Expanded in t = r²/c² to avoid cancellation in `1 − u³` near 0;
+        // this form also gives `r²` (not NaN) for `c² = ∞`.
+        let t = r_sq / c_sq;
+        r_sq * (1.0 - t + t * t / 3.0)
     }
 }
 
@@ -137,6 +197,16 @@ impl RobustKernel for RobustKernelKind {
             RobustKernelKind::Huber => HuberKernel.weight(r_sq, c_sq),
             RobustKernelKind::Cauchy => CauchyKernel.weight(r_sq, c_sq),
             RobustKernelKind::Tukey => TukeyKernel.weight(r_sq, c_sq),
+        }
+    }
+
+    #[inline]
+    fn rho(&self, r_sq: f64, c_sq: f64) -> f64 {
+        match self {
+            RobustKernelKind::Identity => IdentityKernel.rho(r_sq, c_sq),
+            RobustKernelKind::Huber => HuberKernel.rho(r_sq, c_sq),
+            RobustKernelKind::Cauchy => CauchyKernel.rho(r_sq, c_sq),
+            RobustKernelKind::Tukey => TukeyKernel.rho(r_sq, c_sq),
         }
     }
 }
@@ -238,6 +308,92 @@ mod tests {
         ] {
             let w = kernel.weight(1.0, 0.0);
             assert!(w.is_finite(), "{kernel:?} produced non-finite weight: {w}");
+        }
+    }
+
+    const ALL_KERNELS: [RobustKernelKind; 4] = [
+        RobustKernelKind::Identity,
+        RobustKernelKind::Huber,
+        RobustKernelKind::Cauchy,
+        RobustKernelKind::Tukey,
+    ];
+
+    /// Squared residuals on both sides of the knee at `c² = 4`.
+    const RHO_SAMPLES: [f64; 10] = [0.01, 0.5, 1.0, 2.0, 3.5, 3.99, 4.01, 6.0, 25.0, 100.0];
+
+    #[test]
+    fn rho_at_zero_is_zero() {
+        for kernel in ALL_KERNELS {
+            assert_eq!(kernel.rho(0.0, 4.0), 0.0, "{kernel:?}");
+        }
+    }
+
+    /// `dρ/ds = weight(s)`, checked by central differences.
+    #[test]
+    fn rho_derivative_is_weight() {
+        let c_sq = 4.0;
+        let h = 1e-6;
+        for kernel in ALL_KERNELS {
+            for &s in &RHO_SAMPLES {
+                let d_rho = (kernel.rho(s + h, c_sq) - kernel.rho(s - h, c_sq)) / (2.0 * h);
+                let w = kernel.weight(s, c_sq);
+                assert!(
+                    (d_rho - w).abs() < 1e-6,
+                    "{kernel:?} at s={s}: dρ/ds={d_rho}, weight={w}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rho_continuous_at_knee() {
+        let c_sq = 4.0;
+        let eps = 1e-9;
+        for kernel in [RobustKernelKind::Huber, RobustKernelKind::Tukey] {
+            let inside = kernel.rho(c_sq - eps, c_sq);
+            let at = kernel.rho(c_sq, c_sq);
+            let outside = kernel.rho(c_sq + eps, c_sq);
+            assert!((inside - at).abs() < 1e-8, "{kernel:?}: {inside} vs {at}");
+            assert!((outside - at).abs() < 1e-8, "{kernel:?}: {outside} vs {at}");
+        }
+    }
+
+    #[test]
+    fn huber_rho_value() {
+        assert!((HuberKernel.rho(100.0, 25.0) - 75.0).abs() < 1e-12);
+        assert!((HuberKernel.rho(16.0, 25.0) - 16.0).abs() < 1e-12);
+    }
+
+    /// Tukey saturates at `c²/3` beyond the scale.
+    #[test]
+    fn tukey_rho_saturates() {
+        assert!((TukeyKernel.rho(4.0, 4.0) - 4.0 / 3.0).abs() < 1e-12);
+        assert!((TukeyKernel.rho(100.0, 4.0) - 4.0 / 3.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn rho_bounded_by_squared_residual() {
+        let c_sq = 4.0;
+        for kernel in ALL_KERNELS {
+            for &s in &RHO_SAMPLES {
+                let rho = kernel.rho(s, c_sq);
+                assert!(rho <= s + 1e-12, "{kernel:?} at s={s}: ρ={rho} > s");
+                assert!(rho >= 0.0, "{kernel:?} at s={s}: ρ={rho} < 0");
+            }
+        }
+    }
+
+    /// A degenerate (`c² ≤ 0`) or infinite scale weights every residual 1,
+    /// so `ρ(s) = s`, never NaN.
+    #[test]
+    fn rho_degenerate_and_infinite_scale_is_squared_residual() {
+        for kernel in ALL_KERNELS {
+            for c_sq in [0.0, -1.0, f64::INFINITY] {
+                for s in [0.0, 0.5, 4.0, 1e6] {
+                    let rho = kernel.rho(s, c_sq);
+                    assert_eq!(rho, s, "{kernel:?} at s={s}, c²={c_sq}: ρ={rho}");
+                }
+            }
         }
     }
 }
