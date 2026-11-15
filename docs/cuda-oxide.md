@@ -125,7 +125,9 @@ bench.
 **`CUDA_OXIDE_NO_FMA=1`.** This cuda-oxide contracts `fmul`+`fadd` into `fma`
 by default (like `nvcc --fmad=true`); the CPU twins round each op, so
 `build_ptx` always sets it on the nested build (an outer value cannot change
-it) and the gate still rejects any `fma`.
+it) and the gate still rejects any `fma`. `f32::mul_add`/`sqrt` lower to
+libdevice (`__nv_fmaf`), which the gate forbids: keep `PtxOps`' inline
+`fma.rn`/`sqrt.rn` (`options(register_only)`).
 
 ### Compile-checking `cuda` without the toolchain
 
@@ -178,14 +180,32 @@ A second kernel PR (e.g. bicubic resize) does exactly this; nothing else:
    parameters in the same order, so the existing launch code drives it.
    Rebuild the PTX with `cargo run -p kornia-oxide-kernels --example
    build_ptx`; until then any `ptx` build fails with a stale-stamp error.
-   - raw pointers, not slices (slices lose the address space and add a bounds
-     branch: 12-13% on resize upscale);
-   - **all loads before the first store**: cuda-oxide emits `noalias` only for
-     slice parameters, so raw-pointer loads/stores still serialize when
-     interleaved (2x on resize upscale);
+   - raw pointers, not slices (slices add a bounds branch: 12-13% on resize
+     upscale); `noalias` comes only from reference params (`&T`, `&[T]`) and
+     `readonly` is never emitted, so raw-pointer inputs never get
+     `ld.global.nc` (a no-op on sm_87 anyway);
+   - **all loads before the first store**: raw-pointer loads/stores still
+     serialize when interleaved (2x on resize upscale);
+   - constants by value: a `#[repr(C)]` struct parameter is one byval
+     `.param`, read in place (no upload, no dependent global load; the TSDF
+     touch/integrate kernels dropped from ~62 to ~40 registers);
+   - **zero stack frame**: no runtime-indexed local array (a `SharedArray`
+     copied into `[T; N]`, `a[axis] = ..`, `f[i] = ..` in a loop) — use
+     selects or array literals. Check with `ptxas -v -arch=sm_87` on
+     `kernels.ptx` (the build never runs ptxas) and `CUDA_OXIDE_VERBOSE=1`
+     on `build_ptx` (names the local);
+   - `#[launch_bounds(256)]`, above `#[kernel]`, on any kernel sized for 256
+     threads (`SharedArray<_, 256>`, 8-warp loops); the gate requires it on
+     `tsdf_*` entries (`MAXNTID`);
+   - shared memory: index `S[i]` or use `SharedArray::as_raw_mut_ptr(&raw mut
+     S)`; never hold `&T`/`&[T]` into a slot across `sync_threads()` (reads
+     merge). Block-wide ordered scans: ballot + popc(lanemask_lt) + per-warp
+     totals, not a tid-0 loop;
    - mirror each constant with a comment naming the CPU constant it copies;
-   - backend gaps: `Ord::min` and `f32::min`/`max` work; `to_int_unchecked`
-     does not compile (use `as`); no `__ldg` (a no-op on sm_87 anyway).
+   - backend gaps at 6d47ae4: `Ord::min` works; `f32::min`/`max` compile but
+     the gate (G2) rejects them; `to_int_unchecked` does not compile (use
+     `as`); no `__ldg`; `redux.sync` needs sm_80 (not in the sm_75 PTX);
+     SharedArray indexing is unchecked (later revs trap).
 2. **Launcher.** In the family's public launcher replace the NVRTC kernel fetch
    with `oxide::__private::kernel(stream, oxide::entry::<NAME>)` (`use
    kornia_oxide_kernels as oxide`; a crate other than kornia-imgproc also enables
