@@ -61,6 +61,10 @@ pub trait RobustKernel {
     ///
     /// The objective `ρ(s)` in the units of `r_sq`; the cost is `½ρ(s)`.
     ///
+    /// # Errors
+    ///
+    /// None: `rho` is infallible.
+    ///
     /// # Example
     ///
     /// ```
