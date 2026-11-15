@@ -51,6 +51,24 @@ pub trait RobustKernel {
     ///
     /// The reweighted cost `½·w·s` is NOT this objective: for Huber past
     /// the knee it is `½√(c² s)`, with half the slope of `½ρ`.
+    ///
+    /// # Arguments
+    ///
+    /// * `r_sq` - Squared residual magnitude `s`.
+    /// * `c_sq` - Squared scale of the kernel, in the units of `r_sq`.
+    ///
+    /// # Returns
+    ///
+    /// The objective `ρ(s)` in the units of `r_sq`; the cost is `½ρ(s)`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_3d::ransac::{HuberKernel, RobustKernel};
+    ///
+    /// assert_eq!(HuberKernel.rho(16.0, 25.0), 16.0);
+    /// assert_eq!(HuberKernel.rho(100.0, 25.0), 75.0);
+    /// ```
     fn rho(&self, r_sq: f64, c_sq: f64) -> f64;
 }
 
@@ -102,7 +120,10 @@ impl RobustKernel for HuberKernel {
         if r_sq <= c_sq || c_sq <= 0.0 {
             r_sq
         } else {
-            2.0 * (c_sq * r_sq).sqrt() - c_sq
+            // `c·|r|` from separate roots, and no doubling: `c² · r²` and
+            // `2·c·|r|` can leave the f64 range while `ρ` is still inside it.
+            let c_r = c_sq.sqrt() * r_sq.sqrt();
+            c_r + (c_r - c_sq)
         }
     }
 }
@@ -131,7 +152,15 @@ impl RobustKernel for CauchyKernel {
         if c_sq <= 0.0 || c_sq == f64::INFINITY {
             return r_sq;
         }
-        c_sq * (r_sq / c_sq).ln_1p()
+        let t = r_sq / c_sq;
+        if t < f64::EPSILON {
+            // `ln_1p(t) = t` to rounding, and `t` may have underflowed.
+            r_sq
+        } else if t == f64::INFINITY {
+            c_sq * (r_sq.ln() - c_sq.ln())
+        } else {
+            c_sq * t.ln_1p()
+        }
     }
 }
 
@@ -366,6 +395,18 @@ mod tests {
         assert!((HuberKernel.rho(16.0, 25.0) - 16.0).abs() < 1e-12);
         assert!((CauchyKernel.rho(4.0, 4.0) - 4.0 * std::f64::consts::LN_2).abs() < 1e-12);
         assert!((TukeyKernel.rho(2.0, 4.0) - 7.0 / 6.0).abs() < 1e-12);
+    }
+
+    /// Scales where `c² · r²` or `r² / c²` leave the f64 range while `ρ`
+    /// does not.
+    #[test]
+    fn rho_is_finite_at_extreme_scales() {
+        let close = |rho: f64, expected: f64| (rho - expected).abs() <= 1e-12 * expected;
+        assert!(close(HuberKernel.rho(4e200, 1e200), 3e200));
+        assert!(close(HuberKernel.rho(4e-200, 1e-200), 3e-200));
+        let ln_ratio = 400.0 * std::f64::consts::LN_10;
+        assert!(close(CauchyKernel.rho(1e200, 1e-200), 1e-200 * ln_ratio));
+        assert!(close(CauchyKernel.rho(1e-200, 1e200), 1e-200));
     }
 
     /// Tukey saturates at `c²/3` beyond the scale.
