@@ -429,9 +429,12 @@ def _harris_builder(w, h):
                 v = vpi.asimage((a * 255).astype(np.int16)).convert(
                     vpi.Format.S16, backend=vpi.Backend.CUDA)
                 s = vpi.Stream()
-                def run(v=v, s=s):
+                feats = vpi.Array(8192, vpi.Type.KEYPOINT_F32)
+                scores = vpi.Array(8192, vpi.Type.U32)
+                def run(v=v, s=s, feats=feats, scores=scores):
                     v.harriscorners(sensitivity=0.04, stream=s,
-                                    backend=vpi.Backend.CUDA)
+                                    backend=vpi.Backend.CUDA,
+                                    out_features=feats, out_scores=scores)
                 d["vpi"] = (run, s.sync)
             except Exception:                             # noqa: BLE001
                 pass
