@@ -606,6 +606,19 @@ impl SO3F64 {
     /// Returns [`RotationError::DegenerateProjection`] if the matrix columns or Gram-Schmidt residuals
     /// are degenerate (zero-length or collinear), preventing projection to SO(3).
     ///
+    /// # Mathematical Reference
+    ///
+    /// Cross-checked against standard SO(3) Lie group exponential coordinates
+    /// and the formulation in Eigen's Geometry module documentation:
+    /// - [`Eigen::AngleAxis` / `Eigen::AngleAxisd`](https://libeigen.gitlab.io/eigen/docs-master/classEigen_1_1AngleAxis.html)
+    /// - [`Eigen::Quaternion` / `Eigen::Quaterniond`](https://libeigen.gitlab.io/eigen/docs-master/classEigen_1_1Quaternion.html)
+    ///
+    /// For example, a +90° (+π/2 rad) rotation about the Z axis has unit axis $\mathbf{u} = [0, 0, 1]^T$
+    /// and angle $\theta = \pi/2$. Analytically, the corresponding unit quaternion in $[x, y, z, w]$
+    /// format evaluates from the half-angle formula $[\mathbf{u}\sin(\theta/2), \cos(\theta/2)]$ to:
+    ///
+    /// $$[x, y, z, w] = \left[0,\; 0,\; \sin(\pi/4),\; \cos(\pi/4)\right] = \left[0,\; 0,\; \frac{1}{\sqrt{2}},\; \frac{1}{\sqrt{2}}\right]$$
+    ///
     /// # Example
     ///
     /// ```rust
@@ -614,6 +627,17 @@ impl SO3F64 {
     /// // Valid identity matrix
     /// let r = SO3F64::try_from_matrix(&Mat3F64::IDENTITY, 1e-6);
     /// assert!(r.is_ok());
+    ///
+    /// // +90° rotation about Z axis matches analytical [0, 0, 1/√2, 1/√2]
+    /// let rot_z90 = Mat3F64::from_rows_array(&[
+    ///     0.0, -1.0, 0.0,
+    ///     1.0,  0.0, 0.0,
+    ///     0.0,  0.0, 1.0,
+    /// ]);
+    /// let r_z90 = SO3F64::try_from_matrix(&rot_z90, 1e-12)?;
+    /// let expected = std::f64::consts::FRAC_1_SQRT_2;
+    /// assert!((r_z90.q.z.abs() - expected).abs() < 1e-12);
+    /// assert!((r_z90.q.w.abs() - expected).abs() < 1e-12);
     ///
     /// // Reflection matrix (det = -1) rejected, even with a large tolerance
     /// let reflection = Mat3F64::from_rows_array(&[
@@ -629,6 +653,7 @@ impl SO3F64 {
     ///     SO3F64::try_from_matrix(&reflection, 2.0),
     ///     Err(RotationError::NotProper { .. })
     /// ));
+    /// # Ok::<(), RotationError>(())
     /// ```
     pub fn try_from_matrix(mat: &Mat3F64, tol: f64) -> Result<Self, RotationError> {
         validate_rotation_matrix(mat, tol)?;

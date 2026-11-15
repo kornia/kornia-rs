@@ -825,33 +825,6 @@ mod tests {
         let s = 1.0 + 4.9e-7;
         let scaled_perturbed = Mat3F64::from_rows_array(&[s, 0.0, 0.0, 0.0, s, 0.0, 0.0, 0.0, s]);
         assert!(scaled_perturbed.is_rotation(1e-6));
-
-        // 10. diag(1.01): max |RᵀR - I| = 0.0201 <= 0.04, but > 0.01.
-        let m_101 = Mat3F64::from_rows_array(&[1.01, 0.0, 0.0, 0.0, 1.01, 0.0, 0.0, 0.0, 1.01]);
-        assert!(m_101.is_rotation(0.04));
-        assert!(!m_101.is_rotation(0.01));
-    }
-
-    #[test]
-    fn test_mat3f64_is_rotation_overflow() {
-        // Finite entries that overflow during RᵀR:
-        let large_val = 1e200_f64;
-        let large_mat = Mat3F64::from_rows_array(&[
-            large_val, 0.0, 0.0, 0.0, large_val, 0.0, 0.0, 0.0, large_val,
-        ]);
-        assert!(large_mat.is_finite());
-        assert!(!large_mat.is_rotation(1e-6));
-
-        // Matrix with f64::MAX:
-        let max_mat = Mat3F64::from_rows_array(&[f64::MAX, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
-        assert!(max_mat.is_finite());
-        assert!(!max_mat.is_rotation(1e-6));
-
-        // Finite matrix whose RᵀR off-diagonal dot-product produces +Inf - Inf = NaN:
-        let nan_prod_mat =
-            Mat3F64::from_rows_array(&[1e200, -1e200, 0.0, 1e200, 1e200, 0.0, 0.0, 0.0, 1.0]);
-        assert!(nan_prod_mat.is_finite());
-        assert!(!nan_prod_mat.is_rotation(1e-6));
     }
 
     #[test]

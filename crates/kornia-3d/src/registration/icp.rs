@@ -74,7 +74,7 @@ pub const DEFAULT_DEGENERACY_RTOL: f64 = 1e-8;
 /// Fewest inliers that can constrain the six pose parameters.
 const MIN_INLIERS: usize = 6;
 
-/// Largest entry of `|R^T R - I|` and of `|det R - 1|` for a prior rotation to count as one.
+/// Largest entry of `|R^T R - I|` for a prior rotation to count as one.
 /// Loose enough for a rotation rounded through `f32`.
 const ROTATION_TOL: f64 = 1e-6;
 
@@ -647,12 +647,11 @@ fn check_rotation_prior(prior: &RotationPrior) -> Result<(), RgbdIcpError> {
 
 /// `Ok` if `r` is a finite rotation matrix; `field` names it in the error.
 fn check_rotation(r: &Mat3F64, field: &'static str) -> Result<(), RgbdIcpError> {
-    let orth = (r.transpose() * *r - Mat3F64::IDENTITY).to_cols_array();
-    // `f64::max` drops NaN, hence the separate finiteness check
-    let deviation = orth
-        .iter()
-        .fold((r.determinant() - 1.0).abs(), |m, x| m.max(x.abs()));
-    if !(r.is_finite() && deviation <= ROTATION_TOL) {
+    if !r.is_rotation(ROTATION_TOL) {
+        let orth = (r.transpose() * *r - Mat3F64::IDENTITY).to_cols_array();
+        let deviation = orth
+            .iter()
+            .fold((r.determinant() - 1.0).abs(), |m, x| m.max(x.abs()));
         return Err(RgbdIcpError::InvalidCriteria {
             field,
             value: deviation,
@@ -2631,6 +2630,37 @@ mod tests {
             .as_mat3()
             .as_dmat3();
         icp_from_identity(&pyr, &pyr, &with(rounded.into(), 1e-3))?;
+        Ok(())
+    }
+
+    /// A matrix whose orthonormality error is within ROTATION_TOL and whose determinant is
+    /// positive is accepted by check_rotation() and can be used as an ICP rotation prior,
+    /// even if |det - 1| exceeds ROTATION_TOL.
+    #[test]
+    fn check_rotation_accepts_near_tolerance_diagonal() -> Result<(), Box<dyn std::error::Error>> {
+        let s = 1.0 + 4.9e-7;
+        let mat = Mat3F64::from_diagonal(Vec3F64::new(s, s, s));
+
+        // 1. Mat3F64::is_rotation(ROTATION_TOL) returns true
+        assert!(mat.is_rotation(ROTATION_TOL));
+
+        // 2. check_rotation() accepts the matrix
+        assert!(check_rotation(&mat, "rotation_prior.rotation").is_ok());
+
+        // 3. Accepted matrix works end-to-end as an ICP rotation prior
+        let pyr = pyramid(
+            &Scene::corner_and_sphere(),
+            &Mat3F64::IDENTITY,
+            &Vec3F64::ZERO,
+        )?;
+        let criteria = IcpPlaneCriteria {
+            rotation_prior: Some(RotationPrior {
+                rotation: mat,
+                sigma_rad: 1e-3,
+            }),
+            ..Default::default()
+        };
+        icp_from_identity(&pyr, &pyr, &criteria)?;
         Ok(())
     }
 
