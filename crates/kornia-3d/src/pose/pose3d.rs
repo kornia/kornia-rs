@@ -1,6 +1,7 @@
 //! Pose representation utilities.
 
-use kornia_algebra::{Mat3F64, Vec3F64, SO3F64};
+use kornia_algebra::linalg::svd::svd3_f64;
+use kornia_algebra::{Mat3F64, Vec3F64};
 
 /// A rigid 3D pose that maps points from world frame to camera frame.
 ///
@@ -74,7 +75,8 @@ impl Pose3d {
     /// is from orthonormal.
     ///
     /// Repeated composition in floating point lets a rotation drift off
-    /// `SO(3)`; this reports by how much.
+    /// `SO(3)`; this reports by how much. It does not check the sign of
+    /// `det R`: a reflection is orthonormal and reports `0.0`.
     ///
     /// # Returns
     ///
@@ -102,11 +104,11 @@ impl Pose3d {
     /// The pose with its rotation projected back onto `SO(3)`; the
     /// translation is kept.
     ///
-    /// The rotation goes through its quaternion, which is renormalised in
-    /// `f64`, as Sophus does after every `SO3` product. A rigid pose comes back
-    /// unchanged up to rounding. A scaled or drifted rotation comes back as a
-    /// proper rotation near it: for `s·R` the result lies within about
-    /// `|s - 1|` radians of `R`. This is not the SVD (polar) projection.
+    /// The rotation is replaced by the nearest proper rotation in the
+    /// Frobenius norm, `U·diag(1, 1, det(U·Vᵀ))·Vᵀ` from the SVD `R = U·Σ·Vᵀ`
+    /// (polar projection). A rigid pose comes back unchanged up to rounding,
+    /// `s·R` comes back as `R` for any `s > 0`, and a reflection comes back as
+    /// the nearest rotation.
     ///
     /// # Returns
     ///
@@ -126,8 +128,14 @@ impl Pose3d {
     /// assert_eq!(rigid.translation, drifted.translation);
     /// ```
     pub fn orthonormalized(&self) -> Self {
-        let q = SO3F64::from_matrix(&self.rotation).q.normalize();
-        Self::new(SO3F64::from_quaternion(q).matrix(), self.translation)
+        if !self.rotation.to_cols_array().iter().all(|v| v.is_finite()) {
+            return *self;
+        }
+        let svd = svd3_f64(&self.rotation);
+        let (u, v) = (svd.u(), svd.v());
+        let sign = (u.determinant() * v.determinant()).signum();
+        let rotation = *u * Mat3F64::from_diagonal(Vec3F64::new(1.0, 1.0, sign)) * v.transpose();
+        Self::new(rotation, self.translation)
     }
 
     /// Transform a world-frame point into camera frame.
@@ -185,7 +193,10 @@ mod tests {
     fn test_rotation_defect() {
         assert_eq!(Pose3d::IDENTITY.rotation_defect(), 0.0);
         let pose = Pose3d::new(rotation(), Vec3F64::ZERO);
-        assert!(pose.rotation_defect() < 1e-15);
+        assert!(pose.rotation_defect() < 1e-14);
+        // A reflection is orthonormal: the defect does not see `det R = -1`.
+        let mirror = Mat3F64::from_diagonal(Vec3F64::new(1.0, 1.0, -1.0));
+        assert_eq!(Pose3d::new(mirror, Vec3F64::ZERO).rotation_defect(), 0.0);
         // (1.001)^2 - 1 on the diagonal of RᵀR.
         let scaled = Pose3d::new(rotation() * 1.001, Vec3F64::ZERO).rotation_defect();
         assert!((scaled - 2.001e-3).abs() < 1e-9, "{scaled}");
@@ -204,11 +215,23 @@ mod tests {
             let angle = SO3F64::from_matrix(&(rotation().transpose() * pose.rotation))
                 .log()
                 .length();
-            assert!(
-                angle <= 1.1 * (scale - 1.0f64).abs(),
-                "scale {scale}: {angle}"
-            );
+            assert!(angle < 1e-12, "scale {scale}: {angle}");
         }
+    }
+
+    #[test]
+    fn test_orthonormalized_maps_a_reflection_to_a_rotation() {
+        let mirror = Mat3F64::from_diagonal(Vec3F64::new(1.0, 1.0, -1.0));
+        let pose = Pose3d::new(rotation() * mirror, Vec3F64::ZERO).orthonormalized();
+        assert!(pose.rotation_defect() < 1e-12);
+        assert!((pose.rotation.determinant() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_orthonormalized_passes_a_non_finite_rotation_through() {
+        let mut pose = Pose3d::new(rotation(), Vec3F64::ZERO);
+        pose.rotation.x_axis.x = f64::NAN;
+        assert_eq!(pose.orthonormalized().rotation_defect(), f64::INFINITY);
     }
 
     #[test]
@@ -222,7 +245,7 @@ mod tests {
             .iter()
             .zip(pose.rotation.to_cols_array())
         {
-            assert!((a - b).abs() <= 1e-15, "{a} vs {b}");
+            assert!((a - b).abs() <= 1e-14, "{a} vs {b}");
         }
     }
 

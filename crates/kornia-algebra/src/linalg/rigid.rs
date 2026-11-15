@@ -56,9 +56,17 @@ pub type UmeyamaResult = Result<UmeyamaOutput, UmeyamaError>;
 
 /// Umeyama/Kabsch algorithm without scale.
 /// Returns (R, t, s) where s == 1.0.
+///
+/// # Errors
+///
+/// Returns [`UmeyamaError::MismatchedInputLengths`] if `src` and `dst` differ in
+/// length, and [`UmeyamaError::EmptyInput`] if both are empty.
 pub fn umeyama(src: &[Vec3AF32], dst: &[Vec3AF32]) -> UmeyamaResult {
     if src.len() != dst.len() {
         return Err(UmeyamaError::MismatchedInputLengths);
+    }
+    if src.is_empty() {
+        return Err(UmeyamaError::EmptyInput);
     }
     let n = src.len() as f32;
 
@@ -113,7 +121,7 @@ pub fn umeyama(src: &[Vec3AF32], dst: &[Vec3AF32]) -> UmeyamaResult {
     // Reflection correction R = U·diag(1, 1, -1)·Vᵀ: the sign goes on the column
     // of U for the smallest singular value (column 2, `SVD::new` sorts them
     // descending). Negating a column of R instead is a rotation, not the optimum.
-    if (u * v_t).determinant() < 0.0 {
+    if u.determinant() * v_t.determinant() < 0.0 {
         u.column_mut(2).scale_mut(-1.0);
     }
     let r_na = u * v_t;
@@ -2091,5 +2099,11 @@ mod tests {
             );
         }
         Ok(())
+    }
+
+    #[test]
+    fn test_umeyama_empty_input_is_an_error() {
+        // n = 0 would divide by zero and hand an all-NaN matrix to the SVD.
+        assert!(matches!(umeyama(&[], &[]), Err(UmeyamaError::EmptyInput)));
     }
 }
