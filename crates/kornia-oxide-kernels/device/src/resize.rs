@@ -103,10 +103,13 @@ pub unsafe fn resize_bilinear_downscale_3c(
 
 /// Byte-exact twin of `resize_nearest_downscale_3c` (NVRTC).
 ///
-/// Coordinate computation: `(ax * dst_x + bx) + 0.5`, truncated to `u32`,
-/// clamped to `[0, src_w - 1]`. The `+ 0.5` then truncation is round-half-up,
-/// which equals the CPU's `round()` for the non-negative coordinates produced
-/// here.
+/// Coordinate computation: `(ax * dst_x + bx).round()`, cast to `u32`, clamped
+/// to `[0, src_w - 1]` — matching the CPU `nearest_neighbor_interpolation`'s
+/// `u.round()` exactly rather than approximating it with `+ 0.5` then
+/// truncation, which is lossy once the coordinate passes `f32`'s 2^23
+/// half-integer precision limit (CodeRabbit: a 16,777,218-wide source could
+/// round a coordinate to the wrong neighboring pixel; `f32::round` guards that
+/// magnitude and returns the value unchanged instead of adding `0.5`).
 ///
 /// # Safety
 ///
@@ -130,10 +133,8 @@ pub unsafe fn resize_nearest_downscale_3c(
         return;
     }
 
-    // `+ 0.5` before truncation = round-half-up, matching the CPU path's
-    // `round()` on non-negative coordinates.
-    let sx = ax * dst_x as f32 + bx + 0.5;
-    let sy = ay * dst_y as f32 + by + 0.5;
+    let sx = (ax * dst_x as f32 + bx).round();
+    let sy = (ay * dst_y as f32 + by).round();
 
     let sw1 = src_w - 1;
     let sh1 = src_h - 1;

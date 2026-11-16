@@ -160,12 +160,13 @@ extern "C" __global__ void resize_nearest_downscale_3c(
 
     // Half-pixel center alignment.
     // Plain multiply-add (not fmaf) so the coordinate is bit-identical to the
-    // CPU LUT under --fmad=false. +0.5-then-truncate is round-half-up, which
-    // equals the CPU's half-away-from-zero `round()` for the non-negative
-    // coordinates produced here — including exact .5 ties, since both sides
-    // compute the identical f32 coordinate.
-    unsigned int src_xi = min((unsigned int)((ax * (float)dst_x + bx) + 0.5f), src_w - 1u);
-    unsigned int src_yi = min((unsigned int)((ay * (float)dst_y + by) + 0.5f), src_h - 1u);
+    // CPU LUT under --fmad=false. roundf matches the CPU's half-away-from-zero
+    // `round()` exactly, including the magnitude guard that skips the lossy
+    // +0.5-then-truncate step once the coordinate is beyond f32's 2^23
+    // half-integer precision limit (CodeRabbit: a 16,777,218-wide source could
+    // otherwise round a coordinate to the wrong neighboring pixel).
+    unsigned int src_xi = min((unsigned int)roundf(ax * (float)dst_x + bx), src_w - 1u);
+    unsigned int src_yi = min((unsigned int)roundf(ay * (float)dst_y + by), src_h - 1u);
 
     unsigned int src_base = (src_yi * src_w + src_xi) * 3u;
     unsigned int out = (dst_y * dst_w + dst_x) * 3u;
@@ -488,6 +489,37 @@ fn check_resize_len(width: u32, height: u32, len: usize) -> Result<usize, CudaRe
     Ok(need)
 }
 
+/// Device-to-device copy for the no-op case (`src` and `dst` the same size),
+/// mirroring the CPU `resize`'s own same-size short-circuit
+/// (`crates/kornia-imgproc/src/resize/mod.rs`). Returns `None` when the sizes
+/// differ, so the caller falls through to the kernel.
+///
+/// Skipping the kernel here isn't just an optimization: the coordinate math
+/// (`a*dst_x + b`, both `1.0` and `0.0` for an identity mapping) still goes
+/// through `f32`, so at or beyond `dst_x == 2^24` the cast of `dst_x` itself
+/// loses precision and the kernel can read a neighboring pixel instead of
+/// copying exactly (CodeRabbit: a `16_777_220 × 1` identity resize). The CPU
+/// path never has this problem because its same-size check runs before any
+/// float math; this does the same for device buffers.
+fn identity_copy(
+    stream: &Arc<CudaStream>,
+    src: &CudaSlice<f32>,
+    dst: &mut CudaSlice<f32>,
+    src_width: u32,
+    src_height: u32,
+    dst_width: u32,
+    dst_height: u32,
+) -> Option<Result<(), CudaResizeError>> {
+    if src_width != dst_width || src_height != dst_height {
+        return None;
+    }
+    Some(
+        stream
+            .memcpy_dtod(src, dst)
+            .map_err(|e| CudaResizeError::Cuda(e.to_string())),
+    )
+}
+
 // ── Error type ────────────────────────────────────────────────────────────────
 
 /// Error type returned by the CUDA downscale launchers.
@@ -626,6 +658,11 @@ fn launch_resize_bilinear_downscale_cuda_with(
     }
     check_resize_len(src_width, src_height, src.len())?;
     check_resize_len(dst_width, dst_height, dst.len())?;
+    if let Some(result) = identity_copy(
+        stream, src, dst, src_width, src_height, dst_width, dst_height,
+    ) {
+        return result;
+    }
 
     let kernel = bilinear_kernel(ctx, stream, which).map_err(CudaResizeError::Cuda)?;
 
@@ -809,6 +846,11 @@ fn launch_resize_nearest_downscale_cuda_with(
     }
     check_resize_len(src_width, src_height, src.len())?;
     check_resize_len(dst_width, dst_height, dst.len())?;
+    if let Some(result) = identity_copy(
+        stream, src, dst, src_width, src_height, dst_width, dst_height,
+    ) {
+        return result;
+    }
 
     let kernel = nearest_kernel(ctx, stream, which).map_err(CudaResizeError::Cuda)?;
 
@@ -1315,6 +1357,111 @@ mod tests {
                 "dst_x={dst_x}: x0={x0} is out of bounds for src_w={src_w} (sx={sx})"
             );
         }
+    }
+
+    /// Regression test for CodeRabbit's "Preserve large identity resizes"
+    /// finding: at `dst_x >= 2^24`, casting `dst_x` to `f32` for the
+    /// coordinate math already loses precision, so an identity-size resize
+    /// (`src` and `dst` the same shape) could read a neighboring pixel
+    /// instead of copying exactly, even with the `.min(src_w - 1)` clamp
+    /// above (that clamp only prevents an out-of-bounds read; it doesn't
+    /// make the coordinate itself correct).
+    ///
+    /// `identity_copy` sidesteps the kernel (and its `f32` coordinate math)
+    /// entirely for this case via a device-to-device copy, mirroring the CPU
+    /// `resize`'s own same-size short-circuit. Two distinct sentinel values
+    /// make a wrong read unambiguous: the second sentinel sits one element
+    /// past the last real pixel, so any off-by-one read picks it up instead
+    /// of the correct value.
+    #[test]
+    fn identity_resize_exact_at_large_size() -> Result<(), Box<dyn std::error::Error>> {
+        let src_w: u32 = (1u32 << 24) + 4;
+
+        let mut data = vec![0.0f32; src_w as usize * 3];
+        let last = (src_w - 1) as usize;
+        data[last * 3] = 1.0; // correct value at the last real pixel
+                              // No pixel past `last` exists in this buffer, so an off-by-one read
+                              // would hit whatever the allocator left behind; zero-fill already
+                              // makes that distinguishable from the `1.0` sentinel above.
+
+        let stream = default_stream();
+        let ctx = &stream.context();
+        let d_src = stream.clone_htod(&data)?;
+        let mut d_dst = stream.alloc_zeros::<f32>(src_w as usize * 3)?;
+
+        launch_resize_bilinear_downscale_cuda(
+            ctx,
+            &stream,
+            &d_src,
+            &mut d_dst,
+            src_w,
+            1,
+            src_w,
+            1,
+            PixelMapping::HalfPixel,
+            None,
+        )?;
+        let gpu: Vec<f32> = stream.clone_dtoh(&d_dst)?;
+        stream.synchronize()?;
+
+        assert_eq!(
+            gpu, data,
+            "identity resize at src_w={src_w} must copy exactly, not resample"
+        );
+        Ok(())
+    }
+
+    /// Regression test for CodeRabbit's "Round nearest coordinates without
+    /// adding 0.5 in f32" finding: for a half-pixel resize from a
+    /// `16_777_218 × 1` source to `2 × 1`, the exact source coordinate for
+    /// the second destination pixel is `12_582_913`. The previous
+    /// `+ 0.5`-then-truncate rounding is lossy at that magnitude (`f32`'s ULP
+    /// there is already `1.0`, so adding `0.5` ties, and the tie rounds to
+    /// the even neighbor, `12_582_914`) — one pixel off from the CPU
+    /// `nearest_neighbor_interpolation`'s `u.round()`. `f32::round`'s native
+    /// magnitude guard (bypasses the lossy addition once `|x| >= 2^23`) fixes
+    /// this; see the oxide and NVRTC kernel doc comments. Two distinct
+    /// sentinel values at the two candidate indices make a wrong read
+    /// unambiguous. Checked for both the `Auto` and forced `Nvrtc` path.
+    #[test]
+    fn nearest_large_coordinate_rounds_like_cpu() -> Result<(), Box<dyn std::error::Error>> {
+        let src_w: u32 = 16_777_218;
+        let dst_w: u32 = 2;
+        let correct_idx = 12_582_913usize;
+        let wrong_idx = 12_582_914usize;
+
+        let mut data = vec![0.0f32; src_w as usize * 3];
+        data[correct_idx * 3] = 1.0;
+        data[wrong_idx * 3] = -1.0;
+
+        let stream = default_stream();
+        let ctx = &stream.context();
+        let d_src = stream.clone_htod(&data)?;
+
+        for which in [ResizeKernel::Auto, ResizeKernel::Nvrtc] {
+            let mut d_dst = stream.alloc_zeros::<f32>(dst_w as usize * 3)?;
+            launch_resize_nearest_downscale_cuda_with(
+                ctx,
+                &stream,
+                &d_src,
+                &mut d_dst,
+                src_w,
+                1,
+                dst_w,
+                1,
+                PixelMapping::HalfPixel,
+                None,
+                which,
+            )?;
+            let gpu: Vec<f32> = stream.clone_dtoh(&d_dst)?;
+            stream.synchronize()?;
+            assert_eq!(
+                gpu[3], 1.0,
+                "{which:?}: expected source index {correct_idx} (CPU round()), got the \
+                 wrong-neighbor ({wrong_idx}) sentinel instead"
+            );
+        }
+        Ok(())
     }
 
     /// Regression test: a zero `src_w`/`src_h`/`dst_w`/`dst_h` must be
