@@ -121,7 +121,7 @@ pub enum VideoReaderError {
 mod tests {
     use super::{StreamCaptureError, VideoReaderError};
     use kornia_image::{Image, ImageError, ImageSize};
-    use std::error::Error as _;
+    use std::error::Error;
 
     /// Builds a 2x2 RGB image; `?` converts an `ImageError` into a `StreamCaptureError`.
     fn image_from_bytes(data: Vec<u8>) -> Result<Image<u8, 3>, StreamCaptureError> {
@@ -136,8 +136,7 @@ mod tests {
     // produced through the capture path, because `image_from_gst_buffer` rejects short buffers
     // with `BufferSizeMismatch` (gstreamer/mod.rs:381) before building the image.
     #[test]
-    fn image_error_reaches_video_reader_error_unchanged() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn image_error_reaches_video_reader_error_unchanged() -> Result<(), Box<dyn Error>> {
         // A 2x2 RGB image needs 2 * 2 * 3 = 12 bytes; 5 bytes must fail.
         let err = image_from_bytes(vec![0u8; 5])
             .err()
