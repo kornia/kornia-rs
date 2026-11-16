@@ -22,6 +22,7 @@
 *   **Normalization:** Min/max scaling, mean/std normalization.
 *   **Histograms:** Compute and manipulate image histograms.
 *   **Feature Detection:** (Experimental) Corner detection and feature extraction.
+    With the `cuda` feature, `cuda::harris::launch_harris_f32` computes f32 Harris responses on device buffers.
 *   **Contours:** Find image contours and compute their properties.
 
 ## 📦 Installation
