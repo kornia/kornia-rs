@@ -71,8 +71,9 @@ impl DistanceTransformExecutor {
     ///
     /// If the image has no foreground pixels, every output value is `1e10`
     /// (not `f32::MAX` as in [`distance_transform_vanilla`]). Distances are
-    /// computed in `f32`, so they are inexact when the width or height exceeds
-    /// 4096 pixels.
+    /// computed in `f32`, which holds integers exactly only up to `2^24`;
+    /// squared distances are accumulated, so results can become inexact once
+    /// `width^2 + height^2 > 2^24` (already around 2897×2897).
     ///
     /// # Errors
     ///
