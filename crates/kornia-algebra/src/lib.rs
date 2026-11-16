@@ -169,7 +169,7 @@ pub use param::{Param, ParamError};
 pub mod optim;
 
 // Re-export types at crate root for convenience
-pub use lie::{RxSO3F32, Sim3F32, SE2F32, SE3F32, SE3F64, SO2F32, SO3F32, SO3F64};
+pub use lie::{RotationError, RxSO3F32, Sim3F32, SE2F32, SE3F32, SE3F64, SO2F32, SO3F32, SO3F64};
 pub use mat::{
     DMatF32, DMatF64, Mat15F64, Mat2F32, Mat2F64, Mat3AF32, Mat3F32, Mat3F64, Mat4F32, Mat4F64,
     Mat6F64, Mat9F64, SMatF64,

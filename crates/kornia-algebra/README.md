@@ -53,6 +53,25 @@ fn main() {
 }
 ```
 
+### Checked Rotation Matrix Conversion (SO3)
+
+When converting untrusted 3×3 matrices (e.g. from telemetry, external files, or intermediate floating-point operations) into a rotation, use `SO3F64::try_from_matrix` instead of the unchecked `from_matrix`. It checks that the matrix is orthonormal (`Rᵀ R ≈ I`) within the user-specified tolerance and has a positive determinant (`det R > 0`), ensuring proper handedness:
+
+```rust
+use kornia_algebra::{Mat3F64, SO3F64, RotationError};
+
+// Construct a matrix from row-major flat data
+let mat = Mat3F64::from_rows_array(&[
+    0.0, -1.0, 0.0,
+    1.0,  0.0, 0.0,
+    0.0,  0.0, 1.0,
+]);
+
+// Checked conversion rejecting invalid matrices or reflections
+let rot = SO3F64::try_from_matrix(&mat, 1e-6)?;
+# Ok::<(), RotationError>(())
+```
+
 ### Interpolation
 
 ```rust
