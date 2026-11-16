@@ -95,6 +95,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@ebb3d1676050bfd0971c36c1e215b5751473994d # 1.96.0
         with:
           components: clippy
+          targets: aarch64-unknown-none
 
       - uses: ./.github/actions/cuda-oxide-ptx
 
@@ -109,6 +110,10 @@ jobs:
           cargo clippy --all-targets -p kornia-imgproc --features cuda -- -D warnings
           cargo clippy --tests -p kornia-3d --features cuda -- -D warnings
           cargo clippy -p cuda-fusion -p cuda-camera-sift -p cuda-camera-preprocess --features cuda -- -D warnings
+
+      - name: Shared TSDF core builds without std
+        # A host build accepts `std`; a target without one does not (docs/cuda-oxide.md).
+        run: cargo build -p kornia-oxide-kernels --target aarch64-unknown-none
 
   cross-platform-check-macos:
     name: Check - macOS

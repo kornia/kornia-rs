@@ -1,0 +1,2746 @@
+[
+ {
+  "library": "nvblox",
+  "version": "v0.0.10 (git c457c3fc, clean tree, CMAKE_BUILD_TYPE=Release, sm_87, /mnt/data/nvblox-build/executables/fuse_replica)",
+  "scene": "room0",
+  "voxel_m": 0.02,
+  "row": "M",
+  "block_size_vox": 8,
+  "config": "Row M: --projective_integrator_weighting_mode=0 --projective_integrator_max_weight=64 --projective_integrator_truncation_distance_vox=4 --projective_integrator_max_integration_distance_m=7 --mesh_integrator_min_weight=1; both rows: --esdf_frame_subsampling=-1 (ESDF off), --visualization=false, colour integration every frame; static TSDF mapping (fuser default)",
+  "timer_coverage": "integrate_e2e = fuser/integrate_depth + fuser/integrate_color (MultiMapper::integrateDepth / integrateColor: view calc, CPU-side block allocation, block-pointer transfer, kernels, cudaStreamSynchronize) + convert_h2d = (file_loading/depth_image - file_loading/depth_image/stbi) + (file_loading/color_image - file_loading/color_image/stbi), i.e. nvblox's own CPU u16->float depth scaling + both synchronous image copies to device memory. EXCLUDES: PNG/JPG decode (stbi), file IO, pose parsing, the fuser's per-frame updateFlatColorMesh (visualizer path, always on, reported separately), incremental mesh (reported separately). Per-frame values = NVTX ranges of nvblox's own TimerNvtx (chrono + NVTX, every timed call ends in a stream sync), frames 0-4 discarded, stats over frames 5..N-1.",
+  "not_run": {
+   "mesh_incremental": "not run: nvblox v0.0.10 incremental colour mesh (--mesh_frame_subsampling=1, the fuser default) dies with 'CUDA error = 2 ... cudaMallocAsync ... out of memory' at frame 4 in BOTH rows: MeshIntegrator<ColorVoxel>::meshBlocksGPU -> unified_vector<PerVoxelMarchingCubesResults>::reserveAsync asks for 484,847,616 B (about 7k blocks in view x 512 voxels x ~136 B marching-cubes scratch, re-allocated every frame) while ~1.43 GB is already live and ~3 GB RAM is free. Evidence: /mnt/data/kr-tsdf-spikes/results/baselines/nvblox/gate/oom_gdb/gdb.log (gdb backtrace + request sizes), /mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.02_M_inc_cuda_n100 (nsys trace of the failure), /mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.02_M_inc_plain_n100 (repeated after evicting page cache, free 2.2->3.3 GB: same OOM), /mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.02_R_inc_plain_n100 (Row R: same OOM at frame 4).",
+   "full_mesh": "not run: after all 2000 frames integrate fine, the single post-loop full Mapper::updateColorMesh over all blocks dies with the same cudaMallocAsync OOM in the marching-cubes scratch (run.log: 'Ran out of data at frame: 1999' -> 'Generating the mesh.' -> CUDA error 2). Logs: /mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.02_M_full_nvtx_n2000/run.log, /mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.02_R_full_nvtx_n2000/run.log. Block/voxel counts and memory therefore come from the no-mesh runs (nomesh_plain / nomesh_cuda).",
+   "score_full_mesh": "not run: nvblox produced no mesh for this config (incremental and full meshing both OOM, see mesh_incremental / full_mesh)",
+   "score_incremental_mesh": "not run: nvblox produced no mesh for this config (incremental and full meshing both OOM, see mesh_incremental / full_mesh)"
+  },
+  "sources": {
+   "timing": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.02_M_full_nvtx_n2000",
+   "counts_host_memory": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.02_M_nomesh_plain_n2000",
+   "cuda_trace": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.02_M_nomesh_cuda_n2000"
+  },
+  "frames_integrated": 2000,
+  "command_timing": "/usr/local/bin/nsys profile -t nvtx -s none --cpuctxsw=none --export=sqlite -f true -o /mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.02_M_full_nvtx_n2000/prof /mnt/data/nvblox-build/executables/fuse_replica /mnt/data/datasets/replica/Replica/room0 --voxel_size=0.02 --num_frames=2000 --esdf_frame_subsampling=-1 --visualization=false --timing_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.02_M_full_nvtx_n2000/timing.txt --mesh_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.02_M_full_nvtx_n2000/mesh.ply --mesh_frame_subsampling=-1 --map_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.02_M_full_nvtx_n2000/map.nvblx --projective_integrator_weighting_mode=0 --projective_integrator_max_weight=64 --projective_integrator_truncation_distance_vox=4 --projective_integrator_max_integration_distance_m=7 --mesh_integrator_min_weight=1",
+  "clock_start": "date: 2026-11-15T10:08:13,240880104+01:00\nnvpmodel: NV Power Mode: MAXN_SUPER 2 \ngpu_freq cur/min/max: 1020000000 1020000000 1020000000 gov=nvhost_podgov\ncpu_freq: 1728000 1728000 1728000 1728000 1728000 1728000 \nemc: n/a-no-root\ntegrastats: 11-15-2026 10:08:13 RAM 2899/7620MB (lfb 1x4MB) SWAP 1023/12002MB (cached 148MB) CPU [11%@1728,0%@1728,3%@1728,0%@1728,4%@1728,7%@1728] GR3D_FREQ 0% cpu@51.062C soc2@49.531C soc0@50.562C gpu@51.656C tj@51.656C soc1@49.781C VDD_IN 6110mW/6110mW VDD_CPU_GPU_CV 1754mW/1754mW VDD_SOC 2312mW/2312mW\nthermal: cpu-thermal=50875 gpu-thermal=51468 soc0-thermal=50562 soc1-thermal=49843 soc2-thermal=49468 tj-thermal=51531 \nloadavg: 1.10 1.33 1.52 1/660 3105412\nfree_m: Mem:            7619        2559        1688           3        3372        4800\nheavy_procs: \n",
+  "clock_end": "date: 2026-11-15T10:14:45,706293006+01:00\nnvpmodel: NV Power Mode: MAXN_SUPER 2 \ngpu_freq cur/min/max: 1020000000 1020000000 1020000000 gov=nvhost_podgov\ncpu_freq: 1728000 1728000 1728000 1728000 1728000 1728000 \nemc: n/a-no-root\ntegrastats: 11-15-2026 10:14:46 RAM 2879/7620MB (lfb 5x4MB) SWAP 1023/12002MB (cached 148MB) CPU [21%@1728,13%@1728,19%@1728,12%@1728,2%@1728,4%@1728] GR3D_FREQ 0% cpu@49.812C soc2@48.25C soc0@49.218C gpu@50.031C tj@50.031C soc1@48.656C VDD_IN 6429mW/6429mW VDD_CPU_GPU_CV 1953mW/1953mW VDD_SOC 2312mW/2312mW\nthermal: cpu-thermal=49562 gpu-thermal=50250 soc0-thermal=49187 soc1-thermal=48687 soc2-thermal=48218 tj-thermal=50062 \nloadavg: 1.43 1.51 1.55 1/658 3111626\nfree_m: Mem:            7619        2549        1467           3        3602        4834\nheavy_procs: \n",
+  "waited_for_other_jobs": "",
+  "timing_run_mode": "full_nvtx",
+  "integrate_e2e_ms": {
+   "n": 1995,
+   "mean": 30.797572844110277,
+   "median": 31.438560000000003,
+   "p95": 37.1775072,
+   "min": 18.042816,
+   "max": 126.04239999999999,
+   "std": 5.44621347640123
+  },
+  "integrate_no_h2d_ms": {
+   "n": 1995,
+   "mean": 29.278877706265664,
+   "median": 29.951999999999998,
+   "p95": 35.6110688,
+   "min": 16.678496,
+   "max": 124.597152,
+   "std": 5.4648713252017895
+  },
+  "integrate_depth_ms": {
+   "n": 1995,
+   "mean": 6.952723408521303,
+   "median": 6.740512,
+   "p95": 9.5414112,
+   "min": 3.89952,
+   "max": 105.12128,
+   "std": 2.8718526679904994
+  },
+  "integrate_color_ms": {
+   "n": 1995,
+   "mean": 22.32615429774436,
+   "median": 22.806208,
+   "p95": 27.4217056,
+   "min": 12.724192,
+   "max": 83.503136,
+   "std": 4.009419537932018
+  },
+  "convert_h2d_ms": {
+   "n": 1995,
+   "mean": 1.5186951378446116,
+   "median": 1.4463360000000023,
+   "p95": 2.081094399999996,
+   "min": 1.3384,
+   "max": 3.024384000000005,
+   "std": 0.25752360429652305
+  },
+  "tsdf_integrate_ms": {
+   "n": 1995,
+   "mean": 6.536608802005013,
+   "median": 6.343776,
+   "p95": 9.023408,
+   "min": 3.453632,
+   "max": 99.689472,
+   "std": 2.7488535170592687
+  },
+  "color_integrate_ms": {
+   "n": 1995,
+   "mean": 22.03822320601504,
+   "median": 22.521024,
+   "p95": 27.1454688,
+   "min": 12.381088,
+   "max": 80.222144,
+   "std": 3.9891613488860758
+  },
+  "fuser_time_per_frame_ms": {
+   "n": 1995,
+   "mean": 29.28901179348371,
+   "median": 29.960992,
+   "p95": 35.6222048,
+   "min": 16.686464,
+   "max": 124.609408,
+   "std": 5.4655289538246485
+  },
+  "flat_mesh_full_rebuild_per_frame_ms": {
+   "n": 1995,
+   "mean": 52.88137482907268,
+   "median": 63.678848,
+   "p95": 65.84803840000001,
+   "min": 15.798784,
+   "max": 68.59872,
+   "std": 15.933891492618002
+  },
+  "file_loading_excluded_ms": {
+   "n": 1995,
+   "mean": 108.36747693233083,
+   "median": 103.553728,
+   "p95": 148.12359039999998,
+   "min": 55.664224,
+   "max": 612.28928,
+   "std": 31.996747969826533
+  },
+  "builtin_timers_timing_run": {
+   "fuser/integrate_depth": null,
+   "fuser/integrate_color": null,
+   "fuser/mesh": null,
+   "fuser/time_per_frame": null
+  },
+  "outer_wall_loop_s": 385.0071818828583,
+  "outer_wall_per_frame_ms": 192.50359094142914,
+  "outer_wall_note": "glog 'Integrating N frames' -> 'Ran out of data' wall clock / N: whole fuser loop incl. decode, file IO, integrate, incremental mesh (inc mode), always-on flat mesh; under nsys nvtx-only",
+  "mesh_incremental_ms": "not run",
+  "full_mesh_ms": "not run",
+  "tsdf_blocks": 27316,
+  "tsdf_voxels_allocated": 13985792,
+  "tsdf_voxels_observed": 12221664,
+  "color_blocks": 10382,
+  "peak_host_rss_mb": 184.6015625,
+  "getrusage_maxrss_mb": 184.6015625,
+  "sys_used_delta_mb_secondary": 613.595703125,
+  "command_counts": "/mnt/data/nvblox-build/executables/fuse_replica /mnt/data/datasets/replica/Replica/room0 --voxel_size=0.02 --num_frames=2000 --esdf_frame_subsampling=-1 --visualization=false --timing_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.02_M_nomesh_plain_n2000/timing.txt --mesh_frame_subsampling=-1 --map_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.02_M_nomesh_plain_n2000/map.nvblx --projective_integrator_weighting_mode=0 --projective_integrator_max_weight=64 --projective_integrator_truncation_distance_vox=4 --projective_integrator_max_integration_distance_m=7 --mesh_integrator_min_weight=1",
+  "builtin_timers_plain_run": {
+   "fuser/integrate_depth": {
+    "n": 2000,
+    "total_s": 13.68937,
+    "mean_ms": 6.845000000000001,
+    "std_ms": 0.298,
+    "min_ms": 3.862,
+    "max_ms": 102.863,
+    "mean_excl_max_ms": 6.7966518259129565
+   },
+   "fuser/integrate_color": {
+    "n": 2000,
+    "total_s": 44.165042,
+    "mean_ms": 22.083,
+    "std_ms": 1.07,
+    "min_ms": 12.682,
+    "max_ms": 83.591,
+    "mean_excl_max_ms": 22.051751375687843
+   },
+   "fuser/time_per_frame": {
+    "n": 2000,
+    "total_s": 57.867683,
+    "mean_ms": 28.934,
+    "std_ms": 1.0330000000000001,
+    "min_ms": 16.622,
+    "max_ms": 121.14,
+    "mean_excl_max_ms": 28.88771535767884
+   }
+  },
+  "peak_device_mb_loop": 1066.5471591949463,
+  "peak_device_mb_total": 1066.5471591949463,
+  "device_peak_scope": "loop, no colour mesh at all",
+  "device_memory": {
+   "method": "nsys --cuda-memory-usage: running sum of CUDA allocation - deallocation events (all kinds) + max cudaMallocAsync pool size",
+   "peak_live_all_kinds_mb": 1066.5471591949463,
+   "peak_live_loop_mb": 1066.5471591949463,
+   "peak_live_by_kind_mb": {
+    "Pinned": 1.7738151550292969,
+    "Device": 1065.0997695922852,
+    "Device Static": 0.014043807983398438,
+    "Managed": 3.814697265625e-06
+   },
+   "final_live_mb": 4.042535781860352,
+   "n_events": 153090,
+   "pool_max_size_mb": 1056.0,
+   "pool_max_utilized_mb": 1053.655918121338
+  },
+  "cuda_trace_mode": "nomesh_cuda",
+  "command_cuda": "/usr/local/bin/nsys profile -t cuda,nvtx -s none --cpuctxsw=none --cuda-memory-usage=true --export=sqlite -f true -o /mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.02_M_nomesh_cuda_n2000/prof /mnt/data/nvblox-build/executables/fuse_replica /mnt/data/datasets/replica/Replica/room0 --voxel_size=0.02 --num_frames=2000 --esdf_frame_subsampling=-1 --visualization=false --timing_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.02_M_nomesh_cuda_n2000/timing.txt --mesh_frame_subsampling=-1 --map_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.02_M_nomesh_cuda_n2000/map.nvblx --projective_integrator_weighting_mode=0 --projective_integrator_max_weight=64 --projective_integrator_truncation_distance_vox=4 --projective_integrator_max_integration_distance_m=7 --mesh_integrator_min_weight=1",
+  "cuda_run_rc": 0,
+  "gpu_proof": {
+   "kernel_launches": 35185,
+   "kernel_gpu_ms_total": 107248.71776,
+   "top_kernels": [
+    {
+     "name": "flatMarchingCubesKernel",
+     "n": 2000,
+     "total_ms": 96174.390976
+    },
+    {
+     "name": "integrateBlocksKernel",
+     "n": 4000,
+     "total_ms": 4687.539616
+    },
+    {
+     "name": "sphereTracingKernel",
+     "n": 2000,
+     "total_ms": 3513.327136
+    },
+    {
+     "name": "checkBlocksInTruncationBand",
+     "n": 2000,
+     "total_ms": 1790.73232
+    },
+    {
+     "name": "combinedBlockIndicesInImageKernel",
+     "n": 2000,
+     "total_ms": 792.954496
+    },
+    {
+     "name": "static_kernel",
+     "n": 4725,
+     "total_ms": 231.32224
+    },
+    {
+     "name": "setColorBlockGray",
+     "n": 18432,
+     "total_ms": 54.9584
+    },
+    {
+     "name": "setToZero",
+     "n": 22,
+     "total_ms": 2.816128
+    },
+    {
+     "name": "insertAllKernel",
+     "n": 6,
+     "total_ms": 0.676448
+    }
+   ],
+   "memcpy": [
+    {
+     "kind": "CUDA_MEMCPY_KIND_HTOD",
+     "n": 24527,
+     "bytes": 12936936352,
+     "total_ms": 1052.081088
+    },
+    {
+     "kind": "CUDA_MEMCPY_KIND_DTOH",
+     "n": 49275,
+     "bytes": 668505097,
+     "total_ms": 113.893792
+    },
+    {
+     "kind": "CUDA_MEMCPY_KIND_DTOD",
+     "n": 3200,
+     "bytes": 6823809910,
+     "total_ms": 190.139552
+    }
+   ],
+   "memset": {
+    "n": 55200,
+    "total_ms": 82.338752
+   },
+   "frames": 2000,
+   "h2d_gpu_ms_per_frame": 0.526040544,
+   "h2d_bytes_per_frame": 6468468.176
+  },
+  "cuda_trace_integrate_e2e_ms": {
+   "n": 1995,
+   "mean": 33.36572046115288,
+   "median": 32.790592000000004,
+   "p95": 39.1880928,
+   "min": 19.122368,
+   "max": 937.7361279999999,
+   "std": 27.861230167021272
+  },
+  "score_full_mesh": "not run",
+  "score_incremental_mesh": "not run",
+  "status": "partial",
+  "meta_file": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/meta.json"
+ },
+ {
+  "library": "nvblox",
+  "version": "v0.0.10 (git c457c3fc, clean tree, CMAKE_BUILD_TYPE=Release, sm_87, /mnt/data/nvblox-build/executables/fuse_replica)",
+  "scene": "room0",
+  "voxel_m": 0.02,
+  "row": "R",
+  "block_size_vox": 8,
+  "config": "Row R: nvblox defaults (trunc 4 vox, max_weight 5, weighting_mode 2 inverse_square, max dist 7 m, mesh min_weight 1e-4, mesh every frame); both rows: --esdf_frame_subsampling=-1 (ESDF off), --visualization=false, colour integration every frame; static TSDF mapping (fuser default)",
+  "timer_coverage": "integrate_e2e = fuser/integrate_depth + fuser/integrate_color (MultiMapper::integrateDepth / integrateColor: view calc, CPU-side block allocation, block-pointer transfer, kernels, cudaStreamSynchronize) + convert_h2d = (file_loading/depth_image - file_loading/depth_image/stbi) + (file_loading/color_image - file_loading/color_image/stbi), i.e. nvblox's own CPU u16->float depth scaling + both synchronous image copies to device memory. EXCLUDES: PNG/JPG decode (stbi), file IO, pose parsing, the fuser's per-frame updateFlatColorMesh (visualizer path, always on, reported separately), incremental mesh (reported separately). Per-frame values = NVTX ranges of nvblox's own TimerNvtx (chrono + NVTX, every timed call ends in a stream sync), frames 0-4 discarded, stats over frames 5..N-1.",
+  "not_run": {
+   "mesh_incremental": "not run: nvblox v0.0.10 incremental colour mesh (--mesh_frame_subsampling=1, the fuser default) dies with 'CUDA error = 2 ... cudaMallocAsync ... out of memory' at frame 4 in BOTH rows: MeshIntegrator<ColorVoxel>::meshBlocksGPU -> unified_vector<PerVoxelMarchingCubesResults>::reserveAsync asks for 484,847,616 B (about 7k blocks in view x 512 voxels x ~136 B marching-cubes scratch, re-allocated every frame) while ~1.43 GB is already live and ~3 GB RAM is free. Evidence: /mnt/data/kr-tsdf-spikes/results/baselines/nvblox/gate/oom_gdb/gdb.log (gdb backtrace + request sizes), /mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.02_M_inc_cuda_n100 (nsys trace of the failure), /mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.02_M_inc_plain_n100 (repeated after evicting page cache, free 2.2->3.3 GB: same OOM), /mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.02_R_inc_plain_n100 (Row R: same OOM at frame 4).",
+   "full_mesh": "not run: after all 2000 frames integrate fine, the single post-loop full Mapper::updateColorMesh over all blocks dies with the same cudaMallocAsync OOM in the marching-cubes scratch (run.log: 'Ran out of data at frame: 1999' -> 'Generating the mesh.' -> CUDA error 2). Logs: /mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.02_M_full_nvtx_n2000/run.log, /mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.02_R_full_nvtx_n2000/run.log. Block/voxel counts and memory therefore come from the no-mesh runs (nomesh_plain / nomesh_cuda).",
+   "score_full_mesh": "not run: nvblox produced no mesh for this config (incremental and full meshing both OOM, see mesh_incremental / full_mesh)",
+   "score_incremental_mesh": "not run: nvblox produced no mesh for this config (incremental and full meshing both OOM, see mesh_incremental / full_mesh)"
+  },
+  "sources": {
+   "timing": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.02_R_full_nvtx_n2000",
+   "counts_host_memory": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.02_R_nomesh_plain_n2000",
+   "cuda_trace": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.02_R_nomesh_cuda_n2000"
+  },
+  "frames_integrated": 2000,
+  "command_timing": "/usr/local/bin/nsys profile -t nvtx -s none --cpuctxsw=none --export=sqlite -f true -o /mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.02_R_full_nvtx_n2000/prof /mnt/data/nvblox-build/executables/fuse_replica /mnt/data/datasets/replica/Replica/room0 --voxel_size=0.02 --num_frames=2000 --esdf_frame_subsampling=-1 --visualization=false --timing_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.02_R_full_nvtx_n2000/timing.txt --mesh_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.02_R_full_nvtx_n2000/mesh.ply --mesh_frame_subsampling=-1 --map_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.02_R_full_nvtx_n2000/map.nvblx",
+  "clock_start": "date: 2026-11-15T10:14:47,927116128+01:00\nnvpmodel: NV Power Mode: MAXN_SUPER 2 \ngpu_freq cur/min/max: 1020000000 1020000000 1020000000 gov=nvhost_podgov\ncpu_freq: 1728000 1728000 1728000 1728000 1728000 1728000 \nemc: n/a-no-root\ntegrastats: 11-15-2026 10:14:48 RAM 2874/7620MB (lfb 5x4MB) SWAP 1023/12002MB (cached 148MB) CPU [12%@1728,4%@1728,2%@1728,2%@1728,4%@1728,12%@1728] GR3D_FREQ 0% cpu@49.281C soc2@48.187C soc0@49.156C gpu@50.062C tj@50.062C soc1@48.687C VDD_IN 6150mW/6150mW VDD_CPU_GPU_CV 1754mW/1754mW VDD_SOC 2272mW/2272mW\nthermal: cpu-thermal=49250 gpu-thermal=50000 soc0-thermal=49250 soc1-thermal=48468 soc2-thermal=48125 tj-thermal=49968 \nloadavg: 1.43 1.51 1.55 4/653 3111704\nfree_m: Mem:            7619        2545        1467           3        3606        4838\nheavy_procs: \n",
+  "clock_end": "date: 2026-11-15T10:20:25,414025836+01:00\nnvpmodel: NV Power Mode: MAXN_SUPER 2 \ngpu_freq cur/min/max: 1020000000 1020000000 1020000000 gov=nvhost_podgov\ncpu_freq: 1728000 1728000 1728000 1728000 1728000 1728000 \nemc: n/a-no-root\ntegrastats: 11-15-2026 10:20:25 RAM 2902/7620MB (lfb 39x2MB) SWAP 1023/12002MB (cached 148MB) CPU [11%@1728,7%@1728,2%@1728,6%@1728,4%@1728,7%@1728] GR3D_FREQ 0% cpu@51.218C soc2@49.75C soc0@50.843C gpu@51.656C tj@51.656C soc1@50.187C VDD_IN 6309mW/6309mW VDD_CPU_GPU_CV 1913mW/1913mW VDD_SOC 2312mW/2312mW\nthermal: cpu-thermal=51156 gpu-thermal=51875 soc0-thermal=50718 soc1-thermal=49937 soc2-thermal=49687 tj-thermal=51843 \nloadavg: 1.22 1.43 1.51 1/662 3117866\nfree_m: Mem:            7619        2576        1415           3        3627        4806\nheavy_procs: \n",
+  "waited_for_other_jobs": "",
+  "timing_run_mode": "full_nvtx",
+  "integrate_e2e_ms": {
+   "n": 1995,
+   "mean": 31.788364190476187,
+   "median": 31.283359999999995,
+   "p95": 36.676598399999996,
+   "min": 18.261504000000002,
+   "max": 2486.7857280000003,
+   "std": 55.262142205504574
+  },
+  "integrate_no_h2d_ms": {
+   "n": 1995,
+   "mean": 30.331179901754385,
+   "median": 29.840960000000003,
+   "p95": 35.2208672,
+   "min": 16.855424,
+   "max": 2485.348448,
+   "std": 55.26356427643032
+  },
+  "integrate_depth_ms": {
+   "n": 1995,
+   "mean": 6.913270953383458,
+   "median": 6.684832,
+   "p95": 9.4836864,
+   "min": 3.952832,
+   "max": 106.501216,
+   "std": 2.921693875411127
+  },
+  "integrate_color_ms": {
+   "n": 1995,
+   "mean": 23.41790894837093,
+   "median": 22.84336,
+   "p95": 26.8540352,
+   "min": 12.900608,
+   "max": 2475.735008,
+   "std": 55.07676352798112
+  },
+  "convert_h2d_ms": {
+   "n": 1995,
+   "mean": 1.4571842887218043,
+   "median": 1.4243200000000016,
+   "p95": 1.5717151999999959,
+   "min": 1.3392000000000053,
+   "max": 2.9160320000000013,
+   "std": 0.16296569524329732
+  },
+  "tsdf_integrate_ms": {
+   "n": 1995,
+   "mean": 6.495484230576441,
+   "median": 6.286816,
+   "p95": 8.9733568,
+   "min": 3.457696,
+   "max": 100.868544,
+   "std": 2.7913509555938276
+  },
+  "color_integrate_ms": {
+   "n": 1995,
+   "mean": 23.12928110676692,
+   "median": 22.505536,
+   "p95": 26.6370592,
+   "min": 12.562336,
+   "max": 2475.373856,
+   "std": 55.07362416548495
+  },
+  "fuser_time_per_frame_ms": {
+   "n": 1995,
+   "mean": 30.34086534736842,
+   "median": 29.851456,
+   "p95": 35.2308192,
+   "min": 16.864128,
+   "max": 2485.357344,
+   "std": 55.2635734790139
+  },
+  "flat_mesh_full_rebuild_per_frame_ms": {
+   "n": 1995,
+   "mean": 52.911661826566416,
+   "median": 63.734048,
+   "p95": 65.6549824,
+   "min": 15.973856,
+   "max": 66.77872,
+   "std": 15.938020296201447
+  },
+  "file_loading_excluded_ms": {
+   "n": 1995,
+   "mean": 80.20061824962406,
+   "median": 81.24592,
+   "p95": 140.4126016,
+   "min": 35.250528,
+   "max": 866.99872,
+   "std": 44.758611555945826
+  },
+  "builtin_timers_timing_run": {
+   "fuser/integrate_depth": null,
+   "fuser/integrate_color": null,
+   "fuser/mesh": null,
+   "fuser/time_per_frame": null
+  },
+  "outer_wall_loop_s": 331.23809909820557,
+  "outer_wall_per_frame_ms": 165.61904954910278,
+  "outer_wall_note": "glog 'Integrating N frames' -> 'Ran out of data' wall clock / N: whole fuser loop incl. decode, file IO, integrate, incremental mesh (inc mode), always-on flat mesh; under nsys nvtx-only",
+  "mesh_incremental_ms": "not run",
+  "full_mesh_ms": "not run",
+  "tsdf_blocks": 27316,
+  "tsdf_voxels_allocated": 13985792,
+  "tsdf_voxels_observed": 12221664,
+  "color_blocks": 10382,
+  "peak_host_rss_mb": 193.203125,
+  "getrusage_maxrss_mb": 193.203125,
+  "sys_used_delta_mb_secondary": 451.16796875,
+  "command_counts": "/mnt/data/nvblox-build/executables/fuse_replica /mnt/data/datasets/replica/Replica/room0 --voxel_size=0.02 --num_frames=2000 --esdf_frame_subsampling=-1 --visualization=false --timing_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.02_R_nomesh_plain_n2000/timing.txt --mesh_frame_subsampling=-1 --map_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.02_R_nomesh_plain_n2000/map.nvblx",
+  "builtin_timers_plain_run": {
+   "fuser/integrate_depth": {
+    "n": 2000,
+    "total_s": 13.747636,
+    "mean_ms": 6.874,
+    "std_ms": 0.312,
+    "min_ms": 3.868,
+    "max_ms": 104.86099999999999,
+    "mean_excl_max_ms": 6.8247998999499755
+   },
+   "fuser/integrate_color": {
+    "n": 2000,
+    "total_s": 44.068428,
+    "mean_ms": 22.034000000000002,
+    "std_ms": 0.777,
+    "min_ms": 12.485,
+    "max_ms": 81.614,
+    "mean_excl_max_ms": 22.0044092046023
+   },
+   "fuser/time_per_frame": {
+    "n": 2000,
+    "total_s": 57.828632,
+    "mean_ms": 28.913999999999998,
+    "std_ms": 0.86,
+    "min_ms": 16.358,
+    "max_ms": 124.363,
+    "mean_excl_max_ms": 28.866567783891945
+   }
+  },
+  "peak_device_mb_loop": 1066.5457706451416,
+  "peak_device_mb_total": 1066.5457706451416,
+  "device_peak_scope": "loop, no colour mesh at all",
+  "device_memory": {
+   "method": "nsys --cuda-memory-usage: running sum of CUDA allocation - deallocation events (all kinds) + max cudaMallocAsync pool size",
+   "peak_live_all_kinds_mb": 1066.5457706451416,
+   "peak_live_loop_mb": 1066.5457706451416,
+   "peak_live_by_kind_mb": {
+    "Pinned": 1.7731285095214844,
+    "Device": 1065.0990829467773,
+    "Device Static": 0.014028549194335938,
+    "Managed": 3.814697265625e-06
+   },
+   "final_live_mb": 4.042520523071289,
+   "n_events": 153089,
+   "pool_max_size_mb": 1056.0,
+   "pool_max_utilized_mb": 1053.65523147583
+  },
+  "cuda_trace_mode": "nomesh_cuda",
+  "command_cuda": "/usr/local/bin/nsys profile -t cuda,nvtx -s none --cpuctxsw=none --cuda-memory-usage=true --export=sqlite -f true -o /mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.02_R_nomesh_cuda_n2000/prof /mnt/data/nvblox-build/executables/fuse_replica /mnt/data/datasets/replica/Replica/room0 --voxel_size=0.02 --num_frames=2000 --esdf_frame_subsampling=-1 --visualization=false --timing_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.02_R_nomesh_cuda_n2000/timing.txt --mesh_frame_subsampling=-1 --map_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.02_R_nomesh_cuda_n2000/map.nvblx",
+  "cuda_run_rc": 0,
+  "gpu_proof": {
+   "kernel_launches": 35185,
+   "kernel_gpu_ms_total": 107109.026272,
+   "top_kernels": [
+    {
+     "name": "flatMarchingCubesKernel",
+     "n": 2000,
+     "total_ms": 96016.068352
+    },
+    {
+     "name": "integrateBlocksKernel",
+     "n": 4000,
+     "total_ms": 4699.872416
+    },
+    {
+     "name": "sphereTracingKernel",
+     "n": 2000,
+     "total_ms": 3509.95344
+    },
+    {
+     "name": "checkBlocksInTruncationBand",
+     "n": 2000,
+     "total_ms": 1788.823232
+    },
+    {
+     "name": "combinedBlockIndicesInImageKernel",
+     "n": 2000,
+     "total_ms": 803.983904
+    },
+    {
+     "name": "static_kernel",
+     "n": 4725,
+     "total_ms": 232.489696
+    },
+    {
+     "name": "setColorBlockGray",
+     "n": 18432,
+     "total_ms": 54.350464
+    },
+    {
+     "name": "setToZero",
+     "n": 22,
+     "total_ms": 2.812512
+    },
+    {
+     "name": "insertAllKernel",
+     "n": 6,
+     "total_ms": 0.672256
+    }
+   ],
+   "memcpy": [
+    {
+     "kind": "CUDA_MEMCPY_KIND_HTOD",
+     "n": 24527,
+     "bytes": 12936914292,
+     "total_ms": 1043.18192
+    },
+    {
+     "kind": "CUDA_MEMCPY_KIND_DTOH",
+     "n": 49275,
+     "bytes": 668505097,
+     "total_ms": 113.303744
+    },
+    {
+     "kind": "CUDA_MEMCPY_KIND_DTOD",
+     "n": 3200,
+     "bytes": 6823809430,
+     "total_ms": 188.869152
+    }
+   ],
+   "memset": {
+    "n": 55200,
+    "total_ms": 82.439232
+   },
+   "frames": 2000,
+   "h2d_gpu_ms_per_frame": 0.52159096,
+   "h2d_bytes_per_frame": 6468457.146
+  },
+  "cuda_trace_integrate_e2e_ms": {
+   "n": 1995,
+   "mean": 32.59871109774436,
+   "median": 32.968224,
+   "p95": 38.860044800000004,
+   "min": 19.405824,
+   "max": 207.223392,
+   "std": 7.642396103819063
+  },
+  "score_full_mesh": "not run",
+  "score_incremental_mesh": "not run",
+  "status": "partial",
+  "meta_file": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/meta.json"
+ },
+ {
+  "library": "nvblox",
+  "version": "v0.0.10 (git c457c3fc, clean tree, CMAKE_BUILD_TYPE=Release, sm_87, /mnt/data/nvblox-build/executables/fuse_replica)",
+  "scene": "room0",
+  "voxel_m": 0.05,
+  "row": "M",
+  "block_size_vox": 8,
+  "config": "Row M: --projective_integrator_weighting_mode=0 --projective_integrator_max_weight=64 --projective_integrator_truncation_distance_vox=4 --projective_integrator_max_integration_distance_m=7 --mesh_integrator_min_weight=1; both rows: --esdf_frame_subsampling=-1 (ESDF off), --visualization=false, colour integration every frame; static TSDF mapping (fuser default)",
+  "timer_coverage": "integrate_e2e = fuser/integrate_depth + fuser/integrate_color (MultiMapper::integrateDepth / integrateColor: view calc, CPU-side block allocation, block-pointer transfer, kernels, cudaStreamSynchronize) + convert_h2d = (file_loading/depth_image - file_loading/depth_image/stbi) + (file_loading/color_image - file_loading/color_image/stbi), i.e. nvblox's own CPU u16->float depth scaling + both synchronous image copies to device memory. EXCLUDES: PNG/JPG decode (stbi), file IO, pose parsing, the fuser's per-frame updateFlatColorMesh (visualizer path, always on, reported separately), incremental mesh (reported separately). Per-frame values = NVTX ranges of nvblox's own TimerNvtx (chrono + NVTX, every timed call ends in a stream sync), frames 0-4 discarded, stats over frames 5..N-1.",
+  "not_run": {},
+  "sources": {
+   "timing": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.05_M_inc_nvtx_n2000",
+   "full_mesh": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.05_M_full_plain_n2000",
+   "counts_host_memory": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.05_M_full_plain_n2000",
+   "cuda_trace": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.05_M_inc_cuda_n2000"
+  },
+  "frames_integrated": 2000,
+  "command_timing": "/usr/local/bin/nsys profile -t nvtx -s none --cpuctxsw=none --export=sqlite -f true -o /mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.05_M_inc_nvtx_n2000/prof /mnt/data/nvblox-build/executables/fuse_replica /mnt/data/datasets/replica/Replica/room0 --voxel_size=0.05 --num_frames=2000 --esdf_frame_subsampling=-1 --visualization=false --timing_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.05_M_inc_nvtx_n2000/timing.txt --mesh_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.05_M_inc_nvtx_n2000/mesh.ply --mesh_frame_subsampling=1 --projective_integrator_weighting_mode=0 --projective_integrator_max_weight=64 --projective_integrator_truncation_distance_vox=4 --projective_integrator_max_integration_distance_m=7 --mesh_integrator_min_weight=1",
+  "clock_start": "date: 2026-11-15T09:10:46,496178151+01:00\nnvpmodel: NV Power Mode: MAXN_SUPER 2 \ngpu_freq cur/min/max: 1020000000 1020000000 1020000000 gov=nvhost_podgov\ncpu_freq: 1728000 1728000 1728000 1728000 1728000 1728000 \nemc: n/a-no-root\ntegrastats: 11-15-2026 09:10:47 RAM 2584/7620MB (lfb 4x4MB) SWAP 1040/12002MB (cached 149MB) CPU [9%@1728,2%@1728,3%@1728,3%@1728,2%@1728,2%@1728] GR3D_FREQ 0% cpu@48.687C soc2@47.562C soc0@48.656C gpu@49.468C tj@49.468C soc1@48.093C VDD_IN 6110mW/6110mW VDD_CPU_GPU_CV 1754mW/1754mW VDD_SOC 2272mW/2272mW\nthermal: cpu-thermal=48718 gpu-thermal=49593 soc0-thermal=48750 soc1-thermal=48156 soc2-thermal=47656 tj-thermal=49437 \nloadavg: 1.41 1.78 1.66 1/662 3013153\nfree_m: Mem:            7619        2377         862           3        4380        5006\nheavy_procs: \n",
+  "clock_end": "date: 2026-11-15T09:14:23,485556517+01:00\nnvpmodel: NV Power Mode: MAXN_SUPER 2 \ngpu_freq cur/min/max: 1020000000 1020000000 1020000000 gov=nvhost_podgov\ncpu_freq: 1728000 1728000 1728000 1728000 1728000 1728000 \nemc: n/a-no-root\ntegrastats: 11-15-2026 09:14:24 RAM 2769/7620MB (lfb 1x4MB) SWAP 1040/12002MB (cached 149MB) CPU [6%@1728,3%@1728,5%@1728,2%@1728,8%@1728,4%@1728] GR3D_FREQ 0% cpu@49C soc2@48.031C soc0@49.031C gpu@49.812C tj@49.812C soc1@48.406C VDD_IN 6230mW/6230mW VDD_CPU_GPU_CV 1834mW/1834mW VDD_SOC 2272mW/2272mW\nthermal: cpu-thermal=49187 gpu-thermal=50093 soc0-thermal=49031 soc1-thermal=48343 soc2-thermal=47968 tj-thermal=50000 \nloadavg: 2.10 1.94 1.75 1/663 3020392\nfree_m: Mem:            7619        2557         583           3        4479        4822\nheavy_procs: \n",
+  "waited_for_other_jobs": "",
+  "timing_run_mode": "inc_nvtx",
+  "integrate_e2e_ms": {
+   "n": 1995,
+   "mean": 7.521010029072682,
+   "median": 7.511295999999998,
+   "p95": 8.227881600000002,
+   "min": 6.293184000000007,
+   "max": 19.035327999999993,
+   "std": 0.5756132836545486
+  },
+  "integrate_no_h2d_ms": {
+   "n": 1995,
+   "mean": 4.036774560401002,
+   "median": 4.031936,
+   "p95": 4.5806464,
+   "min": 3.118304,
+   "max": 15.480672,
+   "std": 0.4504544719089389
+  },
+  "integrate_depth_ms": {
+   "n": 1995,
+   "mean": 1.561828651629073,
+   "median": 1.531648,
+   "p95": 1.8516895999999998,
+   "min": 1.183456,
+   "max": 12.686336,
+   "std": 0.30133705967604296
+  },
+  "integrate_color_ms": {
+   "n": 1995,
+   "mean": 2.47494590877193,
+   "median": 2.489184,
+   "p95": 2.8089888,
+   "min": 1.774496,
+   "max": 4.920544,
+   "std": 0.24557423943040355
+  },
+  "convert_h2d_ms": {
+   "n": 1995,
+   "mean": 3.484235468671679,
+   "median": 3.465951999999998,
+   "p95": 3.8218495999999997,
+   "min": 2.4010240000000067,
+   "max": 10.295552000000008,
+   "std": 0.3467923615634964
+  },
+  "tsdf_integrate_ms": {
+   "n": 1995,
+   "mean": 1.2586553423558897,
+   "median": 1.24736,
+   "p95": 1.455584,
+   "min": 0.959328,
+   "max": 10.770048,
+   "std": 0.2545614821262075
+  },
+  "color_integrate_ms": {
+   "n": 1995,
+   "mean": 2.2996016280701754,
+   "median": 2.335104,
+   "p95": 2.5721024,
+   "min": 1.662592,
+   "max": 4.79536,
+   "std": 0.22960595933297473
+  },
+  "fuser_time_per_frame_ms": {
+   "n": 1995,
+   "mean": 15.559081287218046,
+   "median": 15.141664,
+   "p95": 21.127023999999995,
+   "min": 9.108,
+   "max": 36.904544,
+   "std": 3.2588070173911303
+  },
+  "flat_mesh_full_rebuild_per_frame_ms": {
+   "n": 1995,
+   "mean": 4.781396114285714,
+   "median": 5.53216,
+   "p95": 5.9306624,
+   "min": 1.542176,
+   "max": 7.029728,
+   "std": 1.3342353808217742
+  },
+  "file_loading_excluded_ms": {
+   "n": 1995,
+   "mean": 83.2955461614035,
+   "median": 81.593568,
+   "p95": 112.9571808,
+   "min": 38.261792,
+   "max": 873.606144,
+   "std": 25.877865138561535
+  },
+  "builtin_timers_timing_run": {
+   "fuser/integrate_depth": {
+    "n": 2000,
+    "total_s": 3.168551,
+    "mean_ms": 1.5839999999999999,
+    "std_ms": 0.054,
+    "min_ms": 1.1820000000000002,
+    "max_ms": 48.638,
+    "mean_excl_max_ms": 1.560736868434217
+   },
+   "fuser/integrate_color": {
+    "n": 2000,
+    "total_s": 4.951401,
+    "mean_ms": 2.476,
+    "std_ms": 0.118,
+    "min_ms": 1.774,
+    "max_ms": 5.373,
+    "mean_excl_max_ms": 2.4742511255627813
+   },
+   "fuser/mesh": {
+    "n": 2000,
+    "total_s": 23.079411,
+    "mean_ms": 11.54,
+    "std_ms": 0.266,
+    "min_ms": 5.742999999999999,
+    "max_ms": 32.449,
+    "mean_excl_max_ms": 11.529245622811406
+   },
+   "fuser/time_per_frame": {
+    "n": 2000,
+    "total_s": 31.223264,
+    "mean_ms": 15.611999999999998,
+    "std_ms": 0.34099999999999997,
+    "min_ms": 9.108,
+    "max_ms": 81.774,
+    "mean_excl_max_ms": 15.578534267133566
+   }
+  },
+  "outer_wall_loop_s": 207.78588700294495,
+  "outer_wall_per_frame_ms": 103.89294350147247,
+  "outer_wall_note": "glog 'Integrating N frames' -> 'Ran out of data' wall clock / N: whole fuser loop incl. decode, file IO, integrate, incremental mesh (inc mode), always-on flat mesh; under nsys nvtx-only",
+  "mesh_incremental_ms": {
+   "n": 1995,
+   "mean": 11.50883655538847,
+   "median": 11.068384,
+   "p95": 16.96296959999999,
+   "min": 5.740288,
+   "max": 32.445568,
+   "std": 3.0542171139216925
+  },
+  "full_mesh_ms": {
+   "builtin_mesh_gpu_integrate": {
+    "n": 1,
+    "total_s": 0.096028,
+    "mean_ms": 96.028,
+    "std_ms": 0.0,
+    "min_ms": 96.028,
+    "max_ms": 96.028,
+    "mean_excl_max_ms": null
+   },
+   "outer_wall_glog_ms": 137.70699501037598,
+   "n": 1,
+   "run_mode": "full_plain",
+   "note": "single cold call after the loop: Mapper::updateColorMesh over ALL blocks (incl. mesh-block + marching-cubes scratch allocation); the fuser cannot repeat it without a rebuild"
+  },
+  "mesh_triangles": 130735,
+  "mesh_vertices": 83739,
+  "tsdf_blocks": 2498,
+  "tsdf_voxels_allocated": 1278976,
+  "tsdf_voxels_observed": 920120,
+  "color_blocks": 1858,
+  "peak_host_rss_mb": 126.28125,
+  "getrusage_maxrss_mb": 126.28125,
+  "sys_used_delta_mb_secondary": 434.05078125,
+  "command_counts": "/mnt/data/nvblox-build/executables/fuse_replica /mnt/data/datasets/replica/Replica/room0 --voxel_size=0.05 --num_frames=2000 --esdf_frame_subsampling=-1 --visualization=false --timing_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.05_M_full_plain_n2000/timing.txt --mesh_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.05_M_full_plain_n2000/mesh.ply --mesh_frame_subsampling=-1 --map_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.05_M_full_plain_n2000/map.nvblx --projective_integrator_weighting_mode=0 --projective_integrator_max_weight=64 --projective_integrator_truncation_distance_vox=4 --projective_integrator_max_integration_distance_m=7 --mesh_integrator_min_weight=1",
+  "builtin_timers_plain_run": {
+   "fuser/integrate_depth": {
+    "n": 2000,
+    "total_s": 3.030373,
+    "mean_ms": 1.5150000000000001,
+    "std_ms": 0.063,
+    "min_ms": 1.138,
+    "max_ms": 12.935,
+    "mean_excl_max_ms": 1.5094737368684341
+   },
+   "fuser/integrate_color": {
+    "n": 2000,
+    "total_s": 4.746339,
+    "mean_ms": 2.373,
+    "std_ms": 0.104,
+    "min_ms": 1.707,
+    "max_ms": 5.218999999999999,
+    "mean_excl_max_ms": 2.371745872936468
+   },
+   "fuser/time_per_frame": {
+    "n": 2000,
+    "total_s": 7.787022,
+    "mean_ms": 3.8939999999999997,
+    "std_ms": 0.12999999999999998,
+    "min_ms": 3.032,
+    "max_ms": 15.604,
+    "mean_excl_max_ms": 3.8876528264132073
+   }
+  },
+  "peak_device_mb_loop": 1089.8075885772705,
+  "peak_device_mb_total": 1089.8075885772705,
+  "device_peak_scope": "loop incl. per-frame incremental mesh",
+  "device_memory": {
+   "method": "nsys --cuda-memory-usage: running sum of CUDA allocation - deallocation events (all kinds) + max cudaMallocAsync pool size",
+   "peak_live_all_kinds_mb": 1089.8075885772705,
+   "peak_live_loop_mb": 1089.8075885772705,
+   "peak_live_by_kind_mb": {
+    "Pinned": 0.34316539764404297,
+    "Device": 1089.5136404037476,
+    "Device Static": 0.02299785614013672,
+    "Managed": 3.814697265625e-06
+   },
+   "final_live_mb": 3.782923698425293,
+   "n_events": 91653,
+   "pool_max_size_mb": 1120.0,
+   "pool_max_utilized_mb": 1010.3306121826172
+  },
+  "cuda_trace_mode": "inc_cuda",
+  "command_cuda": "/usr/local/bin/nsys profile -t cuda,nvtx -s none --cpuctxsw=none --cuda-memory-usage=true --export=sqlite -f true -o /mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.05_M_inc_cuda_n2000/prof /mnt/data/nvblox-build/executables/fuse_replica /mnt/data/datasets/replica/Replica/room0 --voxel_size=0.05 --num_frames=2000 --esdf_frame_subsampling=-1 --visualization=false --timing_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.05_M_inc_cuda_n2000/timing.txt --mesh_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.05_M_inc_cuda_n2000/mesh.ply --mesh_frame_subsampling=1 --projective_integrator_weighting_mode=0 --projective_integrator_max_weight=64 --projective_integrator_truncation_distance_vox=4 --projective_integrator_max_integration_distance_m=7 --mesh_integrator_min_weight=1",
+  "cuda_run_rc": 0,
+  "gpu_proof": {
+   "kernel_launches": 32302,
+   "kernel_gpu_ms_total": 26968.134784,
+   "top_kernels": [
+    {
+     "name": "meshBlocksCalculateTableIndicesKernel",
+     "n": 2000,
+     "total_ms": 11404.81024
+    },
+    {
+     "name": "flatMarchingCubesKernel",
+     "n": 2000,
+     "total_ms": 8353.955584
+    },
+    {
+     "name": "weldVerticesCubKernel",
+     "n": 2000,
+     "total_ms": 3410.743968
+    },
+    {
+     "name": "sphereTracingKernel",
+     "n": 2000,
+     "total_ms": 1294.774528
+    },
+    {
+     "name": "meshBlocksCalculateVerticesKernel",
+     "n": 2000,
+     "total_ms": 1181.605024
+    },
+    {
+     "name": "integrateBlocksKernel",
+     "n": 4000,
+     "total_ms": 585.432704
+    },
+    {
+     "name": "combinedBlockIndicesInImageKernel",
+     "n": 2000,
+     "total_ms": 328.882016
+    },
+    {
+     "name": "isBlockMeshableKernel",
+     "n": 2000,
+     "total_ms": 148.611424
+    },
+    {
+     "name": "checkBlocksInTruncationBand",
+     "n": 2000,
+     "total_ms": 142.299008
+    },
+    {
+     "name": "static_kernel",
+     "n": 4474,
+     "total_ms": 54.409632
+    }
+   ],
+   "memcpy": [
+    {
+     "kind": "CUDA_MEMCPY_KIND_HTOD",
+     "n": 39016,
+     "bytes": 11826104168,
+     "total_ms": 971.237824
+    },
+    {
+     "kind": "CUDA_MEMCPY_KIND_DTOH",
+     "n": 13896,
+     "bytes": 117105004,
+     "total_ms": 27.075488
+    },
+    {
+     "kind": "CUDA_MEMCPY_KIND_DTOD",
+     "n": 6526,
+     "bytes": 16142356483,
+     "total_ms": 438.645024
+    }
+   ],
+   "memset": {
+    "n": 34528,
+    "total_ms": 1324.294208
+   },
+   "frames": 2000,
+   "h2d_gpu_ms_per_frame": 0.485618912,
+   "h2d_bytes_per_frame": 5913052.084
+  },
+  "cuda_trace_integrate_e2e_ms": {
+   "n": 1995,
+   "mean": 7.993566813032581,
+   "median": 7.905439999999999,
+   "p95": 8.831487999999993,
+   "min": 6.3974400000000005,
+   "max": 75.046784,
+   "std": 2.022496826116205
+  },
+  "score_full_mesh": {
+   "accuracy_cm": 1.8527,
+   "completeness_cm": 1.5564,
+   "completion_ratio_pct": 98.738,
+   "precision_pct": 96.364,
+   "f_score_pct": 97.537,
+   "accuracy_surf_cm": 0.4905,
+   "completeness_surf_cm": 0.346,
+   "completion_ratio_surf_pct": 99.175,
+   "precision_surf_pct": 97.34,
+   "accuracy_median_cm": 1.4842,
+   "completeness_median_cm": 1.3892,
+   "pred_area_m2": 146.6767,
+   "gt_kept_frac": 0.8673,
+   "pred_triangles": 130735,
+   "file": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.05_M_full_plain_n2000/score.json"
+  },
+  "score_incremental_mesh": {
+   "accuracy_cm": 1.8541,
+   "completeness_cm": 1.553,
+   "completion_ratio_pct": 98.758,
+   "precision_pct": 96.351,
+   "f_score_pct": 97.54,
+   "accuracy_surf_cm": 0.4921,
+   "completeness_surf_cm": 0.346,
+   "completion_ratio_surf_pct": 99.175,
+   "precision_surf_pct": 97.366,
+   "accuracy_median_cm": 1.4849,
+   "completeness_median_cm": 1.3876,
+   "pred_area_m2": 146.6771,
+   "gt_kept_frac": 0.8673,
+   "pred_triangles": 130735,
+   "file": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.05_M_inc_nvtx_n2000/score.json"
+  },
+  "status": "ok",
+  "meta_file": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/meta.json"
+ },
+ {
+  "library": "nvblox",
+  "version": "v0.0.10 (git c457c3fc, clean tree, CMAKE_BUILD_TYPE=Release, sm_87, /mnt/data/nvblox-build/executables/fuse_replica)",
+  "scene": "room0",
+  "voxel_m": 0.05,
+  "row": "R",
+  "block_size_vox": 8,
+  "config": "Row R: nvblox defaults (trunc 4 vox, max_weight 5, weighting_mode 2 inverse_square, max dist 7 m, mesh min_weight 1e-4, mesh every frame); both rows: --esdf_frame_subsampling=-1 (ESDF off), --visualization=false, colour integration every frame; static TSDF mapping (fuser default)",
+  "timer_coverage": "integrate_e2e = fuser/integrate_depth + fuser/integrate_color (MultiMapper::integrateDepth / integrateColor: view calc, CPU-side block allocation, block-pointer transfer, kernels, cudaStreamSynchronize) + convert_h2d = (file_loading/depth_image - file_loading/depth_image/stbi) + (file_loading/color_image - file_loading/color_image/stbi), i.e. nvblox's own CPU u16->float depth scaling + both synchronous image copies to device memory. EXCLUDES: PNG/JPG decode (stbi), file IO, pose parsing, the fuser's per-frame updateFlatColorMesh (visualizer path, always on, reported separately), incremental mesh (reported separately). Per-frame values = NVTX ranges of nvblox's own TimerNvtx (chrono + NVTX, every timed call ends in a stream sync), frames 0-4 discarded, stats over frames 5..N-1.",
+  "not_run": {},
+  "sources": {
+   "timing": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.05_R_inc_nvtx_n2000",
+   "full_mesh": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.05_R_full_plain_n2000",
+   "counts_host_memory": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.05_R_full_plain_n2000",
+   "cuda_trace": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.05_R_inc_cuda_n2000"
+  },
+  "frames_integrated": 2000,
+  "command_timing": "/usr/local/bin/nsys profile -t nvtx -s none --cpuctxsw=none --export=sqlite -f true -o /mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.05_R_inc_nvtx_n2000/prof /mnt/data/nvblox-build/executables/fuse_replica /mnt/data/datasets/replica/Replica/room0 --voxel_size=0.05 --num_frames=2000 --esdf_frame_subsampling=-1 --visualization=false --timing_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.05_R_inc_nvtx_n2000/timing.txt --mesh_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.05_R_inc_nvtx_n2000/mesh.ply --mesh_frame_subsampling=1",
+  "clock_start": "date: 2026-11-15T09:21:19,876893151+01:00\nnvpmodel: NV Power Mode: MAXN_SUPER 2 \ngpu_freq cur/min/max: 1020000000 1020000000 1020000000 gov=nvhost_podgov\ncpu_freq: 1728000 1728000 1728000 1728000 1728000 1728000 \nemc: n/a-no-root\ntegrastats: 11-15-2026 09:21:20 RAM 2575/7620MB (lfb 7x4MB) SWAP 1034/12002MB (cached 149MB) CPU [15%@1728,14%@1728,6%@1728,16%@1728,9%@1728,6%@1728] GR3D_FREQ 0% cpu@49.5C soc2@48.187C soc0@49.187C gpu@50.25C tj@50.25C soc1@48.562C VDD_IN 6269mW/6269mW VDD_CPU_GPU_CV 1834mW/1834mW VDD_SOC 2312mW/2312mW\nthermal: cpu-thermal=49437 gpu-thermal=50062 soc0-thermal=49187 soc1-thermal=48593 soc2-thermal=48125 tj-thermal=50343 \nloadavg: 2.01 2.19 1.94 4/660 3033053\nfree_m: Mem:            7619        2367         970           3        4281        5016\nheavy_procs: \n",
+  "clock_end": "date: 2026-11-15T09:24:57,719601500+01:00\nnvpmodel: NV Power Mode: MAXN_SUPER 2 \ngpu_freq cur/min/max: 1020000000 1020000000 1020000000 gov=nvhost_podgov\ncpu_freq: 1728000 1728000 1728000 1728000 1728000 1728000 \nemc: n/a-no-root\ntegrastats: 11-15-2026 09:24:58 RAM 2790/7620MB (lfb 26x2MB) SWAP 1034/12002MB (cached 149MB) CPU [11%@1728,9%@1728,7%@1728,2%@1728,2%@1728,5%@1728] GR3D_FREQ 0% cpu@49.531C soc2@48.468C soc0@49.343C gpu@50.343C tj@50.343C soc1@48.812C VDD_IN 6190mW/6190mW VDD_CPU_GPU_CV 1834mW/1834mW VDD_SOC 2272mW/2272mW\nthermal: cpu-thermal=49718 gpu-thermal=50250 soc0-thermal=49406 soc1-thermal=48843 soc2-thermal=48406 tj-thermal=50312 \nloadavg: 1.93 2.06 1.94 4/665 3040311\nfree_m: Mem:            7619        2579         590           3        4450        4792\nheavy_procs: \n",
+  "waited_for_other_jobs": "",
+  "timing_run_mode": "inc_nvtx",
+  "integrate_e2e_ms": {
+   "n": 1995,
+   "mean": 7.438152100250626,
+   "median": 7.434240000000002,
+   "p95": 8.174054400000001,
+   "min": 5.834367999999994,
+   "max": 21.683936000000003,
+   "std": 0.7887711864546202
+  },
+  "integrate_no_h2d_ms": {
+   "n": 1995,
+   "mean": 4.074964868170427,
+   "median": 4.0661760000000005,
+   "p95": 4.6006208,
+   "min": 3.177024,
+   "max": 15.003744000000001,
+   "std": 0.4744267164413617
+  },
+  "integrate_depth_ms": {
+   "n": 1995,
+   "mean": 1.5699287899749372,
+   "median": 1.541376,
+   "p95": 1.8355776,
+   "min": 1.1832,
+   "max": 12.26848,
+   "std": 0.2883400143048019
+  },
+  "integrate_color_ms": {
+   "n": 1995,
+   "mean": 2.5050360781954883,
+   "median": 2.516992,
+   "p95": 2.8332704,
+   "min": 1.78128,
+   "max": 7.11088,
+   "std": 0.2963770782868937
+  },
+  "convert_h2d_ms": {
+   "n": 1995,
+   "mean": 3.3631872320802003,
+   "median": 3.3724160000000047,
+   "p95": 3.7823455999999998,
+   "min": 2.298720000000003,
+   "max": 17.867424000000003,
+   "std": 0.6314963528463317
+  },
+  "tsdf_integrate_ms": {
+   "n": 1995,
+   "mean": 1.2642907588972432,
+   "median": 1.25248,
+   "p95": 1.4568544,
+   "min": 0.965056,
+   "max": 10.400704,
+   "std": 0.2459992102407582
+  },
+  "color_integrate_ms": {
+   "n": 1995,
+   "mean": 2.3237630235588975,
+   "median": 2.356032,
+   "p95": 2.5976544,
+   "min": 1.65824,
+   "max": 6.992672,
+   "std": 0.2829147411544056
+  },
+  "fuser_time_per_frame_ms": {
+   "n": 1995,
+   "mean": 15.633635063659147,
+   "median": 15.207616,
+   "p95": 21.667916799999993,
+   "min": 9.174912,
+   "max": 42.358752,
+   "std": 3.3743281248919317
+  },
+  "flat_mesh_full_rebuild_per_frame_ms": {
+   "n": 1995,
+   "mean": 4.779908876190476,
+   "median": 5.528928,
+   "p95": 5.928464,
+   "min": 1.543904,
+   "max": 6.611264,
+   "std": 1.3302677032776857
+  },
+  "file_loading_excluded_ms": {
+   "n": 1995,
+   "mean": 84.2289529744361,
+   "median": 82.289696,
+   "p95": 117.862048,
+   "min": 37.78672,
+   "max": 334.181248,
+   "std": 22.272856372436486
+  },
+  "builtin_timers_timing_run": {
+   "fuser/integrate_depth": {
+    "n": 2000,
+    "total_s": 3.146123,
+    "mean_ms": 1.573,
+    "std_ms": 0.062,
+    "min_ms": 1.1820000000000002,
+    "max_ms": 12.267999999999999,
+    "mean_excl_max_ms": 1.5677113556778388
+   },
+   "fuser/integrate_color": {
+    "n": 2000,
+    "total_s": 5.02109,
+    "mean_ms": 2.511,
+    "std_ms": 0.097,
+    "min_ms": 1.7810000000000001,
+    "max_ms": 14.916,
+    "mean_excl_max_ms": 2.5043391695847923
+   },
+   "fuser/mesh": {
+    "n": 2000,
+    "total_s": 23.150947,
+    "mean_ms": 11.575000000000001,
+    "std_ms": 0.241,
+    "min_ms": 5.789,
+    "max_ms": 37.417,
+    "mean_excl_max_ms": 11.562546273136567
+   },
+   "fuser/time_per_frame": {
+    "n": 2000,
+    "total_s": 31.341661,
+    "mean_ms": 15.671000000000001,
+    "std_ms": 0.28800000000000003,
+    "min_ms": 9.175,
+    "max_ms": 51.559,
+    "mean_excl_max_ms": 15.652877438719358
+   }
+  },
+  "outer_wall_loop_s": 209.73384284973145,
+  "outer_wall_per_frame_ms": 104.86692142486572,
+  "outer_wall_note": "glog 'Integrating N frames' -> 'Ran out of data' wall clock / N: whole fuser loop incl. decode, file IO, integrate, incremental mesh (inc mode), always-on flat mesh; under nsys nvtx-only",
+  "mesh_incremental_ms": {
+   "n": 1995,
+   "mean": 11.54550146566416,
+   "median": 11.091808,
+   "p95": 17.3320832,
+   "min": 5.786336,
+   "max": 37.413312,
+   "std": 3.1713803814249135
+  },
+  "full_mesh_ms": {
+   "builtin_mesh_gpu_integrate": {
+    "n": 1,
+    "total_s": 0.083253,
+    "mean_ms": 83.253,
+    "std_ms": 0.0,
+    "min_ms": 83.253,
+    "max_ms": 83.253,
+    "mean_excl_max_ms": null
+   },
+   "outer_wall_glog_ms": 86.50016784667969,
+   "n": 1,
+   "run_mode": "full_plain",
+   "note": "single cold call after the loop: Mapper::updateColorMesh over ALL blocks (incl. mesh-block + marching-cubes scratch allocation); the fuser cannot repeat it without a rebuild"
+  },
+  "mesh_triangles": 131649,
+  "mesh_vertices": 84314,
+  "tsdf_blocks": 2498,
+  "tsdf_voxels_allocated": 1278976,
+  "tsdf_voxels_observed": 920120,
+  "color_blocks": 1858,
+  "peak_host_rss_mb": 127.5546875,
+  "getrusage_maxrss_mb": 129.0234375,
+  "sys_used_delta_mb_secondary": 369.2578125,
+  "command_counts": "/mnt/data/nvblox-build/executables/fuse_replica /mnt/data/datasets/replica/Replica/room0 --voxel_size=0.05 --num_frames=2000 --esdf_frame_subsampling=-1 --visualization=false --timing_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.05_R_full_plain_n2000/timing.txt --mesh_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.05_R_full_plain_n2000/mesh.ply --mesh_frame_subsampling=-1 --map_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.05_R_full_plain_n2000/map.nvblx",
+  "builtin_timers_plain_run": {
+   "fuser/integrate_depth": {
+    "n": 2000,
+    "total_s": 3.041046,
+    "mean_ms": 1.521,
+    "std_ms": 0.057,
+    "min_ms": 1.171,
+    "max_ms": 12.908,
+    "mean_excl_max_ms": 1.5148264132066034
+   },
+   "fuser/integrate_color": {
+    "n": 2000,
+    "total_s": 4.783348,
+    "mean_ms": 2.392,
+    "std_ms": 0.10500000000000001,
+    "min_ms": 1.7309999999999999,
+    "max_ms": 4.957999999999999,
+    "mean_excl_max_ms": 2.390390195097549
+   },
+   "fuser/time_per_frame": {
+    "n": 2000,
+    "total_s": 7.835161,
+    "mean_ms": 3.9179999999999997,
+    "std_ms": 0.134,
+    "min_ms": 3.078,
+    "max_ms": 15.434,
+    "mean_excl_max_ms": 3.911819409704853
+   }
+  },
+  "peak_device_mb_loop": 1089.8984088897705,
+  "peak_device_mb_total": 1089.8984088897705,
+  "device_peak_scope": "loop incl. per-frame incremental mesh",
+  "device_memory": {
+   "method": "nsys --cuda-memory-usage: running sum of CUDA allocation - deallocation events (all kinds) + max cudaMallocAsync pool size",
+   "peak_live_all_kinds_mb": 1089.8984088897705,
+   "peak_live_loop_mb": 1089.8984088897705,
+   "peak_live_by_kind_mb": {
+    "Pinned": 0.34316539764404297,
+    "Device": 1089.6044607162476,
+    "Device Static": 0.02299785614013672,
+    "Managed": 3.814697265625e-06
+   },
+   "final_live_mb": 3.782923698425293,
+   "n_events": 91677,
+   "pool_max_size_mb": 1120.0,
+   "pool_max_utilized_mb": 1010.4668426513672
+  },
+  "cuda_trace_mode": "inc_cuda",
+  "command_cuda": "/usr/local/bin/nsys profile -t cuda,nvtx -s none --cpuctxsw=none --cuda-memory-usage=true --export=sqlite -f true -o /mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.05_R_inc_cuda_n2000/prof /mnt/data/nvblox-build/executables/fuse_replica /mnt/data/datasets/replica/Replica/room0 --voxel_size=0.05 --num_frames=2000 --esdf_frame_subsampling=-1 --visualization=false --timing_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.05_R_inc_cuda_n2000/timing.txt --mesh_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.05_R_inc_cuda_n2000/mesh.ply --mesh_frame_subsampling=1",
+  "cuda_run_rc": 0,
+  "gpu_proof": {
+   "kernel_launches": 32302,
+   "kernel_gpu_ms_total": 26963.652032,
+   "top_kernels": [
+    {
+     "name": "meshBlocksCalculateTableIndicesKernel",
+     "n": 2000,
+     "total_ms": 11400.425664
+    },
+    {
+     "name": "flatMarchingCubesKernel",
+     "n": 2000,
+     "total_ms": 8348.584992
+    },
+    {
+     "name": "weldVerticesCubKernel",
+     "n": 2000,
+     "total_ms": 3412.793184
+    },
+    {
+     "name": "sphereTracingKernel",
+     "n": 2000,
+     "total_ms": 1290.41136
+    },
+    {
+     "name": "meshBlocksCalculateVerticesKernel",
+     "n": 2000,
+     "total_ms": 1184.5272
+    },
+    {
+     "name": "integrateBlocksKernel",
+     "n": 4000,
+     "total_ms": 587.295808
+    },
+    {
+     "name": "combinedBlockIndicesInImageKernel",
+     "n": 2000,
+     "total_ms": 331.805312
+    },
+    {
+     "name": "isBlockMeshableKernel",
+     "n": 2000,
+     "total_ms": 147.658784
+    },
+    {
+     "name": "checkBlocksInTruncationBand",
+     "n": 2000,
+     "total_ms": 143.296704
+    },
+    {
+     "name": "static_kernel",
+     "n": 4474,
+     "total_ms": 54.38592
+    }
+   ],
+   "memcpy": [
+    {
+     "kind": "CUDA_MEMCPY_KIND_HTOD",
+     "n": 39016,
+     "bytes": 11826301108,
+     "total_ms": 961.007136
+    },
+    {
+     "kind": "CUDA_MEMCPY_KIND_DTOH",
+     "n": 13896,
+     "bytes": 117131497,
+     "total_ms": 27.04064
+    },
+    {
+     "kind": "CUDA_MEMCPY_KIND_DTOD",
+     "n": 6526,
+     "bytes": 16142372008,
+     "total_ms": 437.437056
+    }
+   ],
+   "memset": {
+    "n": 34528,
+    "total_ms": 1324.807328
+   },
+   "frames": 2000,
+   "h2d_gpu_ms_per_frame": 0.480503568,
+   "h2d_bytes_per_frame": 5913150.554
+  },
+  "cuda_trace_integrate_e2e_ms": {
+   "n": 1995,
+   "mean": 7.962551081704261,
+   "median": 7.877632,
+   "p95": 8.769795199999997,
+   "min": 6.692863999999998,
+   "max": 67.45632,
+   "std": 1.649210219244325
+  },
+  "score_full_mesh": {
+   "accuracy_cm": 1.9109,
+   "completeness_cm": 1.5585,
+   "completion_ratio_pct": 98.691,
+   "precision_pct": 95.871,
+   "f_score_pct": 97.261,
+   "accuracy_surf_cm": 0.5518,
+   "completeness_surf_cm": 0.3488,
+   "completion_ratio_surf_pct": 99.135,
+   "precision_surf_pct": 96.83,
+   "accuracy_median_cm": 1.4949,
+   "completeness_median_cm": 1.3902,
+   "pred_area_m2": 147.4744,
+   "gt_kept_frac": 0.8673,
+   "pred_triangles": 131649,
+   "file": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.05_R_full_plain_n2000/score.json"
+  },
+  "score_incremental_mesh": {
+   "accuracy_cm": 1.9164,
+   "completeness_cm": 1.5611,
+   "completion_ratio_pct": 98.706,
+   "precision_pct": 95.785,
+   "f_score_pct": 97.223,
+   "accuracy_surf_cm": 0.5577,
+   "completeness_surf_cm": 0.3488,
+   "completion_ratio_surf_pct": 99.135,
+   "precision_surf_pct": 96.841,
+   "accuracy_median_cm": 1.4911,
+   "completeness_median_cm": 1.3896,
+   "pred_area_m2": 147.4731,
+   "gt_kept_frac": 0.8673,
+   "pred_triangles": 131649,
+   "file": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/room0_v0.05_R_inc_nvtx_n2000/score.json"
+  },
+  "status": "ok",
+  "meta_file": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/meta.json"
+ },
+ {
+  "library": "nvblox",
+  "version": "v0.0.10 (git c457c3fc, clean tree, CMAKE_BUILD_TYPE=Release, sm_87, /mnt/data/nvblox-build/executables/fuse_replica)",
+  "scene": "office0",
+  "voxel_m": 0.02,
+  "row": "M",
+  "block_size_vox": 8,
+  "config": "Row M: --projective_integrator_weighting_mode=0 --projective_integrator_max_weight=64 --projective_integrator_truncation_distance_vox=4 --projective_integrator_max_integration_distance_m=7 --mesh_integrator_min_weight=1; both rows: --esdf_frame_subsampling=-1 (ESDF off), --visualization=false, colour integration every frame; static TSDF mapping (fuser default)",
+  "timer_coverage": "integrate_e2e = fuser/integrate_depth + fuser/integrate_color (MultiMapper::integrateDepth / integrateColor: view calc, CPU-side block allocation, block-pointer transfer, kernels, cudaStreamSynchronize) + convert_h2d = (file_loading/depth_image - file_loading/depth_image/stbi) + (file_loading/color_image - file_loading/color_image/stbi), i.e. nvblox's own CPU u16->float depth scaling + both synchronous image copies to device memory. EXCLUDES: PNG/JPG decode (stbi), file IO, pose parsing, the fuser's per-frame updateFlatColorMesh (visualizer path, always on, reported separately), incremental mesh (reported separately). Per-frame values = NVTX ranges of nvblox's own TimerNvtx (chrono + NVTX, every timed call ends in a stream sync), frames 0-4 discarded, stats over frames 5..N-1.",
+  "not_run": {
+   "mesh_incremental": "not run to 2000 frames: the incremental-mesh run dies with cudaMallocAsync OOM after 1256 frames (Row M and Row R alike) in the same marching-cubes scratch path (MeshIntegrator<ColorVoxel>::meshBlocksGPU). Partial stats over its completed frames are in mesh_incremental_partial. Logs: /mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.02_M_inc_nvtx_n2000/run.log, /mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.02_R_inc_nvtx_n2000/run.log",
+   "score_incremental_mesh": "not run: the incremental-mesh run did not reach frame 2000 (OOM at frame 1256); the 2000-frame full mesh is scored instead (score_full_mesh)"
+  },
+  "sources": {
+   "timing": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.02_M_full_nvtx_n2000",
+   "full_mesh": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.02_M_full_plain_n2000",
+   "counts_host_memory": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.02_M_full_plain_n2000",
+   "cuda_trace": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.02_M_full_cuda_n2000"
+  },
+  "frames_integrated": 2000,
+  "command_timing": "/usr/local/bin/nsys profile -t nvtx -s none --cpuctxsw=none --export=sqlite -f true -o /mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.02_M_full_nvtx_n2000/prof /mnt/data/nvblox-build/executables/fuse_replica /mnt/data/datasets/replica/Replica/office0 --voxel_size=0.02 --num_frames=2000 --esdf_frame_subsampling=-1 --visualization=false --timing_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.02_M_full_nvtx_n2000/timing.txt --mesh_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.02_M_full_nvtx_n2000/mesh.ply --mesh_frame_subsampling=-1 --map_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.02_M_full_nvtx_n2000/map.nvblx --projective_integrator_weighting_mode=0 --projective_integrator_max_weight=64 --projective_integrator_truncation_distance_vox=4 --projective_integrator_max_integration_distance_m=7 --mesh_integrator_min_weight=1",
+  "clock_start": "date: 2026-11-15T10:46:33,763261694+01:00\nnvpmodel: NV Power Mode: MAXN_SUPER 2 \ngpu_freq cur/min/max: 1020000000 1020000000 1020000000 gov=nvhost_podgov\ncpu_freq: 1728000 1728000 1728000 1728000 1728000 1728000 \nemc: n/a-no-root\ntegrastats: 11-15-2026 10:46:34 RAM 2713/7620MB (lfb 62x4MB) SWAP 1019/12002MB (cached 147MB) CPU [6%@1728,2%@1728,2%@1728,3%@1728,4%@1728,6%@1728] GR3D_FREQ 0% cpu@47.312C soc2@46.375C soc0@47.343C gpu@48.125C tj@48.125C soc1@46.937C VDD_IN 6070mW/6070mW VDD_CPU_GPU_CV 1754mW/1754mW VDD_SOC 2272mW/2272mW\nthermal: cpu-thermal=47468 gpu-thermal=48250 soc0-thermal=47312 soc1-thermal=46968 soc2-thermal=46406 tj-thermal=48343 \nloadavg: 1.35 1.66 1.59 1/658 3161684\nfree_m: Mem:            7619        2566        3971           3        1082        4781\nheavy_procs: \n",
+  "clock_end": "date: 2026-11-15T10:51:22,391094422+01:00\nnvpmodel: NV Power Mode: MAXN_SUPER 2 \ngpu_freq cur/min/max: 1020000000 1020000000 1020000000 gov=nvhost_podgov\ncpu_freq: 1728000 1728000 1728000 1728000 1728000 1728000 \nemc: n/a-no-root\ntegrastats: 11-15-2026 10:51:22 RAM 2700/7620MB (lfb 19x4MB) SWAP 1019/12002MB (cached 147MB) CPU [14%@1728,10%@1728,9%@1728,11%@1728,4%@1728,8%@1728] GR3D_FREQ 0% cpu@49.25C soc2@48.093C soc0@49.281C gpu@49.968C tj@50.031C soc1@48.406C VDD_IN 6349mW/6349mW VDD_CPU_GPU_CV 1953mW/1953mW VDD_SOC 2312mW/2312mW\nthermal: cpu-thermal=49156 gpu-thermal=49937 soc0-thermal=49218 soc1-thermal=48531 soc2-thermal=48156 tj-thermal=50000 \nloadavg: 1.73 1.81 1.68 1/662 3170939\nfree_m: Mem:            7619        2556        2612           3        2450        4827\nheavy_procs: \n",
+  "waited_for_other_jobs": "",
+  "timing_run_mode": "full_nvtx",
+  "integrate_e2e_ms": {
+   "n": 1995,
+   "mean": 21.258642205513787,
+   "median": 21.162176000000002,
+   "p95": 24.409382399999995,
+   "min": 15.121504000000002,
+   "max": 70.535552,
+   "std": 2.596749188553146
+  },
+  "integrate_no_h2d_ms": {
+   "n": 1995,
+   "mean": 19.80740114285714,
+   "median": 19.705632,
+   "p95": 22.921552,
+   "min": 13.710144,
+   "max": 69.022592,
+   "std": 2.5899636638804644
+  },
+  "integrate_depth_ms": {
+   "n": 1995,
+   "mean": 3.5515502997493735,
+   "median": 3.552256,
+   "p95": 4.7250656,
+   "min": 1.949376,
+   "max": 54.947072,
+   "std": 1.4715070531241372
+  },
+  "integrate_color_ms": {
+   "n": 1995,
+   "mean": 16.255850843107773,
+   "median": 16.026816,
+   "p95": 18.921328,
+   "min": 11.594144,
+   "max": 40.881152,
+   "std": 1.904702784423033
+  },
+  "convert_h2d_ms": {
+   "n": 1995,
+   "mean": 1.4512410626566414,
+   "median": 1.4336959999999976,
+   "p95": 1.5429376000000044,
+   "min": 1.366655999999999,
+   "max": 3.0327999999999946,
+   "std": 0.09819354218524887
+  },
+  "tsdf_integrate_ms": {
+   "n": 1995,
+   "mean": 3.1827753062656643,
+   "median": 3.18432,
+   "p95": 4.3168,
+   "min": 1.50672,
+   "max": 51.515904,
+   "std": 1.3956284506759242
+  },
+  "color_integrate_ms": {
+   "n": 1995,
+   "mean": 16.00133814536341,
+   "median": 15.747808,
+   "p95": 18.714624,
+   "min": 11.27648,
+   "max": 38.973664,
+   "std": 1.8941699292079548
+  },
+  "fuser_time_per_frame_ms": {
+   "n": 1995,
+   "mean": 19.816670011027572,
+   "median": 19.715072,
+   "p95": 22.9313888,
+   "min": 13.718912,
+   "max": 69.034208,
+   "std": 2.590484683192305
+  },
+  "flat_mesh_full_rebuild_per_frame_ms": {
+   "n": 1995,
+   "mean": 29.0097599197995,
+   "median": 30.538208,
+   "p95": 35.6128288,
+   "min": 6.70768,
+   "max": 36.15456,
+   "std": 6.65613576974779
+  },
+  "file_loading_excluded_ms": {
+   "n": 1995,
+   "mean": 86.57684812030075,
+   "median": 85.721504,
+   "p95": 113.37549439999998,
+   "min": 45.38592,
+   "max": 161.218272,
+   "std": 15.18536799468151
+  },
+  "builtin_timers_timing_run": {
+   "fuser/integrate_depth": {
+    "n": 2000,
+    "total_s": 7.110722,
+    "mean_ms": 3.555,
+    "std_ms": 0.25999999999999995,
+    "min_ms": 1.949,
+    "max_ms": 54.94799999999999,
+    "mean_excl_max_ms": 3.529651825912956
+   },
+   "fuser/integrate_color": {
+    "n": 2000,
+    "total_s": 32.511473,
+    "mean_ms": 16.256,
+    "std_ms": 1.117,
+    "min_ms": 11.594,
+    "max_ms": 40.882000000000005,
+    "mean_excl_max_ms": 16.2434172086043
+   },
+   "fuser/mesh": null,
+   "fuser/time_per_frame": {
+    "n": 2000,
+    "total_s": 39.643151,
+    "mean_ms": 19.822,
+    "std_ms": 1.113,
+    "min_ms": 13.719,
+    "max_ms": 69.036,
+    "mean_excl_max_ms": 19.796955977988997
+   }
+  },
+  "outer_wall_loop_s": 272.70880603790283,
+  "outer_wall_per_frame_ms": 136.35440301895142,
+  "outer_wall_note": "glog 'Integrating N frames' -> 'Ran out of data' wall clock / N: whole fuser loop incl. decode, file IO, integrate, incremental mesh (inc mode), always-on flat mesh; under nsys nvtx-only",
+  "mesh_incremental_ms": "not run",
+  "mesh_incremental_partial": {
+   "frames_completed": 1256,
+   "run": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.02_M_inc_nvtx_n2000",
+   "cuda_errors": [
+    "r = 2 at /mnt/data/src/nvblox-v0.0.10/nvblox/include/nvblox/core/internal/impl/unified_vector_impl.h:231 'cudaMallocAsync(&new_buffer, sizeof(T) * capacity, cuda_stream)'. Error string: out of memory."
+   ],
+   "mesh_incremental_ms": {
+    "n": 1251,
+    "mean": 41.902647993605115,
+    "median": 39.054592,
+    "p95": 82.907808,
+    "min": 11.908224,
+    "max": 315.317504,
+    "std": 20.16831770988244
+   },
+   "integrate_e2e_ms": {
+    "n": 1251,
+    "mean": 21.714950548361312,
+    "median": 21.353727999999993,
+    "p95": 25.194543999999993,
+    "min": 15.670016,
+    "max": 258.21724800000004,
+    "std": 7.322484745942114
+   },
+   "note": "incremental-mesh run died with cudaMallocAsync OOM before frame 2000; stats over its completed frames 5..k only, NOT comparable to 2000-frame rows"
+  },
+  "full_mesh_ms": {
+   "builtin_mesh_gpu_integrate": {
+    "n": 1,
+    "total_s": 0.436295,
+    "mean_ms": 436.295,
+    "std_ms": 0.0,
+    "min_ms": 436.295,
+    "max_ms": 436.295,
+    "mean_excl_max_ms": null
+   },
+   "outer_wall_glog_ms": 452.95095443725586,
+   "n": 1,
+   "run_mode": "full_plain",
+   "note": "single cold call after the loop: Mapper::updateColorMesh over ALL blocks (incl. mesh-block + marching-cubes scratch allocation); the fuser cannot repeat it without a rebuild"
+  },
+  "mesh_triangles": 459423,
+  "mesh_vertices": 294912,
+  "tsdf_blocks": 14313,
+  "tsdf_voxels_allocated": 7328256,
+  "tsdf_voxels_observed": 6081870,
+  "color_blocks": 6620,
+  "peak_host_rss_mb": 170.8046875,
+  "getrusage_maxrss_mb": 170.8046875,
+  "sys_used_delta_mb_secondary": 1505.96484375,
+  "command_counts": "/mnt/data/nvblox-build/executables/fuse_replica /mnt/data/datasets/replica/Replica/office0 --voxel_size=0.02 --num_frames=2000 --esdf_frame_subsampling=-1 --visualization=false --timing_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.02_M_full_plain_n2000/timing.txt --mesh_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.02_M_full_plain_n2000/mesh.ply --mesh_frame_subsampling=-1 --map_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.02_M_full_plain_n2000/map.nvblx --projective_integrator_weighting_mode=0 --projective_integrator_max_weight=64 --projective_integrator_truncation_distance_vox=4 --projective_integrator_max_integration_distance_m=7 --mesh_integrator_min_weight=1",
+  "builtin_timers_plain_run": {
+   "fuser/integrate_depth": {
+    "n": 2000,
+    "total_s": 7.103733,
+    "mean_ms": 3.552,
+    "std_ms": 0.255,
+    "min_ms": 1.8920000000000001,
+    "max_ms": 54.771,
+    "mean_excl_max_ms": 3.5262441220610303
+   },
+   "fuser/integrate_color": {
+    "n": 2000,
+    "total_s": 32.087006,
+    "mean_ms": 16.044,
+    "std_ms": 0.766,
+    "min_ms": 11.658,
+    "max_ms": 40.749,
+    "mean_excl_max_ms": 16.03114407203602
+   },
+   "fuser/time_per_frame": {
+    "n": 2000,
+    "total_s": 39.203042,
+    "mean_ms": 19.602,
+    "std_ms": 0.878,
+    "min_ms": 13.559,
+    "max_ms": 68.699,
+    "mean_excl_max_ms": 19.576959979989997
+   }
+  },
+  "peak_device_mb_loop": 965.6202430725098,
+  "peak_device_mb_total": 2093.7672986984253,
+  "device_peak_scope": "loop without per-frame mesh / total incl. post-loop full mesh",
+  "device_memory": {
+   "method": "nsys --cuda-memory-usage: running sum of CUDA allocation - deallocation events (all kinds) + max cudaMallocAsync pool size",
+   "peak_live_all_kinds_mb": 2093.7672986984253,
+   "peak_live_loop_mb": 965.6202430725098,
+   "peak_live_by_kind_mb": {
+    "Pinned": 2.6431922912597656,
+    "Device": 2091.101104736328,
+    "Device Static": 0.02299785614013672,
+    "Managed": 3.814697265625e-06
+   },
+   "final_live_mb": 4.05148983001709,
+   "n_events": 133904,
+   "pool_max_size_mb": 1920.0,
+   "pool_max_utilized_mb": 1891.600772857666
+  },
+  "cuda_trace_mode": "full_cuda",
+  "command_cuda": "/usr/local/bin/nsys profile -t cuda,nvtx -s none --cpuctxsw=none --cuda-memory-usage=true --export=sqlite -f true -o /mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.02_M_full_cuda_n2000/prof /mnt/data/nvblox-build/executables/fuse_replica /mnt/data/datasets/replica/Replica/office0 --voxel_size=0.02 --num_frames=2000 --esdf_frame_subsampling=-1 --visualization=false --timing_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.02_M_full_cuda_n2000/timing.txt --mesh_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.02_M_full_cuda_n2000/mesh.ply --mesh_frame_subsampling=-1 --map_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.02_M_full_cuda_n2000/map.nvblx --projective_integrator_weighting_mode=0 --projective_integrator_max_weight=64 --projective_integrator_truncation_distance_vox=4 --projective_integrator_max_integration_distance_m=7 --mesh_integrator_min_weight=1",
+  "cuda_run_rc": 0,
+  "gpu_proof": {
+   "kernel_launches": 30453,
+   "kernel_gpu_ms_total": 58543.592256,
+   "top_kernels": [
+    {
+     "name": "flatMarchingCubesKernel",
+     "n": 2000,
+     "total_ms": 52499.338272
+    },
+    {
+     "name": "sphereTracingKernel",
+     "n": 2000,
+     "total_ms": 2524.353344
+    },
+    {
+     "name": "integrateBlocksKernel",
+     "n": 4000,
+     "total_ms": 1970.082528
+    },
+    {
+     "name": "checkBlocksInTruncationBand",
+     "n": 2000,
+     "total_ms": 644.291136
+    },
+    {
+     "name": "combinedBlockIndicesInImageKernel",
+     "n": 2000,
+     "total_ms": 592.23056
+    },
+    {
+     "name": "static_kernel",
+     "n": 8181,
+     "total_ms": 148.621472
+    },
+    {
+     "name": "meshBlocksCalculateTableIndicesKernel",
+     "n": 1,
+     "total_ms": 104.288992
+    },
+    {
+     "name": "setColorBlockGray",
+     "n": 10240,
+     "total_ms": 30.39744
+    },
+    {
+     "name": "weldVerticesCubKernel",
+     "n": 1,
+     "total_ms": 19.16848
+    },
+    {
+     "name": "meshBlocksCalculateVerticesKernel",
+     "n": 1,
+     "total_ms": 7.018848
+    }
+   ],
+   "memcpy": [
+    {
+     "kind": "CUDA_MEMCPY_KIND_HTOD",
+     "n": 24216,
+     "bytes": 12150747336,
+     "total_ms": 1001.881984
+    },
+    {
+     "kind": "CUDA_MEMCPY_KIND_DTOH",
+     "n": 31558,
+     "bytes": 650991304,
+     "total_ms": 80.214912
+    },
+    {
+     "kind": "CUDA_MEMCPY_KIND_DTOD",
+     "n": 14446,
+     "bytes": 6682213809,
+     "total_ms": 222.664512
+    }
+   ],
+   "memset": {
+    "n": 38820,
+    "total_ms": 80.391104
+   },
+   "frames": 2000,
+   "h2d_gpu_ms_per_frame": 0.500940992,
+   "h2d_bytes_per_frame": 6075373.668
+  },
+  "cuda_trace_integrate_e2e_ms": {
+   "n": 1995,
+   "mean": 23.011404896240602,
+   "median": 23.0264,
+   "p95": 26.209843199999998,
+   "min": 16.604576,
+   "max": 104.52608000000001,
+   "std": 3.464702873373447
+  },
+  "score_full_mesh": {
+   "accuracy_cm": 1.1869,
+   "completeness_cm": 1.0544,
+   "completion_ratio_pct": 99.863,
+   "precision_pct": 99.82,
+   "f_score_pct": 99.842,
+   "accuracy_surf_cm": 0.1258,
+   "completeness_surf_cm": 0.1274,
+   "completion_ratio_surf_pct": 99.909,
+   "precision_surf_pct": 99.969,
+   "accuracy_median_cm": 1.0893,
+   "completeness_median_cm": 0.9696,
+   "pred_area_m2": 77.9309,
+   "gt_kept_frac": 0.7834,
+   "pred_triangles": 459423,
+   "file": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.02_M_full_plain_n2000/score.json"
+  },
+  "score_incremental_mesh": "not run",
+  "status": "partial",
+  "meta_file": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/meta.json"
+ },
+ {
+  "library": "nvblox",
+  "version": "v0.0.10 (git c457c3fc, clean tree, CMAKE_BUILD_TYPE=Release, sm_87, /mnt/data/nvblox-build/executables/fuse_replica)",
+  "scene": "office0",
+  "voxel_m": 0.02,
+  "row": "R",
+  "block_size_vox": 8,
+  "config": "Row R: nvblox defaults (trunc 4 vox, max_weight 5, weighting_mode 2 inverse_square, max dist 7 m, mesh min_weight 1e-4, mesh every frame); both rows: --esdf_frame_subsampling=-1 (ESDF off), --visualization=false, colour integration every frame; static TSDF mapping (fuser default)",
+  "timer_coverage": "integrate_e2e = fuser/integrate_depth + fuser/integrate_color (MultiMapper::integrateDepth / integrateColor: view calc, CPU-side block allocation, block-pointer transfer, kernels, cudaStreamSynchronize) + convert_h2d = (file_loading/depth_image - file_loading/depth_image/stbi) + (file_loading/color_image - file_loading/color_image/stbi), i.e. nvblox's own CPU u16->float depth scaling + both synchronous image copies to device memory. EXCLUDES: PNG/JPG decode (stbi), file IO, pose parsing, the fuser's per-frame updateFlatColorMesh (visualizer path, always on, reported separately), incremental mesh (reported separately). Per-frame values = NVTX ranges of nvblox's own TimerNvtx (chrono + NVTX, every timed call ends in a stream sync), frames 0-4 discarded, stats over frames 5..N-1.",
+  "not_run": {
+   "mesh_incremental": "not run to 2000 frames: the incremental-mesh run dies with cudaMallocAsync OOM after 1256 frames (Row M and Row R alike) in the same marching-cubes scratch path (MeshIntegrator<ColorVoxel>::meshBlocksGPU). Partial stats over its completed frames are in mesh_incremental_partial. Logs: /mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.02_M_inc_nvtx_n2000/run.log, /mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.02_R_inc_nvtx_n2000/run.log",
+   "score_incremental_mesh": "not run: the incremental-mesh run did not reach frame 2000 (OOM at frame 1256); the 2000-frame full mesh is scored instead (score_full_mesh)"
+  },
+  "sources": {
+   "timing": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.02_R_full_nvtx_n2000",
+   "full_mesh": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.02_R_full_plain_n2000",
+   "counts_host_memory": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.02_R_full_plain_n2000",
+   "cuda_trace": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.02_R_full_cuda_n2000"
+  },
+  "frames_integrated": 2000,
+  "command_timing": "/usr/local/bin/nsys profile -t nvtx -s none --cpuctxsw=none --export=sqlite -f true -o /mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.02_R_full_nvtx_n2000/prof /mnt/data/nvblox-build/executables/fuse_replica /mnt/data/datasets/replica/Replica/office0 --voxel_size=0.02 --num_frames=2000 --esdf_frame_subsampling=-1 --visualization=false --timing_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.02_R_full_nvtx_n2000/timing.txt --mesh_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.02_R_full_nvtx_n2000/mesh.ply --mesh_frame_subsampling=-1 --map_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.02_R_full_nvtx_n2000/map.nvblx",
+  "clock_start": "date: 2026-11-15T09:54:18,951205701+01:00\nnvpmodel: NV Power Mode: MAXN_SUPER 2 \ngpu_freq cur/min/max: 1020000000 1020000000 1020000000 gov=nvhost_podgov\ncpu_freq: 1728000 1728000 1728000 1728000 1728000 1728000 \nemc: n/a-no-root\ntegrastats: 11-15-2026 09:54:19 RAM 2936/7620MB (lfb 12x4MB) SWAP 1026/12002MB (cached 148MB) CPU [16%@1728,6%@1728,9%@1728,9%@1728,7%@1728,8%@1728] GR3D_FREQ 0% cpu@50.281C soc2@48.75C soc0@49.656C gpu@50.687C tj@50.687C soc1@49.156C VDD_IN 6349mW/6349mW VDD_CPU_GPU_CV 1953mW/1953mW VDD_SOC 2312mW/2312mW\nthermal: cpu-thermal=49906 gpu-thermal=50531 soc0-thermal=49562 soc1-thermal=48968 soc2-thermal=48687 tj-thermal=50562 \nloadavg: 2.15 1.60 1.62 1/654 3084316\nfree_m: Mem:            7619        2568        1781           3        3269        4815\nheavy_procs: \n",
+  "clock_end": "date: 2026-11-15T09:57:45,677409345+01:00\nnvpmodel: NV Power Mode: MAXN_SUPER 2 \ngpu_freq cur/min/max: 1020000000 1020000000 1020000000 gov=nvhost_podgov\ncpu_freq: 1728000 1728000 1728000 1728000 1728000 1728000 \nemc: n/a-no-root\ntegrastats: 11-15-2026 09:57:46 RAM 2920/7620MB (lfb 42x2MB) SWAP 1026/12002MB (cached 148MB) CPU [14%@1728,17%@1728,8%@1728,2%@1728,4%@1728,15%@1728] GR3D_FREQ 0% cpu@50.343C soc2@49C soc0@50C gpu@50.906C tj@50.906C soc1@49.468C VDD_IN 6429mW/6429mW VDD_CPU_GPU_CV 1993mW/1993mW VDD_SOC 2312mW/2312mW\nthermal: cpu-thermal=50343 gpu-thermal=51218 soc0-thermal=49937 soc1-thermal=49343 soc2-thermal=49031 tj-thermal=51125 \nloadavg: 1.64 1.76 1.69 1/659 3089530\nfree_m: Mem:            7619        2548        1544           3        3526        4834\nheavy_procs: \n",
+  "waited_for_other_jobs": "",
+  "timing_run_mode": "full_nvtx",
+  "integrate_e2e_ms": {
+   "n": 1995,
+   "mean": 21.220674277694236,
+   "median": 21.141183999999996,
+   "p95": 24.2528032,
+   "min": 15.260768,
+   "max": 70.4328,
+   "std": 2.5279706629451852
+  },
+  "integrate_no_h2d_ms": {
+   "n": 1995,
+   "mean": 19.81222257243108,
+   "median": 19.735168,
+   "p95": 22.8315616,
+   "min": 13.89808,
+   "max": 69.088896,
+   "std": 2.525343354782949
+  },
+  "integrate_depth_ms": {
+   "n": 1995,
+   "mean": 3.5703077213032577,
+   "median": 3.58096,
+   "p95": 4.6524896,
+   "min": 1.915584,
+   "max": 54.736928,
+   "std": 1.465982919646698
+  },
+  "integrate_color_ms": {
+   "n": 1995,
+   "mean": 16.24191485112782,
+   "median": 15.976256,
+   "p95": 18.8926176,
+   "min": 11.744832,
+   "max": 41.52864,
+   "std": 1.8435348229452806
+  },
+  "convert_h2d_ms": {
+   "n": 1995,
+   "mean": 1.408451705263158,
+   "median": 1.3939199999999996,
+   "p95": 1.4953216000000007,
+   "min": 1.3076799999999995,
+   "max": 4.791456,
+   "std": 0.11099485302533493
+  },
+  "tsdf_integrate_ms": {
+   "n": 1995,
+   "mean": 3.1947753062656643,
+   "median": 3.217344,
+   "p95": 4.244191999999999,
+   "min": 1.503552,
+   "max": 51.610912,
+   "std": 1.3961786708349542
+  },
+  "color_integrate_ms": {
+   "n": 1995,
+   "mean": 15.97605496942356,
+   "median": 15.684224,
+   "p95": 18.651184,
+   "min": 11.40992,
+   "max": 39.649376,
+   "std": 1.8327284943361741
+  },
+  "fuser_time_per_frame_ms": {
+   "n": 1995,
+   "mean": 19.821663197994987,
+   "median": 19.751648,
+   "p95": 22.8414592,
+   "min": 13.906816,
+   "max": 69.099072,
+   "std": 2.5254320227867417
+  },
+  "flat_mesh_full_rebuild_per_frame_ms": {
+   "n": 1995,
+   "mean": 28.97762112481203,
+   "median": 30.5328,
+   "p95": 35.5633632,
+   "min": 6.58016,
+   "max": 37.34864,
+   "std": 6.6746895378665805
+  },
+  "file_loading_excluded_ms": {
+   "n": 1995,
+   "mean": 47.416856926315795,
+   "median": 37.69472,
+   "p95": 97.13000959999998,
+   "min": 27.365216,
+   "max": 297.836992,
+   "std": 24.29024192057384
+  },
+  "builtin_timers_timing_run": {
+   "fuser/integrate_depth": {
+    "n": 2000,
+    "total_s": 7.147843,
+    "mean_ms": 3.574,
+    "std_ms": 0.14300000000000002,
+    "min_ms": 1.915,
+    "max_ms": 54.738,
+    "mean_excl_max_ms": 3.548326663331666
+   },
+   "fuser/integrate_color": {
+    "n": 2000,
+    "total_s": 32.485947,
+    "mean_ms": 16.243000000000002,
+    "std_ms": 0.40700000000000003,
+    "min_ms": 11.745000000000001,
+    "max_ms": 41.529999999999994,
+    "mean_excl_max_ms": 16.23032366183092
+   },
+   "fuser/mesh": null,
+   "fuser/time_per_frame": {
+    "n": 2000,
+    "total_s": 39.655141,
+    "mean_ms": 19.828,
+    "std_ms": 0.475,
+    "min_ms": 13.907,
+    "max_ms": 69.101,
+    "mean_excl_max_ms": 19.802921460730364
+   }
+  },
+  "outer_wall_loop_s": 193.86168789863586,
+  "outer_wall_per_frame_ms": 96.93084394931793,
+  "outer_wall_note": "glog 'Integrating N frames' -> 'Ran out of data' wall clock / N: whole fuser loop incl. decode, file IO, integrate, incremental mesh (inc mode), always-on flat mesh; under nsys nvtx-only",
+  "mesh_incremental_ms": "not run",
+  "mesh_incremental_partial": {
+   "frames_completed": 1256,
+   "run": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.02_R_inc_nvtx_n2000",
+   "cuda_errors": [
+    "r = 2 at /mnt/data/src/nvblox-v0.0.10/nvblox/include/nvblox/core/internal/impl/unified_vector_impl.h:231 'cudaMallocAsync(&new_buffer, sizeof(T) * capacity, cuda_stream)'. Error string: out of memory."
+   ],
+   "mesh_incremental_ms": {
+    "n": 1251,
+    "mean": 41.94220956035172,
+    "median": 38.834528,
+    "p95": 84.640096,
+    "min": 11.879168,
+    "max": 365.311936,
+    "std": 20.943090318102808
+   },
+   "integrate_e2e_ms": {
+    "n": 1251,
+    "mean": 21.421999245403676,
+    "median": 21.310336,
+    "p95": 24.840255999999997,
+    "min": 15.306496000000012,
+    "max": 64.47468799999999,
+    "std": 2.7165120338236353
+   },
+   "note": "incremental-mesh run died with cudaMallocAsync OOM before frame 2000; stats over its completed frames 5..k only, NOT comparable to 2000-frame rows"
+  },
+  "full_mesh_ms": {
+   "builtin_mesh_gpu_integrate": {
+    "n": 1,
+    "total_s": 0.453827,
+    "mean_ms": 453.827,
+    "std_ms": 0.0,
+    "min_ms": 453.827,
+    "max_ms": 453.827,
+    "mean_excl_max_ms": null
+   },
+   "outer_wall_glog_ms": 464.6649360656738,
+   "n": 1,
+   "run_mode": "full_plain",
+   "note": "single cold call after the loop: Mapper::updateColorMesh over ALL blocks (incl. mesh-block + marching-cubes scratch allocation); the fuser cannot repeat it without a rebuild"
+  },
+  "mesh_triangles": 462469,
+  "mesh_vertices": 296842,
+  "tsdf_blocks": 14313,
+  "tsdf_voxels_allocated": 7328256,
+  "tsdf_voxels_observed": 6081870,
+  "color_blocks": 6620,
+  "peak_host_rss_mb": 171.12890625,
+  "getrusage_maxrss_mb": 171.12890625,
+  "sys_used_delta_mb_secondary": 1402.453125,
+  "command_counts": "/mnt/data/nvblox-build/executables/fuse_replica /mnt/data/datasets/replica/Replica/office0 --voxel_size=0.02 --num_frames=2000 --esdf_frame_subsampling=-1 --visualization=false --timing_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.02_R_full_plain_n2000/timing.txt --mesh_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.02_R_full_plain_n2000/mesh.ply --mesh_frame_subsampling=-1 --map_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.02_R_full_plain_n2000/map.nvblx",
+  "builtin_timers_plain_run": {
+   "fuser/integrate_depth": {
+    "n": 2000,
+    "total_s": 7.031571,
+    "mean_ms": 3.516,
+    "std_ms": 0.132,
+    "min_ms": 1.9020000000000001,
+    "max_ms": 54.017,
+    "mean_excl_max_ms": 3.490522261130565
+   },
+   "fuser/integrate_color": {
+    "n": 2000,
+    "total_s": 32.160101,
+    "mean_ms": 16.080000000000002,
+    "std_ms": 0.513,
+    "min_ms": 11.492,
+    "max_ms": 40.429,
+    "mean_excl_max_ms": 16.06786993496748
+   },
+   "fuser/time_per_frame": {
+    "n": 2000,
+    "total_s": 39.203843,
+    "mean_ms": 19.602,
+    "std_ms": 0.5289999999999999,
+    "min_ms": 13.690000000000001,
+    "max_ms": 67.98700000000001,
+    "mean_excl_max_ms": 19.577716858429213
+   }
+  },
+  "peak_device_mb_loop": 965.6202430725098,
+  "peak_device_mb_total": 2094.5296955108643,
+  "device_peak_scope": "loop without per-frame mesh / total incl. post-loop full mesh",
+  "device_memory": {
+   "method": "nsys --cuda-memory-usage: running sum of CUDA allocation - deallocation events (all kinds) + max cudaMallocAsync pool size",
+   "peak_live_all_kinds_mb": 2094.5296955108643,
+   "peak_live_loop_mb": 965.6202430725098,
+   "peak_live_by_kind_mb": {
+    "Pinned": 2.6431922912597656,
+    "Device": 2091.863501548767,
+    "Device Static": 0.02299785614013672,
+    "Managed": 3.814697265625e-06
+   },
+   "final_live_mb": 4.05148983001709,
+   "n_events": 134000,
+   "pool_max_size_mb": 1920.0,
+   "pool_max_utilized_mb": 1891.600772857666
+  },
+  "cuda_trace_mode": "full_cuda",
+  "command_cuda": "/usr/local/bin/nsys profile -t cuda,nvtx -s none --cpuctxsw=none --cuda-memory-usage=true --export=sqlite -f true -o /mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.02_R_full_cuda_n2000/prof /mnt/data/nvblox-build/executables/fuse_replica /mnt/data/datasets/replica/Replica/office0 --voxel_size=0.02 --num_frames=2000 --esdf_frame_subsampling=-1 --visualization=false --timing_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.02_R_full_cuda_n2000/timing.txt --mesh_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.02_R_full_cuda_n2000/mesh.ply --mesh_frame_subsampling=-1 --map_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.02_R_full_cuda_n2000/map.nvblx",
+  "cuda_run_rc": 0,
+  "gpu_proof": {
+   "kernel_launches": 30465,
+   "kernel_gpu_ms_total": 58613.917568,
+   "top_kernels": [
+    {
+     "name": "flatMarchingCubesKernel",
+     "n": 2000,
+     "total_ms": 52590.029376
+    },
+    {
+     "name": "sphereTracingKernel",
+     "n": 2000,
+     "total_ms": 2523.217792
+    },
+    {
+     "name": "integrateBlocksKernel",
+     "n": 4000,
+     "total_ms": 1979.621152
+    },
+    {
+     "name": "checkBlocksInTruncationBand",
+     "n": 2000,
+     "total_ms": 644.314336
+    },
+    {
+     "name": "combinedBlockIndicesInImageKernel",
+     "n": 2000,
+     "total_ms": 563.061408
+    },
+    {
+     "name": "static_kernel",
+     "n": 8193,
+     "total_ms": 148.857184
+    },
+    {
+     "name": "meshBlocksCalculateTableIndicesKernel",
+     "n": 1,
+     "total_ms": 104.263424
+    },
+    {
+     "name": "setColorBlockGray",
+     "n": 10240,
+     "total_ms": 30.460096
+    },
+    {
+     "name": "weldVerticesCubKernel",
+     "n": 1,
+     "total_ms": 19.216096
+    },
+    {
+     "name": "meshBlocksCalculateVerticesKernel",
+     "n": 1,
+     "total_ms": 7.089728
+    }
+   ],
+   "memcpy": [
+    {
+     "kind": "CUDA_MEMCPY_KIND_HTOD",
+     "n": 24216,
+     "bytes": 12150628476,
+     "total_ms": 1001.412352
+    },
+    {
+     "kind": "CUDA_MEMCPY_KIND_DTOH",
+     "n": 31558,
+     "bytes": 651079966,
+     "total_ms": 79.962048
+    },
+    {
+     "kind": "CUDA_MEMCPY_KIND_DTOD",
+     "n": 14482,
+     "bytes": 6682265919,
+     "total_ms": 223.678656
+    }
+   ],
+   "memset": {
+    "n": 38820,
+    "total_ms": 79.971136
+   },
+   "frames": 2000,
+   "h2d_gpu_ms_per_frame": 0.500706176,
+   "h2d_bytes_per_frame": 6075314.238
+  },
+  "cuda_trace_integrate_e2e_ms": {
+   "n": 1995,
+   "mean": 24.363106919298247,
+   "median": 22.635647999999996,
+   "p95": 26.437296000000003,
+   "min": 16.485184000000004,
+   "max": 2997.570464,
+   "std": 66.72836706894687
+  },
+  "score_full_mesh": {
+   "accuracy_cm": 1.2032,
+   "completeness_cm": 1.058,
+   "completion_ratio_pct": 99.861,
+   "precision_pct": 99.701,
+   "f_score_pct": 99.781,
+   "accuracy_surf_cm": 0.1457,
+   "completeness_surf_cm": 0.1288,
+   "completion_ratio_surf_pct": 99.915,
+   "precision_surf_pct": 99.87,
+   "accuracy_median_cm": 1.0955,
+   "completeness_median_cm": 0.9725,
+   "pred_area_m2": 78.3517,
+   "gt_kept_frac": 0.7834,
+   "pred_triangles": 462469,
+   "file": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.02_R_full_plain_n2000/score.json"
+  },
+  "score_incremental_mesh": "not run",
+  "status": "partial",
+  "meta_file": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/meta.json"
+ },
+ {
+  "library": "nvblox",
+  "version": "v0.0.10 (git c457c3fc, clean tree, CMAKE_BUILD_TYPE=Release, sm_87, /mnt/data/nvblox-build/executables/fuse_replica)",
+  "scene": "office0",
+  "voxel_m": 0.05,
+  "row": "M",
+  "block_size_vox": 8,
+  "config": "Row M: --projective_integrator_weighting_mode=0 --projective_integrator_max_weight=64 --projective_integrator_truncation_distance_vox=4 --projective_integrator_max_integration_distance_m=7 --mesh_integrator_min_weight=1; both rows: --esdf_frame_subsampling=-1 (ESDF off), --visualization=false, colour integration every frame; static TSDF mapping (fuser default)",
+  "timer_coverage": "integrate_e2e = fuser/integrate_depth + fuser/integrate_color (MultiMapper::integrateDepth / integrateColor: view calc, CPU-side block allocation, block-pointer transfer, kernels, cudaStreamSynchronize) + convert_h2d = (file_loading/depth_image - file_loading/depth_image/stbi) + (file_loading/color_image - file_loading/color_image/stbi), i.e. nvblox's own CPU u16->float depth scaling + both synchronous image copies to device memory. EXCLUDES: PNG/JPG decode (stbi), file IO, pose parsing, the fuser's per-frame updateFlatColorMesh (visualizer path, always on, reported separately), incremental mesh (reported separately). Per-frame values = NVTX ranges of nvblox's own TimerNvtx (chrono + NVTX, every timed call ends in a stream sync), frames 0-4 discarded, stats over frames 5..N-1.",
+  "not_run": {},
+  "sources": {
+   "timing": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.05_M_inc_nvtx_n2000",
+   "full_mesh": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.05_M_full_plain_n2000",
+   "counts_host_memory": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.05_M_full_plain_n2000",
+   "cuda_trace": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.05_M_inc_cuda_n2000"
+  },
+  "frames_integrated": 2000,
+  "command_timing": "/usr/local/bin/nsys profile -t nvtx -s none --cpuctxsw=none --export=sqlite -f true -o /mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.05_M_inc_nvtx_n2000/prof /mnt/data/nvblox-build/executables/fuse_replica /mnt/data/datasets/replica/Replica/office0 --voxel_size=0.05 --num_frames=2000 --esdf_frame_subsampling=-1 --visualization=false --timing_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.05_M_inc_nvtx_n2000/timing.txt --mesh_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.05_M_inc_nvtx_n2000/mesh.ply --mesh_frame_subsampling=1 --projective_integrator_weighting_mode=0 --projective_integrator_max_weight=64 --projective_integrator_truncation_distance_vox=4 --projective_integrator_max_integration_distance_m=7 --mesh_integrator_min_weight=1",
+  "clock_start": "date: 2026-11-15T08:55:12,263201558+01:00\nnvpmodel: NV Power Mode: MAXN_SUPER 2 \ngpu_freq cur/min/max: 1020000000 1020000000 1020000000 gov=nvhost_podgov\ncpu_freq: 1728000 1728000 1728000 1728000 1728000 1728000 \nemc: n/a-no-root\ntegrastats: 11-15-2026 08:55:12 RAM 2769/7620MB (lfb 1x4MB) SWAP 1041/12002MB (cached 150MB) CPU [18%@1728,8%@1728,6%@1728,8%@1728,7%@1728,7%@1728] GR3D_FREQ 0% cpu@47.125C soc2@46.093C soc0@46.906C gpu@48.187C tj@48.187C soc1@46.75C VDD_IN 6090mW/6090mW VDD_CPU_GPU_CV 1748mW/1748mW VDD_SOC 2269mW/2269mW\nthermal: cpu-thermal=47187 gpu-thermal=47781 soc0-thermal=47000 soc1-thermal=46531 soc2-thermal=46093 tj-thermal=47843 \nloadavg: 0.87 0.74 1.26 1/667 2974974\nfree_m: Mem:            7619        2565         638           3        4416        4818\nheavy_procs: \n",
+  "clock_end": "date: 2026-11-15T08:57:51,671450135+01:00\nnvpmodel: NV Power Mode: MAXN_SUPER 2 \ngpu_freq cur/min/max: 1020000000 1020000000 1020000000 gov=nvhost_podgov\ncpu_freq: 1728000 1728000 1728000 1728000 1728000 1728000 \nemc: n/a-no-root\ntegrastats: 11-15-2026 08:57:52 RAM 2780/7620MB (lfb 1x4MB) SWAP 1041/12002MB (cached 149MB) CPU [11%@1728,7%@1728,2%@1728,3%@1728,4%@1728,4%@1728] GR3D_FREQ 0% cpu@48.343C soc2@47.312C soc0@48.187C gpu@49.156C tj@49.156C soc1@47.812C VDD_IN 6150mW/6150mW VDD_CPU_GPU_CV 1794mW/1794mW VDD_SOC 2272mW/2272mW\nthermal: cpu-thermal=48312 gpu-thermal=49281 soc0-thermal=48218 soc1-thermal=47750 soc2-thermal=47343 tj-thermal=49093 \nloadavg: 2.07 1.24 1.36 1/665 2982064\nfree_m: Mem:            7619        2571         534           3        4513        4800\nheavy_procs: \n",
+  "waited_for_other_jobs": "",
+  "timing_run_mode": "inc_nvtx",
+  "integrate_e2e_ms": {
+   "n": 1995,
+   "mean": 6.659146410025063,
+   "median": 6.573184000000004,
+   "p95": 7.3240192,
+   "min": 5.419136000000002,
+   "max": 98.80822400000001,
+   "std": 2.1194274228612957
+  },
+  "integrate_no_h2d_ms": {
+   "n": 1995,
+   "mean": 3.3864675448621555,
+   "median": 3.3247679999999997,
+   "p95": 3.8059264,
+   "min": 2.617568,
+   "max": 96.28720000000001,
+   "std": 2.1057333154183238
+  },
+  "integrate_depth_ms": {
+   "n": 1995,
+   "mean": 1.2789374395989974,
+   "median": 1.209568,
+   "p95": 1.4543552,
+   "min": 0.978912,
+   "max": 93.782176,
+   "std": 2.0768898963521827
+  },
+  "integrate_color_ms": {
+   "n": 1995,
+   "mean": 2.107530105263158,
+   "median": 2.097184,
+   "p95": 2.4472736,
+   "min": 1.599424,
+   "max": 4.860352,
+   "std": 0.23002284408466334
+  },
+  "convert_h2d_ms": {
+   "n": 1995,
+   "mean": 3.2726788651629075,
+   "median": 3.2971199999999996,
+   "p95": 3.6949696000000007,
+   "min": 2.259231999999999,
+   "max": 7.4063680000000005,
+   "std": 0.3736778351630717
+  },
+  "tsdf_integrate_ms": {
+   "n": 1995,
+   "mean": 0.9917649804511278,
+   "median": 0.946688,
+   "p95": 1.0783904,
+   "min": 0.766208,
+   "max": 93.261792,
+   "std": 2.0693939135818487
+  },
+  "color_integrate_ms": {
+   "n": 1995,
+   "mean": 1.95224639197995,
+   "median": 1.950304,
+   "p95": 2.2482784,
+   "min": 1.455744,
+   "max": 4.737056,
+   "std": 0.21014210140227976
+  },
+  "fuser_time_per_frame_ms": {
+   "n": 1995,
+   "mean": 8.718569351378445,
+   "median": 8.592544,
+   "p95": 11.963747199999998,
+   "min": 5.086592,
+   "max": 100.943648,
+   "std": 2.9134949665139804
+  },
+  "flat_mesh_full_rebuild_per_frame_ms": {
+   "n": 1995,
+   "mean": 2.8338155949874686,
+   "median": 2.960096,
+   "p95": 3.3627711999999996,
+   "min": 0.80416,
+   "max": 3.995136,
+   "std": 0.5668513544374602
+  },
+  "file_loading_excluded_ms": {
+   "n": 1995,
+   "mean": 64.27905249523809,
+   "median": 61.490208,
+   "p95": 98.0979392,
+   "min": 34.944608,
+   "max": 179.545888,
+   "std": 17.513213753733183
+  },
+  "builtin_timers_timing_run": {
+   "fuser/integrate_depth": {
+    "n": 2000,
+    "total_s": 2.558622,
+    "mean_ms": 1.279,
+    "std_ms": 0.048,
+    "min_ms": 0.9779999999999999,
+    "max_ms": 93.784,
+    "mean_excl_max_ms": 1.2330355177588797
+   },
+   "fuser/integrate_color": {
+    "n": 2000,
+    "total_s": 4.215679,
+    "mean_ms": 2.108,
+    "std_ms": 0.14100000000000001,
+    "min_ms": 1.599,
+    "max_ms": 4.859999999999999,
+    "mean_excl_max_ms": 2.1064627313656827
+   },
+   "fuser/mesh": {
+    "n": 2000,
+    "total_s": 10.638601,
+    "mean_ms": 5.319,
+    "std_ms": 0.24600000000000002,
+    "min_ms": 2.2659999999999996,
+    "max_ms": 20.364,
+    "mean_excl_max_ms": 5.311774387193597
+   },
+   "fuser/time_per_frame": {
+    "n": 2000,
+    "total_s": 17.43661,
+    "mean_ms": 8.718,
+    "std_ms": 0.32,
+    "min_ms": 5.086,
+    "max_ms": 100.946,
+    "mean_excl_max_ms": 8.67216808404202
+   }
+  },
+  "outer_wall_loop_s": 151.9518439769745,
+  "outer_wall_per_frame_ms": 75.97592198848724,
+  "outer_wall_note": "glog 'Integrating N frames' -> 'Ran out of data' wall clock / N: whole fuser loop incl. decode, file IO, integrate, incremental mesh (inc mode), always-on flat mesh; under nsys nvtx-only",
+  "mesh_incremental_ms": {
+   "n": 1995,
+   "mean": 5.318926387969925,
+   "median": 5.115328,
+   "p95": 8.2431456,
+   "min": 2.263584,
+   "max": 20.36016,
+   "std": 1.890601076427131
+  },
+  "full_mesh_ms": {
+   "builtin_mesh_gpu_integrate": {
+    "n": 1,
+    "total_s": 0.041957,
+    "mean_ms": 41.957,
+    "std_ms": 0.0,
+    "min_ms": 41.957,
+    "max_ms": 41.957,
+    "mean_excl_max_ms": null
+   },
+   "outer_wall_glog_ms": 44.16799545288086,
+   "n": 1,
+   "run_mode": "full_plain",
+   "note": "single cold call after the loop: Mapper::updateColorMesh over ALL blocks (incl. mesh-block + marching-cubes scratch allocation); the fuser cannot repeat it without a rebuild"
+  },
+  "mesh_triangles": 79088,
+  "mesh_vertices": 50210,
+  "tsdf_blocks": 1384,
+  "tsdf_voxels_allocated": 708608,
+  "tsdf_voxels_observed": 478239,
+  "color_blocks": 1035,
+  "peak_host_rss_mb": 122.4140625,
+  "getrusage_maxrss_mb": 124.08203125,
+  "sys_used_delta_mb_secondary": 270.044921875,
+  "command_counts": "/mnt/data/nvblox-build/executables/fuse_replica /mnt/data/datasets/replica/Replica/office0 --voxel_size=0.05 --num_frames=2000 --esdf_frame_subsampling=-1 --visualization=false --timing_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.05_M_full_plain_n2000/timing.txt --mesh_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.05_M_full_plain_n2000/mesh.ply --mesh_frame_subsampling=-1 --map_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.05_M_full_plain_n2000/map.nvblx --projective_integrator_weighting_mode=0 --projective_integrator_max_weight=64 --projective_integrator_truncation_distance_vox=4 --projective_integrator_max_integration_distance_m=7 --mesh_integrator_min_weight=1",
+  "builtin_timers_plain_run": {
+   "fuser/integrate_depth": {
+    "n": 2000,
+    "total_s": 2.392992,
+    "mean_ms": 1.196,
+    "std_ms": 0.038,
+    "min_ms": 0.955,
+    "max_ms": 5.124,
+    "mean_excl_max_ms": 1.1945312656328164
+   },
+   "fuser/integrate_color": {
+    "n": 2000,
+    "total_s": 4.066117,
+    "mean_ms": 2.033,
+    "std_ms": 0.060000000000000005,
+    "min_ms": 1.488,
+    "max_ms": 4.39,
+    "mean_excl_max_ms": 2.03187943971986
+   },
+   "fuser/time_per_frame": {
+    "n": 2000,
+    "total_s": 6.469346,
+    "mean_ms": 3.235,
+    "std_ms": 0.08399999999999999,
+    "min_ms": 2.4699999999999998,
+    "max_ms": 8.951,
+    "mean_excl_max_ms": 3.2318134067033517
+   }
+  },
+  "peak_device_mb_loop": 991.5514488220215,
+  "peak_device_mb_total": 991.5514488220215,
+  "device_peak_scope": "loop incl. per-frame incremental mesh",
+  "device_memory": {
+   "method": "nsys --cuda-memory-usage: running sum of CUDA allocation - deallocation events (all kinds) + max cudaMallocAsync pool size",
+   "peak_live_all_kinds_mb": 991.5514488220215,
+   "peak_live_loop_mb": 991.5514488220215,
+   "peak_live_by_kind_mb": {
+    "Pinned": 0.20792198181152344,
+    "Device": 991.3609218597412,
+    "Device Static": 0.02299785614013672,
+    "Managed": 3.814697265625e-06
+   },
+   "final_live_mb": 3.782923698425293,
+   "n_events": 81829,
+   "pool_max_size_mb": 1024.0,
+   "pool_max_utilized_mb": 945.1775732040405
+  },
+  "cuda_trace_mode": "inc_cuda",
+  "command_cuda": "/usr/local/bin/nsys profile -t cuda,nvtx -s none --cpuctxsw=none --cuda-memory-usage=true --export=sqlite -f true -o /mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.05_M_inc_cuda_n2000/prof /mnt/data/nvblox-build/executables/fuse_replica /mnt/data/datasets/replica/Replica/office0 --voxel_size=0.05 --num_frames=2000 --esdf_frame_subsampling=-1 --visualization=false --timing_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.05_M_inc_cuda_n2000/timing.txt --mesh_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.05_M_inc_cuda_n2000/mesh.ply --mesh_frame_subsampling=1 --projective_integrator_weighting_mode=0 --projective_integrator_max_weight=64 --projective_integrator_truncation_distance_vox=4 --projective_integrator_max_integration_distance_m=7 --mesh_integrator_min_weight=1",
+  "cuda_run_rc": 0,
+  "gpu_proof": {
+   "kernel_launches": 31156,
+   "kernel_gpu_ms_total": 13223.153696,
+   "top_kernels": [
+    {
+     "name": "flatMarchingCubesKernel",
+     "n": 2000,
+     "total_ms": 4758.051584
+    },
+    {
+     "name": "meshBlocksCalculateTableIndicesKernel",
+     "n": 2000,
+     "total_ms": 4604.171232
+    },
+    {
+     "name": "weldVerticesCubKernel",
+     "n": 2000,
+     "total_ms": 1551.010528
+    },
+    {
+     "name": "sphereTracingKernel",
+     "n": 2000,
+     "total_ms": 995.826048
+    },
+    {
+     "name": "meshBlocksCalculateVerticesKernel",
+     "n": 2000,
+     "total_ms": 561.614144
+    },
+    {
+     "name": "integrateBlocksKernel",
+     "n": 4000,
+     "total_ms": 290.412224
+    },
+    {
+     "name": "combinedBlockIndicesInImageKernel",
+     "n": 2000,
+     "total_ms": 259.18512
+    },
+    {
+     "name": "isBlockMeshableKernel",
+     "n": 2000,
+     "total_ms": 64.503616
+    },
+    {
+     "name": "checkBlocksInTruncationBand",
+     "n": 2000,
+     "total_ms": 58.829184
+    },
+    {
+     "name": "static_kernel",
+     "n": 3637,
+     "total_ms": 34.677824
+    }
+   ],
+   "memcpy": [
+    {
+     "kind": "CUDA_MEMCPY_KIND_HTOD",
+     "n": 38358,
+     "bytes": 11609639680,
+     "total_ms": 938.666496
+    },
+    {
+     "kind": "CUDA_MEMCPY_KIND_DTOH",
+     "n": 12841,
+     "bytes": 73666720,
+     "total_ms": 24.831008
+    },
+    {
+     "kind": "CUDA_MEMCPY_KIND_DTOD",
+     "n": 4793,
+     "bytes": 10681194586,
+     "total_ms": 292.805152
+    }
+   ],
+   "memset": {
+    "n": 32480,
+    "total_ms": 602.172384
+   },
+   "frames": 2000,
+   "h2d_gpu_ms_per_frame": 0.46933324800000004,
+   "h2d_bytes_per_frame": 5804819.84
+  },
+  "cuda_trace_integrate_e2e_ms": {
+   "n": 1995,
+   "mean": 7.024272697744361,
+   "median": 6.856032,
+   "p95": 7.784182399999999,
+   "min": 5.705183999999999,
+   "max": 228.93270399999997,
+   "std": 5.001630780149273
+  },
+  "score_full_mesh": {
+   "accuracy_cm": 1.6816,
+   "completeness_cm": 1.3139,
+   "completion_ratio_pct": 98.294,
+   "precision_pct": 95.229,
+   "f_score_pct": 96.737,
+   "accuracy_surf_cm": 0.6594,
+   "completeness_surf_cm": 0.4801,
+   "completion_ratio_surf_pct": 98.62,
+   "precision_surf_pct": 96.314,
+   "accuracy_median_cm": 1.209,
+   "completeness_median_cm": 1.0823,
+   "pred_area_m2": 78.8379,
+   "gt_kept_frac": 0.7834,
+   "pred_triangles": 79088,
+   "file": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.05_M_full_plain_n2000/score.json"
+  },
+  "score_incremental_mesh": {
+   "accuracy_cm": 1.6848,
+   "completeness_cm": 1.3145,
+   "completion_ratio_pct": 98.307,
+   "precision_pct": 95.191,
+   "f_score_pct": 96.724,
+   "accuracy_surf_cm": 0.6643,
+   "completeness_surf_cm": 0.4801,
+   "completion_ratio_surf_pct": 98.62,
+   "precision_surf_pct": 96.281,
+   "accuracy_median_cm": 1.2096,
+   "completeness_median_cm": 1.0794,
+   "pred_area_m2": 78.8379,
+   "gt_kept_frac": 0.7834,
+   "pred_triangles": 79088,
+   "file": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.05_M_inc_nvtx_n2000/score.json"
+  },
+  "status": "ok",
+  "meta_file": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/meta.json"
+ },
+ {
+  "library": "nvblox",
+  "version": "v0.0.10 (git c457c3fc, clean tree, CMAKE_BUILD_TYPE=Release, sm_87, /mnt/data/nvblox-build/executables/fuse_replica)",
+  "scene": "office0",
+  "voxel_m": 0.05,
+  "row": "R",
+  "block_size_vox": 8,
+  "config": "Row R: nvblox defaults (trunc 4 vox, max_weight 5, weighting_mode 2 inverse_square, max dist 7 m, mesh min_weight 1e-4, mesh every frame); both rows: --esdf_frame_subsampling=-1 (ESDF off), --visualization=false, colour integration every frame; static TSDF mapping (fuser default)",
+  "timer_coverage": "integrate_e2e = fuser/integrate_depth + fuser/integrate_color (MultiMapper::integrateDepth / integrateColor: view calc, CPU-side block allocation, block-pointer transfer, kernels, cudaStreamSynchronize) + convert_h2d = (file_loading/depth_image - file_loading/depth_image/stbi) + (file_loading/color_image - file_loading/color_image/stbi), i.e. nvblox's own CPU u16->float depth scaling + both synchronous image copies to device memory. EXCLUDES: PNG/JPG decode (stbi), file IO, pose parsing, the fuser's per-frame updateFlatColorMesh (visualizer path, always on, reported separately), incremental mesh (reported separately). Per-frame values = NVTX ranges of nvblox's own TimerNvtx (chrono + NVTX, every timed call ends in a stream sync), frames 0-4 discarded, stats over frames 5..N-1.",
+  "not_run": {},
+  "sources": {
+   "timing": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.05_R_inc_nvtx_n2000",
+   "full_mesh": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.05_R_full_plain_n2000",
+   "counts_host_memory": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.05_R_full_plain_n2000",
+   "cuda_trace": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.05_R_inc_cuda_n2000"
+  },
+  "frames_integrated": 2000,
+  "command_timing": "/usr/local/bin/nsys profile -t nvtx -s none --cpuctxsw=none --export=sqlite -f true -o /mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.05_R_inc_nvtx_n2000/prof /mnt/data/nvblox-build/executables/fuse_replica /mnt/data/datasets/replica/Replica/office0 --voxel_size=0.05 --num_frames=2000 --esdf_frame_subsampling=-1 --visualization=false --timing_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.05_R_inc_nvtx_n2000/timing.txt --mesh_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.05_R_inc_nvtx_n2000/mesh.ply --mesh_frame_subsampling=1",
+  "clock_start": "date: 2026-11-15T09:02:51,866513972+01:00\nnvpmodel: NV Power Mode: MAXN_SUPER 2 \ngpu_freq cur/min/max: 1020000000 1020000000 1020000000 gov=nvhost_podgov\ncpu_freq: 1728000 1728000 1728000 1728000 1728000 1728000 \nemc: n/a-no-root\ntegrastats: 11-15-2026 09:02:52 RAM 2577/7620MB (lfb 6x4MB) SWAP 1041/12002MB (cached 149MB) CPU [8%@1728,5%@1728,5%@1728,5%@1728,4%@1728,5%@1728] GR3D_FREQ 0% cpu@48.968C soc2@47.812C soc0@48.75C gpu@49.75C tj@49.75C soc1@48.25C VDD_IN 6150mW/6150mW VDD_CPU_GPU_CV 1794mW/1794mW VDD_SOC 2272mW/2272mW\nthermal: cpu-thermal=49000 gpu-thermal=49593 soc0-thermal=48750 soc1-thermal=48250 soc2-thermal=47781 tj-thermal=49750 \nloadavg: 2.02 1.69 1.51 1/664 2994095\nfree_m: Mem:            7619        2371         865           3        4383        5012\nheavy_procs: \n",
+  "clock_end": "date: 2026-11-15T09:05:21,111557135+01:00\nnvpmodel: NV Power Mode: MAXN_SUPER 2 \ngpu_freq cur/min/max: 1020000000 1020000000 1020000000 gov=nvhost_podgov\ncpu_freq: 1728000 1728000 1728000 1728000 1728000 1728000 \nemc: n/a-no-root\ntegrastats: 11-15-2026 09:05:21 RAM 2759/7620MB (lfb 4x4MB) SWAP 1041/12002MB (cached 149MB) CPU [6%@1728,6%@1728,7%@1728,6%@1728,5%@1728,2%@1728] GR3D_FREQ 0% cpu@49.031C soc2@47.906C soc0@49C gpu@49.625C tj@49.625C soc1@48.25C VDD_IN 6190mW/6190mW VDD_CPU_GPU_CV 1834mW/1834mW VDD_SOC 2272mW/2272mW\nthermal: cpu-thermal=49093 gpu-thermal=49937 soc0-thermal=48812 soc1-thermal=48281 soc2-thermal=47812 tj-thermal=49562 \nloadavg: 2.00 1.80 1.58 1/664 3001017\nfree_m: Mem:            7619        2552         523           3        4544        4831\nheavy_procs: \n",
+  "waited_for_other_jobs": "",
+  "timing_run_mode": "inc_nvtx",
+  "integrate_e2e_ms": {
+   "n": 1995,
+   "mean": 6.6165952641604004,
+   "median": 6.6452160000000005,
+   "p95": 7.191999999999997,
+   "min": 5.346560000000002,
+   "max": 20.031424,
+   "std": 0.5507521837149011
+  },
+  "integrate_no_h2d_ms": {
+   "n": 1995,
+   "mean": 3.3226077192982455,
+   "median": 3.330304,
+   "p95": 3.760704,
+   "min": 2.538336,
+   "max": 5.788736,
+   "std": 0.2763258345796459
+  },
+  "integrate_depth_ms": {
+   "n": 1995,
+   "mean": 1.222214720802005,
+   "median": 1.206432,
+   "p95": 1.436768,
+   "min": 0.942368,
+   "max": 1.946304,
+   "std": 0.11931443780918094
+  },
+  "integrate_color_ms": {
+   "n": 1995,
+   "mean": 2.10039299849624,
+   "median": 2.102912,
+   "p95": 2.4240799999999996,
+   "min": 1.570848,
+   "max": 4.152032,
+   "std": 0.19632622708253444
+  },
+  "convert_h2d_ms": {
+   "n": 1995,
+   "mean": 3.2939875448621554,
+   "median": 3.342336000000003,
+   "p95": 3.6658655999999996,
+   "min": 2.3236799999999995,
+   "max": 17.092640000000003,
+   "std": 0.49110480237546666
+  },
+  "tsdf_integrate_ms": {
+   "n": 1995,
+   "mean": 0.9361968280701753,
+   "median": 0.942944,
+   "p95": 1.0625568,
+   "min": 0.741792,
+   "max": 1.61568,
+   "std": 0.08296221926646408
+  },
+  "color_integrate_ms": {
+   "n": 1995,
+   "mean": 1.9456473503759397,
+   "median": 1.949696,
+   "p95": 2.2296031999999997,
+   "min": 1.467104,
+   "max": 3.949632,
+   "std": 0.18121714285768759
+  },
+  "fuser_time_per_frame_ms": {
+   "n": 1995,
+   "mean": 8.62501261152882,
+   "median": 8.568256,
+   "p95": 11.7932512,
+   "min": 4.945632,
+   "max": 23.795936,
+   "std": 2.023430431800559
+  },
+  "flat_mesh_full_rebuild_per_frame_ms": {
+   "n": 1995,
+   "mean": 2.823618422055138,
+   "median": 2.957792,
+   "p95": 3.3468256,
+   "min": 0.801568,
+   "max": 3.94112,
+   "std": 0.5614272102184192
+  },
+  "file_loading_excluded_ms": {
+   "n": 1995,
+   "mean": 59.41765015739349,
+   "median": 57.180864,
+   "p95": 88.40586239999999,
+   "min": 31.308192,
+   "max": 1012.082368,
+   "std": 28.645236796890227
+  },
+  "builtin_timers_timing_run": {
+   "fuser/integrate_depth": {
+    "n": 2000,
+    "total_s": 2.447133,
+    "mean_ms": 1.224,
+    "std_ms": 0.11699999999999999,
+    "min_ms": 0.941,
+    "max_ms": 4.3340000000000005,
+    "mean_excl_max_ms": 1.2220105052526264
+   },
+   "fuser/integrate_color": {
+    "n": 2000,
+    "total_s": 4.204409,
+    "mean_ms": 2.1020000000000003,
+    "std_ms": 0.111,
+    "min_ms": 1.571,
+    "max_ms": 4.152,
+    "mean_excl_max_ms": 2.101179089544772
+   },
+   "fuser/mesh": {
+    "n": 2000,
+    "total_s": 10.584783,
+    "mean_ms": 5.292,
+    "std_ms": 0.264,
+    "min_ms": 2.282,
+    "max_ms": 20.105,
+    "mean_excl_max_ms": 5.284981490745373
+   },
+   "fuser/time_per_frame": {
+    "n": 2000,
+    "total_s": 17.259214,
+    "mean_ms": 8.63,
+    "std_ms": 0.393,
+    "min_ms": 4.946,
+    "max_ms": 23.796999999999997,
+    "mean_excl_max_ms": 8.622019509754878
+   }
+  },
+  "outer_wall_loop_s": 142.06316208839417,
+  "outer_wall_per_frame_ms": 71.03158104419708,
+  "outer_wall_note": "glog 'Integrating N frames' -> 'Ran out of data' wall clock / N: whole fuser loop incl. decode, file IO, integrate, incremental mesh (inc mode), always-on flat mesh; under nsys nvtx-only",
+  "mesh_incremental_ms": {
+   "n": 1995,
+   "mean": 5.28961664962406,
+   "median": 5.108448,
+   "p95": 8.154198399999999,
+   "min": 2.279232,
+   "max": 20.101024,
+   "std": 1.8734617306793568
+  },
+  "full_mesh_ms": {
+   "builtin_mesh_gpu_integrate": {
+    "n": 1,
+    "total_s": 0.042876,
+    "mean_ms": 42.876,
+    "std_ms": 0.0,
+    "min_ms": 42.876,
+    "max_ms": 42.876,
+    "mean_excl_max_ms": null
+   },
+   "outer_wall_glog_ms": 45.057058334350586,
+   "n": 1,
+   "run_mode": "full_plain",
+   "note": "single cold call after the loop: Mapper::updateColorMesh over ALL blocks (incl. mesh-block + marching-cubes scratch allocation); the fuser cannot repeat it without a rebuild"
+  },
+  "mesh_triangles": 79921,
+  "mesh_vertices": 50738,
+  "tsdf_blocks": 1384,
+  "tsdf_voxels_allocated": 708608,
+  "tsdf_voxels_observed": 478239,
+  "color_blocks": 1035,
+  "peak_host_rss_mb": 121.8359375,
+  "getrusage_maxrss_mb": 123.5078125,
+  "sys_used_delta_mb_secondary": 315.41796875,
+  "command_counts": "/mnt/data/nvblox-build/executables/fuse_replica /mnt/data/datasets/replica/Replica/office0 --voxel_size=0.05 --num_frames=2000 --esdf_frame_subsampling=-1 --visualization=false --timing_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.05_R_full_plain_n2000/timing.txt --mesh_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.05_R_full_plain_n2000/mesh.ply --mesh_frame_subsampling=-1 --map_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.05_R_full_plain_n2000/map.nvblx",
+  "builtin_timers_plain_run": {
+   "fuser/integrate_depth": {
+    "n": 2000,
+    "total_s": 2.371033,
+    "mean_ms": 1.186,
+    "std_ms": 0.058,
+    "min_ms": 0.9349999999999999,
+    "max_ms": 4.074999999999999,
+    "mean_excl_max_ms": 1.184071035517759
+   },
+   "fuser/integrate_color": {
+    "n": 2000,
+    "total_s": 4.029508,
+    "mean_ms": 2.0149999999999997,
+    "std_ms": 0.062,
+    "min_ms": 1.536,
+    "max_ms": 3.751,
+    "mean_excl_max_ms": 2.0138854427213606
+   },
+   "fuser/time_per_frame": {
+    "n": 2000,
+    "total_s": 6.411229,
+    "mean_ms": 3.206,
+    "std_ms": 0.1,
+    "min_ms": 2.5260000000000002,
+    "max_ms": 7.335,
+    "mean_excl_max_ms": 3.2035487743871935
+   }
+  },
+  "peak_device_mb_loop": 991.6442003250122,
+  "peak_device_mb_total": 991.6442003250122,
+  "device_peak_scope": "loop incl. per-frame incremental mesh",
+  "device_memory": {
+   "method": "nsys --cuda-memory-usage: running sum of CUDA allocation - deallocation events (all kinds) + max cudaMallocAsync pool size",
+   "peak_live_all_kinds_mb": 991.6442003250122,
+   "peak_live_loop_mb": 991.6442003250122,
+   "peak_live_by_kind_mb": {
+    "Pinned": 0.2078266143798828,
+    "Device": 991.4550170898438,
+    "Device Static": 0.021749496459960938,
+    "Managed": 3.814697265625e-06
+   },
+   "final_live_mb": 3.781675338745117,
+   "n_events": 81799,
+   "pool_max_size_mb": 1024.0,
+   "pool_max_utilized_mb": 945.3647451400757
+  },
+  "cuda_trace_mode": "inc_cuda",
+  "command_cuda": "/usr/local/bin/nsys profile -t cuda,nvtx -s none --cpuctxsw=none --cuda-memory-usage=true --export=sqlite -f true -o /mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.05_R_inc_cuda_n2000/prof /mnt/data/nvblox-build/executables/fuse_replica /mnt/data/datasets/replica/Replica/office0 --voxel_size=0.05 --num_frames=2000 --esdf_frame_subsampling=-1 --visualization=false --timing_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.05_R_inc_cuda_n2000/timing.txt --mesh_output_path=/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.05_R_inc_cuda_n2000/mesh.ply --mesh_frame_subsampling=1",
+  "cuda_run_rc": 0,
+  "gpu_proof": {
+   "kernel_launches": 31158,
+   "kernel_gpu_ms_total": 13239.598368,
+   "top_kernels": [
+    {
+     "name": "flatMarchingCubesKernel",
+     "n": 2000,
+     "total_ms": 4773.105568
+    },
+    {
+     "name": "meshBlocksCalculateTableIndicesKernel",
+     "n": 2000,
+     "total_ms": 4605.12336
+    },
+    {
+     "name": "weldVerticesCubKernel",
+     "n": 2000,
+     "total_ms": 1552.566368
+    },
+    {
+     "name": "sphereTracingKernel",
+     "n": 2000,
+     "total_ms": 997.7936
+    },
+    {
+     "name": "meshBlocksCalculateVerticesKernel",
+     "n": 2000,
+     "total_ms": 563.8896
+    },
+    {
+     "name": "integrateBlocksKernel",
+     "n": 4000,
+     "total_ms": 293.74544
+    },
+    {
+     "name": "combinedBlockIndicesInImageKernel",
+     "n": 2000,
+     "total_ms": 250.724928
+    },
+    {
+     "name": "isBlockMeshableKernel",
+     "n": 2000,
+     "total_ms": 64.23984
+    },
+    {
+     "name": "checkBlocksInTruncationBand",
+     "n": 2000,
+     "total_ms": 58.680032
+    },
+    {
+     "name": "static_kernel",
+     "n": 3639,
+     "total_ms": 34.870176
+    }
+   ],
+   "memcpy": [
+    {
+     "kind": "CUDA_MEMCPY_KIND_HTOD",
+     "n": 38358,
+     "bytes": 11609681560,
+     "total_ms": 934.219232
+    },
+    {
+     "kind": "CUDA_MEMCPY_KIND_DTOH",
+     "n": 12841,
+     "bytes": 73690972,
+     "total_ms": 24.655936
+    },
+    {
+     "kind": "CUDA_MEMCPY_KIND_DTOD",
+     "n": 4799,
+     "bytes": 10681208782,
+     "total_ms": 291.746016
+    }
+   ],
+   "memset": {
+    "n": 32480,
+    "total_ms": 602.329472
+   },
+   "frames": 2000,
+   "h2d_gpu_ms_per_frame": 0.467109616,
+   "h2d_bytes_per_frame": 5804840.78
+  },
+  "cuda_trace_integrate_e2e_ms": {
+   "n": 1995,
+   "mean": 7.1934467208020045,
+   "median": 7.0744640000000025,
+   "p95": 7.827395200000003,
+   "min": 5.8144960000000045,
+   "max": 129.071392,
+   "std": 3.7139169040738857
+  },
+  "score_full_mesh": {
+   "accuracy_cm": 1.7498,
+   "completeness_cm": 1.3137,
+   "completion_ratio_pct": 98.288,
+   "precision_pct": 94.517,
+   "f_score_pct": 96.365,
+   "accuracy_surf_cm": 0.727,
+   "completeness_surf_cm": 0.4734,
+   "completion_ratio_surf_pct": 98.603,
+   "precision_surf_pct": 95.681,
+   "accuracy_median_cm": 1.2157,
+   "completeness_median_cm": 1.0824,
+   "pred_area_m2": 79.6121,
+   "gt_kept_frac": 0.7834,
+   "pred_triangles": 79921,
+   "file": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.05_R_full_plain_n2000/score.json"
+  },
+  "score_incremental_mesh": {
+   "accuracy_cm": 1.7463,
+   "completeness_cm": 1.3131,
+   "completion_ratio_pct": 98.288,
+   "precision_pct": 94.513,
+   "f_score_pct": 96.364,
+   "accuracy_surf_cm": 0.7261,
+   "completeness_surf_cm": 0.4734,
+   "completion_ratio_surf_pct": 98.603,
+   "precision_surf_pct": 95.694,
+   "accuracy_median_cm": 1.2123,
+   "completeness_median_cm": 1.0806,
+   "pred_area_m2": 79.6121,
+   "gt_kept_frac": 0.7834,
+   "pred_triangles": 79921,
+   "file": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/runs/office0_v0.05_R_inc_nvtx_n2000/score.json"
+  },
+  "status": "ok",
+  "meta_file": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/meta.json"
+ }
+]

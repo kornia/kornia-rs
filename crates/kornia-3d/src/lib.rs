@@ -22,6 +22,9 @@ pub mod io;
 /// Linear algebra utilities.
 pub mod linalg;
 
+/// Indexed triangle meshes.
+pub mod mesh;
+
 /// Operations on 3D data processing.
 pub mod ops;
 
@@ -48,6 +51,10 @@ pub mod stereo;
 
 /// 3D transforms algorithms.
 pub mod transforms;
+
+/// Truncated signed distance fields: block-hashed volumes, submaps, multi-sensor and
+/// multi-agent integration, raycasting and marching cubes.
+pub mod tsdf;
 
 /// Voxel grids: sparse hash grid, voxel downsampling and voxel density filtering.
 pub mod voxel;

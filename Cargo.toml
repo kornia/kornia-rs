@@ -36,7 +36,7 @@ candle-transformers = { version = "0.11.0" }
 circular-buffer = "2.0"
 criterion = "0.8"
 ctrlc = "3.5"
-cudarc = "0.19"
+cudarc = "0.19.10"
 env_logger = "0.11"
 faer = "=0.24.4"
 glam = "0.33"
@@ -71,6 +71,7 @@ kornia-oxide-kernels = { path = "crates/kornia-oxide-kernels", version = "0.2.0"
 kornia-tensor = { path = "crates/kornia-tensor", version = "0.2.0" }
 kornia-tensor-ops = { path = "crates/kornia-tensor-ops", version = "0.2.0" }
 kornia-vlm = { path = "crates/kornia-vlm", version = "0.2.0" }
+libm = "0.2"
 log = "0.4"
 minijinja = { version = "2.20", features = ["loader"] }
 nalgebra = "0.35"

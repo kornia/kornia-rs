@@ -1,0 +1,11 @@
+# The TSDF core (device/src/tsdf_core.rs) must produce the same bits on the CPU and in the PTX
+# (kornia-3d TSDF contract, sections 1 and 2). These methods differ between the two or lower to
+# libdevice, so per-element code goes through `F32Ops` and compare+select instead.
+disallowed-methods = [
+  { path = "f32::min", reason = "CPU minNum and the device compare/select differ on +-0 and NaN: use compare+select" },
+  { path = "f32::max", reason = "CPU maxNum and the device compare/select differ on +-0 and NaN: use compare+select" },
+  { path = "f32::clamp", reason = "lowers to min/max: use compare+select" },
+  { path = "f32::mul_add", reason = "fused only where the target has it, libdevice on the device: use F32Ops::fma" },
+  { path = "f32::sqrt", reason = "libdevice on the device: use F32Ops::sqrt" },
+  { path = "f32::floor", reason = "libdevice on the device: use floor_i32" },
+]

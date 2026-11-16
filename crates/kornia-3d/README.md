@@ -21,6 +21,7 @@
     `pose::RansacParams::confidence` accepts an explicit sampling target; `None` preserves each model family's default. Exhaustive struct literals must add `confidence: None` or use `..Default::default()`. Adaptive caps use the all-inlier probability for distinct sampling without replacement.
 *   **PnP Solvers:** Solve for camera pose given 3D-2D point correspondences.
 *   **Depth Images:** `depth::DepthImage` (a `u16` / `f32` depth image with its `meter`, units per metre) with `to_pointcloud`, which unprojects it into a point cloud, and `register` / `register_into`, which reproject it into a second pinhole camera with a z-buffer and an optional splat. CUDA twins (`depth::CudaDepthProjector`, feature `cuda`) give identical results on device-resident depth images.
+*   **TSDF fusion:** `tsdf::TsdfVolume` is a block-hashed truncated signed distance field (8³ or 16³ blocks) that fuses pinhole depth cameras and spherical LiDARs in one step, raycasts depth/vertex/normal maps (also into the RGB-D ICP's `RgbdPyramid`) and extracts marching-cubes meshes (`mesh::TriangleMesh`, full or incremental per dirty block, `io::ply::write_ply_mesh`). `tsdf::SubmapTsdf` keeps one active submap per agent, integrates several agents in `(stamp, agent, sensor)` order and moves submaps rigidly on loop closure. All results are bit-reproducible.
 *   **Voxel Grids and Outlier Filters:** `voxel::VoxelGrid` is a sparse hash voxel grid with 6/18/26-neighbour iteration; `voxel::VoxelView` groups a cloud by voxel without copying it and reduces it to one point per voxel (`first` / `nearest` as a zero-copy `pointcloud::PointCloudView`, `centroids` as a new cloud) in a deterministic key order, `voxel::voxel_downsample` is the one-call owned form; `voxel::remove_sparse_voxels` drops points in voxels with few occupied neighbours. `PointCloud::select` gives a `PointCloudView` of the points at given indices. `pointcloud::filter` has radius and statistical outlier removal, which drop non-finite points (as PCL does), with a reusable `OutlierFilter` scratch for repeated calls. With the `cuda` feature, `voxel::CudaVoxelFilter` downsamples and counts voxel neighbours on the device with results identical to the CPU, in the same order; it needs a GPU of compute capability 7.0 (sm_70) or newer and reports `VoxelError::UnsupportedComputeCapability` on older ones, where the host `VoxelDownsampler` is the fallback.
 
 ### Affine cameras
@@ -101,6 +102,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 *   **`pose`**: Pose estimation algorithms.
 *   **`registration`**: Point cloud alignment (ICP).
 *   **`transforms`**: Geometric transformations for 3D points.
+*   **`tsdf`**: TSDF volumes, submaps, raycasting and marching cubes.
+*   **`mesh`**: Indexed triangle meshes.
 
 ## 💡 Related Examples
 
