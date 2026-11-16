@@ -495,10 +495,7 @@ mod tests {
         let x_final = problem.get_variables()["x"].values[0];
         let final_cost = problem.compute_total_cost().unwrap();
 
-        assert_eq!(
-            result.termination_reason,
-            TerminationReason::MaxIterations
-        );
+        assert_eq!(result.termination_reason, TerminationReason::MaxIterations);
 
         assert!(
             (final_cost - initial_cost).abs() < 1e-5,
