@@ -56,9 +56,17 @@ pub type UmeyamaResult = Result<UmeyamaOutput, UmeyamaError>;
 
 /// Umeyama/Kabsch algorithm without scale.
 /// Returns (R, t, s) where s == 1.0.
+///
+/// # Errors
+///
+/// Returns [`UmeyamaError::MismatchedInputLengths`] if `src` and `dst` differ in
+/// length, and [`UmeyamaError::EmptyInput`] if both are empty.
 pub fn umeyama(src: &[Vec3AF32], dst: &[Vec3AF32]) -> UmeyamaResult {
     if src.len() != dst.len() {
         return Err(UmeyamaError::MismatchedInputLengths);
+    }
+    if src.is_empty() {
+        return Err(UmeyamaError::EmptyInput);
     }
     let n = src.len() as f32;
 
@@ -103,17 +111,20 @@ pub fn umeyama(src: &[Vec3AF32], dst: &[Vec3AF32]) -> UmeyamaResult {
     ]);
 
     let svd = SVD::new(h_na, true, true);
-    let Some(u) = svd.u else {
+    let Some(mut u) = svd.u else {
         return Err(UmeyamaError::SvdU);
     };
     let Some(v_t) = svd.v_t else {
         return Err(UmeyamaError::SvdVT);
     };
 
-    let mut r_na = u * v_t;
-    if r_na.determinant() < 0.0 {
-        r_na.column_mut(2).scale_mut(-1.0);
+    // Reflection correction R = U·diag(1, 1, -1)·Vᵀ: the sign goes on the column
+    // of U for the smallest singular value (column 2, `SVD::new` sorts them
+    // descending). Negating a column of R instead is a rotation, not the optimum.
+    if u.determinant() * v_t.determinant() < 0.0 {
+        u.column_mut(2).scale_mut(-1.0);
     }
+    let r_na = u * v_t;
 
     let r_arr = [
         [r_na[(0, 0)], r_na[(0, 1)], r_na[(0, 2)]],
@@ -2050,5 +2061,49 @@ mod tests {
             }
         }
         Ok(())
+    }
+
+    #[test]
+    fn test_umeyama_reflection_case_matches_kabsch() -> Result<(), UmeyamaError> {
+        // dst mirrored in z plus noise gives det(U·Vᵀ) < 0. The optimum under
+        // det(R) = +1 is U·diag(1, 1, -1)·Vᵀ, which `umeyama_f64` computes.
+        let mirror = Mat3F64::from_diagonal(Vec3F64::new(1.0, 1.0, -1.0));
+        for k in 0..50u64 {
+            let src = random_points(0xB000 + k, 6, 1.0);
+            let mut dst: Vec<Vec3F64> = src.iter().map(|p| mirror * *p).collect();
+            add_noise(0xC000 + k, &mut dst, 0.3);
+            let reference = umeyama_f64(&src, &dst, None, false)?;
+            let cost_f64: f64 = src
+                .iter()
+                .zip(&dst)
+                .map(|(p, d)| (reference.r * *p + reference.t - *d).length().powi(2))
+                .sum();
+
+            let to_f32 = |p: &Vec3F64| Vec3AF32::new(p.x as f32, p.y as f32, p.z as f32);
+            let src32: Vec<Vec3AF32> = src.iter().map(to_f32).collect();
+            let dst32: Vec<Vec3AF32> = dst.iter().map(to_f32).collect();
+            let (r, t, _) = umeyama(&src32, &dst32)?;
+            let cost_f32: f64 = src32
+                .iter()
+                .zip(&dst32)
+                .map(|(p, d)| f64::from((r * *p + t - *d).length()).powi(2))
+                .sum();
+
+            assert!(
+                (r.determinant() - 1.0).abs() < 1e-5,
+                "case {k}: R is not a proper rotation"
+            );
+            assert!(
+                cost_f32 <= cost_f64 * (1.0 + 1e-4) + 1e-6,
+                "case {k}: cost {cost_f32} above the Kabsch optimum {cost_f64}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_umeyama_empty_input_is_an_error() {
+        // n = 0 would divide by zero and hand an all-NaN matrix to the SVD.
+        assert!(matches!(umeyama(&[], &[]), Err(UmeyamaError::EmptyInput)));
     }
 }
