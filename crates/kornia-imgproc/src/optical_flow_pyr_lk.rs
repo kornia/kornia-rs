@@ -244,34 +244,31 @@ fn is_interior_for_lk(cx: f32, cy: f32, cols: usize, rows: usize) -> bool {
 const LK_WIN_SIZE: usize = 21;
 /// Half the side of the 21x21 LK window, in pixels.
 const LK_HALF_WIN: f32 = 10.0;
-/// Side of the 21x21 LK window as `f32`, for the window position checks.
-const LK_WIN: f32 = LK_WIN_SIZE as f32;
 
 /// Whether a 21x21 window centred at `(cx, cy)` still overlaps the level,
-/// with `cv::calcOpticalFlowPyrLK`'s rule: the floored top-left corner must
-/// lie in `[-21, cols)` and `[-21, rows)`. Past that, the point is lost.
-///
-/// A NaN centre fails every comparison, so it counts as outside.
+/// with `cv::calcOpticalFlowPyrLK`'s rule (shared with the u8 tracker): the
+/// floored top-left corner must lie in `[-21, cols)` and `[-21, rows)`. Past
+/// that, the point is lost.
 #[inline(always)]
 fn window_overlaps_level(cx: f32, cy: f32, cols: usize, rows: usize) -> bool {
-    let x = (cx - LK_HALF_WIN).floor();
-    let y = (cy - LK_HALF_WIN).floor();
-    x >= -LK_WIN && x < cols as f32 && y >= -LK_WIN && y < rows as f32
+    fixed_point::corner(
+        [cx - LK_HALF_WIN, cy - LK_HALF_WIN],
+        LK_WIN_SIZE,
+        cols,
+        rows,
+    )
+    .is_some()
 }
+
 /// Highest pyramid level LK tracks on, as `cv::buildOpticalFlowPyramid`
-/// picks it: a level above 0 is used only while it is larger than the 21x21
-/// window in both axes. On a smaller level most of the window is border
-/// padding and the iteration drifts off the image.
+/// picks it (shared with the u8 tracker): a level above 0 is used only while
+/// it is larger than the 21x21 window in both axes. On a smaller level most
+/// of the window is border padding and the iteration drifts off the image.
 fn max_trackable_level(precomputed: &PyrLKPrecomputed, max_level: usize) -> usize {
-    (1..=max_level)
-        .take_while(|&lvl| {
-            precomputed
-                .prev_pyr
-                .get(lvl)
-                .is_some_and(|img| img.cols() > LK_WIN_SIZE && img.rows() > LK_WIN_SIZE)
-        })
-        .last()
-        .unwrap_or(0)
+    precomputed.prev_pyr.first().map_or(0, |level0| {
+        let (_, count) = fixed_point::level_sizes(level0.size(), LK_WIN_SIZE, max_level);
+        (count - 1).min(precomputed.prev_pyr.len() - 1)
+    })
 }
 /// Fused fast-path patch build for the three images sampled at the LK
 /// patch centre: `prev`, `ix`, `iy`. The four bilinear weights are

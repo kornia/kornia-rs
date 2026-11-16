@@ -362,7 +362,7 @@ impl LkPyramidU8 {
 
 /// Level sizes as `cv::buildOpticalFlowPyramid` makes them, on the stack:
 /// `(sizes, count)`, `count <= max_level + 1`.
-fn level_sizes(
+pub(super) fn level_sizes(
     size: ImageSize,
     win: usize,
     max_level: usize,
@@ -880,7 +880,7 @@ fn abs_error(next: &Plane<u8>, j0: usize, w: [i32; 4], win: &Window) -> i64 {
 /// Integer corner of a window whose top-left is at `p`, if the window still
 /// overlaps the level as OpenCV requires (`-win <= floor(p) < size`).
 #[inline]
-fn corner(p: [f32; 2], win: usize, width: usize, height: usize) -> Option<[isize; 2]> {
+pub(super) fn corner(p: [f32; 2], win: usize, width: usize, height: usize) -> Option<[isize; 2]> {
     let (x, y) = (p[0].floor(), p[1].floor());
     let w = win as f32;
     if x < -w || x >= width as f32 || y < -w || y >= height as f32 {
