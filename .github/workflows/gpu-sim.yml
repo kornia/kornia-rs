@@ -81,18 +81,18 @@ jobs:
           die() { echo "::error::$*"; exit 1; }
           grep -q "test result: FAILED" "$log" && die "tests failed"
           for t in load_ptx_many_entries_and_errors all_entries_load concurrent_calls_share_one_module; do
-            grep -q "^test loader::tests::$t \.\.\. ok$" "$log" || die "$t did not pass"
+            grep -q "^test loader::tests::$t \.\.\. ok" "$log" || die "$t did not pass"
           done
           mapfile -t entries < <(sed -n 's/.*\.entry \([A-Za-z0-9_]*\).*/\1/p' crates/kornia-oxide-kernels/kernels.ptx)
           ((${#entries[@]})) || die "no .entry in kernels.ptx"
           for e in "${entries[@]}"; do
             # The NVRTC-fallback test must not stand in for the oxide kernel's.
-            n=$(grep -E "^test .*::${e}[a-z0-9_]*bit_exact \.\.\. ok$" "$log" | grep -vc nvrtc || true)
+            n=$(grep -E "^test .*::${e}[a-z0-9_]*bit_exact \.\.\. ok" "$log" | grep -vc nvrtc || true)
             ((n > 0)) || die "no passing ${e}*bit_exact test"
           done
           for m in 'cuda::tests::' 'cuda_parity::' 'cuda::color::' 'depth::cuda_tests::' 'voxel::cuda_tests::' \
                    'label_boundaries::cuda_tests::' 'preprocess::tests::(cuda_|cpu_close_to_cuda|f16_matches|pitched_surface)'; do
-            n=$(grep -cE "^test .*${m}.* \.\.\. ok$" "$log" || true)
+            n=$(grep -cE "^test .*${m}.* \.\.\. ok" "$log" || true)
             ((n > 0)) || die "no passing test under ${m}"
             echo "${m} ${n} passed"
           done
