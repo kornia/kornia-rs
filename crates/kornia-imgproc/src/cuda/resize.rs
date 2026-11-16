@@ -1464,6 +1464,80 @@ mod tests {
         Ok(())
     }
 
+    /// Regression test for CodeRabbit's "Add regression tests for the
+    /// source-boundary clamp" finding: for a large source and a `2 × 1`
+    /// `AlignCorners` destination, the last destination pixel's clamp must
+    /// land on the last real source pixel, never a pixel past it.
+    ///
+    /// `AlignCorners` has no CPU counterpart to byte-compare against (the
+    /// public `resize()` always uses the half-pixel grid — see its rustdoc),
+    /// so this pins the expected pixel directly: the source buffer is
+    /// allocated one pixel longer than the logical size, with a distinct
+    /// sentinel there, so an unclamped or off-by-one read is unambiguous.
+    /// Checked for bilinear and nearest, `Auto` and forced `Nvrtc`.
+    #[test]
+    fn align_corners_boundary_clamp_stays_on_last_pixel() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let src_w: u32 = (1u32 << 24) + 4;
+        let dst_w: u32 = 2;
+
+        let mut data = vec![0.0f32; (src_w as usize + 1) * 3]; // +1: sentinel slot
+        let last = (src_w - 1) as usize;
+        data[last * 3] = 1.0; // the real last pixel
+        data[src_w as usize * 3] = -1.0; // sentinel, one past the logical source
+
+        let stream = default_stream();
+        let ctx = &stream.context();
+        let d_src = stream.clone_htod(&data)?;
+
+        for which in [ResizeKernel::Auto, ResizeKernel::Nvrtc] {
+            let mut d_dst = stream.alloc_zeros::<f32>(dst_w as usize * 3)?;
+            launch_resize_bilinear_downscale_cuda_with(
+                ctx,
+                &stream,
+                &d_src,
+                &mut d_dst,
+                src_w,
+                1,
+                dst_w,
+                1,
+                PixelMapping::AlignCorners,
+                None,
+                which,
+            )?;
+            let gpu: Vec<f32> = stream.clone_dtoh(&d_dst)?;
+            stream.synchronize()?;
+            assert_eq!(
+                gpu[3], 1.0,
+                "bilinear {which:?}: last destination pixel must clamp to the last \
+                 real source pixel ({last}), not past it"
+            );
+
+            let mut d_dst = stream.alloc_zeros::<f32>(dst_w as usize * 3)?;
+            launch_resize_nearest_downscale_cuda_with(
+                ctx,
+                &stream,
+                &d_src,
+                &mut d_dst,
+                src_w,
+                1,
+                dst_w,
+                1,
+                PixelMapping::AlignCorners,
+                None,
+                which,
+            )?;
+            let gpu: Vec<f32> = stream.clone_dtoh(&d_dst)?;
+            stream.synchronize()?;
+            assert_eq!(
+                gpu[3], 1.0,
+                "nearest {which:?}: last destination pixel must clamp to the last \
+                 real source pixel ({last}), not past it"
+            );
+        }
+        Ok(())
+    }
+
     /// Regression test: a zero `src_w`/`src_h`/`dst_w`/`dst_h` must be
     /// rejected before a kernel is ever selected or launched. Without this,
     /// `check_resize_len` would see `need == 0`, pass against any `dst.len()`,
