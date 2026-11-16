@@ -27,8 +27,14 @@ pub enum TermCriteria {
 /// Clamp coordinates to the image border.
 pub enum BorderMode {
     /// Clamp coordinates to the image border.
+    ///
+    /// A track whose window leaves the image is lost (status 0), with
+    /// `cv::calcOpticalFlowPyrLK`'s rule: the window's floored top-left corner
+    /// must stay within `[-win_size, size)` in both axes.
     Clamp,
     /// Mirror coordinates at the image border.
+    ///
+    /// Tracks are lost past the same limit as [`BorderMode::Clamp`].
     Mirror,
     /// Reject points that fall outside the image border.
     Reject,
@@ -42,6 +48,9 @@ pub struct PyrLKParams {
     /// Currently, only a window size of exactly `21` is supported.
     pub win_size: usize,
     /// Maximum pyramid level (0 means single-scale tracking).
+    ///
+    /// Levels smaller than the window in either axis are not tracked on, as in
+    /// `cv::buildOpticalFlowPyramid`, so small images may use fewer levels.
     pub max_level: usize,
     /// Maximum Gauss-Newton iterations per pyramid level.
     pub max_iter: usize,
@@ -231,6 +240,36 @@ fn is_interior_for_lk(cx: f32, cy: f32, cols: usize, rows: usize) -> bool {
     cx >= 10.0 && cy >= 10.0 && cx < (cols as f32 - 11.0) && cy < (rows as f32 - 11.0)
 }
 
+/// Side of the 21x21 LK window, in pixels.
+const LK_WIN_SIZE: usize = 21;
+/// Half the side of the 21x21 LK window, in pixels.
+const LK_HALF_WIN: f32 = 10.0;
+
+/// Whether a 21x21 window centred at `(cx, cy)` still overlaps the level,
+/// with `cv::calcOpticalFlowPyrLK`'s rule (shared with the u8 tracker): the
+/// floored top-left corner must lie in `[-21, cols)` and `[-21, rows)`. Past
+/// that, the point is lost.
+#[inline(always)]
+fn window_overlaps_level(cx: f32, cy: f32, cols: usize, rows: usize) -> bool {
+    fixed_point::corner(
+        [cx - LK_HALF_WIN, cy - LK_HALF_WIN],
+        LK_WIN_SIZE,
+        cols,
+        rows,
+    )
+    .is_some()
+}
+
+/// Highest pyramid level LK tracks on, as `cv::buildOpticalFlowPyramid`
+/// picks it (shared with the u8 tracker): a level above 0 is used only while
+/// it is larger than the 21x21 window in both axes. On a smaller level most
+/// of the window is border padding and the iteration drifts off the image.
+fn max_trackable_level(precomputed: &PyrLKPrecomputed, max_level: usize) -> usize {
+    precomputed.prev_pyr.first().map_or(0, |level0| {
+        let (_, count) = fixed_point::level_sizes(level0.size(), LK_WIN_SIZE, max_level);
+        (count - 1).min(precomputed.prev_pyr.len() - 1)
+    })
+}
 /// Fused fast-path patch build for the three images sampled at the LK
 /// patch centre: `prev`, `ix`, `iy`. The four bilinear weights are
 /// computed **once** per patch (constant across all 441 pixels) and
@@ -1192,18 +1231,19 @@ fn track_feature(
     const WIN_SIZE: usize = 21;
     const HALF_WIN: i32 = 10;
     const WIN_PIXELS: usize = WIN_SIZE * WIN_SIZE;
+    let max_level = max_trackable_level(precomputed, params.max_level);
 
-    let initial_scale = 1.0 / 2.0_f32.powi(params.max_level as i32);
+    let initial_scale = 1.0 / 2.0_f32.powi(max_level as i32);
     let mut dx = initial_flow.map_or(0.0, |d| d[0] * initial_scale);
     let mut dy = initial_flow.map_or(0.0, |d| d[1] * initial_scale);
     let mut tracking_error = 0.0f32;
 
-    for lvl in (0..=params.max_level).rev() {
+    for lvl in (0..=max_level).rev() {
         let scale = 1.0 / 2.0_f32.powi(lvl as i32);
         let xc = pt[0] * scale;
         let yc = pt[1] * scale;
 
-        if lvl < params.max_level {
+        if lvl < max_level {
             dx *= 2.0;
             dy *= 2.0;
         }
@@ -1228,7 +1268,14 @@ fn track_feature(
         {
             return None;
         }
-
+        // OpenCV's lost-point rule: at a coarser level the point skips this
+        // level and keeps its estimate; at level 0 it is lost.
+        if !window_overlaps_level(xc, yc, prev.cols(), prev.rows()) {
+            if lvl == 0 {
+                return None;
+            }
+            continue;
+        }
         let mut prev_patch = [0.0f32; WIN_PIXELS];
         let mut ix_patch = [0.0f32; WIN_PIXELS];
         let mut iy_patch = [0.0f32; WIN_PIXELS];
@@ -1305,7 +1352,6 @@ fn track_feature(
         for _iter in 0..params.max_iter {
             let xnc = xc + dx;
             let ync = yc + dy;
-
             if params.border_mode == BorderMode::Reject
                 && !(xnc >= hw
                     && ync >= hw
@@ -1313,6 +1359,12 @@ fn track_feature(
                     && ync < (next.rows() as f32 - hw))
             {
                 return None;
+            }
+            if !window_overlaps_level(xnc, ync, next.cols(), next.rows()) {
+                if lvl == 0 {
+                    return None;
+                }
+                break;
             }
 
             let (d, e) = if is_interior_for_lk(xnc, ync, next.cols(), next.rows()) {
@@ -1361,6 +1413,9 @@ fn track_feature(
         if lvl == 0 {
             let ex = pt[0] + dx;
             let ey = pt[1] + dy;
+            if !window_overlaps_level(ex, ey, next.cols(), next.rows()) {
+                return None;
+            }
             let err_sum = if is_interior_for_lk(ex, ey, next.cols(), next.rows()) {
                 error_pass_interior(next, ex, ey, &prev_patch)
             } else if tabulated_clamp(params.border_mode) {
@@ -1762,10 +1817,6 @@ mod tests {
     const OPENCV_BORDER_TOL_PX: f32 = 2.0;
     /// Margin from every border that makes a point interior for the tolerance.
     const OPENCV_INTERIOR_MARGIN_PX: f32 = 9.0;
-    /// `(0, 65.5)` slides off the bottom of the image (to y = 79.6) with
-    /// status 1, where OpenCV stays at y = 64.5. The per-pixel sampler does
-    /// the same, so it is a property of the Clamp border, not of this window.
-    const OPENCV_KNOWN_DIVERGENT: [f32; 2] = [0.0, 65.5];
 
     /// Tracks on, near and away from every border match OpenCV with the same
     /// window, levels and criteria, within the tolerances above.
@@ -1776,11 +1827,14 @@ mod tests {
         let (w, h) = (prev.cols() as f32 - 1.0, prev.rows() as f32 - 1.0);
         let pts: Vec<[f32; 2]> = OPENCV_LK_TRACKS.iter().map(|(p, _)| *p).collect();
         let res = calc_optical_flow_pyr_lk(&prev, &next, &pts, None, &PyrLKParams::default())?;
-        assert!(res.status.iter().all(|&s| s == 1));
+        for ((p, want), (got, &s)) in OPENCV_LK_TRACKS
+            .iter()
+            .zip(res.next_pts.iter().zip(&res.status))
+        {
+            assert_eq!(s, 1, "{p:?} lost at {got:?}, OpenCV tracks it to {want:?}");
+        }
+
         for ((p, want), got) in OPENCV_LK_TRACKS.iter().zip(&res.next_pts) {
-            if *p == OPENCV_KNOWN_DIVERGENT {
-                continue;
-            }
             let margin = p[0].min(p[1]).min(w - p[0]).min(h - p[1]);
             let tol = if margin >= OPENCV_INTERIOR_MARGIN_PX {
                 OPENCV_INTERIOR_TOL_PX
@@ -1790,6 +1844,118 @@ mod tests {
             let d = (got[0] - want[0]).hypot(got[1] - want[1]);
             assert!(d <= tol, "{p:?}: {got:?} vs OpenCV {want:?}");
         }
+        Ok(())
+    }
+
+    /// Parameters for the out-of-image tests: one level, so a guess is used
+    /// as given instead of being scaled down to the coarsest level.
+    fn single_level_params(use_initial_flow: bool) -> PyrLKParams {
+        PyrLKParams {
+            max_level: 0,
+            use_initial_flow,
+            ..PyrLKParams::default()
+        }
+    }
+
+    /// Point tracked by the out-of-image tests (the one from issue #1320).
+    const OFF_IMAGE_START: [f32; 2] = [0.0, 65.5];
+    /// Window centre one pixel past OpenCV's left margin for a 21x21 window:
+    /// `floor(-12 - 10) = -22 < -21`.
+    const GUESS_PAST_LEFT_MARGIN: [f32; 2] = [-12.0, 64.5];
+    /// Window centre past OpenCV's bottom margin on the 72-row test image:
+    /// `floor(83 - 10) = 73 >= 72`.
+    const GUESS_PAST_BOTTOM_MARGIN: [f32; 2] = [0.0, 83.0];
+    /// Point whose own window in `prev` is far outside the left border:
+    /// `floor(-30 - 10) = -40 < -21`.
+    const START_FAR_OFF_IMAGE: [f32; 2] = [-30.0, 30.0];
+
+    /// A Clamp track whose window leaves the image past OpenCV's margin is
+    /// lost (status 0), as in `cv::calcOpticalFlowPyrLK`.
+    #[test]
+    fn clamp_track_past_left_margin_is_lost() -> Result<(), PyrLKError> {
+        let prev = opencv_parity_image(0, 0)?;
+        let next = opencv_parity_image(2, -1)?;
+        let res = calc_optical_flow_pyr_lk(
+            &prev,
+            &next,
+            &[OFF_IMAGE_START],
+            Some(&[GUESS_PAST_LEFT_MARGIN]),
+            &single_level_params(true),
+        )?;
+        assert_eq!(res.status[0], 0, "tracked to {:?}", res.next_pts[0]);
+        Ok(())
+    }
+
+    #[test]
+    fn clamp_guess_past_bottom_margin_is_lost() -> Result<(), PyrLKError> {
+        let prev = opencv_parity_image(0, 0)?;
+        let next = opencv_parity_image(2, -1)?;
+        let res = calc_optical_flow_pyr_lk(
+            &prev,
+            &next,
+            &[OFF_IMAGE_START],
+            Some(&[GUESS_PAST_BOTTOM_MARGIN]),
+            &single_level_params(true),
+        )?;
+        assert_eq!(res.status[0], 0, "tracked to {:?}", res.next_pts[0]);
+        Ok(())
+    }
+
+    /// The window check also runs on the starting point, before iterating.
+    #[test]
+    fn clamp_start_far_off_image_is_lost() -> Result<(), PyrLKError> {
+        let prev = opencv_parity_image(0, 0)?;
+        let next = opencv_parity_image(2, -1)?;
+        let res = calc_optical_flow_pyr_lk(
+            &prev,
+            &next,
+            &[START_FAR_OFF_IMAGE],
+            None,
+            &single_level_params(false),
+        )?;
+        assert_eq!(res.status[0], 0, "tracked to {:?}", res.next_pts[0]);
+        Ok(())
+    }
+
+    /// The probes from issue #1320 on the 96x72 image, against the window
+    /// rule directly (no solver): a 21x21 window centred at x = -11 or
+    /// y = rows + 9 still overlaps the level, x = -12 and y = rows + 11 do not.
+    #[test]
+    fn window_margin_probes() {
+        let (cols, rows) = (96usize, 72usize);
+        let mid = 36.0;
+        let below_last_row = |offset: f32| rows as f32 + offset;
+        // floor(-11 - 10) = -21 >= -21: kept; floor(-12 - 10) = -22: lost.
+        assert!(window_overlaps_level(-11.0, mid, cols, rows));
+        assert!(!window_overlaps_level(-12.0, mid, cols, rows));
+        // floor(81 - 10) = 71 < 72: kept; floor(83 - 10) = 73 >= 72: lost.
+        assert!(window_overlaps_level(mid, below_last_row(9.0), cols, rows));
+        assert!(!window_overlaps_level(
+            mid,
+            below_last_row(11.0),
+            cols,
+            rows
+        ));
+    }
+
+    /// Levels smaller than the 21x21 window are skipped, as
+    /// `cv::buildOpticalFlowPyramid` does: on the 96x72 image, levels 2 (24x18)
+    /// and 3 (12x9) are not tracked on, so `max_level: 3` gives the same tracks
+    /// as `max_level: 1`, bit for bit.
+    #[test]
+    fn levels_smaller_than_window_are_skipped() -> Result<(), PyrLKError> {
+        let prev = opencv_parity_image(0, 0)?;
+        let next = opencv_parity_image(2, -1)?;
+        let pts: Vec<[f32; 2]> = OPENCV_LK_TRACKS.iter().map(|(p, _)| *p).collect();
+        let capped = PyrLKParams {
+            max_level: 1,
+            ..PyrLKParams::default()
+        };
+        let a = calc_optical_flow_pyr_lk(&prev, &next, &pts, None, &PyrLKParams::default())?;
+        let b = calc_optical_flow_pyr_lk(&prev, &next, &pts, None, &capped)?;
+        assert_eq!(a.next_pts, b.next_pts);
+        assert_eq!(a.status, b.status);
+        assert_eq!(a.error, b.error);
         Ok(())
     }
 
