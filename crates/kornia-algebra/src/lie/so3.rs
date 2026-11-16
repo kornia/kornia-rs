@@ -485,6 +485,47 @@ impl SO3F64 {
         }
     }
 
+    /// Return the rotation angle in radians.
+    ///
+    /// Computes the shortest rotation angle corresponding to this rotation element.
+    /// The returned angle is in radians and lies in `[0, π]`, assuming a normalized quaternion.
+    ///
+    /// Uses the numerically stable quaternion-based formula:
+    /// `2.0 * atan2(|v|, |w|)`, where `v` is the quaternion's vector part and `w` is its scalar part.
+    /// This formulation naturally accounts for quaternion double-cover (`q` and `-q`).
+    /// When comparing against the identity rotation, this directly matches the geodesic
+    /// distance formula implemented in Eigen's [`QuaternionBase::angularDistance()`](https://gitlab.com/libeigen/eigen/-/blob/master/Eigen/src/Geometry/Quaternion.h)
+    /// (`2 * atan2(d.vec().norm(), abs(d.w()))`).
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The rotation represented by a normalized quaternion.
+    ///
+    /// # Returns
+    ///
+    /// The shortest rotation angle in radians, in the range `[0, π]`.
+    ///
+    /// # Errors
+    ///
+    /// This method does not return an error.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use kornia_algebra::{SO3F64, Vec3F64};
+    ///
+    /// let rot = SO3F64::IDENTITY;
+    /// assert_eq!(rot.angle(), 0.0);
+    ///
+    /// let rot_90 = SO3F64::exp(Vec3F64::new(std::f64::consts::FRAC_PI_2, 0.0, 0.0));
+    /// assert!((rot_90.angle() - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+    /// ```
+    #[inline]
+    pub fn angle(&self) -> f64 {
+        let v = Vec3F64::new(self.q.x, self.q.y, self.q.z);
+        2.0 * v.length().atan2(self.q.w.abs())
+    }
+
     /// Exponential map so(3) → SO(3): axis-angle vector → rotation.
     pub fn exp(v: Vec3F64) -> Self {
         let theta_sq = v.dot(v);
@@ -1300,5 +1341,63 @@ mod tests_f64 {
         let r = SO3F64::exp(Vec3F64::new(0.4, -0.1, 0.8));
         let r2 = SO3F64::from_matrix(&r.matrix());
         assert_mat_eq(&r.matrix(), &r2.matrix(), 1e-12);
+    }
+
+    #[test]
+    fn angle_identity_returns_zero() {
+        let rot = SO3F64::IDENTITY;
+        assert_eq!(rot.angle(), 0.0);
+    }
+
+    #[test]
+    fn angle_general_rotation() {
+        let angle_expected = 1.2345;
+        let axis = Vec3F64::new(1.0, -2.0, 3.0).normalize();
+        let rot = SO3F64::exp(axis * angle_expected);
+        assert!((rot.angle() - angle_expected).abs() < 1e-12);
+    }
+
+    #[test]
+    fn angle_near_zero_rotation() {
+        let angle_expected = 1e-9;
+        let axis = Vec3F64::new(0.0, 1.0, 0.0);
+        let rot = SO3F64::exp(axis * angle_expected);
+        assert!((rot.angle() - angle_expected).abs() < 1e-15);
+    }
+
+    #[test]
+    fn angle_near_pi_rotation() {
+        let angle_expected = std::f64::consts::PI - 1e-9;
+        let axis = Vec3F64::new(0.0, 0.0, 1.0);
+        let rot = SO3F64::exp(axis * angle_expected);
+        assert!((rot.angle() - angle_expected).abs() < 1e-12);
+    }
+
+    #[test]
+    fn angle_quaternion_sign_invariance() {
+        let axis = Vec3F64::new(1.0, 2.0, -1.0).normalize();
+        let rot = SO3F64::exp(axis * 0.75);
+        let rot_neg = SO3F64 {
+            q: QuatF64::from_xyzw(-rot.q.x, -rot.q.y, -rot.q.z, -rot.q.w),
+        };
+        assert!((rot.angle() - 0.75).abs() < 1e-12);
+        assert_eq!(rot.angle(), rot_neg.angle());
+    }
+
+    #[test]
+    fn angle_known_quaternion_returns_pi_over_two() {
+        // Independent reference test: pins a 90-degree (pi/2) rotation around the Z axis.
+        // A unit quaternion for angle theta about axis u has (u * sin(theta/2), cos(theta/2)).
+        // For theta = pi/2 around Z (0, 0, 1), q = (0, 0, sin(pi/4), cos(pi/4)) = (0, 0, 1/sqrt(2), 1/sqrt(2)).
+        // Directly constructed via QuatF64::from_xyzw rather than generated via SO3F64::exp.
+        let half_sqrt_two = std::f64::consts::FRAC_1_SQRT_2;
+
+        let rot = SO3F64 {
+            q: QuatF64::from_xyzw(0.0, 0.0, half_sqrt_two, half_sqrt_two),
+        };
+
+        // For the identity comparison, Eigen's formula gives:
+        // 2 * atan2(|d.vec()|, |d.w|) = 2 * atan2(1/sqrt(2), 1/sqrt(2)) = pi/2.
+        assert!((rot.angle() - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
     }
 }
