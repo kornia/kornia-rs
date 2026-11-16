@@ -4,8 +4,9 @@
 //! The algorithm is ORB-SLAM3's `Frame::ComputeStereoMatches`, generalised over the
 //! descriptor: for every left keypoint, search the right keypoints on the same row band
 //! and inside the disparity range for the best descriptor match, then refine the
-//! disparity to sub-pixel with a centred sliding-window SAD and a line or parabola fit, and
-//! finally drop matches whose SAD is a gross outlier relative to the median.
+//! disparity to sub-pixel with a sliding-window SAD (centred, as in ORB-SLAM3, unless
+//! [`SadRefine::centred`] is off) and a line or parabola fit, and finally drop matches whose
+//! SAD is a gross outlier relative to the median.
 //!
 //! ```text
 //!   left kp (uL, vL)            right view, rows vL ± band
@@ -88,7 +89,7 @@ pub enum SubPixelFit {
     Parabola,
 }
 
-/// Sub-pixel refinement by centred SAD block matching (ORB-SLAM3's `w` and `L`).
+/// Sub-pixel refinement by SAD block matching (ORB-SLAM3's `w` and `L`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SadRefine {
     /// Patch half-size; the patch is `(2w+1)²`. ORB-SLAM3: 5.
@@ -100,16 +101,22 @@ pub struct SadRefine {
     pub median_factor: Option<f32>,
     /// Sub-pixel fit.
     pub fit: SubPixelFit,
+    /// Subtract each patch's centre pixel before the SAD, `Σ |(L - L_centre) - (R -
+    /// R_centre)|`, so a brightness offset between the cameras cancels (ORB-SLAM3). `false`
+    /// uses the plain `Σ |L - R|`. Default `true`.
+    pub centred: bool,
 }
 
 impl Default for SadRefine {
-    /// Uses an 11×11 patch, a ±5-pixel search, equiangular fitting, and median rejection.
+    /// Uses an 11×11 patch, a ±5-pixel search, centred SAD, equiangular fitting, and median
+    /// rejection.
     fn default() -> Self {
         Self {
             half_window: 5,
             search_range: 5,
             median_factor: Some(1.5 * 1.4),
             fit: SubPixelFit::default(),
+            centred: true,
         }
     }
 }
@@ -702,13 +709,24 @@ impl Best {
     }
 }
 
-/// Centred SAD between the left patch at `(su_l, sv)` and the right patch at
-/// `(su_r, sv)`: `Σ |(L - L_centre) - (R - R_centre)|` (ORB-SLAM3 subtracts each patch's
-/// centre pixel, so a brightness offset between the cameras cancels).
-fn centred_sad(l: &[u8], r: &[u8], stride: usize, su_l: i32, su_r: i32, sv: i32, w: i32) -> i32 {
+/// SAD between the `(2w+1)²` left patch at `(su_l, sv)` and the right patch at
+/// `(su_r, sv)`: `Σ |(L - L_centre) - (R - R_centre)|` when `centred`, else `Σ |L - R|`.
+fn patch_sad(
+    li: &Image<u8, 1>,
+    ri: &Image<u8, 1>,
+    su_l: i32,
+    su_r: i32,
+    sv: i32,
+    w: i32,
+    centred: bool,
+) -> i32 {
+    let (l, r, stride) = (li.as_slice(), ri.as_slice(), li.width());
     let at = |img: &[u8], x: i32, y: i32| img[y as usize * stride + x as usize] as i32;
-    let lc = at(l, su_l, sv);
-    let rc = at(r, su_r, sv);
+    let (lc, rc) = if centred {
+        (at(l, su_l, sv), at(r, su_r, sv))
+    } else {
+        (0, 0)
+    };
     let mut sad = 0i32;
     for dy in -w..=w {
         for dx in -w..=w {
@@ -741,12 +759,11 @@ fn refine_sad(
     if !sad_fits(su_l, sv, su_r0, w, l, iw, ih) {
         return None;
     }
-    let (ls, rs) = (li.as_slice(), ri.as_slice());
     let mut best_sad = i32::MAX;
     let mut best_inc = 0i32;
     let mut sads = [0i32; 2 * MAX_SAD_RADIUS + 1];
     for inc in -l..=l {
-        let sad = centred_sad(ls, rs, li.width(), su_l, su_r0 + inc, sv, w);
+        let sad = patch_sad(li, ri, su_l, su_r0 + inc, sv, w, s.centred);
         sads[(inc + l) as usize] = sad;
         if sad < best_sad {
             best_sad = sad;
@@ -813,7 +830,7 @@ fn median_rejects(sad: i32, th: f32) -> bool {
     sad > 0 && sad as f32 >= th
 }
 
-/// Scales the median centred SAD to obtain the outlier-rejection threshold.
+/// Scales the median SAD to obtain the outlier-rejection threshold.
 fn median_threshold(factor: f32, median: i32) -> f32 {
     factor * median as f32
 }
@@ -1028,6 +1045,109 @@ pub(crate) mod tests {
             out.num_matched(),
             s.lxy.len()
         );
+        Ok(())
+    }
+
+    /// [`pair`] at half contrast with `offset` added to the right view; values stay below
+    /// 255, so nothing saturates.
+    fn halved_pair(d: f32, offset: u8) -> (Image<u8, 1>, Image<u8, 1>) {
+        let (l, r) = pair(d);
+        let half = |img: &Image<u8, 1>, add: u8| {
+            let v = img.as_slice().iter().map(|&p| p / 2 + add).collect();
+            Image::new(img.size(), v).unwrap()
+        };
+        (half(&l, 0), half(&r, offset))
+    }
+
+    fn match_with_sad(
+        centred: bool,
+        li: &Image<u8, 1>,
+        ri: &Image<u8, 1>,
+        s: &Scene,
+    ) -> Result<StereoMatches, StereoMatchError> {
+        let mut c = cfg();
+        c.sad = Some(SadRefine {
+            centred,
+            ..SadRefine::default()
+        });
+        let mut out = StereoMatches::default();
+        StereoMatcher::new(c)?.match_into(
+            std::slice::from_ref(li),
+            std::slice::from_ref(ri),
+            &kps(&s.lxy, &s.lbin, &s.lf, true),
+            &kps(&s.rxy, &s.rbin, &s.rf, true),
+            &mut out,
+        )?;
+        Ok(out)
+    }
+
+    #[test]
+    fn sad_refine_defaults_to_centred() {
+        assert!(SadRefine::default().centred);
+        assert_eq!(cfg().sad.map(|s| s.centred), Some(true));
+    }
+
+    #[test]
+    fn patch_sad_centring_cancels_a_brightness_offset() {
+        let (li, ri) = halved_pair(0.0, 0);
+        let (_, ri_bright) = halved_pair(0.0, 40);
+        let (x, y, w) = (100, 100, 5);
+        assert_eq!(patch_sad(&li, &ri, x, x, y, w, false), 0);
+        assert_eq!(patch_sad(&li, &ri_bright, x, x, y, w, true), 0);
+        assert_eq!(patch_sad(&li, &ri_bright, x, x, y, w, false), 121 * 40);
+    }
+
+    /// A constant brightness offset on the right view leaves the centred result bit for bit
+    /// unchanged and pulls the uncentred SAD off the true disparity.
+    #[test]
+    fn brightness_offset_degrades_only_uncentred_sad() -> Result<(), StereoMatchError> {
+        let d = 7.3f32;
+        let s = scene(d, 7);
+        let (li, ri) = halved_pair(d, 0);
+        let (_, ri_bright) = halved_pair(d, 40);
+        let accurate = |m: &StereoMatches| {
+            (0..s.lxy.len())
+                .filter(|&il| {
+                    m.right_idx[il] >= 0 && (s.lxy[il][0] - m.u_right[il] - d).abs() < 0.25
+                })
+                .count()
+        };
+        let centred = match_with_sad(true, &li, &ri, &s)?;
+        assert_eq!(centred, match_with_sad(true, &li, &ri_bright, &s)?);
+        assert!(accurate(&centred) * 10 >= s.lxy.len() * 7);
+
+        let uncentred = match_with_sad(false, &li, &ri, &s)?;
+        let uncentred_bright = match_with_sad(false, &li, &ri_bright, &s)?;
+        assert!(
+            accurate(&uncentred_bright) * 2 < accurate(&uncentred),
+            "offset: {} accurate, no offset: {}",
+            accurate(&uncentred_bright),
+            accurate(&uncentred)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn centred_and_uncentred_agree_on_integer_disparity_without_offset(
+    ) -> Result<(), StereoMatchError> {
+        let d = 7.3f32;
+        let s = scene(d, 7);
+        let (li, ri) = pair(d);
+        let centred = match_with_sad(true, &li, &ri, &s)?;
+        let uncentred = match_with_sad(false, &li, &ri, &s)?;
+        let mut both = 0;
+        for (il, xy) in s.lxy.iter().enumerate() {
+            if centred.right_idx[il] < 0 || uncentred.right_idx[il] < 0 {
+                continue;
+            }
+            both += 1;
+            assert_eq!(centred.right_idx[il], uncentred.right_idx[il]);
+            let disparity_c = (xy[0] - centred.u_right[il]).round();
+            let disparity_u = (xy[0] - uncentred.u_right[il]).round();
+            assert_eq!(disparity_c, d.round(), "left keypoint {il}");
+            assert_eq!(disparity_u, d.round(), "left keypoint {il}");
+        }
+        assert!(both * 10 >= s.lxy.len() * 7, "{both} of {}", s.lxy.len());
         Ok(())
     }
 
