@@ -1916,6 +1916,28 @@ mod tests {
         assert_eq!(res.status[0], 0, "tracked to {:?}", res.next_pts[0]);
         Ok(())
     }
+
+    /// The probes from issue #1320 on the 96x72 image, against the window
+    /// rule directly (no solver): a 21x21 window centred at x = -11 or
+    /// y = rows + 9 still overlaps the level, x = -12 and y = rows + 11 do not.
+    #[test]
+    fn window_margin_probes() {
+        let (cols, rows) = (96usize, 72usize);
+        let mid = 36.0;
+        let below_last_row = |offset: f32| rows as f32 + offset;
+        // floor(-11 - 10) = -21 >= -21: kept; floor(-12 - 10) = -22: lost.
+        assert!(window_overlaps_level(-11.0, mid, cols, rows));
+        assert!(!window_overlaps_level(-12.0, mid, cols, rows));
+        // floor(81 - 10) = 71 < 72: kept; floor(83 - 10) = 73 >= 72: lost.
+        assert!(window_overlaps_level(mid, below_last_row(9.0), cols, rows));
+        assert!(!window_overlaps_level(
+            mid,
+            below_last_row(11.0),
+            cols,
+            rows
+        ));
+    }
+
     /// Levels smaller than the 21x21 window are skipped, as
     /// `cv::buildOpticalFlowPyramid` does: on the 96x72 image, levels 2 (24x18)
     /// and 3 (12x9) are not tracked on, so `max_level: 3` gives the same tracks
