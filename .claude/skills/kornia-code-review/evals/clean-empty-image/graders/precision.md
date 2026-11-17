@@ -200,9 +200,9 @@ index 66c2e6cf..2a7101d5 100644
 +    /// empty image of the same size.
 +    ///
 +    /// If the image has no foreground pixels, every output value is `1e10`
-+    /// (not `f32::MAX` as in [`distance_transform_vanilla`]). Distances are
-+    /// computed in `f32`, so they are inexact when the width or height exceeds
-+    /// 4096 pixels.
++    /// (not `f32::MAX` as in [`distance_transform_vanilla`]). Squared distances
++    /// are stored as `f32`, so distances above 4096 pixels are rounded to `f32`
++    /// precision.
 +    ///
 +    /// # Errors
 +    ///
@@ -318,4 +318,4 @@ new file mode 100644
 +`DistanceTransformExecutor::execute` and `compute_histogram` return an empty result for zero-width or zero-height images instead of panicking.
 ```
 
-<!-- skill_evals.py sync: 623ba32e7c4be090 -->
+<!-- skill_evals.py sync: bb3dac0395f3d433 -->
