@@ -1222,6 +1222,39 @@ mod tests {
         Ok(())
     }
 
+    /// Entry-named per the cuda-oxide CI gate's naming convention (same as
+    /// `gray_from_rgb_u8_bit_exact` in `cuda::color::gray`): the gate greps
+    /// `kernels.ptx` for `.entry resize_bilinear_downscale_3c` and requires a
+    /// passing, non-nvrtc test named `resize_bilinear_downscale_3c*bit_exact`
+    /// to prove the oxide kernel itself — not the NVRTC fallback — was run.
+    /// `assert_bit_exact` already covers this kernel elsewhere; this gives
+    /// that coverage the name the gate looks for.
+    #[test]
+    fn resize_bilinear_downscale_3c_bit_exact() -> Result<(), Box<dyn std::error::Error>> {
+        for &(src, dst) in &[
+            ((640, 480), (320, 240)),
+            ((320, 240), (640, 480)),
+            ((129, 97), (64, 48)),
+        ] {
+            assert_bit_exact(src, dst, InterpolationMode::Bilinear)?;
+        }
+        Ok(())
+    }
+
+    /// Same CI-gate convention as [`resize_bilinear_downscale_3c_bit_exact`],
+    /// for the `resize_nearest_downscale_3c` oxide entry.
+    #[test]
+    fn resize_nearest_downscale_3c_bit_exact() -> Result<(), Box<dyn std::error::Error>> {
+        for &(src, dst) in &[
+            ((640, 480), (320, 240)),
+            ((320, 240), (640, 480)),
+            ((129, 97), (64, 48)),
+        ] {
+            assert_bit_exact(src, dst, InterpolationMode::Nearest)?;
+        }
+        Ok(())
+    }
+
     /// The NVRTC fallback (pre-sm_75 GPUs, stub PTX, a failed module load),
     /// forced here, matches the CPU path byte for byte — same contract as the
     /// cuda-oxide kernel exercised through `cpu_and_gpu`/`assert_bit_exact`.
