@@ -1,4 +1,4 @@
-//! Fused f32 Harris response without shared memory, compiled through NVRTC.
+//! Fused f32 Harris response on shared-memory tiles, compiled through NVRTC.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -13,24 +13,30 @@ super::define_cuda_error!(
     "CUDA Harris error: {0}"
 );
 
+// Must match TILE_W/TILE_H in HARRIS_SRC.
+const TILE: (u32, u32) = (32, 8);
+
 static HARRIS_SRC: &str = r#"
 // Reference: features/responses.rs, HarrisResponse::compute (f32).
+#define TILE_W 32
+#define TILE_H 8
+// Gradients for the tile plus a 1-pixel halo (window radius 1).
+#define G_W (TILE_W + 2)
+#define G_H (TILE_H + 2)
+
 extern "C" __global__ void harris_fused_f32(
     const float* src, float* dst, int width, int height, float k)
 {
-    const int x = blockIdx.x * blockDim.x + threadIdx.x;
-    const int y = blockIdx.y * blockDim.y + threadIdx.y;
-    if (x < 1 || y < 1 || x >= width - 1 || y >= height - 1)
-        return;
+    __shared__ float s_ix[G_H][G_W];
+    __shared__ float s_iy[G_H][G_W];
 
-    float a = 0.0f, b = 0.0f, c = 0.0f;
-    for (int dy = -1; dy <= 1; ++dy) {
-        for (int dx = -1; dx <= 1; ++dx) {
-            const int nx = x + dx, ny = y + dy;
-            // The CPU leaves gradient products on the image border at zero.
-            if (nx < 1 || ny < 1 || nx >= width - 1 || ny >= height - 1)
-                continue;
-
+    const int tid = threadIdx.y * TILE_W + threadIdx.x;
+    for (int i = tid; i < G_W * G_H; i += TILE_W * TILE_H) {
+        const int r = i / G_W, c = i % G_W;
+        const int nx = blockIdx.x * TILE_W - 1 + c, ny = blockIdx.y * TILE_H - 1 + r;
+        float ix = 0.0f, iy = 0.0f;
+        // The CPU leaves gradient products on the image border at zero.
+        if (nx >= 1 && ny >= 1 && nx < width - 1 && ny < height - 1) {
             const int p = ny * width + nx;
             const float v11 = src[p - width - 1];
             const float v12 = src[p - width];
@@ -40,10 +46,27 @@ extern "C" __global__ void harris_fused_f32(
             const float v31 = src[p + width - 1];
             const float v32 = src[p + width];
             const float v33 = src[p + width + 1];
-            const float ix =
+            ix =
                 (-v33 + v31 - 2.0f * v23 + 2.0f * v21 - v13 + v11) * 0.125f;
-            const float iy =
+            iy =
                 (-v33 - 2.0f * v32 - v31 + v13 + 2.0f * v12 + v11) * 0.125f;
+        }
+        s_ix[r][c] = ix;
+        s_iy[r][c] = iy;
+    }
+    __syncthreads();
+
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x < 1 || y < 1 || x >= width - 1 || y >= height - 1)
+        return;
+
+    // Same summation order as the CPU: row by row, left to right.
+    float a = 0.0f, b = 0.0f, c = 0.0f;
+    for (int dy = 0; dy < 3; ++dy) {
+        for (int dx = 0; dx < 3; ++dx) {
+            const float ix = s_ix[threadIdx.y + dy][threadIdx.x + dx];
+            const float iy = s_iy[threadIdx.y + dy][threadIdx.x + dx];
             a += ix * ix;
             b += iy * iy;
             c += ix * iy;
@@ -69,8 +92,9 @@ fn get_kernel(ctx: &Arc<CudaContext>) -> Result<Arc<CudaKernel>, CudaHarrisError
         return Ok(kernel);
     }
     let kernel = Arc::new(
-        super::try_compile_with_l1(ctx, HARRIS_SRC, "harris_fused_f32")
-            .map_err(CudaHarrisError::Cuda)?,
+        CudaKernel::compile(ctx, HARRIS_SRC, "harris_fused_f32").map_err(|e| {
+            CudaHarrisError::Cuda(format!("failed to compile harris_fused_f32: {e}"))
+        })?,
     );
     let mut map = cache.lock().map_err(lock_error)?;
     if map.len() >= KERNEL_CACHE_CAP && !map.contains_key(&key) {
@@ -149,7 +173,7 @@ pub fn launch_harris_f32(
         .arg(&w)
         .arg(&h)
         .arg(&k)
-        .launch_cfg(super::make_config(w as u32, h as u32, None))
+        .launch_cfg(super::make_config(w as u32, h as u32, Some(TILE)))
         .map_err(|e| CudaHarrisError::Cuda(e.to_string()))
 }
 
