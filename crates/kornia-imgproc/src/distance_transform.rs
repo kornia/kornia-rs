@@ -142,7 +142,8 @@ fn distance_transform_1d(f: &[f32], d: &mut [f32], v: &mut [usize], z: &mut [f64
     for q in 1..n {
         loop {
             let r = v[k];
-            let numerator = (f[q] - f[r]) as f64 + (q - r) as f64 * (q + r) as f64;
+            let numerator =
+                (f[q] as f64 - f[r] as f64) + (q as f64 - r as f64) * (q as f64 + r as f64);
             let denominator = 2.0 * (q as f64 - r as f64);
             let s = numerator / denominator;
 
