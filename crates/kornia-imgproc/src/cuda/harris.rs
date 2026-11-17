@@ -228,6 +228,26 @@ mod tests {
     }
 
     #[test]
+    fn harris_f32_partial_tiles_bit_exact() {
+        // (45, 19): partial second x tile; (31, 7): one partial tile in x and y.
+        let stream = default_stream();
+        for (width, height) in [(45, 19), (31, 7)] {
+            let size = ImageSize { width, height };
+            let src = Image::<f32, 1>::new(size, pattern_f32(width * height)).unwrap();
+            let mut cpu = Image::<f32, 1>::from_size_val(size, -7.0).unwrap();
+            HarrisResponse::new(size).compute(&src, &mut cpu).unwrap();
+            let d_src = stream.clone_htod(src.as_slice()).unwrap();
+            let mut d_dst = stream.clone_htod(&vec![-7.0f32; width * height]).unwrap();
+            let ctx = stream.context();
+            launch_harris_f32(ctx, &stream, &d_src, &mut d_dst, width, height, 0.04).unwrap();
+            let gpu = stream.clone_dtoh(&d_dst).unwrap();
+            stream.synchronize().unwrap();
+            let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+            assert_eq!(bits(&gpu), bits(cpu.as_slice()), "{width}x{height}");
+        }
+    }
+
+    #[test]
     fn harris_rejects_invalid_inputs() {
         let stream = default_stream();
         let src = stream.alloc_zeros::<f32>(4).unwrap();
