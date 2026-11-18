@@ -86,7 +86,10 @@ pub fn from_video_path<const N: usize, P: AsRef<std::path::Path>>(
         .start()
         .map_err(|_| VideoError::VideoReaderStart)?;
 
-    let fps = video_reader.get_fps().map(|f| f.round() as u32);
+    let fps = video_reader
+        .get_fps()
+        .map(|f| f.round() as u32)
+        .filter(|fps| *fps > 0);
     let duration = video_reader.get_duration().map(|d| d.as_secs() as u32);
 
     let mut all_frames = Vec::new();
@@ -116,7 +119,10 @@ pub fn from_video_path<const N: usize, P: AsRef<std::path::Path>>(
     // Read frames until the reader reports end-of-stream or a pipeline error.
     loop {
         match video_reader.try_grab_rgb8() {
-            Ok(Grab::Frame(gst_image)) => {
+            Ok(Grab::Frame {
+                image: gst_image,
+                pts,
+            }) => {
                 use kornia_image::Image;
 
                 // Convert kornia_image::allocator::host_alloc() image to target allocator
@@ -126,18 +132,15 @@ pub fn from_video_path<const N: usize, P: AsRef<std::path::Path>>(
                 let img = Image::<u8, 3>::from_size_slice(size, gst_data)
                     .map_err(VideoError::KorniaImage)?;
 
-                // Get current position for timestamp - using frame index as fallback
-                let current_pos = video_reader
-                    .get_pos()
-                    .map(|d| d.as_nanos() as u64)
-                    .unwrap_or_else(|| {
-                        // Fallback: estimate based on frame index and fps
-                        if let Some(fps_val) = fps {
-                            (frame_idx as u64 * 1_000_000_000) / fps_val as u64
-                        } else {
-                            frame_idx as u64 * 33_333_333 // Assume 30fps
-                        }
-                    });
+                // Use this frame’s PTS; estimate only when the producer supplies none.
+                let current_pos = pts.map(|d| d.as_nanos() as u64).unwrap_or_else(|| {
+                    // Fallback: estimate based on frame index and fps
+                    if let Some(fps_val) = video_reader.get_fps().filter(|fps| *fps > 0.0) {
+                        (frame_idx as f64 * 1_000_000_000.0 / fps_val) as u64
+                    } else {
+                        frame_idx as u64 * 33_333_333 // Assume 30fps
+                    }
+                });
 
                 if collect_all {
                     all_frames.push(img);

@@ -121,6 +121,6 @@ pub fn v4l2_camera_pipeline_description(
     };
 
     Ok(format!(
-        "v4l2src device={device} {video_resize}! videorate ! video/x-raw,framerate={fps}/1 ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink"
+        "v4l2src device={device} {video_resize}! videorate ! video/x-raw,framerate={fps}/1 ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink max-buffers=1 drop=true"
     ))
 }

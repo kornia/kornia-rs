@@ -1,6 +1,6 @@
 //! Cost of `StreamCapture::grab_rgb8` and `grab_gray8` for packed versus padded rows.
 //!
-//! `videotestsrc` runs unsynchronised, so the 5-frame ring buffer stays full, and only the
+//! `videotestsrc` runs unsynchronised with an explicit dropping queue, and only the
 //! grab calls that return a frame are timed. Widths divisible by 4 are tightly packed
 //! and borrowed from the GStreamer buffer (zero-copy). The other widths are padded by
 //! GStreamer's default layout, so each grab copies the rows into a packed image.
@@ -29,7 +29,7 @@ fn bench_grab_layout<const C: usize>(
         let pipeline_desc = format!(
             "videotestsrc pattern=black ! \
              video/x-raw,format={format},width={width},height={height},framerate=30/1 ! \
-             appsink name=sink sync=false"
+             appsink name=sink sync=false max-buffers=5 drop=true"
         );
         let mut capture = StreamCapture::new(&pipeline_desc).expect("Failed to create pipeline");
         capture.start().expect("Failed to start pipeline");

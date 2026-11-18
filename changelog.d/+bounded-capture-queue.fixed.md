@@ -1,0 +1,1 @@
+Slow file consumers receive every decoded frame in order through a bounded appsink queue with backpressure. Closing or dropping capture stops the pipeline directly, releasing a producer blocked on a full queue.

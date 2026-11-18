@@ -270,7 +270,7 @@ fn render_play_controls(app: &mut MyApp, ctx: &eframe::egui::Context) {
                             let seek_time = std::time::Duration::from_secs(app.slider_pos);
 
                             #[allow(unused_must_use)]
-                            video_reader.seek(SeekFlags::TRICKMODE, seek_time);
+                            video_reader.seek(SeekFlags::TRICKMODE | SeekFlags::FLUSH, seek_time);
                         }
                     });
                 }
@@ -336,7 +336,7 @@ fn render_image(app: &mut MyApp, ui: &mut eframe::egui::Ui) {
             {
                 // Don't grab the new image, load the previous one instead
             } else if let Some(image_frame) = match video_reader.try_grab_rgb8() {
-                Ok(Grab::Frame(image)) => Some(image),
+                Ok(Grab::Frame { image, .. }) => Some(image),
                 // Finish only after every buffered frame has been drawn.
                 Ok(Grab::Eos) => {
                     app.finished = true;
