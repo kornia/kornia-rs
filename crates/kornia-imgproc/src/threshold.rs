@@ -407,7 +407,7 @@ pub fn otsu_threshold_from_histogram(
     let sum_total: f64 = hist
         .iter()
         .enumerate()
-        .map(|(i, &count)| (i * count) as f64)
+        .map(|(i, &count)| (i as f64) * (count as f64))
         .sum();
 
     let total = total_pixels as f64;
@@ -428,7 +428,7 @@ pub fn otsu_threshold_from_histogram(
             break;
         }
 
-        sum_background += (t * count) as f64;
+        sum_background += (t as f64) * (count as f64);
         let sum_foreground = sum_total - sum_background;
 
         let mean_background = sum_background / weight_background;
@@ -516,6 +516,7 @@ pub fn otsu_threshold(src: &Image<u8, 1>) -> Result<u8, ImageError> {
 ///
 /// Returns [`ImageError::InvalidImageSize`] if `src` and `dst` dimensions differ.
 /// Returns [`ImageError::ImageDataNotInitialized`] if the image data is empty.
+/// Returns [`ImageError::UnsupportedDevice`] if `src` or `dst` is resident on device (GPU) memory.
 ///
 /// # Example
 ///
@@ -539,6 +540,11 @@ pub fn threshold_otsu(
     dst: &mut Image<u8, 1>,
     max_value: u8,
 ) -> Result<u8, ImageError> {
+    #[cfg(feature = "cuda")]
+    if crate::cuda::dispatch::is_device(src) || crate::cuda::dispatch::is_device(dst) {
+        return Err(ImageError::UnsupportedDevice);
+    }
+
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
             src.cols(),
@@ -819,6 +825,20 @@ mod tests {
 
         let empty_result = super::otsu_threshold_from_histogram(&hist, 0);
         assert!(empty_result.is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_otsu_threshold_large_histogram_no_overflow() -> Result<(), ImageError> {
+        let mut hist = [0usize; 256];
+        // 250 * 20_000_000 = 5_000_000_000, which exceeds 32-bit u32::MAX (4_294_967_295)
+        hist[100] = 10_000_000;
+        hist[200] = 20_000_000;
+        hist[250] = 20_000_000;
+
+        let threshold = super::otsu_threshold_from_histogram(&hist, 50_000_000)?;
+        assert_eq!(threshold, 100);
 
         Ok(())
     }
