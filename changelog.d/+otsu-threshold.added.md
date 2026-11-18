@@ -1,0 +1,1 @@
+Otsu's automatic thresholding (`otsu_threshold` and `threshold_otsu`) for 8-bit grayscale images in `kornia-imgproc::threshold`.

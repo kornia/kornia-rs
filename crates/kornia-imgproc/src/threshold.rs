@@ -365,7 +365,196 @@ where
     Ok(())
 }
 
-// TODO: otsu, triangle
+/// Compute the optimal Otsu threshold value from an intensity histogram.
+///
+/// Implements Otsu's method by finding the threshold that maximizes the between-class
+/// variance of pixel intensities.
+///
+/// # Arguments
+///
+/// * `hist` - The 256-bin histogram of pixel intensity counts.
+/// * `total_pixels` - The total number of pixels in the image.
+///
+/// # Returns
+///
+/// The optimal threshold value in the range `[0, 255]`.
+///
+/// # Errors
+///
+/// Returns [`ImageError::ImageDataNotInitialized`] if `total_pixels` is zero.
+///
+/// # Example
+///
+/// ```
+/// use kornia_imgproc::threshold::otsu_threshold_from_histogram;
+///
+/// let mut hist = [0usize; 256];
+/// hist[50] = 100;
+/// hist[200] = 100;
+///
+/// let threshold = otsu_threshold_from_histogram(&hist, 200).unwrap();
+/// assert_eq!(threshold, 50);
+/// ```
+pub fn otsu_threshold_from_histogram(
+    hist: &[usize; 256],
+    total_pixels: usize,
+) -> Result<u8, ImageError> {
+    if total_pixels == 0 {
+        return Err(ImageError::ImageDataNotInitialized);
+    }
+
+    // Total intensity sum across all bins
+    let sum_total: f64 = hist
+        .iter()
+        .enumerate()
+        .map(|(i, &count)| (i * count) as f64)
+        .sum();
+
+    let total = total_pixels as f64;
+    let mut weight_background: f64 = 0.0;
+    let mut sum_background: f64 = 0.0;
+    let mut max_variance: f64 = -1.0;
+    let mut best_threshold: u8 = 0;
+
+    for (t, &count) in hist.iter().enumerate() {
+        if count == 0 {
+            continue;
+        }
+
+        weight_background += count as f64;
+        let weight_foreground = total - weight_background;
+
+        if weight_foreground <= 0.0 {
+            break;
+        }
+
+        sum_background += (t * count) as f64;
+        let sum_foreground = sum_total - sum_background;
+
+        let mean_background = sum_background / weight_background;
+        let mean_foreground = sum_foreground / weight_foreground;
+
+        let mean_diff = mean_background - mean_foreground;
+        let variance_between = weight_background * weight_foreground * mean_diff * mean_diff;
+
+        if variance_between > max_variance {
+            max_variance = variance_between;
+            best_threshold = t as u8;
+        }
+    }
+
+    if max_variance < 0.0 {
+        // If all pixels share the same intensity, return that intensity.
+        return Ok(hist
+            .iter()
+            .position(|&c| c > 0)
+            .map(|idx| idx as u8)
+            .unwrap_or(0));
+    }
+
+    Ok(best_threshold)
+}
+
+/// Compute the optimal Otsu threshold value for an 8-bit, 1-channel image.
+///
+/// Otsu's method automatically calculates the optimum threshold separating two classes
+/// of pixels (foreground and background) so that their intra-class variance is minimal.
+///
+/// # Arguments
+///
+/// * `src` - The input 8-bit, 1-channel grayscale image.
+///
+/// # Returns
+///
+/// The computed threshold value in the range `[0, 255]`.
+///
+/// # Errors
+///
+/// Returns [`ImageError::ImageDataNotInitialized`] if the image data is empty.
+///
+/// # Example
+///
+/// ```
+/// use kornia_image::{Image, ImageSize};
+/// use kornia_imgproc::threshold::otsu_threshold;
+///
+/// let data = vec![
+///     20u8, 20, 20, 20,
+///     200, 200, 200, 200,
+/// ];
+/// let image = Image::<u8, 1>::new(ImageSize { width: 4, height: 2 }, data).unwrap();
+/// let threshold = otsu_threshold(&image).unwrap();
+/// assert_eq!(threshold, 20);
+/// ```
+pub fn otsu_threshold(src: &Image<u8, 1>) -> Result<u8, ImageError> {
+    if src.numel() == 0 {
+        return Err(ImageError::ImageDataNotInitialized);
+    }
+
+    let mut hist = [0usize; 256];
+    crate::histogram::compute_histogram(src, &mut hist, 256)?;
+
+    otsu_threshold_from_histogram(&hist, src.numel())
+}
+
+/// Apply Otsu's automatic thresholding to an 8-bit, 1-channel image.
+///
+/// Computes the optimal threshold via [`otsu_threshold`] and applies binary thresholding
+/// to `dst`.
+///
+/// # Arguments
+///
+/// * `src` - The input 8-bit, 1-channel grayscale image.
+/// * `dst` - The pre-allocated output 8-bit, 1-channel image. Must match `src` dimensions.
+/// * `max_value` - The maximum value to assign to pixels exceeding the threshold.
+///
+/// # Returns
+///
+/// The optimal threshold value computed by Otsu's method.
+///
+/// # Errors
+///
+/// Returns [`ImageError::InvalidImageSize`] if `src` and `dst` dimensions differ.
+/// Returns [`ImageError::ImageDataNotInitialized`] if the image data is empty.
+///
+/// # Example
+///
+/// ```
+/// use kornia_image::{Image, ImageSize};
+/// use kornia_imgproc::threshold::threshold_otsu;
+///
+/// let data = vec![
+///     10u8, 20, 10, 20,
+///     200, 220, 210, 200,
+/// ];
+/// let image = Image::<u8, 1>::new(ImageSize { width: 4, height: 2 }, data).unwrap();
+/// let mut dst = Image::<u8, 1>::from_size_val(image.size(), 0).unwrap();
+///
+/// let thresh = threshold_otsu(&image, &mut dst, 255).unwrap();
+/// assert_eq!(thresh, 20);
+/// assert_eq!(dst.as_slice(), &[0, 0, 0, 0, 255, 255, 255, 255]);
+/// ```
+pub fn threshold_otsu(
+    src: &Image<u8, 1>,
+    dst: &mut Image<u8, 1>,
+    max_value: u8,
+) -> Result<u8, ImageError> {
+    if src.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.cols(),
+            src.rows(),
+            dst.cols(),
+            dst.rows(),
+        ));
+    }
+
+    let threshold = otsu_threshold(src)?;
+    threshold_binary(src, dst, threshold, max_value)?;
+
+    Ok(threshold)
+}
+
+// TODO: triangle
 
 #[cfg(test)]
 mod tests {
@@ -543,6 +732,93 @@ mod tests {
 
         assert_eq!(thresholded.get([0, 0, 0]), Some(&255));
         assert_eq!(thresholded.get([0, 1, 0]), Some(&0));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_otsu_threshold_bimodal() -> Result<(), ImageError> {
+        let data = vec![10u8, 20, 10, 20, 180, 200, 180, 200];
+        let image = Image::<u8, 1>::new(
+            ImageSize {
+                width: 4,
+                height: 2,
+            },
+            data,
+        )?;
+
+        let threshold = super::otsu_threshold(&image)?;
+        assert_eq!(threshold, 20);
+
+        let mut dst = Image::<u8, 1>::from_size_val(image.size(), 0)?;
+        let computed_thresh = super::threshold_otsu(&image, &mut dst, 255)?;
+        assert_eq!(computed_thresh, 20);
+        assert_eq!(dst.as_slice(), &[0, 0, 0, 0, 255, 255, 255, 255]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_otsu_threshold_uniform() -> Result<(), ImageError> {
+        let data = vec![128u8; 16];
+        let image = Image::<u8, 1>::new(
+            ImageSize {
+                width: 4,
+                height: 4,
+            },
+            data,
+        )?;
+
+        let threshold = super::otsu_threshold(&image)?;
+        assert_eq!(threshold, 128);
+
+        let mut dst = Image::<u8, 1>::from_size_val(image.size(), 0)?;
+        super::threshold_otsu(&image, &mut dst, 255)?;
+        assert_eq!(dst.as_slice(), &[0u8; 16]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_otsu_threshold_size_mismatch() -> Result<(), ImageError> {
+        let image = Image::<u8, 1>::new(
+            ImageSize {
+                width: 2,
+                height: 2,
+            },
+            vec![10, 20, 180, 200],
+        )?;
+        let mut dst = Image::<u8, 1>::from_size_val(
+            ImageSize {
+                width: 3,
+                height: 3,
+            },
+            0,
+        )?;
+
+        let result = super::threshold_otsu(&image, &mut dst, 255);
+        assert!(result.is_err());
+        match result {
+            Err(ImageError::InvalidImageSize(2, 2, 3, 3)) => (),
+            _ => panic!("Expected InvalidImageSize error"),
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_otsu_threshold_from_histogram() -> Result<(), ImageError> {
+        let mut hist = [0usize; 256];
+        hist[40] = 50;
+        hist[50] = 50;
+        hist[180] = 50;
+        hist[190] = 50;
+
+        let threshold = super::otsu_threshold_from_histogram(&hist, 200)?;
+        assert_eq!(threshold, 50);
+
+        let empty_result = super::otsu_threshold_from_histogram(&hist, 0);
+        assert!(empty_result.is_err());
 
         Ok(())
     }
