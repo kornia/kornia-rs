@@ -82,7 +82,8 @@ fn frame_position_ns(
     anchor_position.saturating_add(elapsed)
 }
 
-/// Start the sampling schedule at the first buffer PTS, which need not be zero.
+/// Start the schedule at the first frame position, which may be estimated.
+/// After a gap, skip scheduled slots that have already elapsed.
 #[cfg(feature = "gstreamer")]
 fn take_fps_frame(current_time: f64, next_time: &mut Option<f64>, interval: f64) -> bool {
     if interval == 0.0 {
@@ -90,7 +91,9 @@ fn take_fps_frame(current_time: f64, next_time: &mut Option<f64>, interval: f64)
     }
     let threshold = next_time.get_or_insert(current_time);
     if current_time >= *threshold {
-        *threshold += interval;
+        let slots = ((current_time - *threshold) / interval).floor() + 1.0;
+        // Keep the next threshold strictly ahead even if floating-point rounding lands on this frame.
+        *threshold = (*threshold + slots * interval).max(current_time.next_up());
         true
     } else {
         false
@@ -109,6 +112,10 @@ pub fn from_video_path<P: AsRef<std::path::Path>>(
 
 #[cfg(feature = "gstreamer")]
 /// Loads a video file and samples frames according to `sampling`.
+///
+/// Returned timestamps are whole seconds on the frame PTS timeline, truncated from
+/// nanoseconds. Missing PTS values are estimated from the latest observed PTS and
+/// frame rate (30 FPS if unknown). Before any PTS is observed, estimates start at zero.
 pub fn from_video_path<const N: usize, P: AsRef<std::path::Path>>(
     path: P,
     sampling: VideoSamplingMethod,
@@ -388,6 +395,21 @@ mod tests {
                 .filter(|time| take_fps_frame(*time, &mut next_time, 1.0))
                 .collect();
             assert_eq!(selected, [origin, origin + 1.0, origin + 2.0]);
+        }
+    }
+
+    #[test]
+    fn fps_sampling_skips_missed_slots_after_timestamp_gap() {
+        for times in [
+            [0.0, 10.4, 10.433, 10.467, 10.999, 11.0, 12.0],
+            [10.0, 15.4, 15.433, 15.467, 15.999, 16.0, 17.0],
+        ] {
+            let mut next_time = None;
+            let selected: Vec<_> = times
+                .into_iter()
+                .filter(|time| take_fps_frame(*time, &mut next_time, 1.0))
+                .collect();
+            assert_eq!(selected, [times[0], times[1], times[5], times[6]]);
         }
     }
 
