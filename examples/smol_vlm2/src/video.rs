@@ -62,6 +62,26 @@ pub enum VideoSamplingMethod {
     Indices(Vec<usize>),
 }
 
+/// Estimate missing timestamps relative to the most recent observed PTS.
+#[cfg(feature = "gstreamer")]
+fn frame_position_ns(
+    pts: Option<std::time::Duration>,
+    frame_idx: usize,
+    last_pts: &mut Option<(usize, u64)>,
+    negotiated_fps: impl FnOnce() -> Option<f64>,
+) -> u64 {
+    if let Some(pts) = pts {
+        let position = pts.as_nanos() as u64;
+        *last_pts = Some((frame_idx, position));
+        return position;
+    }
+
+    let (anchor_idx, anchor_position) = last_pts.unwrap_or((0, 0));
+    let fps = negotiated_fps().filter(|fps| *fps > 0.0).unwrap_or(30.0);
+    let elapsed = ((frame_idx - anchor_idx) as f64 * 1_000_000_000.0 / fps) as u64;
+    anchor_position.saturating_add(elapsed)
+}
+
 /// Start the sampling schedule at the first buffer PTS, which need not be zero.
 #[cfg(feature = "gstreamer")]
 fn take_fps_frame(current_time: f64, next_time: &mut Option<f64>, interval: f64) -> bool {
@@ -112,6 +132,7 @@ pub fn from_video_path<const N: usize, P: AsRef<std::path::Path>>(
     let mut frames = Vec::new();
     let mut frame_pts = Vec::new();
     let mut frame_idx = 0;
+    let mut last_pts = None;
     let mut indices_set = std::collections::HashSet::new();
     let mut fps_next_time = None;
     let mut fps_interval = 0.0;
@@ -147,15 +168,8 @@ pub fn from_video_path<const N: usize, P: AsRef<std::path::Path>>(
                 let img = Image::<u8, 3>::from_size_slice(size, gst_data)
                     .map_err(VideoError::KorniaImage)?;
 
-                // Use this frame’s PTS; estimate only when the producer supplies none.
-                let current_pos = pts.map(|d| d.as_nanos() as u64).unwrap_or_else(|| {
-                    // Fallback: estimate based on frame index and fps
-                    if let Some(fps_val) = video_reader.get_fps().filter(|fps| *fps > 0.0) {
-                        (frame_idx as f64 * 1_000_000_000.0 / fps_val) as u64
-                    } else {
-                        frame_idx as u64 * 33_333_333 // Assume 30fps
-                    }
-                });
+                let current_pos =
+                    frame_position_ns(pts, frame_idx, &mut last_pts, || video_reader.get_fps());
 
                 if collect_all {
                     all_frames.push(img);
@@ -335,7 +349,34 @@ pub fn from_video_path<const N: usize, P: AsRef<std::path::Path>>(
 
 #[cfg(all(test, feature = "gstreamer"))]
 mod tests {
-    use super::take_fps_frame;
+    use super::{frame_position_ns, take_fps_frame};
+    use std::time::Duration;
+
+    #[test]
+    fn fps_sampling_keeps_missing_pts_on_the_observed_timeline() {
+        let mut last_pts = None;
+        let mut next_time = None;
+        let selected: Vec<_> = (0..=60)
+            .filter_map(|index| {
+                let pts = match index {
+                    0 => Some(Duration::from_secs(10)),
+                    30 => Some(Duration::from_millis(11_250)),
+                    _ => None,
+                };
+                let position = frame_position_ns(pts, index, &mut last_pts, || Some(30.0));
+                take_fps_frame(position as f64 / 1_000_000_000.0, &mut next_time, 1.0)
+                    .then_some((index, position))
+            })
+            .collect();
+        assert_eq!(
+            selected,
+            [
+                (0, 10_000_000_000),
+                (30, 11_250_000_000),
+                (53, 12_016_666_666)
+            ]
+        );
+    }
 
     #[test]
     fn fps_sampling_starts_at_first_pts() {
