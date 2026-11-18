@@ -165,6 +165,10 @@ pub fn launch_harris_f32(
             "buffers and stream must belong to ctx".into(),
         ));
     }
+    // No interior pixels: the kernel would write nothing.
+    if width == 2 || height == 2 {
+        return Ok(());
+    }
     let w = width as i32;
     let h = height as i32;
     let kernel = get_kernel(ctx)?;
