@@ -62,6 +62,21 @@ pub enum VideoSamplingMethod {
     Indices(Vec<usize>),
 }
 
+/// Start the sampling schedule at the first buffer PTS, which need not be zero.
+#[cfg(feature = "gstreamer")]
+fn take_fps_frame(current_time: f64, next_time: &mut Option<f64>, interval: f64) -> bool {
+    if interval == 0.0 {
+        return true;
+    }
+    let threshold = next_time.get_or_insert(current_time);
+    if current_time >= *threshold {
+        *threshold += interval;
+        true
+    } else {
+        false
+    }
+}
+
 #[cfg(not(feature = "gstreamer"))]
 #[allow(dead_code)]
 /// Fallback that panics when the `gstreamer` feature is disabled.
@@ -98,7 +113,7 @@ pub fn from_video_path<const N: usize, P: AsRef<std::path::Path>>(
     let mut frame_pts = Vec::new();
     let mut frame_idx = 0;
     let mut indices_set = std::collections::HashSet::new();
-    let mut fps_next_time = 0.0;
+    let mut fps_next_time = None;
     let mut fps_interval = 0.0;
 
     // Precompute for Indices
@@ -154,15 +169,11 @@ pub fn from_video_path<const N: usize, P: AsRef<std::path::Path>>(
                     let mut take = false;
                     match &sampling {
                         VideoSamplingMethod::Fps(_) => {
-                            if fps_interval == 0.0 {
-                                take = true;
-                            } else {
-                                let current_time = current_pos as f64 / 1_000_000_000.0;
-                                if current_time >= fps_next_time {
-                                    take = true;
-                                    fps_next_time += fps_interval;
-                                }
-                            }
+                            take = take_fps_frame(
+                                current_pos as f64 / 1_000_000_000.0,
+                                &mut fps_next_time,
+                                fps_interval,
+                            );
                         }
                         VideoSamplingMethod::FirstN(n) => {
                             if frames.len() < *n && frames.len() < N {
@@ -170,9 +181,7 @@ pub fn from_video_path<const N: usize, P: AsRef<std::path::Path>>(
                             }
                         }
                         VideoSamplingMethod::Indices(_) => {
-                            if indices_set.contains(&frame_idx) {
-                                take = true;
-                            }
+                            take = indices_set.contains(&frame_idx);
                         }
                         _ => {}
                     }
@@ -318,8 +327,34 @@ pub fn from_video_path<const N: usize, P: AsRef<std::path::Path>>(
     log::debug!("[kornia-io] ============================");
 
     let mut video_sample = VideoSample::new();
-    for (frame, timestamp) in frames.into_iter().zip(timestamps.into_iter()) {
+    for (frame, timestamp) in frames.into_iter().zip(timestamps) {
         video_sample.add_frame(frame, timestamp);
     }
     Ok(video_sample)
+}
+
+#[cfg(all(test, feature = "gstreamer"))]
+mod tests {
+    use super::take_fps_frame;
+
+    #[test]
+    fn fps_sampling_starts_at_first_pts() {
+        for origin in [0.0, 10.0] {
+            let mut next_time = None;
+            let selected: Vec<f64> = [0.0, 0.033, 0.067, 0.1, 1.0, 1.033, 2.0]
+                .into_iter()
+                .map(|time| time + origin)
+                .filter(|time| take_fps_frame(*time, &mut next_time, 1.0))
+                .collect();
+            assert_eq!(selected, [origin, origin + 1.0, origin + 2.0]);
+        }
+    }
+
+    #[test]
+    fn zero_fps_interval_keeps_every_frame() {
+        let mut next_time = None;
+        for time in [10.0, 10.033, 10.067] {
+            assert!(take_fps_frame(time, &mut next_time, 0.0));
+        }
+    }
 }

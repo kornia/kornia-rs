@@ -739,9 +739,9 @@ impl VideoReader {
     ///
     /// A flushing seek ignores EOS messages from earlier segments while retaining EOS
     /// posted for the new seek, including messages posted before this method returns.
-    /// It also discards buffered frames from the previous segment. A non-flushing seek
-    /// preserves those frames and may wait for queued data to be consumed. Use `FLUSH`
-    /// for interactive seeking, particularly while paused or when the queue is full.
+    /// It also discards buffered frames from the previous segment. File readers reject
+    /// non-flushing seeks without changing queued frames or EOS: waiting for a full queue
+    /// to drain could block the calling consumer. Include `FLUSH` in `seek_flags`.
     /// See <https://gstreamer.freedesktop.org/documentation/additional/design/seeking.html>.
     ///
     /// # Arguments
@@ -756,7 +756,9 @@ impl VideoReader {
     ///
     /// # Errors
     ///
-    /// Returns an error if the pipeline rejects the seek or the status lock is poisoned.
+    /// Returns [`StreamCaptureError::InvalidConfig`] wrapped in
+    /// [`VideoReaderError::StreamCaptureError`] if `seek_flags` lacks `FLUSH`, or an error
+    /// if the pipeline rejects the seek or the status lock is poisoned.
     ///
     /// # Example
     ///
@@ -1251,7 +1253,12 @@ mod tests {
         assert!(reader.is_eos());
 
         // No FLUSH: GStreamer keeps its EOS state, so the reader must keep reporting it.
-        let _ = reader.seek(gstreamer::SeekFlags::ACCURATE, Duration::ZERO);
+        assert!(matches!(
+            reader.seek(gstreamer::SeekFlags::ACCURATE, Duration::ZERO),
+            Err(VideoReaderError::StreamCaptureError(
+                StreamCaptureError::InvalidConfig(_)
+            ))
+        ));
         assert!(reader.is_eos(), "a non-flushing seek cleared EOS");
         assert!(
             !matches!(reader.try_grab_rgb8()?, Grab::Pending),
@@ -1785,7 +1792,12 @@ mod tests {
             // This clip fits in the bounded queue; EOS does not require discarding samples.
             match operation {
                 "non-flushing" => {
-                    let _ = reader.seek(gstreamer::SeekFlags::ACCURATE, Duration::ZERO);
+                    assert!(matches!(
+                        reader.seek(gstreamer::SeekFlags::ACCURATE, Duration::ZERO),
+                        Err(VideoReaderError::StreamCaptureError(
+                            StreamCaptureError::InvalidConfig(_)
+                        ))
+                    ));
                 }
                 "speed" => reader.set_playback_speed(2.0)?,
                 _ => unreachable!(),
@@ -1864,6 +1876,95 @@ mod tests {
             done_rx.recv_timeout(Duration::from_secs(10))?;
             worker.join().map_err(|_| "queue operation panicked")??;
         }
+        Ok(())
+    }
+
+    /// Rejected non-flushing seeks must return even while file decoding is backpressured.
+    #[test]
+    fn video_reader_rejects_non_flushing_seek_with_full_queue(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        const CHILD_ENV: &str = "KORNIA_NON_FLUSHING_SEEK_TEST_CHILD";
+        if std::env::var_os(CHILD_ENV).is_none() {
+            // GStreamer may also block cleanup after a deadlock; enforce the deadline outside it.
+            let mut child = std::process::Command::new(std::env::current_exe()?)
+                .args(["--exact", "gstreamer::video::tests::video_reader_rejects_non_flushing_seek_with_full_queue", "--nocapture"])
+                .env(CHILD_ENV, "1")
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()?;
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            loop {
+                if child.try_wait()?.is_some() {
+                    break;
+                }
+                if std::time::Instant::now() >= deadline {
+                    child.kill()?;
+                    let output = child.wait_with_output()?;
+                    panic!(
+                        "non-flushing seek test timed out: {}",
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let output = child.wait_with_output()?;
+            assert!(
+                output.status.success(),
+                "seek regression failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return Ok(());
+        }
+        let tmp = tempfile::tempdir()?;
+        let path = tmp.path().join("non-flushing-full.mov");
+        let mut writer =
+            VideoWriter::from_pipeline_description(RAW_MOV, &path, ImageFormat::Rgb8, 30, SIZE)?;
+        writer.start()?;
+        let expected: Vec<u8> = (0..20).map(|i| i * 10).collect();
+        write_and_close(writer, &expected)?;
+        let mut reader = VideoReader::new(&path, ImageFormat::Rgb8)?;
+        let pad = reader
+            .0
+            .pipeline
+            .by_name("sink")
+            .ok_or("missing sink")?
+            .static_pad("sink")
+            .ok_or("missing sink pad")?;
+        let count = std::sync::atomic::AtomicUsize::new(0);
+        let (full_tx, full_rx) = std::sync::mpsc::channel();
+        let probe = pad
+            .add_probe(gstreamer::PadProbeType::BUFFER, move |_, _| {
+                if count.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    == super::FILE_QUEUE_BUFFERS as usize
+                {
+                    let _ = full_tx.send(());
+                }
+                gstreamer::PadProbeReturn::Ok
+            })
+            .ok_or("missing probe")?;
+        reader.start()?;
+        full_rx.recv_timeout(Duration::from_secs(5))?;
+        pad.remove_probe(probe);
+        let result = reader.seek(gstreamer::SeekFlags::ACCURATE, Duration::ZERO);
+        let Err(VideoReaderError::StreamCaptureError(StreamCaptureError::InvalidConfig(message))) =
+            result
+        else {
+            panic!("non-flushing file seek was not rejected")
+        };
+        assert!(message.contains("FLUSH"));
+        assert!(!reader.is_eos(), "rejected seek modified terminal state");
+        assert_eq!(
+            read_frame_values(&mut reader)?,
+            expected,
+            "rejected seek discarded frames"
+        );
+        reader.reset()?;
+        assert_eq!(
+            read_frame_values(&mut reader)?,
+            expected,
+            "flushing reset stopped working"
+        );
+        reader.close()?;
         Ok(())
     }
 

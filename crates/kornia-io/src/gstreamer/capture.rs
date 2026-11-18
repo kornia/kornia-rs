@@ -549,13 +549,21 @@ impl StreamCapture {
     ///
     /// # Errors
     ///
-    /// Returns a seek error if rejected, or a capture error if a lock is poisoned.
+    /// Returns a seek error if rejected, an invalid-configuration error for a non-flushing
+    /// seek on a non-dropping queue, or a capture error if a lock is poisoned.
     pub(crate) fn seek(
         &self,
         rate: f64,
         flags: gstreamer::SeekFlags,
         position: gstreamer::ClockTime,
     ) -> Result<(), super::error::VideoReaderError> {
+        // Occupancy can change before send_event; reject without inspecting or draining the queue.
+        if !flags.contains(gstreamer::SeekFlags::FLUSH) && !self.appsink.is_drop() {
+            return Err(StreamCaptureError::InvalidConfig(
+                "non-flushing seeks on a non-dropping queue can block; use SeekFlags::FLUSH".into(),
+            )
+            .into());
+        }
         let _seek = self
             .seek_lock
             .lock()

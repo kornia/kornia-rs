@@ -83,7 +83,9 @@ playback. RTSP/V4L2 camera pipelines retain only the newest queued frame.
 `try_grab_rgb8()` and `try_grab_gray8()` return `Grab::Frame { image, pts }`;
 `pts: Option<Duration>` belongs to the returned buffer, unlike pipeline position.
 PTS may be absent or jump backwards after a seek/reset. Negotiated FPS is `None`
-until caps are available, and zero for an unknown/variable rate. Legacy
+until caps are available, and zero for an unknown/variable rate. File-reader seeks
+require `SeekFlags::FLUSH`; non-flushing requests return an error without discarding
+queued frames or changing EOS, avoiding a wait for the calling consumer. Legacy
 `grab_rgb8()`/`grab_gray8()` still return only the image.
 
 Custom `StreamCapture` pipelines keep explicit nonzero `max-buffers`, `drop`, and
