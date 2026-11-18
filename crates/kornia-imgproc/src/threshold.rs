@@ -842,4 +842,42 @@ mod tests {
 
         Ok(())
     }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn test_threshold_otsu_device_rejected() -> Result<(), ImageError> {
+        let stream = crate::cuda::color::test_utils::default_stream();
+        let size = ImageSize {
+            width: 4,
+            height: 4,
+        };
+        let host_data = vec![
+            10u8, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160,
+        ];
+
+        let host_src = Image::<u8, 1>::new(size, host_data)?;
+        let dev_src = host_src.to_cuda(&stream)?;
+
+        // 1. Device src with host dst: rejected with UnsupportedDevice, dst unchanged
+        let mut host_dst = Image::<u8, 1>::from_size_val(size, 42)?;
+        let result = super::threshold_otsu(&dev_src, &mut host_dst, 255);
+        assert!(matches!(result, Err(ImageError::UnsupportedDevice)));
+        assert_eq!(host_dst.as_slice(), &[42u8; 16]);
+
+        // 2. Host src with device dst: rejected with UnsupportedDevice, dst unchanged
+        let mut dev_dst = Image::<u8, 1>::from_size_val(size, 42)?.to_cuda(&stream)?;
+        let result = super::threshold_otsu(&host_src, &mut dev_dst, 255);
+        assert!(matches!(result, Err(ImageError::UnsupportedDevice)));
+        let back = dev_dst.to_host_owned()?;
+        assert_eq!(back.as_slice(), &[42u8; 16]);
+
+        // 3. Device src with device dst: rejected with UnsupportedDevice, dst unchanged
+        let mut dev_dst2 = Image::<u8, 1>::from_size_val(size, 42)?.to_cuda(&stream)?;
+        let result = super::threshold_otsu(&dev_src, &mut dev_dst2, 255);
+        assert!(matches!(result, Err(ImageError::UnsupportedDevice)));
+        let back2 = dev_dst2.to_host_owned()?;
+        assert_eq!(back2.as_slice(), &[42u8; 16]);
+
+        Ok(())
+    }
 }
