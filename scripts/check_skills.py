@@ -174,6 +174,7 @@ def self_review_error(body: str, library: bool) -> str | None:
 
 
 def main() -> int:
+    """Validate skill documentation and eval fixtures against the repository."""
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--base-ref", default="origin/main",
                     help="what the change is compared with, to decide whether a stale eval case fails (default: origin/main)")
@@ -258,12 +259,18 @@ def main() -> int:
             if r.returncode != 0:
                 stale.append(f"eval {case.name}: merged.diff is no longer in the tree: {r.stderr.strip()}")
         # Controls put their library changes in merged.diff and only a changelog in patch.diff.
-        diffs = [str(p) for p in (merged, patch) if p.is_file()]
+        library = False
+        for diff in (merged, patch):
+            if not diff.is_file():
+                continue
+            stat = subprocess.run(["git", "apply", "--numstat", "-z", str(diff)], cwd=ROOT, capture_output=True)
+            if stat.returncode:
+                errors.append(f"eval {case.name}: cannot read {diff.name}: {stat.stderr.decode(errors='replace').strip()}")
+                continue
+            paths = (row.split(b"\t", 2)[2] for row in stat.stdout.split(b"\0") if row)
+            library |= any(path.startswith((b"crates/", b"kornia-py/src/", b"kornia-cpp/src/")) for path in paths)
         pr = case / "pr.md"
-        if diffs and pr.is_file():
-            stat = subprocess.run(["git", "apply", "--numstat", "-z", *diffs], cwd=ROOT, capture_output=True)
-            paths = [row.split(b"\t", 2)[2] for row in stat.stdout.split(b"\0") if row]
-            library = any(path.startswith((b"crates/", b"kornia-py/src/", b"kornia-cpp/src/")) for path in paths)
+        if pr.is_file():
             if problem := self_review_error(pr.read_text(encoding="utf-8"), library):
                 errors.append(f"eval {case.name}: pr.md Self-review: {problem}")
     if strict:
