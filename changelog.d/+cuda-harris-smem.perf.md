@@ -1,0 +1,1 @@
+The fused CUDA Harris kernel behind `launch_harris_f32` computes the Sobel gradients once per pixel in shared memory instead of once per window tap. Device-resident f32 on an RTX 2000 Ada Laptop GPU: 912 -> 522 µs at 3840x2160 (1.75x), about 1.8x at 1920x1080 (223 -> 122 µs). Output is unchanged and stays bit-exact with the CPU `HarrisResponse`.
