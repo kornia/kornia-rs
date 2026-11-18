@@ -861,7 +861,7 @@ unsafe fn gradient_clusters_inner_neon(
         // no_grad(a, b) = (a == b) | (a == Skip) | (b == Skip)
         // When ALL 16 lanes of all 4 directions are 0xFF → no pixel in [x, x+15]
         // can possibly have a gradient → advance 16 pixels in ~8 NEON ops.
-        while x + 16 <= width - 1 {
+        while x + 16 < width {
             let src_ptr = src_slice.as_ptr().add(row_off + x) as *const u8;
 
             let curr_c = vld1q_u8(src_ptr);
@@ -908,7 +908,7 @@ unsafe fn gradient_clusters_inner_neon(
                 // NEON inner loop: 4 rep_cache u32 at a time → skip whole group if all MAX.
                 let max_u32v = vdupq_n_u32(u32::MAX);
                 while xi + 4 <= chunk_end {
-                    let rcv = vld1q_u32(rep_cache.as_ptr().add(row_off + xi) as *const u32);
+                    let rcv = vld1q_u32(rep_cache.as_ptr().add(row_off + xi));
                     if vminvq_u32(vceqq_u32(rcv, max_u32v)) != 0 {
                         xi += 4;
                         connected_last = false;

@@ -85,7 +85,7 @@ pub(crate) fn sobel3_i16(src: &Image<u8, 1>, dx: &mut [i16], dy: &mut [i16]) {
                 unsafe {
                     use std::arch::aarch64::*;
                     let mut x = 1usize;
-                    while x + 8 <= w - 1 {
+                    while x + 8 < w {
                         let sm = vld1q_s16(sv.as_ptr().add(x - 1));
                         let sp = vld1q_s16(sv.as_ptr().add(x + 1));
                         vst1q_s16(dxr.as_mut_ptr().add(x), vsubq_s16(sp, sm));
