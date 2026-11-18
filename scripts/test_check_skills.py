@@ -13,6 +13,36 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import check_skills  # noqa: E402
 
 
+class TestEvalSelfReview(unittest.TestCase):
+    review = (
+        "## Self-review\nVerdict: approve\n"
+        "§4 — no finding — checked the diff — [inferred]\n"
+        "Reuse searches:\n  $ rg helper crates/\nSkill gaps: none\n"
+    )
+
+    def test_accepts_a_library_self_review_and_tooling_without_searches(self):
+        self.assertIsNone(check_skills.self_review_error(self.review, library=True))
+        tooling = self.review.split("Reuse searches:")[0] + "Skill gaps: none"
+        self.assertIsNone(check_skills.self_review_error(tooling, library=False))
+        self.assertIsNotNone(check_skills.self_review_error(tooling, library=True))
+
+    def test_rejects_the_same_incomplete_or_unresolved_reviews_as_ci(self):
+        for old, new in (
+            ("## Self-review", "Self-review:"),
+            ("Verdict: approve", "Verdict: pending"),
+            ("approve", "request changes"),
+            ("Skill gaps:", "Gaps:"),
+            ("[inferred]", "<!-- [measured] -->"),
+            ("[inferred]", "\n## Tests\n[measured]"),
+            ("no finding", "blocking"),
+            ("  $ rg helper crates/", "No searches."),
+            ("Reuse searches:", "Checks:"),
+        ):
+            with self.subTest(new=new):
+                body = self.review.replace(old, new)
+                self.assertIsNotNone(check_skills.self_review_error(body, library=True))
+
+
 class TestEvalsStrict(unittest.TestCase):
     def strict(self, paths, env=None):
         with mock.patch.dict(os.environ, env or {}, clear=False), \
