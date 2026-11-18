@@ -1,6 +1,6 @@
 Title: fix(algebra): derive PartialEq on Lie groups so --all-features builds
 
-**Fixes/Relates to:** #728
+Fixes #728
 
 User-visible fix: `changelog.d/746.fixed.md`.
 
@@ -9,7 +9,7 @@ User-visible fix: `changelog.d/746.fixed.md`.
 - Each struct's rustdoc says the comparison is exact and member-wise, so `q` and `-q` (the same rotation) compare unequal.
 
 ## How Was This Tested?
-The bug is a build failure, so the regression check is an all-features build. CI's `ci` feature set does not enable `approx`, so CI does not build this path; this run is local:
+The bug is a build failure, so the regression check is an all-features build. The first local build reproduces #746 without the derives. The second includes them. CI coverage came later in #1236: on today's main, both `rust-check` and `rust-test` explicitly enable `kornia-algebra/approx`.
 ```text
 $ cargo check --all-targets --all-features -p kornia-algebra   # before this PR
 error[E0277]: can't compare `SE3F32` with `SE3F32`
@@ -25,16 +25,19 @@ Public API: `PartialEq` is a new trait impl on the four types. Bindings: not exp
 ## Self-review
 ```text
 Verdict: approve
-- §0 scope: the four of #728's six structs that lacked the derive; no other change.
-- §1-3: derive only; no runtime path changes; no perf claim.
-- §4: regression check is the all-features build (fails on main, passes here; local only, CI does not enable approx); rustdoc states the q/-q caveat; bindings not exposed.
-- §5: derive only; no unwrap, unsafe or new error types.
-- §6: changelog fragment added.
+§0 — no finding — the diff adds the missing derive to four of the six types named in #728. The other two already derive it. — [inferred]
+§0b — no finding — the existing SO2 and SE2 types use derived equality. — [measured]
+§1–3 — no finding — deriving equality adds no work to existing operations. — [inferred]
+§4 — no finding — the all-features build above went from E0277 to “Finished”. The CI tasks now compile those impls too (#1236, after this fix). — [measured]
+§5 — no finding — the docs explain why quaternions of opposite sign can compare unequal. — [inferred]
+§6 — no finding — the changelog names the newly supported comparison. — [inferred]
 Reuse searches:
-  - equality for Lie groups
-    $ rg -n "impl.*PartialEq|impl approx::AbsDiffEq" crates/kornia-algebra/src/lie
-    so2.rs:180, se2.rs:319, se3.rs:380, so3.rs:320/601: `impl approx::AbsDiffEq`; no hand-written PartialEq
-    -> derive, as se2.rs/so2.rs already do.
+  $ rg -B1 'pub struct (SE2F32|SO2F32)' crates/kornia-algebra/src/lie/{se2,so2}.rs
+crates/kornia-algebra/src/lie/so2.rs-#[derive(Debug, Clone, Copy, PartialEq)]
+crates/kornia-algebra/src/lie/so2.rs:pub struct SO2F32 {
+--
+crates/kornia-algebra/src/lie/se2.rs-#[derive(Debug, Clone, Copy, PartialEq)]
+crates/kornia-algebra/src/lie/se2.rs:pub struct SE2F32 {
 Skill gaps: none
 ```
 

@@ -152,6 +152,27 @@ PUBLISH_PROBES = [
 ]
 
 
+def self_review_error(body: str, library: bool) -> str | None:
+    """Mirror the Self-review failures in .github/workflows/pr-validation.yml."""
+    body = re.sub(r"<!--.*?-->", "", body, flags=re.S)
+    section = re.search(r"##[^\n]*Self-review[^\n]*\n(.*?)(?=\n## |\Z)", body, re.I | re.S)
+    review = section[1] if section else ""
+    verdict = re.search(r"Verdict:[ \t]*(approve|request changes|comment)\b", review, re.I)
+    if not verdict or not re.search(r"Skill gaps:", review, re.I):
+        return "missing verdict or skill gaps"
+    tagged = [line for line in review.split("\n") if re.search(r"\[(measured|inferred)\]", line, re.I)]
+    if not tagged:
+        return "missing [measured] or [inferred] line"
+    if any(re.search(r"(^|\s)[—–-]+\s*blocking\s*[—–-]", line, re.I) for line in tagged):
+        return "unresolved blocking finding"
+    if verdict[1].lower() == "request changes":
+        return "verdict requests changes"
+    reuse = re.search(r"Reuse searches:(.*?)(?=\n\s*Skill gaps:|\Z)", review, re.I | re.S)
+    if library and not (reuse and re.search(r"^\s*\$ ", reuse[1], re.M)):
+        return "missing command in Reuse searches"
+    return None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--base-ref", default="origin/main",
@@ -236,6 +257,15 @@ def main() -> int:
             r = subprocess.run(["git", "apply", "-R", "--check", str(merged)], cwd=ROOT, capture_output=True, text=True)
             if r.returncode != 0:
                 stale.append(f"eval {case.name}: merged.diff is no longer in the tree: {r.stderr.strip()}")
+        # Controls put their library changes in merged.diff and only a changelog in patch.diff.
+        diffs = [str(p) for p in (merged, patch) if p.is_file()]
+        pr = case / "pr.md"
+        if diffs and pr.is_file():
+            stat = subprocess.run(["git", "apply", "--numstat", "-z", *diffs], cwd=ROOT, capture_output=True)
+            paths = [row.split(b"\t", 2)[2] for row in stat.stdout.split(b"\0") if row]
+            library = any(path.startswith((b"crates/", b"kornia-py/src/", b"kornia-cpp/src/")) for path in paths)
+            if problem := self_review_error(pr.read_text(encoding="utf-8"), library):
+                errors.append(f"eval {case.name}: pr.md Self-review: {problem}")
     if strict:
         errors += [f"{s} ({why}; re-sync the case, see kornia-code-review/evals/README.md)" for s in stale]
     # precision.md is generated from the case files alone, never from the tree, so
