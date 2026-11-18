@@ -13,13 +13,11 @@ super::define_cuda_error!(
     "CUDA Harris error: {0}"
 );
 
-// Must match TILE_W/TILE_H in HARRIS_SRC.
+// Launch block; also emitted as TILE_W/TILE_H into the kernel source.
 const TILE: (u32, u32) = (32, 8);
 
 static HARRIS_SRC: &str = r#"
 // Reference: features/responses.rs, HarrisResponse::compute (f32).
-#define TILE_W 32
-#define TILE_H 8
 // Gradients for the tile plus a 1-pixel halo (window radius 1).
 #define G_W (TILE_W + 2)
 #define G_H (TILE_H + 2)
@@ -91,8 +89,12 @@ fn get_kernel(ctx: &Arc<CudaContext>) -> Result<Arc<CudaKernel>, CudaHarrisError
     if let Some(kernel) = cache.lock().map_err(lock_error)?.get(&key).cloned() {
         return Ok(kernel);
     }
+    let src = format!(
+        "#define TILE_W {}\n#define TILE_H {}\n{HARRIS_SRC}",
+        TILE.0, TILE.1
+    );
     let kernel = Arc::new(
-        CudaKernel::compile(ctx, HARRIS_SRC, "harris_fused_f32").map_err(|e| {
+        CudaKernel::compile(ctx, &src, "harris_fused_f32").map_err(|e| {
             CudaHarrisError::Cuda(format!("failed to compile harris_fused_f32: {e}"))
         })?,
     );
