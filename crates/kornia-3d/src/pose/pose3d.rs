@@ -153,6 +153,18 @@ impl Pose3d {
     /// Extracts the 3x3 linear rotation block and 3x1 translation vector,
     /// ignoring the homogeneous bottom row `[0.0, 0.0, 0.0, 1.0]`.
     ///
+    /// # Arguments
+    ///
+    /// * `m` - Homogeneous 4x4 transformation matrix mapping points from world frame to camera frame.
+    ///
+    /// # Returns
+    ///
+    /// A new [`Pose3d`] with rotation extracted from top-left 3x3 and translation from top-right 3x1.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible.
+    ///
     /// # Example
     ///
     /// ```
@@ -176,6 +188,14 @@ impl Pose3d {
     /// Convert to a homogeneous 4x4 transformation matrix.
     ///
     /// Top-left 3x3 is rotation, top-right 3x1 is translation, and bottom row is `[0.0, 0.0, 0.0, 1.0]`.
+    ///
+    /// # Returns
+    ///
+    /// Homogeneous 4x4 transformation matrix representation of this pose.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible.
     ///
     /// # Example
     ///
@@ -201,6 +221,20 @@ impl Pose3d {
     /// If `q` is non-finite or degenerate (zero norm), the resulting rotation matrix
     /// contains non-finite entries, which can be checked via [`Pose3d::rotation_defect`].
     ///
+    /// # Arguments
+    ///
+    /// * `q` - Rotation quaternion mapping vectors from world to camera frame. Will be normalized.
+    /// * `t` - Translation vector from world to camera frame.
+    ///
+    /// # Returns
+    ///
+    /// A new [`Pose3d`] representing the rigid transformation.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible. If `q` has zero or non-finite norm, the resulting
+    /// pose contains non-finite entries.
+    ///
     /// # Example
     ///
     /// ```
@@ -218,6 +252,20 @@ impl Pose3d {
     }
 
     /// Extract the pose as a unit quaternion and a translation vector `(q, t)`.
+    ///
+    /// # Returns
+    ///
+    /// A tuple `(q, t)` of type `(QuatF64, Vec3F64)`.
+    ///
+    /// # Preconditions
+    ///
+    /// `self.rotation` must be a valid proper rotation matrix with negligible defect
+    /// (`RᵀR = I`, `det R = 1`). If the pose has accumulated numerical drift or scaling,
+    /// callers should invoke [`Pose3d::orthonormalized`] first before extracting the quaternion.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible.
     ///
     /// # Example
     ///
@@ -238,6 +286,14 @@ impl Pose3d {
     ///
     /// Computed via `atan2(R[1][0], R[0][0])` conforming to the standard robotics navigation
     /// convention (REP 103 / ISO 8855) where +X is forward and +Z is upward.
+    ///
+    /// # Returns
+    ///
+    /// Heading angle in radians about the +Z axis in the interval `(-π, π]`.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible.
     ///
     /// # Example
     ///
@@ -266,6 +322,14 @@ impl Pose3d {
     ///
     /// This operation is idempotent: `pose.planar().planar() == pose.planar()`.
     ///
+    /// # Returns
+    ///
+    /// A new projected [`Pose3d`] on the ground plane.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible.
+    ///
     /// # Example
     ///
     /// ```
@@ -293,6 +357,19 @@ impl Pose3d {
     /// This formulation handles the SU(2) double-cover (`q` and `-q` yield identical angles)
     /// and avoids the catastrophic cancellation and domain errors of `acos((tr(R) - 1) / 2)`
     /// near `θ ≈ 0`.
+    ///
+    /// # Returns
+    ///
+    /// The geodesic rotation distance from identity in `[0, π]` radians.
+    ///
+    /// # Preconditions
+    ///
+    /// `self.rotation` is expected to be a proper rotation matrix. If numerical drift has
+    /// accumulated, call [`Pose3d::orthonormalized`] first.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible.
     ///
     /// # Example
     ///
@@ -351,6 +428,11 @@ impl From<SE3F64> for Pose3d {
 
 impl From<Pose3d> for SE3F64 {
     /// Convert from `Pose3d` to `kornia_algebra::SE3F64`.
+    ///
+    /// # Preconditions
+    ///
+    /// Assumes `pose.rotation` is a proper rotation matrix with negligible defect.
+    /// Call [`Pose3d::orthonormalized`] first if the pose has accumulated numerical drift.
     #[inline]
     fn from(pose: Pose3d) -> Self {
         Self::new(SO3F64::from_matrix(&pose.rotation), pose.translation)
@@ -657,5 +739,29 @@ mod tests {
         let p_neg = Pose3d::from_quat_translation(q_neg, Vec3F64::ZERO);
 
         assert!((p_pos.rotation_angle() - p_neg.rotation_angle()).abs() < 1e-15);
+    }
+
+    #[test]
+    fn test_drifted_rotation_orthonormalized_before_extraction() {
+        let drifted = Pose3d::new(Mat3F64::IDENTITY * 1.05, Vec3F64::new(1.0, 2.0, 3.0));
+        assert!(drifted.rotation_defect() > 0.05);
+        let rigid = drifted.orthonormalized();
+        assert!(rigid.rotation_defect() < 1e-12);
+        let (q, t) = rigid.to_quat_translation();
+        assert!((q.length() - 1.0).abs() < 1e-12);
+        assert_eq!(t, Vec3F64::new(1.0, 2.0, 3.0));
+        let se3: SE3F64 = rigid.into();
+        assert_eq!(se3.t, Vec3F64::new(1.0, 2.0, 3.0));
+    }
+
+    #[test]
+    fn test_from_quat_translation_zero_or_non_finite() {
+        let zero_q = QuatF64::from_xyzw(0.0, 0.0, 0.0, 0.0);
+        let pose = Pose3d::from_quat_translation(zero_q, Vec3F64::ZERO);
+        assert!(pose.rotation_defect().is_infinite());
+
+        let nan_q = QuatF64::from_xyzw(f64::NAN, 0.0, 0.0, 1.0);
+        let pose_nan = Pose3d::from_quat_translation(nan_q, Vec3F64::ZERO);
+        assert!(pose_nan.rotation_defect().is_infinite());
     }
 }
