@@ -91,8 +91,10 @@ fn take_fps_frame(position_ns: u64, next_slot: &mut Option<u128>, fps: usize) ->
     }
     // Scale timestamps so each slot is exactly one billion units, even at fractional periods.
     const SLOT: u128 = 1_000_000_000;
-    let position = u128::from(position_ns) * fps as u128;
-    let threshold = next_slot.get_or_insert(position);
+    let scaled_position = u128::from(position_ns) * fps as u128;
+    let threshold = next_slot.get_or_insert(scaled_position);
+    // Include fractional slots that floor to this nanosecond.
+    let position = scaled_position + fps as u128 - 1;
     if position < *threshold {
         return false;
     }
@@ -419,6 +421,18 @@ mod tests {
                 .filter(|time| take_fps_frame((*time * 1e9).round() as u64, &mut next_time, 1))
                 .collect();
             assert_eq!(selected, [times[0], times[1], times[5], times[6]]);
+        }
+    }
+
+    #[test]
+    fn fps_sampling_keeps_floor_quantized_30_fps_frames() {
+        let mut next_slot = None;
+        for index in 0..90 {
+            let pts_ns = 42_000_001 + index * 1_000_000_000 / 30;
+            assert!(
+                take_fps_frame(pts_ns, &mut next_slot, 30),
+                "dropped frame {index} at {pts_ns} ns"
+            );
         }
     }
 
