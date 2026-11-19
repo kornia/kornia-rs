@@ -496,17 +496,17 @@ pub fn otsu_threshold_from_histogram(
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_imgproc::threshold::otsu_threshold;
+/// use kornia_imgproc::threshold::compute_otsu_threshold;
 ///
 /// let data = vec![
 ///     20u8, 20, 20, 20,
 ///     200, 200, 200, 200,
 /// ];
 /// let image = Image::<u8, 1>::new(ImageSize { width: 4, height: 2 }, data).unwrap();
-/// let threshold = otsu_threshold(&image).unwrap();
+/// let threshold = compute_otsu_threshold(&image).unwrap();
 /// assert_eq!(threshold, 20);
 /// ```
-pub fn otsu_threshold(src: &Image<u8, 1>) -> Result<u8, ImageError> {
+pub fn compute_otsu_threshold(src: &Image<u8, 1>) -> Result<u8, ImageError> {
     // Early exit before allocating histogram buffer or launching GPU kernel
     if src.numel() == 0 {
         return Err(ImageError::ImageDataNotInitialized);
@@ -520,13 +520,13 @@ pub fn otsu_threshold(src: &Image<u8, 1>) -> Result<u8, ImageError> {
 
 /// Apply Otsu's automatic thresholding to an 8-bit, 1-channel image.
 ///
-/// Computes the optimal threshold via [`otsu_threshold`] and applies binary thresholding
+/// Computes the optimal threshold via [`compute_otsu_threshold`] and applies binary thresholding
 /// to `dst`.
 ///
 /// Note: This function computes the threshold and writes the binarized image to `dst`.
-/// To compute only the threshold value without writing to a destination image, use [`otsu_threshold`].
+/// To compute only the threshold value without writing to a destination image, use [`compute_otsu_threshold`].
 ///
-/// Note: Unlike [`otsu_threshold`], `threshold_otsu` requires host-resident images because the
+/// Note: Unlike [`compute_otsu_threshold`], `threshold_otsu` requires host-resident images because the
 /// subsequent binary thresholding step operates on CPU memory.
 ///
 /// # Arguments
@@ -587,7 +587,7 @@ pub fn threshold_otsu(
         ));
     }
 
-    let threshold = otsu_threshold(src)?;
+    let threshold = compute_otsu_threshold(src)?;
     threshold_binary(src, dst, threshold, max_value)?;
 
     Ok(threshold)
@@ -786,7 +786,7 @@ mod tests {
             data,
         )?;
 
-        let threshold = super::otsu_threshold(&image)?;
+        let threshold = super::compute_otsu_threshold(&image)?;
         assert_eq!(threshold, 20);
 
         let mut dst = Image::<u8, 1>::from_size_val(image.size(), 0)?;
@@ -808,7 +808,7 @@ mod tests {
             data,
         )?;
 
-        let threshold = super::otsu_threshold(&image)?;
+        let threshold = super::compute_otsu_threshold(&image)?;
         assert_eq!(threshold, 128);
 
         let mut dst = Image::<u8, 1>::from_size_val(image.size(), 0)?;
@@ -873,7 +873,13 @@ mod tests {
             186, 192, 43, 38, 41, 40, 184, 190, 188, 194, 40, 42, 39, 44, 186, 192, 191, 185, 44,
             40, 43, 38, 187, 185, 193, 189,
         ];
-        let image = Image::<u8, 1>::new(ImageSize { width: 8, height: 8 }, data)?;
+        let image = Image::<u8, 1>::new(
+            ImageSize {
+                width: 8,
+                height: 8,
+            },
+            data,
+        )?;
         let mut dst = Image::<u8, 1>::from_size_val(image.size(), 0)?;
 
         let threshold = super::threshold_otsu(&image, &mut dst, 255)?;
