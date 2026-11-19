@@ -365,7 +365,235 @@ where
     Ok(())
 }
 
-// TODO: otsu, triangle
+/// Compute the optimal Otsu threshold value from an intensity histogram.
+///
+/// Implements Otsu's method by finding the threshold that maximizes the between-class
+/// variance of pixel intensities.
+///
+/// # Arguments
+///
+/// * `hist` - The 256-bin histogram of pixel intensity counts.
+/// * `total_pixels` - The total number of pixels in the image.
+///
+/// # Returns
+///
+/// The optimal threshold value in the range `[0, 255]`.
+///
+/// # Errors
+///
+/// Returns [`ImageError::ImageDataNotInitialized`] if `total_pixels` is zero.
+///
+/// # Reference
+///
+/// * Nobuyuki Otsu (1979). "A threshold selection method from gray-level histograms".
+///   IEEE Transactions on Systems, Man, and Cybernetics, 9(1), pp. 62–66.
+///   DOI: [10.1109/TSMC.1979.4310076](https://doi.org/10.1109/TSMC.1979.4310076)
+///
+/// # Example
+///
+/// ```
+/// use kornia_imgproc::threshold::otsu_threshold_from_histogram;
+///
+/// let mut hist = [0usize; 256];
+/// hist[50] = 100;
+/// hist[200] = 100;
+///
+/// let threshold = otsu_threshold_from_histogram(&hist, 200).unwrap();
+/// assert_eq!(threshold, 50);
+/// ```
+pub fn otsu_threshold_from_histogram(
+    hist: &[usize; 256],
+    total_pixels: usize,
+) -> Result<u8, ImageError> {
+    if total_pixels == 0 {
+        return Err(ImageError::ImageDataNotInitialized);
+    }
+
+    // Total intensity sum across all bins
+    let sum_total: f64 = hist
+        .iter()
+        .enumerate()
+        .map(|(i, &count)| (i as f64) * (count as f64))
+        .sum();
+
+    let total = total_pixels as f64;
+    let mut weight_background: f64 = 0.0;
+    let mut sum_background: f64 = 0.0;
+    let mut max_variance: f64 = 0.0;
+    let mut best_threshold: u8 = 0;
+    let mut found_split = false;
+
+    for (t, &count) in hist.iter().enumerate() {
+        if count == 0 {
+            continue;
+        }
+
+        weight_background += count as f64;
+        let weight_foreground = total - weight_background;
+
+        if weight_foreground <= 0.0 {
+            break;
+        }
+
+        sum_background += (t as f64) * (count as f64);
+        let sum_foreground = sum_total - sum_background;
+
+        let mean_background = sum_background / weight_background;
+        let mean_foreground = sum_foreground / weight_foreground;
+
+        let mean_diff = mean_background - mean_foreground;
+        let variance_between = weight_background * weight_foreground * mean_diff * mean_diff;
+
+        if variance_between > max_variance {
+            max_variance = variance_between;
+            best_threshold = t as u8;
+            found_split = true;
+        }
+    }
+
+    if !found_split {
+        // If all pixels share the same intensity (no split found), return that intensity.
+        return Ok(hist
+            .iter()
+            .position(|&c| c > 0)
+            .map(|idx| idx as u8)
+            .unwrap_or(0));
+    }
+
+    Ok(best_threshold)
+}
+
+/// Compute the optimal Otsu threshold value for an 8-bit, 1-channel image.
+///
+/// Otsu's method automatically calculates the optimum threshold separating two classes
+/// of pixels (foreground and background) so that their intra-class variance is minimal.
+///
+/// Note: This function only computes and returns the threshold value. To both compute
+/// and apply binary thresholding to a destination image, use [`threshold_otsu`].
+///
+/// When `feature = "cuda"` is enabled, this function accepts both host-resident and
+/// CUDA device-resident images (the histogram is computed on the GPU and transferred back).
+///
+/// # Arguments
+///
+/// * `src` - The input 8-bit, 1-channel grayscale image.
+///
+/// # Returns
+///
+/// The computed threshold value in the range `[0, 255]`.
+///
+/// # Errors
+///
+/// Returns [`ImageError::ImageDataNotInitialized`] if the image data is empty.
+///
+/// # Reference
+///
+/// * Nobuyuki Otsu (1979). "A threshold selection method from gray-level histograms".
+///   IEEE Transactions on Systems, Man, and Cybernetics, 9(1), pp. 62–66.
+///   DOI: [10.1109/TSMC.1979.4310076](https://doi.org/10.1109/TSMC.1979.4310076)
+///
+/// # Example
+///
+/// ```
+/// use kornia_image::{Image, ImageSize};
+/// use kornia_imgproc::threshold::compute_otsu_threshold;
+///
+/// let data = vec![
+///     20u8, 20, 20, 20,
+///     200, 200, 200, 200,
+/// ];
+/// let image = Image::<u8, 1>::new(ImageSize { width: 4, height: 2 }, data).unwrap();
+/// let threshold = compute_otsu_threshold(&image).unwrap();
+/// assert_eq!(threshold, 20);
+/// ```
+pub fn compute_otsu_threshold(src: &Image<u8, 1>) -> Result<u8, ImageError> {
+    // Early exit before allocating histogram buffer or launching GPU kernel
+    if src.numel() == 0 {
+        return Err(ImageError::ImageDataNotInitialized);
+    }
+
+    let mut hist = [0usize; 256];
+    crate::histogram::compute_histogram(src, &mut hist, 256)?;
+
+    otsu_threshold_from_histogram(&hist, src.numel())
+}
+
+/// Apply Otsu's automatic thresholding to an 8-bit, 1-channel image.
+///
+/// Computes the optimal threshold via [`compute_otsu_threshold`] and applies binary thresholding
+/// to `dst`.
+///
+/// Note: This function computes the threshold and writes the binarized image to `dst`.
+/// To compute only the threshold value without writing to a destination image, use [`compute_otsu_threshold`].
+///
+/// Note: Unlike [`compute_otsu_threshold`], `threshold_otsu` requires host-resident images because the
+/// subsequent binary thresholding step operates on CPU memory.
+///
+/// # Arguments
+///
+/// * `src` - The input 8-bit, 1-channel grayscale image.
+/// * `dst` - The pre-allocated output 8-bit, 1-channel image. Must match `src` dimensions.
+/// * `max_value` - The maximum value to assign to pixels exceeding the threshold.
+///
+/// # Returns
+///
+/// The optimal threshold value computed by Otsu's method.
+///
+/// # Errors
+///
+/// Returns [`ImageError::InvalidImageSize`] if `src` and `dst` dimensions differ.
+/// Returns [`ImageError::ImageDataNotInitialized`] if the image data is empty.
+/// Returns [`ImageError::UnsupportedDevice`] if `src` or `dst` is resident on device (GPU) memory.
+///
+/// # Reference
+///
+/// * Nobuyuki Otsu (1979). "A threshold selection method from gray-level histograms".
+///   IEEE Transactions on Systems, Man, and Cybernetics, 9(1), pp. 62–66.
+///   DOI: [10.1109/TSMC.1979.4310076](https://doi.org/10.1109/TSMC.1979.4310076)
+///
+/// # Example
+///
+/// ```
+/// use kornia_image::{Image, ImageSize};
+/// use kornia_imgproc::threshold::threshold_otsu;
+///
+/// let data = vec![
+///     10u8, 20, 10, 20,
+///     200, 220, 210, 200,
+/// ];
+/// let image = Image::<u8, 1>::new(ImageSize { width: 4, height: 2 }, data).unwrap();
+/// let mut dst = Image::<u8, 1>::from_size_val(image.size(), 0).unwrap();
+///
+/// let thresh = threshold_otsu(&image, &mut dst, 255).unwrap();
+/// assert_eq!(thresh, 20);
+/// assert_eq!(dst.as_slice(), &[0, 0, 0, 0, 255, 255, 255, 255]);
+/// ```
+pub fn threshold_otsu(
+    src: &Image<u8, 1>,
+    dst: &mut Image<u8, 1>,
+    max_value: u8,
+) -> Result<u8, ImageError> {
+    #[cfg(feature = "cuda")]
+    if crate::cuda::dispatch::is_device(src) || crate::cuda::dispatch::is_device(dst) {
+        return Err(ImageError::UnsupportedDevice);
+    }
+
+    if src.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.cols(),
+            src.rows(),
+            dst.cols(),
+            dst.rows(),
+        ));
+    }
+
+    let threshold = compute_otsu_threshold(src)?;
+    threshold_binary(src, dst, threshold, max_value)?;
+
+    Ok(threshold)
+}
+
+// TODO: triangle
 
 #[cfg(test)]
 mod tests {
@@ -543,6 +771,179 @@ mod tests {
 
         assert_eq!(thresholded.get([0, 0, 0]), Some(&255));
         assert_eq!(thresholded.get([0, 1, 0]), Some(&0));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_otsu_threshold_bimodal() -> Result<(), ImageError> {
+        let data = vec![10u8, 20, 10, 20, 180, 200, 180, 200];
+        let image = Image::<u8, 1>::new(
+            ImageSize {
+                width: 4,
+                height: 2,
+            },
+            data,
+        )?;
+
+        let threshold = super::compute_otsu_threshold(&image)?;
+        assert_eq!(threshold, 20);
+
+        let mut dst = Image::<u8, 1>::from_size_val(image.size(), 0)?;
+        let computed_thresh = super::threshold_otsu(&image, &mut dst, 255)?;
+        assert_eq!(computed_thresh, 20);
+        assert_eq!(dst.as_slice(), &[0, 0, 0, 0, 255, 255, 255, 255]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_otsu_threshold_uniform() -> Result<(), ImageError> {
+        let data = vec![128u8; 16];
+        let image = Image::<u8, 1>::new(
+            ImageSize {
+                width: 4,
+                height: 4,
+            },
+            data,
+        )?;
+
+        let threshold = super::compute_otsu_threshold(&image)?;
+        assert_eq!(threshold, 128);
+
+        let mut dst = Image::<u8, 1>::from_size_val(image.size(), 0)?;
+        super::threshold_otsu(&image, &mut dst, 255)?;
+        assert_eq!(dst.as_slice(), &[0u8; 16]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_otsu_threshold_size_mismatch() -> Result<(), ImageError> {
+        let image = Image::<u8, 1>::new(
+            ImageSize {
+                width: 2,
+                height: 2,
+            },
+            vec![10, 20, 180, 200],
+        )?;
+        let mut dst = Image::<u8, 1>::from_size_val(
+            ImageSize {
+                width: 3,
+                height: 3,
+            },
+            0,
+        )?;
+
+        let result = super::threshold_otsu(&image, &mut dst, 255);
+        assert!(result.is_err());
+        match result {
+            Err(ImageError::InvalidImageSize(2, 2, 3, 3)) => (),
+            _ => panic!("Expected InvalidImageSize error"),
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_otsu_threshold_from_histogram() -> Result<(), ImageError> {
+        let mut hist = [0usize; 256];
+        hist[40] = 50;
+        hist[50] = 50;
+        hist[180] = 50;
+        hist[190] = 50;
+
+        let threshold = super::otsu_threshold_from_histogram(&hist, 200)?;
+        assert_eq!(threshold, 50);
+
+        let empty_result = super::otsu_threshold_from_histogram(&hist, 0);
+        assert!(empty_result.is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_otsu_threshold_reference_pinned() -> Result<(), ImageError> {
+        // 8x8 bimodal image pinned against OpenCV 4.x
+        // cv2.threshold(img, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+        // Reference output: threshold = 45
+        let data = vec![
+            40u8, 45, 38, 42, 180, 190, 185, 195, 42, 39, 44, 41, 182, 188, 192, 186, 38, 43, 40,
+            45, 185, 191, 189, 193, 41, 37, 42, 39, 181, 187, 190, 184, 39, 41, 38, 43, 183, 189,
+            186, 192, 43, 38, 41, 40, 184, 190, 188, 194, 40, 42, 39, 44, 186, 192, 191, 185, 44,
+            40, 43, 38, 187, 185, 193, 189,
+        ];
+        let image = Image::<u8, 1>::new(
+            ImageSize {
+                width: 8,
+                height: 8,
+            },
+            data,
+        )?;
+        let mut dst = Image::<u8, 1>::from_size_val(image.size(), 0)?;
+
+        let threshold = super::threshold_otsu(&image, &mut dst, 255)?;
+        assert_eq!(threshold, 45);
+
+        // Columns 0..4 have values <= 45 (background -> 0)
+        // Columns 4..8 have values >= 180 (foreground -> 255)
+        for row in 0..8 {
+            let row_slice = &dst.as_slice()[row * 8..(row + 1) * 8];
+            assert_eq!(&row_slice[..4], &[0, 0, 0, 0]);
+            assert_eq!(&row_slice[4..], &[255, 255, 255, 255]);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_otsu_threshold_large_histogram_no_overflow() -> Result<(), ImageError> {
+        let mut hist = [0usize; 256];
+        // 250 * 20_000_000 = 5_000_000_000, which exceeds 32-bit u32::MAX (4_294_967_295)
+        hist[100] = 10_000_000;
+        hist[200] = 20_000_000;
+        hist[250] = 20_000_000;
+
+        let threshold = super::otsu_threshold_from_histogram(&hist, 50_000_000)?;
+        assert_eq!(threshold, 100);
+
+        Ok(())
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn test_threshold_otsu_device_rejected() -> Result<(), ImageError> {
+        let stream = crate::cuda::color::test_utils::default_stream();
+        let size = ImageSize {
+            width: 4,
+            height: 4,
+        };
+        let host_data = vec![
+            10u8, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160,
+        ];
+
+        let host_src = Image::<u8, 1>::new(size, host_data)?;
+        let dev_src = host_src.to_cuda(&stream)?;
+
+        // 1. Device src with host dst: rejected with UnsupportedDevice, dst unchanged
+        let mut host_dst = Image::<u8, 1>::from_size_val(size, 42)?;
+        let result = super::threshold_otsu(&dev_src, &mut host_dst, 255);
+        assert!(matches!(result, Err(ImageError::UnsupportedDevice)));
+        assert_eq!(host_dst.as_slice(), &[42u8; 16]);
+
+        // 2. Host src with device dst: rejected with UnsupportedDevice, dst unchanged
+        let mut dev_dst = Image::<u8, 1>::from_size_val(size, 42)?.to_cuda(&stream)?;
+        let result = super::threshold_otsu(&host_src, &mut dev_dst, 255);
+        assert!(matches!(result, Err(ImageError::UnsupportedDevice)));
+        let back = dev_dst.to_host_owned()?;
+        assert_eq!(back.as_slice(), &[42u8; 16]);
+
+        // 3. Device src with device dst: rejected with UnsupportedDevice, dst unchanged
+        let mut dev_dst2 = Image::<u8, 1>::from_size_val(size, 42)?.to_cuda(&stream)?;
+        let result = super::threshold_otsu(&dev_src, &mut dev_dst2, 255);
+        assert!(matches!(result, Err(ImageError::UnsupportedDevice)));
+        let back2 = dev_dst2.to_host_owned()?;
+        assert_eq!(back2.as_slice(), &[42u8; 16]);
 
         Ok(())
     }
