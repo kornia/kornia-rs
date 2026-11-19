@@ -238,7 +238,7 @@ impl RleCC {
                             use std::arch::aarch64::*;
                             let pv = vdupq_n_u8(pixel as u8);
                             let base_ptr = src_ptr.0.add(row_off);
-                            while x + 16 < width {
+                            while x + 16 <= width - 1 {
                                 let chunk = vld1q_u8(base_ptr.add(x));
                                 if vminvq_u8(vceqq_u8(chunk, pv)) == 0xFF {
                                     x += 16;

@@ -1,18 +1,12 @@
 use argh::FromArgs;
 use kornia::{
     image::{Image, ImageSize},
-    imgproc::color::gray_from_rgb_u8,
-    io::functional::read_image_any_rgb8,
-};
-#[cfg(target_os = "linux")]
-use kornia::{
-    imgproc::color::YuvToRgbMode,
-    io::{fps_counter::FpsCounter, jpeg},
+    imgproc::color::{gray_from_rgb_u8, YuvToRgbMode},
+    io::{fps_counter::FpsCounter, functional::read_image_any_rgb8, jpeg},
 };
 use kornia_3d::camera::PinholeCamera;
 use kornia_apriltag::{family::TagFamilyKind, AprilTagDecoder, DecodeTagsConfig};
 use std::collections::HashMap;
-#[cfg(target_os = "linux")]
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -34,26 +28,14 @@ struct Args {
 
     /// camera capture width in pixels
     #[argh(option, default = "640")]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(dead_code, reason = "camera capture is Linux-only")
-    )]
     width: u32,
 
     /// camera capture height in pixels
     #[argh(option, default = "480")]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(dead_code, reason = "camera capture is Linux-only")
-    )]
     height: u32,
 
     /// frames per second for camera mode
     #[argh(option, short = 'f', default = "30")]
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(dead_code, reason = "camera capture is Linux-only")
-    )]
     fps: u32,
 
     /// apriltag family kinds to detect

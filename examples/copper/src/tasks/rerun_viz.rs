@@ -67,7 +67,7 @@ impl CuSinkTask for RerunViz {
 
 fn log_image_rgb8(
     rec: &rerun::RecordingStream,
-    name: &'static str,
+    name: &str,
     timestamp_ns: u64,
     img: &ImageRgb8Msg,
 ) -> Result<(), CuError> {
