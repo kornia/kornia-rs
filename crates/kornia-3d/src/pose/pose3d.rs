@@ -248,7 +248,13 @@ impl Pose3d {
     /// assert!(pose.rotation_defect() < 1e-12);
     /// ```
     pub fn from_quat_translation(q: QuatF64, t: Vec3F64) -> Self {
-        Self::new(Mat3F64::from_quat(q.normalize()), t)
+        let max_abs = q.x.abs().max(q.y.abs()).max(q.z.abs()).max(q.w.abs());
+        let q_scaled = if max_abs > 0.0 && max_abs.is_finite() {
+            QuatF64::from_xyzw(q.x / max_abs, q.y / max_abs, q.z / max_abs, q.w / max_abs)
+        } else {
+            q
+        };
+        Self::new(Mat3F64::from_quat(q_scaled.normalize()), t)
     }
 
     /// Extract the pose as a unit quaternion and a translation vector `(q, t)`.
@@ -763,5 +769,19 @@ mod tests {
         let nan_q = QuatF64::from_xyzw(f64::NAN, 0.0, 0.0, 1.0);
         let pose_nan = Pose3d::from_quat_translation(nan_q, Vec3F64::ZERO);
         assert!(pose_nan.rotation_defect().is_infinite());
+    }
+
+    #[test]
+    fn test_from_quat_translation_large_finite_does_not_overflow() {
+        // 180 degree rotation about X represented with large magnitude components (1e200)
+        // Without scaling before normalization, dot(q, q) overflows to +inf, producing zero quat.
+        let q = QuatF64::from_xyzw(1e200, 0.0, 0.0, 0.0);
+        let pose = Pose3d::from_quat_translation(q, Vec3F64::ZERO);
+        let pt = Vec3F64::new(0.0, 1.0, 0.0);
+        let transformed = pose.transform_point(&pt);
+        // 180 deg about X rotates (0, 1, 0) to (0, -1, 0)
+        assert!((transformed.x - 0.0).abs() < 1e-12);
+        assert!((transformed.y - (-1.0)).abs() < 1e-12);
+        assert!((transformed.z - 0.0).abs() < 1e-12);
     }
 }
