@@ -21,6 +21,7 @@ pub struct MyApp {
     slider_pos: u64,
     playback_speed: u32,
     active_speed: u32,
+    segment_started: bool,
     /// Set when `try_grab_rgb8` reports `Grab::Eos`, i.e. after every buffered frame was drawn.
     finished: bool,
     /// Carries a grab error into the Finished/Failed transition.
@@ -85,6 +86,7 @@ impl Default for MyApp {
             slider_pos: 0,
             playback_speed: 1,
             active_speed: 1,
+            segment_started: false,
             finished: false,
             error: None,
             app_state: AppState::default(),
@@ -117,6 +119,7 @@ fn render_navbar(app: &mut MyApp, ui: &mut eframe::egui::Ui) {
                 app.app_state = AppState::Stopped;
                 app.playback_speed = 1;
                 app.active_speed = 1;
+                app.segment_started = false;
             }
         });
 
@@ -198,10 +201,12 @@ fn render_play_controls(app: &mut MyApp, ctx: &eframe::egui::Context) {
                                 .start()
                                 .expect("Failed to start/resume the video");
                             app.app_state = AppState::Playing(video_reader, texture_store);
+                            apply_speed_to_started_segment(app);
                         }
                         AppState::Finished(mut video_reader, _) => {
                             video_reader.reset().expect("Failed to reset video");
                             app.active_speed = 1;
+                            app.segment_started = false;
                             video_reader.start().expect("Failed to start the video");
                             app.finished = false;
                             app.app_state = AppState::Playing(video_reader, None);
@@ -226,6 +231,7 @@ fn render_play_controls(app: &mut MyApp, ctx: &eframe::egui::Context) {
                                 Ok(video_reader) => {
                                     log::warn!("Retrying after playback error: {error}");
                                     app.active_speed = 1;
+                                    app.segment_started = false;
                                     app.finished = false;
                                     app.error = None;
                                     app.slider_pos = 0;
@@ -269,6 +275,7 @@ fn render_play_controls(app: &mut MyApp, ctx: &eframe::egui::Context) {
                                 .is_ok()
                             {
                                 app.active_speed = 1;
+                                app.segment_started = false;
                             }
                         }
                     });
@@ -277,7 +284,12 @@ fn render_play_controls(app: &mut MyApp, ctx: &eframe::egui::Context) {
                 ui.end_row();
 
                 ui.label("Playback Speed");
-                ui.add(egui::Slider::new(&mut app.playback_speed, 1..=8));
+                if ui
+                    .add(egui::Slider::new(&mut app.playback_speed, 1..=8))
+                    .changed()
+                {
+                    apply_speed_to_started_segment(app);
+                }
                 ui.end_row();
             });
         });
@@ -311,7 +323,17 @@ fn render_play_controls(app: &mut MyApp, ctx: &eframe::egui::Context) {
     });
 }
 
-/// Applies the selected speed once a frame confirms that the current segment has started.
+/// Applies a slider change immediately if playback has started on the current segment.
+fn apply_speed_to_started_segment(app: &mut MyApp) {
+    if !app.segment_started {
+        return;
+    }
+    if let AppState::Playing(reader, _) = &app.app_state {
+        apply_playback_speed(reader, &mut app.playback_speed, &mut app.active_speed);
+    }
+}
+
+/// Updates the pipeline rate and restores the previous selection if the seek fails.
 fn apply_playback_speed(reader: &VideoReader, selected_speed: &mut u32, active_speed: &mut u32) {
     if *selected_speed != *active_speed {
         match reader.set_playback_speed(f64::from(*selected_speed)) {
@@ -330,6 +352,7 @@ fn render_image(app: &mut MyApp, ui: &mut eframe::egui::Ui) {
         AppState::Playing(reader, texture_store) => {
             if let Some(image_frame) = match reader.try_grab_rgb8() {
                 Ok(Grab::Frame { image, .. }) => {
+                    app.segment_started = true;
                     apply_playback_speed(reader, &mut app.playback_speed, &mut app.active_speed);
                     Some(image)
                 }
@@ -495,6 +518,34 @@ mod tests {
             );
         }
         reader.close()?;
+        Ok(())
+    }
+
+    #[test]
+    fn speed_change_applies_between_frames() -> Result<(), Box<dyn std::error::Error>> {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/five-frames.mov");
+        let mut reader = open_player_reader(&path)?;
+        reader.start()?;
+        let mut app = MyApp {
+            playback_speed: 4,
+            app_state: AppState::Playing(reader, None),
+            ..MyApp::default()
+        };
+
+        apply_speed_to_started_segment(&mut app);
+        assert_eq!(app.active_speed, 1, "startup must wait for its first frame");
+
+        let reader = app.app_state.inner().ok_or("reader missing")?;
+        assert_eq!(wait_for_frame(reader)?, Duration::ZERO);
+        assert!(matches!(reader.try_grab_rgb8()?, Grab::Pending));
+        app.segment_started = true;
+
+        apply_speed_to_started_segment(&mut app);
+        assert_eq!(
+            app.active_speed, 4,
+            "speed should change before the next frame"
+        );
+        app.app_state.inner().ok_or("reader missing")?.close()?;
         Ok(())
     }
 
