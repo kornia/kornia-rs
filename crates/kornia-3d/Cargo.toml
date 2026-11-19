@@ -51,6 +51,7 @@ name = "bench_affine_ba"
 bincode = { workspace = true }
 cudarc = { workspace = true, optional = true }
 faer = { workspace = true }
+glam = { workspace = true }
 kiddo = { workspace = true }
 kornia-algebra = { workspace = true }
 kornia-image = { workspace = true }

@@ -7997,6 +7997,7 @@ dependencies = [
  "criterion 0.8.2",
  "cudarc 0.19.9",
  "faer 0.24.4",
+ "glam 0.33.11",
  "kiddo",
  "kornia-algebra",
  "kornia-image",

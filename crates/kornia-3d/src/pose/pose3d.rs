@@ -1,7 +1,7 @@
 //! Pose representation utilities.
 
 use kornia_algebra::linalg::svd::svd3_f64;
-use kornia_algebra::{Mat3F64, Vec3F64};
+use kornia_algebra::{Mat3F64, Mat4F64, QuatF64, Vec3F64, SE3F64, SO3F64};
 
 /// A rigid 3D pose that maps points from world frame to camera frame.
 ///
@@ -147,6 +147,165 @@ impl Pose3d {
     pub fn untransform_point(&self, point_cam: &Vec3F64) -> Vec3F64 {
         self.inverse().transform_point(point_cam)
     }
+
+    /// Create a pose from a 4x4 transformation matrix.
+    ///
+    /// Extracts the 3x3 linear rotation block and 3x1 translation vector,
+    /// ignoring the homogeneous bottom row `[0.0, 0.0, 0.0, 1.0]`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_3d::pose::Pose3d;
+    /// use kornia_algebra::Mat4F64;
+    ///
+    /// let m = Mat4F64::IDENTITY;
+    /// let pose = Pose3d::from_matrix(&m);
+    /// assert_eq!(pose, Pose3d::IDENTITY);
+    /// ```
+    pub fn from_matrix(m: &Mat4F64) -> Self {
+        let rotation = Mat3F64::from(glam::DMat3::from_cols(
+            m.0.x_axis.truncate(),
+            m.0.y_axis.truncate(),
+            m.0.z_axis.truncate(),
+        ));
+        let translation = Vec3F64::from(m.0.w_axis.truncate());
+        Self::new(rotation, translation)
+    }
+
+    /// Convert to a homogeneous 4x4 transformation matrix.
+    ///
+    /// Top-left 3x3 is rotation, top-right 3x1 is translation, and bottom row is `[0.0, 0.0, 0.0, 1.0]`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_3d::pose::Pose3d;
+    /// use kornia_algebra::Mat4F64;
+    ///
+    /// let pose = Pose3d::IDENTITY;
+    /// assert_eq!(pose.to_matrix(), Mat4F64::IDENTITY);
+    /// ```
+    pub fn to_matrix(&self) -> Mat4F64 {
+        Mat4F64::from(glam::DMat4::from_mat3_translation(
+            self.rotation.into(),
+            self.translation.into(),
+        ))
+    }
+
+    /// Create a pose from a quaternion and a translation vector.
+    ///
+    /// The input quaternion is explicitly normalized before constructing the rotation
+    /// matrix to ensure the rigid orthogonality invariant (`RᵀR = I`) is preserved.
+    ///
+    /// If `q` is non-finite or degenerate (zero norm), the resulting rotation matrix
+    /// contains non-finite entries, which can be checked via [`Pose3d::rotation_defect`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_3d::pose::Pose3d;
+    /// use kornia_algebra::{QuatF64, Vec3F64};
+    ///
+    /// let q = QuatF64::from_xyzw(0.0, 0.0, 0.0, 1.0);
+    /// let t = Vec3F64::new(1.0, 2.0, 3.0);
+    /// let pose = Pose3d::from_quat_translation(q, t);
+    /// assert_eq!(pose.translation, t);
+    /// assert!(pose.rotation_defect() < 1e-12);
+    /// ```
+    pub fn from_quat_translation(q: QuatF64, t: Vec3F64) -> Self {
+        Self::new(Mat3F64::from_quat(q.normalize()), t)
+    }
+
+    /// Extract the pose as a unit quaternion and a translation vector `(q, t)`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_3d::pose::Pose3d;
+    /// use kornia_algebra::{QuatF64, Vec3F64};
+    ///
+    /// let pose = Pose3d::IDENTITY;
+    /// let (q, t) = pose.to_quat_translation();
+    /// assert_eq!(q, QuatF64::from_xyzw(0.0, 0.0, 0.0, 1.0));
+    /// assert_eq!(t, Vec3F64::ZERO);
+    /// ```
+    pub fn to_quat_translation(&self) -> (QuatF64, Vec3F64) {
+        (QuatF64::from_mat3(&self.rotation), self.translation)
+    }
+
+    /// Heading (yaw) angle in radians about the +Z axis, in `(-π, π]`.
+    ///
+    /// Computed via `atan2(R[1][0], R[0][0])` conforming to the standard robotics navigation
+    /// convention (REP 103 / ISO 8855) where +X is forward and +Z is upward.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_3d::pose::Pose3d;
+    /// use std::f64::consts::FRAC_PI_2;
+    /// use kornia_algebra::{Mat3F64, Vec3F64};
+    ///
+    /// // 90 degree rotation about +Z maps +X (1, 0, 0) to +Y (0, 1, 0)
+    /// let r_z_90 = Mat3F64::from_cols(
+    ///     Vec3F64::new(0.0, 1.0, 0.0),
+    ///     Vec3F64::new(-1.0, 0.0, 0.0),
+    ///     Vec3F64::new(0.0, 0.0, 1.0),
+    /// );
+    /// let pose = Pose3d::new(r_z_90, Vec3F64::ZERO);
+    /// assert!((pose.yaw() - FRAC_PI_2).abs() < 1e-12);
+    /// ```
+    pub fn yaw(&self) -> f64 {
+        self.rotation.x_axis.y.atan2(self.rotation.x_axis.x)
+    }
+
+    /// Project the pose onto the horizontal ground plane (X-Y plane).
+    ///
+    /// Sets the rotation to a pure planar rotation about +Z by [`Pose3d::yaw`],
+    /// and drops the vertical component of translation by setting `translation.z = 0.0`.
+    ///
+    /// This operation is idempotent: `pose.planar().planar() == pose.planar()`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_3d::pose::Pose3d;
+    /// use kornia_algebra::{Mat3F64, Vec3F64};
+    ///
+    /// let pose = Pose3d::new(Mat3F64::IDENTITY, Vec3F64::new(1.0, 2.0, 5.0));
+    /// let planar = pose.planar();
+    /// assert_eq!(planar.translation, Vec3F64::new(1.0, 2.0, 0.0));
+    /// assert_eq!(planar.yaw(), 0.0);
+    /// ```
+    pub fn planar(&self) -> Self {
+        let yaw = self.yaw();
+        let rotation = Mat3F64::from(glam::DMat3::from_rotation_z(yaw));
+        let translation = Vec3F64::new(self.translation.x, self.translation.y, 0.0);
+        Self::new(rotation, translation)
+    }
+
+    /// Shortest geodesic rotation angle from the identity rotation in radians, in `[0, π]`.
+    ///
+    /// Uses the numerically stable quaternion formulation:
+    /// `2.0 * atan2(||v||, |w|)`
+    /// where `v` is the vector part and `w` is the scalar part of the extracted quaternion.
+    ///
+    /// This formulation handles the SU(2) double-cover (`q` and `-q` yield identical angles)
+    /// and avoids the catastrophic cancellation and domain errors of `acos((tr(R) - 1) / 2)`
+    /// near `θ ≈ 0`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_3d::pose::Pose3d;
+    ///
+    /// let pose = Pose3d::IDENTITY;
+    /// assert_eq!(pose.rotation_angle(), 0.0);
+    /// ```
+    pub fn rotation_angle(&self) -> f64 {
+        let q = QuatF64::from_mat3(&self.rotation);
+        2.0 * q.xyz().length().atan2(q.w.abs())
+    }
 }
 
 impl Default for Pose3d {
@@ -163,10 +322,54 @@ impl std::ops::Mul<Vec3F64> for Pose3d {
     }
 }
 
+impl From<glam::DAffine3> for Pose3d {
+    /// Convert from `glam::DAffine3` to `Pose3d`.
+    #[inline]
+    fn from(affine: glam::DAffine3) -> Self {
+        Self {
+            rotation: Mat3F64::from(affine.matrix3),
+            translation: Vec3F64::from(affine.translation),
+        }
+    }
+}
+
+impl From<Pose3d> for glam::DAffine3 {
+    /// Convert from `Pose3d` to `glam::DAffine3`.
+    #[inline]
+    fn from(pose: Pose3d) -> Self {
+        Self::from_mat3_translation(pose.rotation.into(), pose.translation.into())
+    }
+}
+
+impl From<SE3F64> for Pose3d {
+    /// Convert from `kornia_algebra::SE3F64` to `Pose3d`.
+    #[inline]
+    fn from(se3: SE3F64) -> Self {
+        Self::new(se3.r.matrix(), se3.t)
+    }
+}
+
+impl From<Pose3d> for SE3F64 {
+    /// Convert from `Pose3d` to `kornia_algebra::SE3F64`.
+    #[inline]
+    fn from(pose: Pose3d) -> Self {
+        Self::new(SO3F64::from_matrix(&pose.rotation), pose.translation)
+    }
+}
+
+impl From<Pose3d> for Mat4F64 {
+    /// Convert from `Pose3d` to a homogeneous 4x4 matrix `Mat4F64`.
+    #[inline]
+    fn from(pose: Pose3d) -> Self {
+        pose.to_matrix()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::Pose3d;
-    use kornia_algebra::{Mat3F64, Vec3F64, SO3F64};
+    use kornia_algebra::{Mat3F64, QuatF64, Vec3F64, SE3F64, SO3F64};
+    use std::f64::consts::{FRAC_PI_2, PI};
 
     #[test]
     fn test_identity() {
@@ -251,8 +454,6 @@ mod tests {
 
     #[test]
     fn test_inverse_of_a_scaled_pose_is_not_its_inverse() {
-        // Documents the rigid assumption of `inverse`: the scale survives the
-        // transpose, so pose ∘ pose⁻¹ carries scale² until orthonormalized.
         let pose = Pose3d::new(rotation() * 1.001, Vec3F64::new(1.0, 2.0, 3.0));
         assert!(pose.compose(&pose.inverse()).rotation_defect() > 1e-3);
         let rigid = pose.orthonormalized();
@@ -267,5 +468,194 @@ mod tests {
         let recomposed = delta.compose(&prev);
         assert!((recomposed.translation - next.translation).length() < 1e-10);
         assert_eq!(recomposed.rotation, next.rotation);
+    }
+
+    #[test]
+    fn test_glam_daffine3_roundtrip() {
+        let pose = Pose3d::new(rotation(), Vec3F64::new(1.5, -2.5, 3.5));
+        let affine: glam::DAffine3 = pose.into();
+        let recovered = Pose3d::from(affine);
+
+        assert_eq!(recovered.translation, pose.translation);
+        for (a, b) in recovered
+            .rotation
+            .to_cols_array()
+            .iter()
+            .zip(pose.rotation.to_cols_array())
+        {
+            assert!((a - b).abs() < 1e-15);
+        }
+    }
+
+    #[test]
+    fn test_matrix_roundtrip() {
+        let pose = Pose3d::new(rotation(), Vec3F64::new(-4.0, 5.0, 6.0));
+        let mat = pose.to_matrix();
+        let recovered = Pose3d::from_matrix(&mat);
+
+        assert_eq!(recovered.translation, pose.translation);
+        for (a, b) in recovered
+            .rotation
+            .to_cols_array()
+            .iter()
+            .zip(pose.rotation.to_cols_array())
+        {
+            assert!((a - b).abs() < 1e-15);
+        }
+
+        // Check homogeneous bottom row
+        let cols = mat.to_cols_array();
+        assert_eq!(cols[3], 0.0);
+        assert_eq!(cols[7], 0.0);
+        assert_eq!(cols[11], 0.0);
+        assert_eq!(cols[15], 1.0);
+    }
+
+    #[test]
+    fn test_se3f64_roundtrip() {
+        let pose = Pose3d::new(rotation(), Vec3F64::new(2.0, -1.0, 0.5));
+        let se3: SE3F64 = pose.into();
+        let recovered = Pose3d::from(se3);
+
+        assert_eq!(recovered.translation, pose.translation);
+        for (a, b) in recovered
+            .rotation
+            .to_cols_array()
+            .iter()
+            .zip(pose.rotation.to_cols_array())
+        {
+            assert!((a - b).abs() < 1e-14);
+        }
+
+        let pt = Vec3F64::new(1.0, 2.0, 3.0);
+        assert!((pose.transform_point(&pt) - (se3 * pt)).length() < 1e-14);
+    }
+
+    #[test]
+    fn test_quat_translation_roundtrip() {
+        let pose = Pose3d::new(rotation(), Vec3F64::new(0.1, -0.2, 0.3));
+        let (q, t) = pose.to_quat_translation();
+        assert_eq!(t, pose.translation);
+
+        let reconstructed = Pose3d::from_quat_translation(q, t);
+        assert_eq!(reconstructed.translation, pose.translation);
+        for (a, b) in reconstructed
+            .rotation
+            .to_cols_array()
+            .iter()
+            .zip(pose.rotation.to_cols_array())
+        {
+            assert!((a - b).abs() < 1e-14);
+        }
+    }
+
+    #[test]
+    fn test_from_quat_translation_normalizes_unnormalized_input() {
+        let unnormalized_q = QuatF64::from_xyzw(0.0, 0.0, 3.0, 4.0); // norm = 5.0
+        let t = Vec3F64::new(1.0, 2.0, 3.0);
+        let pose = Pose3d::from_quat_translation(unnormalized_q, t);
+
+        assert_eq!(pose.translation, t);
+        assert!(pose.rotation_defect() < 1e-12);
+        assert!((pose.rotation.determinant() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_yaw_ground_truth() {
+        // Identity has zero yaw
+        assert_eq!(Pose3d::IDENTITY.yaw(), 0.0);
+
+        // Yaw +90 degrees (pi/2)
+        let r_90 = Mat3F64::from(glam::DMat3::from_rotation_z(FRAC_PI_2));
+        let p_90 = Pose3d::new(r_90, Vec3F64::ZERO);
+        assert!((p_90.yaw() - FRAC_PI_2).abs() < 1e-14);
+
+        // Yaw -90 degrees (-pi/2)
+        let r_neg_90 = Mat3F64::from(glam::DMat3::from_rotation_z(-FRAC_PI_2));
+        let p_neg_90 = Pose3d::new(r_neg_90, Vec3F64::ZERO);
+        assert!((p_neg_90.yaw() - (-FRAC_PI_2)).abs() < 1e-14);
+
+        // Yaw +180 degrees (pi)
+        let r_180 = Mat3F64::from(glam::DMat3::from_rotation_z(PI));
+        let p_180 = Pose3d::new(r_180, Vec3F64::ZERO);
+        assert!((p_180.yaw().abs() - PI).abs() < 1e-14);
+    }
+
+    #[test]
+    fn test_yaw_with_roll_and_pitch() {
+        let yaw_expected = 0.75;
+        let r_z = glam::DMat3::from_rotation_z(yaw_expected);
+        let r_y = glam::DMat3::from_rotation_y(0.2); // pitch
+        let r_x = glam::DMat3::from_rotation_x(-0.3); // roll
+        let r_combined = Mat3F64::from(r_z * r_y * r_x);
+
+        let pose = Pose3d::new(r_combined, Vec3F64::ZERO);
+        assert!((pose.yaw() - yaw_expected).abs() < 1e-14);
+    }
+
+    #[test]
+    fn test_planar_projection() {
+        let pose = Pose3d::new(rotation(), Vec3F64::new(10.0, -20.0, 30.0));
+        let planar = pose.planar();
+
+        // Translation z is zeroed out, x and y are preserved
+        assert_eq!(planar.translation.x, 10.0);
+        assert_eq!(planar.translation.y, -20.0);
+        assert_eq!(planar.translation.z, 0.0);
+
+        // Yaw is preserved
+        assert!((planar.yaw() - pose.yaw()).abs() < 1e-14);
+
+        // Planar rotation has zero roll and pitch
+        let r = planar.rotation;
+        assert_eq!(r.x_axis.z, 0.0);
+        assert_eq!(r.y_axis.z, 0.0);
+        assert_eq!(r.z_axis.x, 0.0);
+        assert_eq!(r.z_axis.y, 0.0);
+        assert_eq!(r.z_axis.z, 1.0);
+
+        // Idempotency: planar().planar() == planar()
+        let idempotent = planar.planar();
+        assert_eq!(idempotent, planar);
+    }
+
+    #[test]
+    fn test_rotation_angle() {
+        // Identity has angle 0
+        assert_eq!(Pose3d::IDENTITY.rotation_angle(), 0.0);
+
+        // Known 90-degree rotation about X
+        let r_x_90 = Mat3F64::from(glam::DMat3::from_rotation_x(FRAC_PI_2));
+        let p_x_90 = Pose3d::new(r_x_90, Vec3F64::ZERO);
+        assert!((p_x_90.rotation_angle() - FRAC_PI_2).abs() < 1e-14);
+
+        // Known 180-degree rotation about Y
+        let r_y_180 = Mat3F64::from(glam::DMat3::from_rotation_y(PI));
+        let p_y_180 = Pose3d::new(r_y_180, Vec3F64::ZERO);
+        assert!((p_y_180.rotation_angle() - PI).abs() < 1e-14);
+
+        // Near-zero angle numerical accuracy (avoids acos catastrophic cancellation)
+        let eps = 1e-9;
+        let r_eps = Mat3F64::from(glam::DMat3::from_rotation_z(eps));
+        let p_eps = Pose3d::new(r_eps, Vec3F64::ZERO);
+        assert!((p_eps.rotation_angle() - eps).abs() < 1e-15);
+
+        // Near-pi angle numerical accuracy
+        let near_pi = PI - 1e-8;
+        let r_near_pi = Mat3F64::from(glam::DMat3::from_rotation_z(near_pi));
+        let p_near_pi = Pose3d::new(r_near_pi, Vec3F64::ZERO);
+        assert!((p_near_pi.rotation_angle() - near_pi).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_rotation_angle_double_cover() {
+        // Construct two quaternions differing only by sign
+        let q_pos = QuatF64::from_xyzw(0.0, 0.0, FRAC_PI_2.sin(), FRAC_PI_2.cos());
+        let q_neg = QuatF64::from_xyzw(0.0, 0.0, -FRAC_PI_2.sin(), -FRAC_PI_2.cos());
+
+        let p_pos = Pose3d::from_quat_translation(q_pos, Vec3F64::ZERO);
+        let p_neg = Pose3d::from_quat_translation(q_neg, Vec3F64::ZERO);
+
+        assert!((p_pos.rotation_angle() - p_neg.rotation_angle()).abs() < 1e-15);
     }
 }
