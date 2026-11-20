@@ -424,6 +424,9 @@ impl Drop for VideoWriter {
     }
 }
 
+/// Decoded samples retained before file decoding applies backpressure.
+const FILE_QUEUE_BUFFERS: u32 = 5;
+
 /// A struct for reading video files
 pub struct VideoReader(StreamCapture);
 
@@ -448,7 +451,7 @@ impl VideoReader {
             decodebin ! \
             videoconvert ! \
             video/x-raw,format={video_format} ! \
-            appsink name=sink sync=true"
+            appsink name=sink sync=false max-buffers={FILE_QUEUE_BUFFERS} drop=false"
         );
 
         let capture = StreamCapture::new(&pipeline)?;
@@ -480,10 +483,89 @@ impl VideoReader {
         Ok(())
     }
 
-    /// Gets the current FPS of the video
+    /// Gets negotiated FPS, or `None` before caps negotiation (zero means unknown rate).
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The video reader.
+    ///
+    /// # Returns
+    ///
+    /// Negotiated FPS; see [`StreamCapture::get_fps`].
+    ///
+    /// # Errors
+    ///
+    /// This method does not return errors.
     #[inline]
     pub fn get_fps(&self) -> Option<f64> {
         self.0.get_fps()
+    }
+
+    /// Sets whether file decoding is paced by the pipeline clock.
+    ///
+    /// Files decode without real-time pacing by default. The bounded queue applies
+    /// backpressure when the consumer is slower than the decoder.
+    ///
+    /// # Arguments
+    ///
+    /// * `realtime` - `true` to synchronize delivery with the pipeline clock.
+    ///
+    /// # Returns
+    ///
+    /// No value is returned.
+    ///
+    /// # Errors
+    ///
+    /// This method does not return errors.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use kornia_io::gstreamer::video::{VideoReader, ImageFormat};
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut reader = VideoReader::new("video.mov", ImageFormat::Rgb8)?;
+    /// reader.set_realtime(true);
+    /// reader.start()?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn set_realtime(&mut self, realtime: bool) {
+        self.0.set_sync(realtime);
+    }
+
+    /// Sets the maximum number of decoded frames queued by the file reader.
+    ///
+    /// The default is five frames. When the queue fills, decoding waits for the
+    /// consumer to grab a frame. Call this before [Self::start] or after [Self::close].
+    ///
+    /// # Arguments
+    ///
+    /// * `max_buffers` - Positive queue capacity in frames.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` once the new bound is configured.
+    ///
+    /// # Errors
+    ///
+    /// Returns [StreamCaptureError::InvalidConfig] wrapped in
+    /// [VideoReaderError::StreamCaptureError] if the capacity is zero or the
+    /// pipeline is running, paused, or transitioning.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use kornia_io::gstreamer::video::{ImageFormat, VideoReader};
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut reader = VideoReader::new("video.mov", ImageFormat::Rgb8)?;
+    /// reader.set_max_buffers(2)?;
+    /// reader.start()?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn set_max_buffers(&mut self, max_buffers: u32) -> Result<(), VideoReaderError> {
+        self.0.set_max_buffers(max_buffers)?;
+        Ok(())
     }
 
     /// Grabs the oldest decoded frame as an RGB image.
@@ -660,6 +742,8 @@ impl VideoReader {
     ///
     /// * `Some(Duration)` - The current position as a Duration from the start of the video in nanoseconds
     /// * `None` - If the position could not be determined
+    ///
+    /// This is pipeline position; use the PTS in [`Grab::Frame`] to timestamp a grabbed frame.
     pub fn get_pos(&self) -> Option<Duration> {
         let clock_time = self
             .0
@@ -690,8 +774,10 @@ impl VideoReader {
     ///
     /// A flushing seek ignores EOS messages from earlier segments while retaining EOS
     /// posted for the new seek, including messages posted before this method returns.
-    /// It also discards buffered frames from the previous segment. A non-flushing seek
-    /// preserves those frames.
+    /// It also discards buffered frames from the previous segment. File readers reject
+    /// non-flushing seeks without changing queued frames or EOS: waiting for a full queue
+    /// to drain could block the calling consumer. Include `FLUSH` in `seek_flags`.
+    /// See <https://gstreamer.freedesktop.org/documentation/additional/design/seeking.html>.
     ///
     /// # Arguments
     ///
@@ -705,7 +791,9 @@ impl VideoReader {
     ///
     /// # Errors
     ///
-    /// Returns an error if the pipeline rejects the seek or the status lock is poisoned.
+    /// Returns [`StreamCaptureError::InvalidConfig`] wrapped in
+    /// [`VideoReaderError::StreamCaptureError`] if `seek_flags` lacks `FLUSH`, or an error
+    /// if the pipeline rejects the seek or the status lock is poisoned.
     ///
     /// # Example
     ///
@@ -927,8 +1015,8 @@ mod tests {
         let start = std::time::Instant::now();
         while start.elapsed() < Duration::from_secs(10) {
             match reader.try_grab_gray8()? {
-                Grab::Frame(frame) if image.is_none() => image = Some(frame),
-                Grab::Frame(_) => {}
+                Grab::Frame { image: frame, .. } if image.is_none() => image = Some(frame),
+                Grab::Frame { .. } => {}
                 Grab::Eos => {
                     saw_eos = true;
                     break;
@@ -954,7 +1042,7 @@ mod tests {
         let start = std::time::Instant::now();
         while start.elapsed() < Duration::from_secs(10) {
             match reader.try_grab_rgb8()? {
-                Grab::Frame(image) => values.push(image.as_slice()[0]),
+                Grab::Frame { image, .. } => values.push(image.as_slice()[0]),
                 Grab::Eos => {
                     assert!(
                         reader.stream_error().is_none(),
@@ -1166,6 +1254,10 @@ mod tests {
         write_and_close(writer, &[80])?;
 
         let mut reader = VideoReader::new(&file_path, ImageFormat::Rgb8)?;
+        assert!(matches!(
+            reader.seek(gstreamer::SeekFlags::FLUSH, Duration::ZERO),
+            Err(VideoReaderError::SeekError)
+        ));
         reader.start()?;
         assert_eq!(read_frame_values(&mut reader)?, [80]);
         // A stopped pipeline cannot seek; the EOS seen while reading must survive the failure.
@@ -1200,7 +1292,12 @@ mod tests {
         assert!(reader.is_eos());
 
         // No FLUSH: GStreamer keeps its EOS state, so the reader must keep reporting it.
-        let _ = reader.seek(gstreamer::SeekFlags::ACCURATE, Duration::ZERO);
+        assert!(matches!(
+            reader.seek(gstreamer::SeekFlags::ACCURATE, Duration::ZERO),
+            Err(VideoReaderError::StreamCaptureError(
+                StreamCaptureError::InvalidConfig(_)
+            ))
+        ));
         assert!(reader.is_eos(), "a non-flushing seek cleared EOS");
         assert!(
             !matches!(reader.try_grab_rgb8()?, Grab::Pending),
@@ -1662,12 +1759,12 @@ mod tests {
                         loop {
                             let value = match grayscale {
                                 false => match reader.try_grab_rgb8()? {
-                                    Grab::Frame(image) => Some(image.as_slice()[0]),
+                                    Grab::Frame { image, .. } => Some(image.as_slice()[0]),
                                     Grab::Pending => None,
                                     Grab::Eos => return Err("unexpected EOS".into()),
                                 },
                                 true => match reader.try_grab_gray8()? {
-                                    Grab::Frame(image) => Some(image.as_slice()[0]),
+                                    Grab::Frame { image, .. } => Some(image.as_slice()[0]),
                                     Grab::Pending => None,
                                     Grab::Eos => return Err("unexpected EOS".into()),
                                 },
@@ -1709,7 +1806,7 @@ mod tests {
     #[test]
     fn video_reader_flush_preserves_other_seek_behaviour() -> Result<(), Box<dyn std::error::Error>>
     {
-        for operation in ["non-flushing", "failed", "speed"] {
+        for operation in ["non-flushing", "speed"] {
             let tmp = tempfile::tempdir()?;
             let path = tmp.path().join("seek-controls.mov");
             let mut writer = VideoWriter::from_pipeline_description(
@@ -1720,7 +1817,7 @@ mod tests {
                 SIZE,
             )?;
             writer.start()?;
-            write_and_close(writer, &[0, 20, 40, 60, 80, 100, 120, 140, 160, 180])?;
+            write_and_close(writer, &[0, 20, 40])?;
             let mut reader = VideoReader::new(&path, ImageFormat::Rgb8)?;
             reader.start()?;
             let deadline = std::time::Instant::now() + Duration::from_secs(10);
@@ -1731,16 +1828,15 @@ mod tests {
                 );
                 std::thread::sleep(Duration::from_millis(1));
             }
-            // All ten frames were decoded; the five-frame ring holds values 100..=180.
+            // This clip fits in the bounded queue; EOS does not require discarding samples.
             match operation {
-                "failed" => {
-                    reader.0.pipeline.set_state(gstreamer::State::Null)?;
-                    assert!(reader
-                        .seek(gstreamer::SeekFlags::FLUSH, Duration::ZERO)
-                        .is_err());
-                }
                 "non-flushing" => {
-                    let _ = reader.seek(gstreamer::SeekFlags::ACCURATE, Duration::ZERO);
+                    assert!(matches!(
+                        reader.seek(gstreamer::SeekFlags::ACCURATE, Duration::ZERO),
+                        Err(VideoReaderError::StreamCaptureError(
+                            StreamCaptureError::InvalidConfig(_)
+                        ))
+                    ));
                 }
                 "speed" => reader.set_playback_speed(2.0)?,
                 _ => unreachable!(),
@@ -1750,19 +1846,276 @@ mod tests {
             if operation == "speed" {
                 // The rate change seeks at EOS: no pre-seek frame may be returned.
                 assert!(
-                    !matches!(first, Grab::Frame(_)),
+                    !matches!(first, Grab::Frame { .. }),
                     "rate change retained an old frame"
                 );
             } else {
-                let Grab::Frame(image) = first else {
+                let Grab::Frame { image, .. } = first else {
                     panic!("{operation} seek discarded buffered data");
                 };
                 assert_eq!(
                     image.as_slice()[0],
-                    100,
+                    0,
                     "{operation} seek changed buffered data"
                 );
             }
+        }
+        Ok(())
+    }
+    /// Full bounded file queues must be flushable without a consumer draining them first.
+    #[test]
+    fn video_reader_full_queue_seek_reset_and_speed() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let path = tmp.path().join("full-queue.mov");
+        let mut writer =
+            VideoWriter::from_pipeline_description(RAW_MOV, &path, ImageFormat::Rgb8, 30, SIZE)?;
+        writer.start()?;
+        let expected: Vec<u8> = (0..20).map(|i| i * 10).collect();
+        write_and_close(writer, &expected)?;
+        for operation in ["seek", "reset", "speed"] {
+            let mut reader = VideoReader::new(&path, ImageFormat::Rgb8)?;
+            let sink = reader.0.pipeline.by_name("sink").ok_or("missing sink")?;
+            let pad = sink.static_pad("sink").ok_or("missing pad")?;
+            let count = std::sync::atomic::AtomicUsize::new(0);
+            let (full_tx, full_rx) = std::sync::mpsc::channel();
+            let probe = pad
+                .add_probe(gstreamer::PadProbeType::BUFFER, move |_, _| {
+                    // Five buffers have reached the sink; this sixth one encounters backpressure.
+                    if count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 5 {
+                        let _ = full_tx.send(());
+                    }
+                    gstreamer::PadProbeReturn::Ok
+                })
+                .ok_or("missing probe")?;
+            reader.start()?;
+            full_rx.recv_timeout(Duration::from_secs(5))?;
+            pad.remove_probe(probe);
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || -> Result<(), String> {
+                match operation {
+                    "seek" => reader.seek(
+                        gstreamer::SeekFlags::FLUSH | gstreamer::SeekFlags::ACCURATE,
+                        Duration::ZERO,
+                    ),
+                    "reset" => reader.reset(),
+                    "speed" => reader.set_playback_speed(2.0),
+                    _ => unreachable!(),
+                }
+                .map_err(|e| e.to_string())?;
+                if operation != "speed" {
+                    assert_eq!(
+                        read_frame_values(&mut reader).map_err(|e| e.to_string())?,
+                        (0..20).map(|i| i * 10).collect::<Vec<u8>>()
+                    );
+                }
+                reader.close().map_err(|e| e.to_string())?;
+                let _ = done_tx.send(());
+                Ok(())
+            });
+            done_rx.recv_timeout(Duration::from_secs(10))?;
+            worker.join().map_err(|_| "queue operation panicked")??;
+        }
+        Ok(())
+    }
+
+    /// Rejected non-flushing seeks must return even while file decoding is backpressured.
+    #[test]
+    fn video_reader_rejects_non_flushing_seek_with_full_queue(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        const CHILD_ENV: &str = "KORNIA_NON_FLUSHING_SEEK_TEST_CHILD";
+        if std::env::var_os(CHILD_ENV).is_none() {
+            // GStreamer may also block cleanup after a deadlock; enforce the deadline outside it.
+            let mut child = std::process::Command::new(std::env::current_exe()?)
+                .args(["--exact", "gstreamer::video::tests::video_reader_rejects_non_flushing_seek_with_full_queue", "--nocapture"])
+                .env(CHILD_ENV, "1")
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()?;
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            loop {
+                if child.try_wait()?.is_some() {
+                    break;
+                }
+                if std::time::Instant::now() >= deadline {
+                    child.kill()?;
+                    let output = child.wait_with_output()?;
+                    panic!(
+                        "non-flushing seek test timed out: {}",
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let output = child.wait_with_output()?;
+            assert!(
+                output.status.success(),
+                "seek regression failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return Ok(());
+        }
+        let tmp = tempfile::tempdir()?;
+        let path = tmp.path().join("non-flushing-full.mov");
+        let mut writer =
+            VideoWriter::from_pipeline_description(RAW_MOV, &path, ImageFormat::Rgb8, 30, SIZE)?;
+        writer.start()?;
+        let expected: Vec<u8> = (0..20).map(|i| i * 10).collect();
+        write_and_close(writer, &expected)?;
+        let mut reader = VideoReader::new(&path, ImageFormat::Rgb8)?;
+        let sink = reader
+            .0
+            .pipeline
+            .by_name("sink")
+            .ok_or("missing sink")?
+            .downcast::<gstreamer_app::AppSink>()
+            .map_err(|_| "sink is not an appsink")?;
+        assert_eq!(sink.max_buffers(), super::FILE_QUEUE_BUFFERS);
+        assert!(matches!(
+            reader.set_max_buffers(0),
+            Err(VideoReaderError::StreamCaptureError(
+                StreamCaptureError::InvalidConfig(_)
+            ))
+        ));
+        let capacity = 2;
+        reader.set_max_buffers(capacity)?;
+        assert_eq!(sink.max_buffers(), capacity);
+        let pad = sink.static_pad("sink").ok_or("missing sink pad")?;
+        let count = std::sync::atomic::AtomicUsize::new(0);
+        let (full_tx, full_rx) = std::sync::mpsc::channel();
+        let probe = pad
+            .add_probe(gstreamer::PadProbeType::BUFFER, move |_, _| {
+                if count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == capacity as usize {
+                    let _ = full_tx.send(());
+                }
+                gstreamer::PadProbeReturn::Ok
+            })
+            .ok_or("missing probe")?;
+        reader.start()?;
+        full_rx.recv_timeout(Duration::from_secs(5))?;
+        pad.remove_probe(probe);
+        assert!(matches!(
+            reader.set_max_buffers(capacity + 1),
+            Err(VideoReaderError::StreamCaptureError(
+                StreamCaptureError::InvalidConfig(_)
+            ))
+        ));
+        assert_eq!(sink.max_buffers(), capacity);
+        let result = reader.seek(gstreamer::SeekFlags::ACCURATE, Duration::ZERO);
+        let Err(VideoReaderError::StreamCaptureError(StreamCaptureError::InvalidConfig(message))) =
+            result
+        else {
+            panic!("non-flushing file seek was not rejected")
+        };
+        assert!(message.contains("FLUSH"));
+        assert!(!reader.is_eos(), "rejected seek modified terminal state");
+        assert_eq!(
+            read_frame_values(&mut reader)?,
+            expected,
+            "rejected seek discarded frames"
+        );
+        reader.reset()?;
+        assert_eq!(
+            read_frame_values(&mut reader)?,
+            expected,
+            "flushing reset stopped working"
+        );
+        reader.close()?;
+        Ok(())
+    }
+
+    #[test]
+    fn video_reader_frame_pts_survive_replay_and_match_pixels(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let path = tmp.path().join("pts.mov");
+        let mut writer =
+            VideoWriter::from_pipeline_description(RAW_MOV, &path, ImageFormat::Rgb8, 30, SIZE)?;
+        writer.start()?;
+        write_and_close(writer, &[0, 40, 80, 120, 160])?;
+        for grayscale in [false, true] {
+            let mut reader = VideoReader::new(
+                &path,
+                if grayscale {
+                    ImageFormat::Mono8
+                } else {
+                    ImageFormat::Rgb8
+                },
+            )?;
+            reader.start()?;
+            for replay in 0..3 {
+                if replay == 1 {
+                    reader.reset()?;
+                }
+                if replay == 2 {
+                    reader.seek(
+                        gstreamer::SeekFlags::FLUSH | gstreamer::SeekFlags::ACCURATE,
+                        Duration::ZERO,
+                    )?;
+                }
+                let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                let mut frames = Vec::new();
+                loop {
+                    let frame = if grayscale {
+                        match reader.try_grab_gray8()? {
+                            Grab::Frame { image, pts } => Some((image.as_slice()[0], pts)),
+                            Grab::Eos => break,
+                            Grab::Pending => None,
+                        }
+                    } else {
+                        match reader.try_grab_rgb8()? {
+                            Grab::Frame { image, pts } => Some((image.as_slice()[0], pts)),
+                            Grab::Eos => break,
+                            Grab::Pending => None,
+                        }
+                    };
+                    if let Some(frame) = frame {
+                        frames.push(frame);
+                    } else {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "PTS replay did not finish"
+                    );
+                }
+                assert_eq!(frames.len(), 5);
+                for (i, (value, pts)) in frames.iter().enumerate() {
+                    assert_eq!(*value, i as u8 * 40);
+                    let expected = Duration::from_nanos(i as u64 * 1_000_000_000 / 30);
+                    assert!(
+                        pts.ok_or("missing PTS")?.abs_diff(expected) < Duration::from_micros(1)
+                    );
+                }
+            }
+            reader.close()?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn video_reader_realtime_is_optional() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let path = tmp.path().join("realtime.mov");
+        let mut writer =
+            VideoWriter::from_pipeline_description(RAW_MOV, &path, ImageFormat::Rgb8, 10, SIZE)?;
+        writer.start()?;
+        write_and_close(writer, &[0, 40, 80, 120, 160])?;
+        for realtime in [false, true] {
+            let mut reader = VideoReader::new(&path, ImageFormat::Rgb8)?;
+            let sink = reader.0.pipeline.by_name("sink").ok_or("missing sink")?;
+            assert!(!sink.property::<bool>("sync"));
+            reader.set_realtime(realtime);
+            assert_eq!(sink.property::<bool>("sync"), realtime);
+            let start = std::time::Instant::now();
+            reader.start()?;
+            assert_eq!(read_frame_values(&mut reader)?, [0, 40, 80, 120, 160]);
+            if realtime {
+                assert!(
+                    start.elapsed() >= Duration::from_millis(350),
+                    "real-time delivery was not paced"
+                );
+            }
+            reader.close()?;
         }
         Ok(())
     }

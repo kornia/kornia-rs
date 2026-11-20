@@ -8126,7 +8126,6 @@ dependencies = [
 name = "kornia-io"
 version = "0.2.0"
 dependencies = [
- "circular-buffer",
  "criterion 0.8.2",
  "gstreamer",
  "gstreamer-app",

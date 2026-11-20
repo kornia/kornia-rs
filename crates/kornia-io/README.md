@@ -77,6 +77,23 @@ For grayscale GStreamer streams, use `StreamCapture::grab_gray8()` to read
 `GRAY8` frames as `Image<u8, 1>`. For video files, configure `VideoReader` with
 `ImageFormat::Mono8` and call `VideoReader::grab_gray8()`.
 
+File readers use a bounded five-frame appsink queue with backpressure and decode
+without clock pacing by default. Call `reader.set_max_buffers(n)?` with a positive
+frame count before starting to override the queue bound. Call
+`reader.set_realtime(true)` for clock-paced playback. RTSP/V4L2 camera pipelines retain only the newest queued frame.
+`try_grab_rgb8()` and `try_grab_gray8()` return `Grab::Frame { image, pts }`;
+`pts: Option<Duration>` belongs to the returned buffer, unlike pipeline position.
+PTS may be absent or jump backwards after a seek/reset. Negotiated FPS is `None`
+until caps are available, and zero for an unknown/variable rate. File-reader seeks
+require `SeekFlags::FLUSH`; non-flushing requests return an error without discarding
+queued frames or changing EOS, avoiding a wait for the calling consumer. Legacy
+`grab_rgb8()`/`grab_gray8()` still return only the image.
+
+Custom `StreamCapture` pipelines keep explicit nonzero `max-buffers`, `drop`, and
+`sync` settings; a zero/unlimited buffer count is replaced with five. Queue bounds
+limit queued samples, not images retained by the caller. Samples queued before
+pausing remain pullable; resuming playback does not discard the queue.
+
 ## 🧩 Modules
 
 *   **`error`**: Error types for the I/O module.

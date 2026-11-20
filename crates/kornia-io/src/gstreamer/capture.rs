@@ -1,18 +1,11 @@
 use super::{image_from_gst_buffer, video::detailed_error};
 use crate::stream::error::StreamCaptureError;
-use circular_buffer::FixedCircularBuffer;
 use gstreamer::prelude::*;
 use kornia_image::Image;
-use std::sync::{Arc, Mutex};
-
-// utility struct to store the frame buffer
-struct FrameBuffer {
-    buffer: gstreamer::Buffer,
-    /// Caps of the sample. The frame geometry, format and layout are read from them when the
-    /// frame is grabbed, so problems with them are returned by the grab instead of ending the
-    /// stream on the streaming thread.
-    caps: gstreamer::Caps,
-}
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 #[derive(Clone, Copy)]
 enum GrabFormat {
@@ -61,14 +54,26 @@ impl EosStatus {
     }
 }
 
+/// Image and metadata extracted from one sample before terminal-state classification.
+struct CapturedFrame<const C: usize> {
+    image: Image<u8, C>,
+    pts: Option<Duration>,
+}
+
 /// The outcome of [`StreamCapture::try_grab_rgb8`] and [`StreamCapture::try_grab_gray8`].
 ///
 /// Unlike [`StreamCapture::grab_rgb8`] and [`StreamCapture::grab_gray8`], which report `None`
 /// for a frame that has not arrived yet, the end of the stream and a pipeline error alike, this
 /// enum keeps the three cases apart.
 pub enum Grab<const C: usize> {
-    /// A decoded frame.
-    Frame(Image<u8, C>),
+    /// A decoded frame and the timestamp carried by the same GStreamer buffer.
+    Frame {
+        /// The decoded image.
+        image: Image<u8, C>,
+        /// Buffer presentation timestamp, or `None` when absent.
+        /// It may jump backwards after a seek/reset; it is not a wall-clock timestamp.
+        pts: Option<Duration>,
+    },
     /// No frame is buffered yet; the stream is still running.
     Pending,
     /// The stream reached end-of-stream and every decoded frame has been grabbed.
@@ -101,14 +106,16 @@ impl From<gstreamer::State> for StreamerState {
     }
 }
 
+/// Frames retained when a custom pipeline leaves max-buffers unbounded.
+const DEFAULT_MAX_BUFFERS: u32 = 5;
+
 /// Represents a stream capture pipeline using GStreamer.
 pub struct StreamCapture {
     pub(crate) pipeline: gstreamer::Pipeline,
     /// The pipeline's bus. Auto-flush is off, so messages posted while the pipeline goes to null
     /// can still be read.
     bus: gstreamer::Bus,
-    circular_buffer: Arc<Mutex<FixedCircularBuffer<FrameBuffer, 5>>>,
-    fps: Arc<Mutex<gstreamer::Fraction>>,
+    appsink: gstreamer_app::AppSink,
     /// End-of-stream and errors seen on the bus, updated by its sync handler.
     status: Arc<Mutex<StreamStatus>>,
     /// Serialize seeks without blocking the bus handler on the status lock.
@@ -117,6 +124,11 @@ pub struct StreamCapture {
 
 impl StreamCapture {
     /// Creates a new StreamCapture instance with the given pipeline description.
+    ///
+    /// Samples are pulled from GStreamer's appsink queue. A zero `max-buffers` is replaced
+    /// by five; explicit nonzero bounds and the description's drop/sync settings are kept.
+    /// By default the queue applies backpressure. Use `max-buffers=1 drop=true` for live
+    /// latest-frame delivery. See <https://gstreamer.freedesktop.org/documentation/app/appsink.html>.
     ///
     /// # Arguments
     ///
@@ -129,7 +141,7 @@ impl StreamCapture {
     /// # Errors
     ///
     /// Returns an error if GStreamer initialization or pipeline construction fails, the named
-    /// appsink or bus is unavailable, or the appsink flush probe cannot be installed.
+    /// appsink or bus is unavailable.
     pub fn new(pipeline_desc: &str) -> Result<Self, StreamCaptureError> {
         if !gstreamer::INITIALIZED.load(std::sync::atomic::Ordering::Relaxed) {
             gstreamer::init()?;
@@ -145,8 +157,11 @@ impl StreamCapture {
             .dynamic_cast::<gstreamer_app::AppSink>()
             .map_err(StreamCaptureError::DowncastPipelineError)?;
 
-        let circular_buffer = Arc::new(Mutex::new(FixedCircularBuffer::new()));
-        let fps = Arc::new(Mutex::new(gstreamer::Fraction::new(1, 1)));
+        if appsink.max_buffers() == 0 {
+            appsink.set_max_buffers(DEFAULT_MAX_BUFFERS);
+        }
+        // EOS must be observable without a consumer draining the remaining samples.
+        appsink.set_wait_on_eos(false);
         let status = Arc::new(Mutex::new(StreamStatus::default()));
 
         let bus = pipeline.bus().ok_or(StreamCaptureError::BusError)?;
@@ -179,90 +194,69 @@ impl StreamCapture {
             }
         });
 
-        let sink_pad = appsink
-            .static_pad("sink")
-            .ok_or_else(|| StreamCaptureError::InvalidConfig("appsink has no sink pad".into()))?;
-        sink_pad
-            .add_probe(
-                gstreamer::PadProbeType::EVENT_DOWNSTREAM | gstreamer::PadProbeType::EVENT_FLUSH,
-                {
-                    let circular_buffer = circular_buffer.clone();
-                    move |_pad, info| {
-                        if info
-                            .event()
-                            .is_some_and(|event| event.type_() == gstreamer::EventType::FlushStop)
-                        {
-                            // FLUSH_STOP takes the sink pad's stream lock before probes run,
-                            // so an in-flight new_sample callback finishes before this clear.
-                            // The ordering is exercised by tests::flush_stop_discards_inflight_sample.
-                            // Background on GStreamer's FLUSH_START/STOP events:
-                            // https://gstreamer.freedesktop.org/documentation/additional/design/events.html
-                            let mut ring = match circular_buffer.lock() {
-                                Ok(ring) => ring,
-                                // Discard invalidated buffers even after a panic. Keep the
-                                // poison flag: subsequent grabs still return MutexPoisonError.
-                                Err(poisoned) => poisoned.into_inner(),
-                            };
-                            ring.clear();
-                        }
-                        gstreamer::PadProbeReturn::Ok
-                    }
-                },
-            )
-            .ok_or_else(|| {
-                StreamCaptureError::InvalidConfig("could not install appsink flush probe".into())
-            })?;
-
-        appsink.set_callbacks(
-            gstreamer_app::AppSinkCallbacks::builder()
-                .new_sample({
-                    let circular_buffer = circular_buffer.clone();
-                    let fps = fps.clone();
-                    let status = status.clone();
-
-                    move |sink| match Self::extract_frame_buffer(sink) {
-                        Ok((frame_buffer, fps_fraction)) => {
-                            circular_buffer
-                                .lock()
-                                .map_err(|_| gstreamer::FlowError::Error)?
-                                .push_back(frame_buffer);
-                            *fps.lock().map_err(|_| gstreamer::FlowError::Error)? = fps_fraction;
-                            Ok(gstreamer::FlowSuccess::Ok)
-                        }
-                        // Returning `Eos` here ended the stream silently; report the error to
-                        // the caller and let GStreamer post it on the bus.
-                        Err(err) => {
-                            if let Ok(mut status) = status.lock() {
-                                status.error.get_or_insert_with(|| {
-                                    gstreamer::glib::Error::new(
-                                        gstreamer::CoreError::Failed,
-                                        &err.to_string(),
-                                    )
-                                });
-                            }
-                            Err(gstreamer::FlowError::Error)
-                        }
-                    }
-                })
-                .build(),
-        );
-
         Ok(Self {
             pipeline,
             bus,
-            circular_buffer,
-            fps,
+            appsink,
             status,
             seek_lock: Mutex::new(()),
         })
     }
 
-    /// Gets the current fps of the stream, or `0.0` if the caps give no fixed framerate.
+    /// Gets the negotiated framerate from the appsink sink-pad caps.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The stream capture.
+    ///
+    /// # Returns
+    ///
+    /// `None` before negotiation, `Some(0.0)` for an unknown/variable rate, otherwise FPS.
+    ///
+    /// # Errors
+    ///
+    /// This method does not return errors.
     pub fn get_fps(&self) -> Option<f64> {
-        self.fps
-            .lock()
-            .ok()
-            .map(|fps| fps.numer() as f64 / fps.denom() as f64)
+        let caps = self.appsink.static_pad("sink")?.current_caps()?;
+        let fps = caps
+            .structure(0)
+            .and_then(|s| s.get::<gstreamer::Fraction>("framerate").ok())
+            .unwrap_or_else(|| gstreamer::Fraction::new(0, 1));
+        Some(fps.numer() as f64 / fps.denom() as f64)
+    }
+
+    /// Sets whether the appsink synchronizes sample delivery with the pipeline clock.
+    ///
+    /// # Arguments
+    ///
+    /// * `sync` - Whether to synchronize with the pipeline clock.
+    ///
+    /// # Returns
+    ///
+    /// No value is returned.
+    ///
+    /// # Errors
+    ///
+    /// This method does not return errors.
+    pub(crate) fn set_sync(&self, sync: bool) {
+        self.appsink.set_property("sync", sync);
+    }
+
+    /// Sets the bounded appsink capacity while the pipeline is stopped.
+    pub(crate) fn set_max_buffers(&mut self, max_buffers: u32) -> Result<(), StreamCaptureError> {
+        if max_buffers == 0 {
+            return Err(StreamCaptureError::InvalidConfig(
+                "max_buffers must be greater than zero".into(),
+            ));
+        }
+        let (_, current, pending) = self.pipeline.state(gstreamer::ClockTime::ZERO);
+        if current != gstreamer::State::Null || pending != gstreamer::State::VoidPending {
+            return Err(StreamCaptureError::InvalidConfig(
+                "max_buffers must be configured while the pipeline is stopped".into(),
+            ));
+        }
+        self.appsink.set_max_buffers(max_buffers);
+        Ok(())
     }
 
     /// Gets the current state of the stream pipeline
@@ -327,10 +321,6 @@ impl StreamCapture {
                 .lock()
                 .map_err(|_| StreamCaptureError::MutexPoisonError)? = StreamStatus::default();
         }
-        self.circular_buffer
-            .lock()
-            .map_err(|_| StreamCaptureError::MutexPoisonError)?
-            .clear();
         self.pipeline.set_state(gstreamer::State::Playing)?;
         Ok(())
     }
@@ -357,10 +347,11 @@ impl StreamCapture {
     /// [`StreamCaptureError::InvalidImageFormat`] if the frames are not `RGB` (e.g. `BGR`,
     /// `RGBx`, or an encoded format such as `image/jpeg`) or their size or layout is invalid,
     /// [`StreamCaptureError::BufferSizeMismatch`] if the buffer is too small for the frame,
-    /// [`StreamCaptureError::GetBufferError`] if it cannot be mapped, and
-    /// [`StreamCaptureError::MutexPoisonError`] if the frame queue lock is poisoned.
+    /// [`StreamCaptureError::GetBufferError`] if the sample has no buffer or cannot be mapped.
     pub fn grab_rgb8(&mut self) -> Result<Option<Image<u8, 3>>, StreamCaptureError> {
-        self.grab_image::<3>(GrabFormat::Rgb8)
+        Ok(self
+            .grab_image::<3>(GrabFormat::Rgb8)?
+            .map(|frame| frame.image))
     }
 
     /// Grabs the oldest captured frame as a grayscale image.
@@ -402,29 +393,24 @@ impl StreamCapture {
     /// # }
     /// ```
     pub fn grab_gray8(&mut self) -> Result<Option<Image<u8, 1>>, StreamCaptureError> {
-        self.grab_image::<1>(GrabFormat::Gray8)
+        Ok(self
+            .grab_image::<1>(GrabFormat::Gray8)?
+            .map(|frame| frame.image))
     }
 
-    /// Pops the oldest buffered frame and converts it to an image with `C` channels.
+    /// Pulls a queued sample without waiting and maps the image and its own PTS.
     fn grab_image<const C: usize>(
         &mut self,
         grab_format: GrabFormat,
-    ) -> Result<Option<Image<u8, C>>, StreamCaptureError> {
-        // Keeps the bus queue bounded for callers that only ever use the grab methods; the sync
-        // handler has already recorded EOS and errors.
+    ) -> Result<Option<CapturedFrame<C>>, StreamCaptureError> {
         self.drain_bus();
-        // Pop in its own statement so the lock is released before the frame is mapped or
-        // repacked: the appsink streaming thread needs it to push the next sample.
-        let frame_buffer = self
-            .circular_buffer
-            .lock()
-            .map_err(|_| StreamCaptureError::MutexPoisonError)?
-            .pop_front();
-        let Some(FrameBuffer { buffer, caps }) = frame_buffer else {
+        let Some(sample) = self.appsink.try_pull_sample(gstreamer::ClockTime::ZERO) else {
             return Ok(None);
         };
-
-        let info = gstreamer_video::VideoInfo::from_caps(&caps)
+        let caps = sample.caps().ok_or_else(|| {
+            StreamCaptureError::GetCapsError("Failed to get the caps".to_string())
+        })?;
+        let info = gstreamer_video::VideoInfo::from_caps(caps)
             .map_err(|e| StreamCaptureError::GetCapsError(e.to_string()))?;
         let expected_format: gstreamer_video::VideoFormat = grab_format.into();
         if info.format() != expected_format {
@@ -436,13 +422,21 @@ impl StreamCapture {
 
         // Zero-copy when the rows are tightly packed; otherwise the padded rows are copied
         // into a packed image. See `image_from_gst_buffer`.
+        let buffer = sample
+            .buffer_owned()
+            .ok_or(StreamCaptureError::GetBufferError)?;
+        let pts = buffer
+            .pts()
+            .map(|time| Duration::from_nanos(time.nseconds()));
         let image = image_from_gst_buffer(buffer, &info)?;
 
-        Ok(Some(image))
+        Ok(Some(CapturedFrame { image, pts }))
     }
 
     /// Tries to grab the oldest captured frame as an RGB image, distinguishing a frame from
     /// "no frame yet", end-of-stream and a pipeline error.
+    ///
+    /// Grabs do not wait. Samples already queued before pausing remain pullable.
     ///
     /// Frames decoded before end-of-stream or before an error are returned first; the terminal
     /// state is reported once the buffer is empty. A caller can therefore loop on this method
@@ -476,7 +470,7 @@ impl StreamCapture {
     /// capture.start()?;
     /// loop {
     ///     match capture.try_grab_rgb8()? {
-    ///         Grab::Frame(frame) => println!("{}x{}", frame.width(), frame.height()),
+    ///         Grab::Frame { image: frame, .. } => println!("{}x{}", frame.width(), frame.height()),
     ///         Grab::Eos => break,
     ///         Grab::Pending => std::thread::sleep(std::time::Duration::from_millis(1)),
     ///     }
@@ -516,8 +510,8 @@ impl StreamCapture {
         &mut self,
         grab_format: GrabFormat,
     ) -> Result<Grab<C>, StreamCaptureError> {
-        if let Some(image) = self.grab_image::<C>(grab_format)? {
-            return Ok(Grab::Frame(image));
+        if let Some(CapturedFrame { image, pts }) = self.grab_image::<C>(grab_format)? {
+            return Ok(Grab::Frame { image, pts });
         }
 
         let (error, eos) = {
@@ -530,8 +524,8 @@ impl StreamCapture {
         // The final frame can land between the empty check above and the terminal state below:
         // take one more look before reporting the end.
         if error.is_some() || eos {
-            if let Some(image) = self.grab_image::<C>(grab_format)? {
-                return Ok(Grab::Frame(image));
+            if let Some(CapturedFrame { image, pts }) = self.grab_image::<C>(grab_format)? {
+                return Ok(Grab::Frame { image, pts });
             }
         }
         if let Some(error) = error {
@@ -545,21 +539,12 @@ impl StreamCapture {
 
     /// Closes the stream capture pipeline.
     pub fn close(&self) -> Result<(), StreamCaptureError> {
-        // A pipeline that already ended, or failed, rejects a second end-of-stream event.
-        if !self.is_eos() && self.stream_error().is_none() {
-            let res = self.pipeline.send_event(gstreamer::event::Eos::new());
-            if !res {
-                return Err(StreamCaptureError::SendEosError);
-            }
-        }
+        // A serialized EOS can block behind a full backpressure queue with no consumer.
+        // Stopping directly wakes the producer and releases queued samples.
         self.pipeline.set_state(gstreamer::State::Null)?;
         // Auto-flush is off, so drop the messages posted while stopping: they retain references
         // to the pipeline elements.
         self.drain_bus();
-        self.circular_buffer
-            .lock()
-            .map_err(|_| StreamCaptureError::MutexPoisonError)?
-            .clear();
         Ok(())
     }
 
@@ -581,13 +566,21 @@ impl StreamCapture {
     ///
     /// # Errors
     ///
-    /// Returns a seek error if rejected, or a capture error if a lock is poisoned.
+    /// Returns a seek error if rejected, an invalid-configuration error for a non-flushing
+    /// seek on a non-dropping queue, or a capture error if a lock is poisoned.
     pub(crate) fn seek(
         &self,
         rate: f64,
         flags: gstreamer::SeekFlags,
         position: gstreamer::ClockTime,
     ) -> Result<(), super::error::VideoReaderError> {
+        // Occupancy can change before send_event; reject without inspecting or draining the queue.
+        if !flags.contains(gstreamer::SeekFlags::FLUSH) && !self.appsink.is_drop() {
+            return Err(StreamCaptureError::InvalidConfig(
+                "non-flushing seeks on a non-dropping queue can block; use SeekFlags::FLUSH".into(),
+            )
+            .into());
+        }
         let _seek = self
             .seek_lock
             .lock()
@@ -636,44 +629,6 @@ impl StreamCapture {
     fn drain_bus(&self) {
         while self.bus.pop().is_some() {}
     }
-
-    /// Extracts a frame buffer from the AppSink.
-    ///
-    /// # Arguments
-    ///
-    /// * `appsink` - The AppSink to extract the frame buffer from.
-    ///
-    /// # Returns
-    ///
-    /// A Result containing the extracted FrameBuffer or a StreamCaptureError.
-    fn extract_frame_buffer(
-        appsink: &gstreamer_app::AppSink,
-    ) -> Result<(FrameBuffer, gstreamer::Fraction), StreamCaptureError> {
-        let sample = appsink.pull_sample()?;
-
-        let caps = sample.caps().ok_or_else(|| {
-            StreamCaptureError::GetCapsError("Failed to get the caps".to_string())
-        })?;
-
-        // A missing framerate means a variable or unknown rate, which GStreamer writes as 0/1.
-        // Failing here would silently end the stream: errors in this callback never reach the
-        // caller, so every other check on the caps happens in `grab_image`.
-        let fps = caps
-            .structure(0)
-            .and_then(|structure| structure.get::<gstreamer::Fraction>("framerate").ok())
-            .unwrap_or_else(|| gstreamer::Fraction::new(0, 1));
-
-        let buffer = sample
-            .buffer_owned()
-            .ok_or_else(|| StreamCaptureError::GetBufferError)?;
-
-        let frame_buffer = FrameBuffer {
-            buffer,
-            caps: caps.to_owned(),
-        };
-
-        Ok((frame_buffer, fps))
-    }
 }
 
 impl Drop for StreamCapture {
@@ -688,116 +643,243 @@ impl Drop for StreamCapture {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{sync::mpsc, time::Duration};
+    use std::{sync::mpsc, time::Instant};
 
-    const CAPTURE_PIPELINE: &str = "appsrc name=src format=time ! video/x-raw,format=RGB,width=4,height=1,framerate=1/1 ! appsink name=sink sync=false async=false";
     const DEADLINE: Duration = Duration::from_secs(5);
+    const CAPTURE_PIPELINE: &str = "appsrc name=src format=time ! video/x-raw,format=RGB,width=4,height=1,framerate=1/1 ! appsink name=sink sync=false async=false";
 
-    /// The real constructor's probe must clear a frame queued by a callback already in flight.
-    #[test]
-    fn flush_stop_discards_inflight_sample() -> Result<(), Box<dyn std::error::Error>> {
-        let capture = StreamCapture::new(CAPTURE_PIPELINE)?;
-        let sink = capture
-            .pipeline
-            .by_name("sink")
-            .ok_or("missing sink")?
-            .downcast::<gstreamer_app::AppSink>()
-            .map_err(|_| "not appsink")?;
-        let source = capture
-            .pipeline
-            .by_name("src")
-            .ok_or("missing src")?
-            .downcast::<gstreamer_app::AppSrc>()
-            .map_err(|_| "not appsrc")?;
-        let pad = sink.static_pad("sink").ok_or("missing sink pad")?;
-        let (entered_tx, entered_rx) = mpsc::channel();
-        let (release_tx, release_rx) = mpsc::channel();
-        let release_rx = Mutex::new(release_rx);
-        sink.set_callbacks(
+    /// Notify only after appsink has enqueued each sample; never consume it in the callback.
+    fn queue_notifications(capture: &StreamCapture) -> mpsc::Receiver<()> {
+        let (tx, rx) = mpsc::channel();
+        capture.appsink.set_callbacks(
             gstreamer_app::AppSinkCallbacks::builder()
-                .new_sample({
-                    let ring = capture.circular_buffer.clone();
-                    move |sink| {
-                        let (frame, _) = StreamCapture::extract_frame_buffer(sink)
-                            .map_err(|_| gstreamer::FlowError::Error)?;
-                        entered_tx
-                            .send(())
-                            .map_err(|_| gstreamer::FlowError::Error)?;
-                        release_rx
-                            .lock()
-                            .map_err(|_| gstreamer::FlowError::Error)?
-                            .recv_timeout(DEADLINE)
-                            .map_err(|_| gstreamer::FlowError::Error)?;
-                        ring.lock()
-                            .map_err(|_| gstreamer::FlowError::Error)?
-                            .push_back(frame);
-                        Ok(gstreamer::FlowSuccess::Ok)
-                    }
+                .new_sample(move |_| {
+                    let _ = tx.send(());
+                    Ok(gstreamer::FlowSuccess::Ok)
                 })
                 .build(),
         );
-        let (stopped_tx, stopped_rx) = mpsc::channel();
-        pad.add_probe(
-            gstreamer::PadProbeType::EVENT_DOWNSTREAM | gstreamer::PadProbeType::EVENT_FLUSH,
-            move |_pad, info| {
-                if info
-                    .event()
-                    .is_some_and(|event| event.type_() == gstreamer::EventType::FlushStop)
-                {
-                    let _ = stopped_tx.send(());
-                }
-                gstreamer::PadProbeReturn::Ok
-            },
-        );
-        capture.start()?;
-        source.push_buffer(gstreamer::Buffer::from_mut_slice(vec![100u8; 12]))?;
-        entered_rx.recv_timeout(DEADLINE)?;
-        let (attempt_tx, attempt_rx) = mpsc::channel();
-        let flush = std::thread::spawn(move || {
-            let _ = attempt_tx.send(());
-            pad.send_event(gstreamer::event::FlushStart::new())
-                && pad.send_event(gstreamer::event::FlushStop::new(true))
-        });
-        attempt_rx.recv_timeout(DEADLINE)?;
-        // A descheduled flush thread can make this window vacuous; the final queue check still applies.
-        let early_stop = stopped_rx.recv_timeout(Duration::from_millis(100));
-        release_tx.send(())?;
-        stopped_rx.recv_timeout(DEADLINE)?;
-        let flushed = flush.join().map_err(|_| "flush thread panicked")?;
-        let empty = capture
-            .circular_buffer
-            .lock()
-            .map_err(|_| "poisoned queue")?
-            .is_empty();
-        capture.pipeline.set_state(gstreamer::State::Null)?;
-        assert!(
-            matches!(early_stop, Err(mpsc::RecvTimeoutError::Timeout)),
-            "flush-stop overtook a sample callback"
-        );
-        assert!(flushed, "flush events were rejected");
-        assert!(empty, "a pre-flush callback's frame survived flush-stop");
+        rx
+    }
+
+    fn source(
+        capture: &StreamCapture,
+    ) -> Result<gstreamer_app::AppSrc, Box<dyn std::error::Error>> {
+        Ok(capture
+            .pipeline
+            .by_name("src")
+            .ok_or("missing source")?
+            .downcast::<gstreamer_app::AppSrc>()
+            .map_err(|_| "not appsrc")?)
+    }
+
+    fn push_frame(source: &gstreamer_app::AppSrc, value: u8) -> Result<(), gstreamer::FlowError> {
+        let mut buffer = gstreamer::Buffer::from_mut_slice(vec![value; 12]);
+        buffer
+            .get_mut()
+            .unwrap()
+            .set_pts(gstreamer::ClockTime::from_seconds(value as u64));
+        source.push_buffer(buffer)?;
         Ok(())
     }
 
-    /// Clearing invalidated frames must not hide the queue's existing poison error.
     #[test]
-    fn flush_stop_keeps_queue_poison_visible() -> Result<(), Box<dyn std::error::Error>> {
-        let mut capture = StreamCapture::new(CAPTURE_PIPELINE)?;
+    fn bounded_queue_preserves_slow_consumer_frames_and_pts(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut capture =
+            StreamCapture::new(&format!("{CAPTURE_PIPELINE} max-buffers=2 drop=false"))?;
+        let queued = queue_notifications(&capture);
         capture.start()?;
-        let ring = capture.circular_buffer.clone();
-        assert!(std::thread::spawn(move || {
-            let _guard = ring.lock().unwrap();
-            panic!("poison the frame queue");
-        })
-        .join()
-        .is_err());
-        let sink = capture.pipeline.by_name("sink").ok_or("missing sink")?;
-        let pad = sink.static_pad("sink").ok_or("missing sink pad")?;
+        let src = source(&capture)?;
+        for value in 0..20 {
+            push_frame(&src, value)?;
+        }
+        src.end_of_stream()?;
+        queued.recv_timeout(DEADLINE)?;
+        queued.recv_timeout(DEADLINE)?;
+        // The consumer starts only after the bounded queue is full.
+        let mut values = Vec::new();
+        let deadline = Instant::now() + DEADLINE;
+        loop {
+            match capture.try_grab_rgb8()? {
+                Grab::Frame { image, pts } => {
+                    let value = image.as_slice()[0];
+                    assert_eq!(pts, Some(Duration::from_secs(value as u64)));
+                    values.push(value);
+                }
+                Grab::Eos => break,
+                Grab::Pending => std::thread::sleep(Duration::from_millis(1)),
+            }
+            assert!(Instant::now() < deadline, "queue did not drain to EOS");
+        }
+        capture.close()?;
+        assert_eq!(values, (0..20).collect::<Vec<u8>>());
+        Ok(())
+    }
+
+    #[test]
+    fn dropping_queue_keeps_latest_frame_without_a_consumer(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut capture =
+            StreamCapture::new(&format!("{CAPTURE_PIPELINE} max-buffers=1 drop=true"))?;
+        let queued = queue_notifications(&capture);
+        capture.start()?;
+        let src = source(&capture)?;
+        for value in 0..20 {
+            push_frame(&src, value)?;
+        }
+        for _ in 0..20 {
+            queued.recv_timeout(DEADLINE)?;
+        }
+        let Grab::Frame { image, pts } = capture.try_grab_rgb8()? else {
+            panic!("missing frame")
+        };
+        assert_eq!(image.as_slice(), &[19; 12]);
+        assert_eq!(pts, Some(Duration::from_secs(19)));
+        capture.close()?;
+        Ok(())
+    }
+
+    #[test]
+    fn flush_discards_queued_frames() -> Result<(), Box<dyn std::error::Error>> {
+        let mut capture = StreamCapture::new(CAPTURE_PIPELINE)?;
+        let queued = queue_notifications(&capture);
+        capture.start()?;
+        push_frame(&source(&capture)?, 100)?;
+        queued.recv_timeout(DEADLINE)?;
+        let pad = capture
+            .appsink
+            .static_pad("sink")
+            .ok_or("missing sink pad")?;
         assert!(pad.send_event(gstreamer::event::FlushStart::new()));
         assert!(pad.send_event(gstreamer::event::FlushStop::new(true)));
-        let result = capture.try_grab_rgb8();
-        capture.pipeline.set_state(gstreamer::State::Null)?;
-        assert!(matches!(result, Err(StreamCaptureError::MutexPoisonError)));
+        assert!(matches!(capture.try_grab_rgb8()?, Grab::Pending));
+        capture.close()?;
+        Ok(())
+    }
+
+    #[test]
+    fn failed_seek_keeps_queued_frames() -> Result<(), Box<dyn std::error::Error>> {
+        let mut capture = StreamCapture::new(CAPTURE_PIPELINE)?;
+        let queued = queue_notifications(&capture);
+        capture.start()?;
+        push_frame(&source(&capture)?, 10)?;
+        queued.recv_timeout(DEADLINE)?;
+        // Appsrc defaults to a non-seekable stream and rejects this seek without flushing.
+        assert!(capture
+            .seek(1.0, gstreamer::SeekFlags::FLUSH, gstreamer::ClockTime::ZERO)
+            .is_err());
+        let Grab::Frame { image, .. } = capture.try_grab_rgb8()? else {
+            panic!("seek discarded data")
+        };
+        assert_eq!(image.as_slice(), &[10; 12]);
+        capture.close()?;
+        Ok(())
+    }
+
+    #[test]
+    fn fps_comes_from_negotiated_caps() -> Result<(), Box<dyn std::error::Error>> {
+        for (rate, expected) in [("1/1", 1.0), ("0/1", 0.0), ("30000/1001", 30000.0 / 1001.0)] {
+            let capture = StreamCapture::new(&CAPTURE_PIPELINE.replace("1/1", rate))?;
+            assert_eq!(capture.get_fps(), None);
+            let queued = queue_notifications(&capture);
+            capture.start()?;
+            push_frame(&source(&capture)?, 0)?;
+            queued.recv_timeout(DEADLINE)?;
+            assert_eq!(capture.get_fps(), Some(expected));
+            capture.close()?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn absent_pts_and_pause_resume_keep_queued_frames() -> Result<(), Box<dyn std::error::Error>> {
+        let mut capture = StreamCapture::new(CAPTURE_PIPELINE)?;
+        let queued = queue_notifications(&capture);
+        capture.start()?;
+        let src = source(&capture)?;
+        // Appsrc may timestamp the first buffer at zero; a later absent PTS must stay absent.
+        push_frame(&src, 0)?;
+        queued.recv_timeout(DEADLINE)?;
+        assert!(matches!(capture.try_grab_rgb8()?, Grab::Frame { .. }));
+        src.push_buffer(gstreamer::Buffer::from_mut_slice(vec![7u8; 12]))?;
+        queued.recv_timeout(DEADLINE)?;
+        capture.pipeline.set_state(gstreamer::State::Paused)?;
+        capture
+            .pipeline
+            .state(gstreamer::ClockTime::from_seconds(5))
+            .0?;
+        let Grab::Frame { image, pts } = capture.try_grab_rgb8()? else {
+            panic!("pause discarded the sample")
+        };
+        assert_eq!(image.as_slice(), &[7; 12]);
+        assert_eq!(pts, None);
+        push_frame(&src, 8)?;
+        capture.start()?;
+        let deadline = Instant::now() + DEADLINE;
+        loop {
+            match capture.try_grab_rgb8()? {
+                Grab::Frame { image, pts } => {
+                    assert_eq!(image.as_slice(), &[8; 12]);
+                    assert_eq!(pts, Some(Duration::from_secs(8)));
+                    break;
+                }
+                Grab::Pending => std::thread::sleep(Duration::from_millis(1)),
+                Grab::Eos => panic!("pause discarded the sample"),
+            }
+            assert!(Instant::now() < deadline);
+        }
+        capture.close()?;
+        Ok(())
+    }
+
+    #[test]
+    fn default_bound_preserves_explicit_queue_settings() -> Result<(), Box<dyn std::error::Error>> {
+        let default = StreamCapture::new(CAPTURE_PIPELINE)?;
+        assert_eq!(default.appsink.max_buffers(), DEFAULT_MAX_BUFFERS);
+        assert!(!default.appsink.is_drop());
+        let custom = StreamCapture::new(&format!("{CAPTURE_PIPELINE} max-buffers=2 drop=true"))?;
+        assert_eq!(custom.appsink.max_buffers(), 2);
+        assert!(custom.appsink.is_drop());
+        Ok(())
+    }
+
+    #[test]
+    fn close_and_drop_release_a_full_queue() -> Result<(), Box<dyn std::error::Error>> {
+        for drop_capture in [false, true] {
+            let capture =
+                StreamCapture::new(&format!("{CAPTURE_PIPELINE} max-buffers=1 drop=false"))?;
+            let queued = queue_notifications(&capture);
+            let (blocked_tx, blocked_rx) = mpsc::channel();
+            let count = std::sync::atomic::AtomicUsize::new(0);
+            capture
+                .appsink
+                .static_pad("sink")
+                .ok_or("missing sink pad")?
+                .add_probe(gstreamer::PadProbeType::BUFFER, move |_, _| {
+                    if count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 1 {
+                        let _ = blocked_tx.send(());
+                    }
+                    gstreamer::PadProbeReturn::Ok
+                });
+            capture.start()?;
+            let src = source(&capture)?;
+            push_frame(&src, 0)?;
+            push_frame(&src, 1)?;
+            queued.recv_timeout(DEADLINE)?;
+            blocked_rx.recv_timeout(DEADLINE)?;
+            let (done_tx, done_rx) = mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                if drop_capture {
+                    drop(capture);
+                } else {
+                    capture.close().unwrap();
+                }
+                let _ = done_tx.send(());
+            });
+            done_rx.recv_timeout(DEADLINE)?;
+            worker.join().map_err(|_| "shutdown panicked")?;
+        }
         Ok(())
     }
 }
