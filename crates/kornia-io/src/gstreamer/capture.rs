@@ -242,6 +242,23 @@ impl StreamCapture {
         self.appsink.set_property("sync", sync);
     }
 
+    /// Sets the bounded appsink capacity while the pipeline is stopped.
+    pub(crate) fn set_max_buffers(&mut self, max_buffers: u32) -> Result<(), StreamCaptureError> {
+        if max_buffers == 0 {
+            return Err(StreamCaptureError::InvalidConfig(
+                "max_buffers must be greater than zero".into(),
+            ));
+        }
+        let (_, current, pending) = self.pipeline.state(gstreamer::ClockTime::ZERO);
+        if current != gstreamer::State::Null || pending != gstreamer::State::VoidPending {
+            return Err(StreamCaptureError::InvalidConfig(
+                "max_buffers must be configured while the pipeline is stopped".into(),
+            ));
+        }
+        self.appsink.set_max_buffers(max_buffers);
+        Ok(())
+    }
+
     /// Gets the current state of the stream pipeline
     pub fn get_state(&self) -> StreamerState {
         self.pipeline.current_state().into()

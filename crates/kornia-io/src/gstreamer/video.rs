@@ -533,6 +533,41 @@ impl VideoReader {
         self.0.set_sync(realtime);
     }
 
+    /// Sets the maximum number of decoded frames queued by the file reader.
+    ///
+    /// The default is five frames. When the queue fills, decoding waits for the
+    /// consumer to grab a frame. Call this before [Self::start] or after [Self::close].
+    ///
+    /// # Arguments
+    ///
+    /// * `max_buffers` - Positive queue capacity in frames.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` once the new bound is configured.
+    ///
+    /// # Errors
+    ///
+    /// Returns [StreamCaptureError::InvalidConfig] wrapped in
+    /// [VideoReaderError::StreamCaptureError] if the capacity is zero or the
+    /// pipeline is running, paused, or transitioning.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use kornia_io::gstreamer::video::{ImageFormat, VideoReader};
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut reader = VideoReader::new("video.mov", ImageFormat::Rgb8)?;
+    /// reader.set_max_buffers(2)?;
+    /// reader.start()?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn set_max_buffers(&mut self, max_buffers: u32) -> Result<(), VideoReaderError> {
+        self.0.set_max_buffers(max_buffers)?;
+        Ok(())
+    }
+
     /// Grabs the oldest decoded frame as an RGB image.
     ///
     /// The reader must have been created with [`ImageFormat::Rgb8`]. As with
@@ -1219,6 +1254,10 @@ mod tests {
         write_and_close(writer, &[80])?;
 
         let mut reader = VideoReader::new(&file_path, ImageFormat::Rgb8)?;
+        assert!(matches!(
+            reader.seek(gstreamer::SeekFlags::FLUSH, Duration::ZERO),
+            Err(VideoReaderError::SeekError)
+        ));
         reader.start()?;
         assert_eq!(read_frame_values(&mut reader)?, [80]);
         // A stopped pipeline cannot seek; the EOS seen while reading must survive the failure.
@@ -1923,20 +1962,29 @@ mod tests {
         let expected: Vec<u8> = (0..20).map(|i| i * 10).collect();
         write_and_close(writer, &expected)?;
         let mut reader = VideoReader::new(&path, ImageFormat::Rgb8)?;
-        let pad = reader
+        let sink = reader
             .0
             .pipeline
             .by_name("sink")
             .ok_or("missing sink")?
-            .static_pad("sink")
-            .ok_or("missing sink pad")?;
+            .downcast::<gstreamer_app::AppSink>()
+            .map_err(|_| "sink is not an appsink")?;
+        assert_eq!(sink.max_buffers(), super::FILE_QUEUE_BUFFERS);
+        assert!(matches!(
+            reader.set_max_buffers(0),
+            Err(VideoReaderError::StreamCaptureError(
+                StreamCaptureError::InvalidConfig(_)
+            ))
+        ));
+        let capacity = 2;
+        reader.set_max_buffers(capacity)?;
+        assert_eq!(sink.max_buffers(), capacity);
+        let pad = sink.static_pad("sink").ok_or("missing sink pad")?;
         let count = std::sync::atomic::AtomicUsize::new(0);
         let (full_tx, full_rx) = std::sync::mpsc::channel();
         let probe = pad
             .add_probe(gstreamer::PadProbeType::BUFFER, move |_, _| {
-                if count.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                    == super::FILE_QUEUE_BUFFERS as usize
-                {
+                if count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == capacity as usize {
                     let _ = full_tx.send(());
                 }
                 gstreamer::PadProbeReturn::Ok
@@ -1945,6 +1993,13 @@ mod tests {
         reader.start()?;
         full_rx.recv_timeout(Duration::from_secs(5))?;
         pad.remove_probe(probe);
+        assert!(matches!(
+            reader.set_max_buffers(capacity + 1),
+            Err(VideoReaderError::StreamCaptureError(
+                StreamCaptureError::InvalidConfig(_)
+            ))
+        ));
+        assert_eq!(sink.max_buffers(), capacity);
         let result = reader.seek(gstreamer::SeekFlags::ACCURATE, Duration::ZERO);
         let Err(VideoReaderError::StreamCaptureError(StreamCaptureError::InvalidConfig(message))) =
             result

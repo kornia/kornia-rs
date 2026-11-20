@@ -78,8 +78,9 @@ For grayscale GStreamer streams, use `StreamCapture::grab_gray8()` to read
 `ImageFormat::Mono8` and call `VideoReader::grab_gray8()`.
 
 File readers use a bounded five-frame appsink queue with backpressure and decode
-without clock pacing by default. Call `reader.set_realtime(true)` for clock-paced
-playback. RTSP/V4L2 camera pipelines retain only the newest queued frame.
+without clock pacing by default. Call `reader.set_max_buffers(n)?` with a positive
+frame count before starting to override the queue bound. Call
+`reader.set_realtime(true)` for clock-paced playback. RTSP/V4L2 camera pipelines retain only the newest queued frame.
 `try_grab_rgb8()` and `try_grab_gray8()` return `Grab::Frame { image, pts }`;
 `pts: Option<Duration>` belongs to the returned buffer, unlike pipeline position.
 PTS may be absent or jump backwards after a seek/reset. Negotiated FPS is `None`
