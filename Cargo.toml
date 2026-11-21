@@ -111,3 +111,8 @@ unsafe_code = "warn"
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# Third-party crates keep Cargo's default 16 codegen units: as one unit, faer
+# alone optimizes serially for minutes. ThinLTO still inlines across them.
+[profile.release.package."*"]
+codegen-units = 16
