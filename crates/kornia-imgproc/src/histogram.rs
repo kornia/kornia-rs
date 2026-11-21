@@ -78,7 +78,7 @@ pub fn compute_histogram(
     const ROWS_PER_TASK: usize = 16;
     let partial_hist = par_row_chunks(src_slice, width, ROWS_PER_TASK)
         .map(|chunk| {
-            let mut counts = [[0u32; 256]; 4];
+            let mut counts = [[0usize; 256]; 4];
             let mut quads = chunk.chunks_exact(4);
             for q in &mut quads {
                 counts[0][q[0] as usize] += 1;
@@ -91,7 +91,7 @@ pub fn compute_histogram(
             }
             let mut local_hist = vec![0_usize; num_bins];
             for (value, &bin) in bin_of.iter().enumerate() {
-                local_hist[bin] += counts.iter().map(|c| c[value] as usize).sum::<usize>();
+                local_hist[bin] += counts.iter().map(|c| c[value]).sum::<usize>();
             }
             local_hist
         })
