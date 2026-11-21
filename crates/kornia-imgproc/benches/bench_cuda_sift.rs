@@ -1,9 +1,10 @@
+use std::hint::black_box;
 use std::time::Instant;
 
 use argh::FromArgs;
 use cudarc::driver::CudaContext;
 use kornia_image::{Image, ImageSize};
-use kornia_imgproc::cuda::sift::{FirstOctave, SiftCuda, SiftCudaConfig};
+use kornia_imgproc::cuda::sift::{FirstOctave, SiftCuda, SiftCudaConfig, SiftMatcher, DESCR_LEN};
 
 /// Benchmark unified memory against explicit device copies for SIFT.
 #[derive(FromArgs)]
@@ -46,6 +47,30 @@ where
     Ok(start.elapsed().as_secs_f64() * 1e3 / iters as f64)
 }
 
+/// Best per-iteration milliseconds of each mode. Each iteration starts from the
+/// next mode, so no mode always runs first.
+fn best_of_rotated<const MODES: usize>(
+    warmup: usize,
+    iters: usize,
+    mut run: impl FnMut(usize) -> Result<(), Box<dyn std::error::Error>>,
+) -> Result<[f64; MODES], Box<dyn std::error::Error>> {
+    for mode in 0..MODES {
+        for _ in 0..warmup {
+            run(mode)?;
+        }
+    }
+    let mut best = [f64::INFINITY; MODES];
+    for iter in 0..iters {
+        for step in 0..MODES {
+            let mode = (iter + step) % MODES;
+            let start = Instant::now();
+            run(mode)?;
+            best[mode] = best[mode].min(start.elapsed().as_secs_f64() * 1e3);
+        }
+    }
+    Ok(best)
+}
+
 fn fill_ramp(buf: &mut [f32]) {
     let inv = 255.0 / buf.len() as f32;
     for (i, px) in buf.iter_mut().enumerate() {
@@ -79,6 +104,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     );
     println!("iters: {} (warmup {})\n", args.iters, args.warmup);
+
+    println!("\nmatching, best ms per pair of descriptor blocks");
+    println!(
+        "{:<8} {:>11} {:>11} {:>11}",
+        "rows", "forward", "cross-check", "match_smnn"
+    );
+    for rows in [512usize, 1024, 2048, 4096, 8192] {
+        let (a, b) = (match_descriptors(rows, 1), match_descriptors(rows, 2));
+        let (da, db) = (stream.clone_htod(&a)?, stream.clone_htod(&b)?);
+        let mut matcher = SiftMatcher::new(&stream, rows)?;
+        let [forward_ms, cross_check_ms, smnn_ms] =
+            best_of_rotated(args.warmup, args.iters, |mode| {
+                let (d1, d2) = (black_box(da.as_view()), black_box(db.as_view()));
+                if mode == 2 {
+                    black_box(matcher.match_smnn(&ctx, &stream, &d1, rows, &d2, rows, 0.95)?);
+                } else {
+                    black_box(matcher.match_descriptors(
+                        &ctx,
+                        &stream,
+                        &d1,
+                        rows,
+                        &d2,
+                        rows,
+                        0.95,
+                        mode == 1,
+                    )?);
+                }
+                Ok(())
+            })?;
+        println!("{rows:<8} {forward_ms:>11.3} {cross_check_ms:>11.3} {smnn_ms:>11.3}");
+    }
 
     println!("── per frame, end-to-end SIFT detect_and_compute() ───────────");
     println!(
@@ -134,4 +190,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+fn match_descriptors(rows: usize, mut seed: u64) -> Vec<f32> {
+    (0..rows * DESCR_LEN)
+        .map(|_| {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((seed >> 33) % 256) as f32
+        })
+        .collect()
 }

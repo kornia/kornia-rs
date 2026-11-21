@@ -485,6 +485,11 @@ where
 /// `fit` + `residual_batch` + `consensus` work distributes across the
 /// rayon thread pool.
 ///
+/// **Determinism:** for a given sampler state the result does not depend
+/// on the rayon pool size. Hypotheses are reduced in draw order, and draws
+/// at or past an adaptive cap that tightened earlier in the same batch are
+/// discarded, so the result equals scoring one draw at a time.
+///
 /// **When to pick this over [`run`]:** the rayon overhead (~1 µs per
 /// chunk dispatch) is worth it once `samples.len() ≳ 200` *and* the
 /// minimal solver is non-trivial (5-point E, EPnP). For F-8pt with
@@ -583,9 +588,18 @@ where
             })
             .collect();
 
-        // Reduce: pick best across the chunk, update global best.
-        for entry in chunk_results.into_iter().flatten() {
-            let (model, score, inlier_count, inliers) = entry;
+        // Reduce in draw order. Draws at or past a cap that tightened earlier
+        // in this chunk are discarded, so the result matches a chunk size of
+        // 1 and does not depend on the rayon pool size.
+        let mut evaluated: u32 = 0;
+        for entry in chunk_results {
+            if i + evaluated >= max_iters {
+                break;
+            }
+            evaluated += 1;
+            let Some((model, score, inlier_count, inliers)) = entry else {
+                continue;
+            };
             if score > best_score {
                 best_score = score;
                 best_model = Some(model);
@@ -605,7 +619,7 @@ where
             }
         }
 
-        i += this_chunk as u32;
+        i += evaluated;
     }
 
     RansacResult {
@@ -836,6 +850,89 @@ mod tests {
             par.score,
             serial.score
         );
+    }
+
+    /// 400 matches of a non-planar scene: 30% uniform outliers, ±1 px noise.
+    /// Unlike the noise-free `synthetic_with_outliers`, the best inlier
+    /// count keeps improving late, so the adaptive cap tightens inside the
+    /// last chunk of `run_parallel`.
+    fn noisy_matches_with_outliers() -> Vec<Match2d2d> {
+        let (f, cx, cy) = (800.0, 320.0, 240.0);
+        let (s, c) = 0.1f64.sin_cos();
+        let t = [-0.7, 0.0, 0.05];
+        let mut state = 25u64;
+        let mut uniform = || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut out = Vec::new();
+        while out.len() < 400 {
+            let (u, v, z) = (
+                20.0 + 600.0 * uniform(),
+                20.0 + 440.0 * uniform(),
+                4.0 + 8.0 * uniform(),
+            );
+            let p = [(u - cx) / f * z, (v - cy) / f * z, z];
+            let q = [
+                c * p[0] + s * p[2] + t[0],
+                p[1] + t[1],
+                -s * p[0] + c * p[2] + t[2],
+            ];
+            let (mut u2, mut v2) = (f * q[0] / q[2] + cx, f * q[1] / q[2] + cy);
+            if !((0.0..640.0).contains(&u2) && (0.0..480.0).contains(&v2)) {
+                continue;
+            }
+            if uniform() < 0.3 {
+                (u2, v2) = (640.0 * uniform(), 480.0 * uniform());
+            }
+            let x2 = Vec2F64::new(u2 + 2.0 * (uniform() - 0.5), v2 + 2.0 * (uniform() - 0.5));
+            out.push(Match2d2d::new(Vec2F64::new(u, v), x2));
+        }
+        out
+    }
+
+    /// Regression for #1204: the chunk size scales with the rayon pool
+    /// size, so draws past a cap that tightened mid-chunk used to change
+    /// `num_iters` (and here the model) with more than 8 threads.
+    #[test]
+    fn run_parallel_does_not_depend_on_pool_size() -> Result<(), Box<dyn std::error::Error>> {
+        let samples = noisy_matches_with_outliers();
+        let cfg = RansacConfig {
+            max_iters: 2000,
+            confidence: 0.95,
+            ..Default::default()
+        };
+        let run_with = |threads: usize| -> Result<_, rayon::ThreadPoolBuildError> {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()?;
+            Ok(pool.install(|| {
+                let mut sampler = UniformSampler::new(StdRng::seed_from_u64(0));
+                run_parallel(
+                    &crate::ransac::estimators::Fundamental8PointEstimator,
+                    &ThresholdConsensus { threshold: 1.0 },
+                    &mut sampler,
+                    &samples,
+                    &cfg,
+                )
+            }))
+        };
+        let reference = run_with(1)?;
+        assert!(reference.model.is_some());
+        for threads in [8, 16, 32] {
+            let res = run_with(threads)?;
+            assert_eq!(res.num_iters, reference.num_iters, "{threads} threads");
+            assert_eq!(
+                res.score.to_bits(),
+                reference.score.to_bits(),
+                "{threads} threads"
+            );
+            assert_eq!(res.inliers, reference.inliers, "{threads} threads");
+            assert_eq!(res.model, reference.model, "{threads} threads");
+        }
+        Ok(())
     }
 
     /// LO-RANSAC with `lo_every=5` should produce a strictly better

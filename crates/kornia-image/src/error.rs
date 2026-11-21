@@ -53,6 +53,15 @@ pub enum ImageError {
     #[error("Invalid sigma values {0} and {1}")]
     InvalidSigmaValue(f32, f32),
 
+    /// A threshold argument is NaN or negative.
+    #[error("invalid threshold `{name}` = {value}: must be non-negative and not NaN")]
+    InvalidThreshold {
+        /// Name of the offending argument.
+        name: &'static str,
+        /// The value that was passed.
+        value: f32,
+    },
+
     /// Error when the channel count is unsupported.
     #[error("Unsupported channel count {0}")]
     UnsupportedChannelCount(usize),
@@ -122,6 +131,15 @@ pub enum ImageError {
         expected: crate::image::PixelFormat,
         /// The pixel format the buffer was actually tagged with.
         got: crate::image::PixelFormat,
+    },
+
+    /// A radius is larger than an operation supports for the image size.
+    #[error("radius {radius} exceeds the supported maximum {max} for this image")]
+    RadiusTooLarge {
+        /// The requested radius.
+        radius: usize,
+        /// The largest radius the operation supports.
+        max: usize,
     },
 
     /// A DLPack tensor had an invalid or unsupported shape (e.g. ndim != 3, non-positive dim).

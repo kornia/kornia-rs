@@ -1,6 +1,7 @@
 use super::{
-    capture::StreamerState, error::VideoReaderError, set_location_property, StreamCapture,
-    StreamCaptureError,
+    capture::{Grab, StreamerState},
+    error::VideoReaderError,
+    set_location_property, StreamCapture, StreamCaptureError,
 };
 use gstreamer::prelude::*;
 use kornia_image::{Image, ImageSize};
@@ -387,7 +388,7 @@ impl VideoWriter {
 /// message on one line, e.g. `Internal data stream error. (gstbasesrc.c(3187): gst_base_src_loop
 /// (): /GstPipeline:pipeline0/GstAppSrc:src: streaming stopped, reason not-negotiated (-4))`. The
 /// GStreamer error domain and code are kept.
-fn detailed_error(
+pub(crate) fn detailed_error(
     msg: &gstreamer::Message,
     err: &gstreamer::message::Error,
 ) -> gstreamer::glib::Error {
@@ -501,11 +502,150 @@ impl VideoReader {
     /// Returns [`VideoReaderError::StreamCaptureError`] wrapping
     /// [`StreamCaptureError::InvalidImageFormat`] if the reader was created with another format,
     /// or any other error of [`StreamCapture::grab_rgb8`].
+    ///
+    /// `None` cannot distinguish "no frame yet" from end-of-stream or a pipeline error; use
+    /// [`Self::try_grab_rgb8`] or [`Self::is_eos`]/[`Self::stream_error`] to tell them apart.
     #[inline]
     pub fn grab_rgb8(&mut self) -> Result<Option<Image<u8, 3>>, VideoReaderError> {
         self.0
             .grab_rgb8()
             .map_err(VideoReaderError::StreamCaptureError)
+    }
+
+    /// Grabs the oldest decoded frame as a grayscale image.
+    ///
+    /// The reader must have been created with [`ImageFormat::Mono8`]. As with
+    /// [`StreamCapture::grab_gray8`], tightly packed rows are borrowed read-only and padded
+    /// rows are copied. Call `.clone()` for a writable image.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The mutable video reader.
+    ///
+    /// # Returns
+    ///
+    /// The oldest decoded image, or `None` if no frame is buffered yet.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VideoReaderError::StreamCaptureError`] wrapping
+    /// [`StreamCaptureError::InvalidImageFormat`] if the pipeline produces a different format,
+    /// or any other error of [`StreamCapture::grab_gray8`].
+    ///
+    /// `None` cannot distinguish "no frame yet" from end-of-stream or a pipeline error; use
+    /// [`Self::try_grab_gray8`] or [`Self::is_eos`]/[`Self::stream_error`] to tell them apart.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use kornia_io::gstreamer::video::{ImageFormat, VideoReader};
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut reader = VideoReader::new("input.mp4", ImageFormat::Mono8)?;
+    /// reader.start()?;
+    /// if let Some(frame) = reader.grab_gray8()? {
+    ///     println!("{}x{}", frame.width(), frame.height());
+    /// }
+    /// reader.close()?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[inline]
+    pub fn grab_gray8(&mut self) -> Result<Option<Image<u8, 1>>, VideoReaderError> {
+        self.0
+            .grab_gray8()
+            .map_err(VideoReaderError::StreamCaptureError)
+    }
+
+    /// Tries to grab the oldest decoded RGB frame, distinguishing a frame from "no frame yet",
+    /// end-of-stream and a pipeline error.
+    ///
+    /// This is the loop-safe counterpart of [`Self::grab_rgb8`]: `Grab::Frame` continues,
+    /// `Grab::Eos` stops, `Grab::Pending` backs off, and a failed pipeline is returned as
+    /// `Err(VideoReaderError::StreamCaptureError(StreamCaptureError::StreamError(_)))`.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The mutable video reader.
+    ///
+    /// # Returns
+    ///
+    /// [`Grab::Frame`] with the oldest decoded frame, [`Grab::Pending`] when none is buffered
+    /// yet, or [`Grab::Eos`] once the video has ended and no frame is left.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VideoReaderError::StreamCaptureError`] wrapping
+    /// [`StreamCaptureError::StreamError`] if the pipeline posted an error (e.g. the file cannot
+    /// be decoded), or any other error of [`StreamCapture::try_grab_rgb8`].
+    #[inline]
+    pub fn try_grab_rgb8(&mut self) -> Result<Grab<3>, VideoReaderError> {
+        self.0
+            .try_grab_rgb8()
+            .map_err(VideoReaderError::StreamCaptureError)
+    }
+
+    /// Tries to grab the oldest decoded grayscale frame, distinguishing a frame from "no frame
+    /// yet", end-of-stream and a pipeline error.
+    ///
+    /// This is the loop-safe counterpart of [`Self::grab_gray8`]; see [`Self::try_grab_rgb8`]
+    /// for the loop contract.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The mutable video reader.
+    ///
+    /// # Returns
+    ///
+    /// [`Grab::Frame`] with the oldest decoded frame, [`Grab::Pending`] when none is buffered
+    /// yet, or [`Grab::Eos`] once the video has ended and no frame is left.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VideoReaderError::StreamCaptureError`] wrapping
+    /// [`StreamCaptureError::StreamError`] if the pipeline posted an error (e.g. the file cannot
+    /// be decoded), or any other error of [`StreamCapture::try_grab_gray8`].
+    #[inline]
+    pub fn try_grab_gray8(&mut self) -> Result<Grab<1>, VideoReaderError> {
+        self.0
+            .try_grab_gray8()
+            .map_err(VideoReaderError::StreamCaptureError)
+    }
+
+    /// Returns whether the video has reached end-of-stream.
+    ///
+    /// The end is read from the pipeline's bus, so it is independent of the position reaching
+    /// the duration and of any timeout. Frames decoded before it are still returned by the
+    /// `try_grab_*` methods.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The video reader.
+    ///
+    /// # Returns
+    ///
+    /// `true` once the pipeline has posted end-of-stream; frames decoded before it may still
+    /// remain buffered for the `try_grab_*` methods.
+    #[inline]
+    pub fn is_eos(&self) -> bool {
+        self.0.is_eos()
+    }
+
+    /// Returns the first error the video pipeline reported, if any.
+    ///
+    /// A file that cannot be decoded (audio-only, truncated, missing decoder, not a media file)
+    /// sets this instead of leaving the caller with `None` frames forever.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The video reader.
+    ///
+    /// # Returns
+    ///
+    /// The GStreamer error, or `None` if the pipeline has not failed.
+    #[inline]
+    pub fn stream_error(&self) -> Option<gstreamer::glib::Error> {
+        self.0.stream_error()
     }
 
     /// Gets the current state of the video pipeline
@@ -548,30 +688,53 @@ impl VideoReader {
 
     /// Seeks to a specific position in the video.
     ///
+    /// A flushing seek ignores EOS messages from earlier segments while retaining EOS
+    /// posted for the new seek, including messages posted before this method returns.
+    /// It also discards buffered frames from the previous segment. A non-flushing seek
+    /// preserves those frames.
+    ///
     /// # Arguments
     ///
+    /// * `seek_flags` - GStreamer seek flags; `FLUSH` clears the previous EOS state and frames.
     /// * `pos` - The position to seek to, as a Duration from the start of the video.
     ///
     /// # Returns
     ///
     /// * `Ok(())` - If the seek operation was successful.
     /// * `Err(VideoReaderError)` - If the seek operation failed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the pipeline rejects the seek or the status lock is poisoned.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use kornia_io::gstreamer::video::{ImageFormat, VideoReader};
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut reader = VideoReader::new("clip.mp4", ImageFormat::Rgb8)?;
+    /// reader.start()?;
+    /// reader.seek(
+    ///     gstreamer::SeekFlags::FLUSH | gstreamer::SeekFlags::ACCURATE,
+    ///     std::time::Duration::ZERO,
+    /// )?;
+    /// reader.close()?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn seek(
         &self,
         seek_flags: gstreamer::SeekFlags,
         pos: Duration,
     ) -> Result<(), VideoReaderError> {
-        let pipeline = &self.0.pipeline;
-
-        // Convert the Duration to ClockTime (nanoseconds)
         let clock_time = gstreamer::ClockTime::from_nseconds(pos.as_nanos() as u64);
-
-        pipeline
-            .seek_simple(seek_flags, clock_time)
-            .map_err(|_| VideoReaderError::SeekError)
+        self.0.seek(1.0, seek_flags, clock_time)
     }
 
     /// Sets the playback speed of the video.
+    ///
+    /// This performs a flushing seek and discards buffered pre-seek frames.
     ///
     /// # Arguments
     ///
@@ -580,7 +743,12 @@ impl VideoReader {
     ///
     /// # Returns
     ///
-    /// `true` if the speed change operation was successful, `false` otherwise.
+    /// `Ok(())` if the flushing seek with the new playback rate was accepted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a non-positive speed, an unavailable current position,
+    /// a rejected seek, or a poisoned status lock.
     pub fn set_playback_speed(&self, speed: f64) -> Result<(), VideoReaderError> {
         if speed <= 0.0 {
             return Err(VideoReaderError::InvalidPlaybackSpeed); // Speed must be positive
@@ -593,37 +761,45 @@ impl VideoReader {
             .query_position::<gstreamer::format::ClockTime>()
             .ok_or(VideoReaderError::CurrentPosError)?;
 
-        // Seek with the new rate
-        pipeline
-            .seek(
-                speed,
-                gstreamer::SeekFlags::FLUSH | gstreamer::SeekFlags::ACCURATE,
-                gstreamer::SeekType::Set,
-                position,
-                gstreamer::SeekType::None,
-                gstreamer::ClockTime::NONE,
-            )
-            .map_err(|_| VideoReaderError::SeekError)
+        self.0.seek(
+            speed,
+            gstreamer::SeekFlags::FLUSH | gstreamer::SeekFlags::ACCURATE,
+            position,
+        )
     }
 
     /// Resets the video to the beginning without changing its state.
     ///
     /// This function seeks the video to the origin (start) but does not stop or start the pipeline.
+    ///
+    /// EOS from earlier segments is ignored, as with a flushing [Self::seek].
+    /// Buffered frames from before the reset are discarded at the flushing seek boundary.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The video reader.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if the seek was accepted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the pipeline rejects the seek or the status lock is poisoned.
     pub fn reset(&self) -> Result<(), VideoReaderError> {
-        let pipeline = &self.0.pipeline;
-        pipeline
-            .seek_simple(
-                gstreamer::SeekFlags::FLUSH | gstreamer::SeekFlags::ACCURATE,
-                gstreamer::ClockTime::ZERO,
-            )
-            .map_err(|_| VideoReaderError::SeekError)?;
-        Ok(())
+        self.seek(
+            gstreamer::SeekFlags::FLUSH | gstreamer::SeekFlags::ACCURATE,
+            Duration::ZERO,
+        )
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ImageFormat, StreamCaptureError, VideoCodec, VideoReader, VideoWriter};
+    use super::{
+        Grab, ImageFormat, StreamCaptureError, VideoCodec, VideoReader, VideoReaderError,
+        VideoWriter,
+    };
     use gstreamer::prelude::*;
     use kornia_image::{Image, ImageSize};
     use std::time::Duration;
@@ -729,39 +905,309 @@ mod tests {
         Ok(())
     }
 
-    /// Reads `path` back to its end and returns the value of the first byte of every frame, so
-    /// missing, duplicated or blank frames all show up; a reader error is returned as an error. Stops 1 s after the last frame (the
-    /// reader cannot report end-of-stream) or after 10 s.
-    fn frame_values(path: &std::path::Path) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-        let mut reader = VideoReader::new(path, ImageFormat::Rgb8)?;
-        let bus = reader
-            .0
-            .pipeline
-            .bus()
-            .ok_or("reader pipeline has no bus")?;
+    #[test]
+    fn video_reader_grabs_mono8_frames() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp_dir = tempfile::tempdir()?;
+        let file_path = tmp_dir.path().join("gray-read.mov");
+        let mut writer = VideoWriter::from_pipeline_description(
+            RAW_MOV,
+            &file_path,
+            ImageFormat::Rgb8,
+            30,
+            SIZE,
+        )?;
+        writer.start()?;
+        write_and_close(writer, &[80])?;
+
+        let mut reader = VideoReader::new(&file_path, ImageFormat::Mono8)?;
+        assert!(matches!(reader.try_grab_gray8()?, Grab::Pending));
         reader.start()?;
+        let mut image = None;
+        let mut saw_eos = false;
         let start = std::time::Instant::now();
-        let mut last_frame = start;
-        let mut values = Vec::new();
-        while last_frame.elapsed() < Duration::from_secs(1)
-            && start.elapsed() < Duration::from_secs(10)
-        {
-            // Report a reader failure (e.g. no H.264 decoder installed) instead of "0 frames".
-            if let Some(msg) = bus.pop_filtered(&[gstreamer::MessageType::Error]) {
-                if let gstreamer::MessageView::Error(err) = msg.view() {
-                    return Err(super::detailed_error(&msg, err).into());
+        while start.elapsed() < Duration::from_secs(10) {
+            match reader.try_grab_gray8()? {
+                Grab::Frame(frame) if image.is_none() => image = Some(frame),
+                Grab::Frame(_) => {}
+                Grab::Eos => {
+                    saw_eos = true;
+                    break;
                 }
-            }
-            match reader.grab_rgb8()? {
-                Some(img) => {
-                    values.push(img.as_slice()[0]);
-                    last_frame = std::time::Instant::now();
-                }
-                None => std::thread::sleep(Duration::from_millis(10)),
+                Grab::Pending => std::thread::sleep(Duration::from_millis(5)),
             }
         }
+        // Assert before close: close() sends its own EOS and would satisfy the assertion.
+        assert!(saw_eos, "end-of-stream was not reported");
+        reader.close()?;
+        let image = image.ok_or("no grayscale frame received")?;
+        assert_eq!(image.size(), SIZE);
+        assert_eq!(image.as_slice(), vec![80; SIZE.width * SIZE.height]);
+        Ok(())
+    }
+
+    /// Reads `reader` to end-of-stream and returns the value of the first byte of every frame, so
+    /// missing, duplicated or blank frames all show up; a reader error is returned as an error.
+    /// Fails if end-of-stream is not reported within 10 s, which also keeps a regression from
+    /// hanging the test run.
+    fn read_frame_values(reader: &mut VideoReader) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let mut values = Vec::new();
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(10) {
+            match reader.try_grab_rgb8()? {
+                Grab::Frame(image) => values.push(image.as_slice()[0]),
+                Grab::Eos => {
+                    assert!(
+                        reader.stream_error().is_none(),
+                        "a healthy file reported a stream error"
+                    );
+                    return Ok(values);
+                }
+                Grab::Pending => std::thread::sleep(Duration::from_millis(1)),
+            }
+        }
+        panic!("end-of-stream was not reported within 10 s");
+    }
+
+    /// Opens `path`, reads it to end-of-stream and closes it.
+    fn frame_values(path: &std::path::Path) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let mut reader = VideoReader::new(path, ImageFormat::Rgb8)?;
+        reader.start()?;
+        let values = read_frame_values(&mut reader)?;
         reader.close()?;
         Ok(values)
+    }
+
+    /// A file that reaches its end must be detected through the explicit end-of-stream signal,
+    /// not by the position reaching the duration or by a timeout (both of which never fired and
+    /// made consumers hang or truncate).
+    #[test]
+    fn video_reader_reports_eos_after_the_last_frame() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp_dir = tempfile::tempdir()?;
+        let file_path = tmp_dir.path().join("eos.mov");
+        let mut writer = VideoWriter::from_pipeline_description(
+            RAW_MOV,
+            &file_path,
+            ImageFormat::Rgb8,
+            30,
+            SIZE,
+        )?;
+        writer.start()?;
+        write_and_close(writer, &[0, 40, 80, 120, 160])?;
+        assert_eq!(frame_values(&file_path)?, [0, 40, 80, 120, 160]);
+        Ok(())
+    }
+
+    /// A file that can never decode must report a stream error instead of returning `Ok(None)`
+    /// forever. Every consumer used to hang on this.
+    #[test]
+    fn video_reader_reports_an_error_for_a_non_media_file() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let tmp_dir = tempfile::tempdir()?;
+        let path = tmp_dir.path().join("not-a-video.bin");
+        std::fs::write(&path, b"this is not a media file")?;
+        let mut reader = VideoReader::new(&path, ImageFormat::Rgb8)?;
+        reader.start()?;
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(10) {
+            match reader.try_grab_rgb8() {
+                Err(
+                    err @ VideoReaderError::StreamCaptureError(StreamCaptureError::StreamError(_)),
+                ) => {
+                    // The GStreamer cause survives the wrap: VideoReaderError ->
+                    // StreamCaptureError -> glib::Error.
+                    assert!(
+                        std::error::Error::source(&err).is_some(),
+                        "the stream error lost its cause"
+                    );
+                    assert!(
+                        !err.to_string().is_empty(),
+                        "the stream error has no message"
+                    );
+                    // `stream_error` reports the same failure without grabbing a frame.
+                    assert!(
+                        reader.stream_error().is_some(),
+                        "stream_error() did not report the failure"
+                    );
+                    reader.close()?;
+                    return Ok(());
+                }
+                Err(err) => return Err(err.into()),
+                Ok(Grab::Pending) => std::thread::sleep(Duration::from_millis(5)),
+                Ok(_) => panic!("a non-media file must not deliver frames or end-of-stream"),
+            }
+        }
+        panic!("no stream error within 10 s");
+    }
+
+    /// Regression for #1337: inject EOS synchronously while the seek is in flight.
+    /// A paused source keeps frame delivery out of the test, so no timing window is needed.
+    #[test]
+    fn video_reader_seek_filters_in_flight_eos() -> Result<(), Box<dyn std::error::Error>> {
+        for matching in [false, true] {
+            for reset in [false, true] {
+                let mut reader = VideoReader(super::StreamCapture::new(
+                    "videotestsrc ! video/x-raw,format=RGB,width=4,height=4 ! appsink name=sink",
+                )?);
+                let pipeline = &reader.0.pipeline;
+                pipeline.set_state(gstreamer::State::Paused)?;
+                pipeline.state(gstreamer::ClockTime::from_seconds(5)).0?;
+                let sink = pipeline.by_name("sink").ok_or("missing sink")?;
+                let pad = sink.static_pad("sink").ok_or("missing pad")?;
+                let bus = pipeline.bus().ok_or("missing bus")?;
+                let old = gstreamer::Seqnum::next();
+                let injected = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let observed = injected.clone();
+                let probe = pad
+                    .add_probe(gstreamer::PadProbeType::EVENT_UPSTREAM, move |_, info| {
+                        if let Some(gstreamer::PadProbeData::Event(event)) = &info.data {
+                            if matches!(event.view(), gstreamer::EventView::Seek(_)) {
+                                let seqnum = if matching { event.seqnum() } else { old };
+                                bus.post(gstreamer::message::Eos::builder().seqnum(seqnum).build())
+                                    .unwrap();
+                                // Also deliver a stale EOS after a matching one.
+                                bus.post(gstreamer::message::Eos::builder().seqnum(old).build())
+                                    .unwrap();
+                                observed.store(true, std::sync::atomic::Ordering::SeqCst);
+                                return gstreamer::PadProbeReturn::Handled;
+                            }
+                        }
+                        gstreamer::PadProbeReturn::Ok
+                    })
+                    .ok_or("probe not installed")?;
+                if reset {
+                    reader.reset()?;
+                } else {
+                    reader.seek(gstreamer::SeekFlags::FLUSH, Duration::ZERO)?;
+                }
+                let eos = reader.is_eos();
+                let rgb_eos = matches!(reader.try_grab_rgb8()?, Grab::Eos);
+                let gray_eos = matches!(reader.try_grab_gray8()?, Grab::Eos);
+                pad.remove_probe(probe);
+                reader.0.pipeline.set_state(gstreamer::State::Playing)?;
+                reader.close()?;
+                assert!(injected.load(std::sync::atomic::Ordering::SeqCst));
+                assert_eq!(eos, matching);
+                assert_eq!(rgb_eos, matching);
+                assert_eq!(gray_eos, matching);
+            }
+        }
+        Ok(())
+    }
+
+    /// A flushing seek to the end must report end-of-stream again. Clearing EOS *after* the seek
+    /// erases the EOS the seek itself posts.
+    #[test]
+    fn video_reader_reports_eos_after_seeking_to_the_end() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let tmp_dir = tempfile::tempdir()?;
+        let file_path = tmp_dir.path().join("seek-eos.mov");
+        let mut writer = VideoWriter::from_pipeline_description(
+            RAW_MOV,
+            &file_path,
+            ImageFormat::Rgb8,
+            30,
+            SIZE,
+        )?;
+        writer.start()?;
+        write_and_close(writer, &[0, 40, 80])?;
+
+        let mut reader = VideoReader::new(&file_path, ImageFormat::Rgb8)?;
+        reader.start()?;
+        assert_eq!(read_frame_values(&mut reader)?, [0, 40, 80]);
+        let duration = reader.get_duration().ok_or("no duration")?;
+        reader.seek(
+            gstreamer::SeekFlags::FLUSH | gstreamer::SeekFlags::ACCURATE,
+            duration,
+        )?;
+        // Returns on the new EOS instead of panicking on the deadline.
+        read_frame_values(&mut reader)?;
+        reader.close()?;
+        Ok(())
+    }
+
+    /// `reset` must let the reader replay from the beginning and report EOS a second time.
+    #[test]
+    fn video_reader_reset_replays_and_reports_eos() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp_dir = tempfile::tempdir()?;
+        let file_path = tmp_dir.path().join("reset-eos.mov");
+        let mut writer = VideoWriter::from_pipeline_description(
+            RAW_MOV,
+            &file_path,
+            ImageFormat::Rgb8,
+            30,
+            SIZE,
+        )?;
+        writer.start()?;
+        write_and_close(writer, &[0, 40, 80])?;
+
+        let mut reader = VideoReader::new(&file_path, ImageFormat::Rgb8)?;
+        reader.start()?;
+        assert_eq!(read_frame_values(&mut reader)?, [0, 40, 80]);
+        reader.reset()?;
+        reader.start()?;
+        assert_eq!(read_frame_values(&mut reader)?, [0, 40, 80]);
+        reader.close()?;
+        Ok(())
+    }
+
+    /// A failed seek must keep the previous end-of-stream state instead of erasing it.
+    #[test]
+    fn video_reader_failed_seek_keeps_eos() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp_dir = tempfile::tempdir()?;
+        let file_path = tmp_dir.path().join("failed-seek.mov");
+        let mut writer = VideoWriter::from_pipeline_description(
+            RAW_MOV,
+            &file_path,
+            ImageFormat::Rgb8,
+            30,
+            SIZE,
+        )?;
+        writer.start()?;
+        write_and_close(writer, &[80])?;
+
+        let mut reader = VideoReader::new(&file_path, ImageFormat::Rgb8)?;
+        reader.start()?;
+        assert_eq!(read_frame_values(&mut reader)?, [80]);
+        // A stopped pipeline cannot seek; the EOS seen while reading must survive the failure.
+        reader.close()?;
+        assert!(matches!(
+            reader.seek(gstreamer::SeekFlags::FLUSH, Duration::ZERO),
+            Err(VideoReaderError::SeekError)
+        ));
+        assert!(reader.is_eos(), "a failed seek erased the end-of-stream");
+        Ok(())
+    }
+
+    /// A seeking without `FLUSH` does not undo EOS in GStreamer, so the stored EOS must survive
+    /// and later grabs must not report `Pending` forever.
+    #[test]
+    fn video_reader_non_flushing_seek_keeps_eos() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp_dir = tempfile::tempdir()?;
+        let file_path = tmp_dir.path().join("non-flushing-seek.mov");
+        let mut writer = VideoWriter::from_pipeline_description(
+            RAW_MOV,
+            &file_path,
+            ImageFormat::Rgb8,
+            30,
+            SIZE,
+        )?;
+        writer.start()?;
+        write_and_close(writer, &[0, 40, 80])?;
+
+        let mut reader = VideoReader::new(&file_path, ImageFormat::Rgb8)?;
+        reader.start()?;
+        assert_eq!(read_frame_values(&mut reader)?, [0, 40, 80]);
+        assert!(reader.is_eos());
+
+        // No FLUSH: GStreamer keeps its EOS state, so the reader must keep reporting it.
+        let _ = reader.seek(gstreamer::SeekFlags::ACCURATE, Duration::ZERO);
+        assert!(reader.is_eos(), "a non-flushing seek cleared EOS");
+        assert!(
+            !matches!(reader.try_grab_rgb8()?, Grab::Pending),
+            "a non-flushing seek left the reader pending"
+        );
+        reader.close()?;
+        Ok(())
     }
 
     /// `write` and `close` before `start` must fail instead of reporting success for a file that
@@ -1174,6 +1620,150 @@ mod tests {
             "frames read back from {file_path:?}"
         );
 
+        Ok(())
+    }
+    /// Buffered frames from the old segment must not survive seek/reset for either format.
+    #[test]
+    fn video_reader_flushing_seek_discards_old_frames() -> Result<(), Box<dyn std::error::Error>> {
+        for grayscale in [false, true] {
+            for reset in [false, true] {
+                let tmp = tempfile::tempdir()?;
+                let path = tmp.path().join("seek-buffered.mov");
+                let mut writer = VideoWriter::from_pipeline_description(
+                    RAW_MOV,
+                    &path,
+                    ImageFormat::Rgb8,
+                    30,
+                    SIZE,
+                )?;
+                writer.start()?;
+                write_and_close(writer, &[0, 20, 40, 60, 80, 100, 120, 140, 160, 180])?;
+                let format = if grayscale {
+                    ImageFormat::Mono8
+                } else {
+                    ImageFormat::Rgb8
+                };
+                let mut reader = VideoReader::new(&path, format)?;
+                // Observe the third incoming buffer: earlier samples have reached the sink.
+                // Unlike waiting for EOS without consuming, this also works with backpressure.
+                let sink = reader.0.pipeline.by_name("sink").ok_or("missing sink")?;
+                let pad = sink.static_pad("sink").ok_or("missing sink pad")?;
+                let count = std::sync::atomic::AtomicUsize::new(0);
+                let (queued_tx, queued_rx) = std::sync::mpsc::sync_channel(1);
+                pad.add_probe(gstreamer::PadProbeType::BUFFER, move |_pad, _info| {
+                    if count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 2 {
+                        let _ = queued_tx.try_send(());
+                    }
+                    gstreamer::PadProbeReturn::Ok
+                });
+                let read_value =
+                    |reader: &mut VideoReader| -> Result<u8, Box<dyn std::error::Error>> {
+                        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                        loop {
+                            let value = match grayscale {
+                                false => match reader.try_grab_rgb8()? {
+                                    Grab::Frame(image) => Some(image.as_slice()[0]),
+                                    Grab::Pending => None,
+                                    Grab::Eos => return Err("unexpected EOS".into()),
+                                },
+                                true => match reader.try_grab_gray8()? {
+                                    Grab::Frame(image) => Some(image.as_slice()[0]),
+                                    Grab::Pending => None,
+                                    Grab::Eos => return Err("unexpected EOS".into()),
+                                },
+                            };
+                            if let Some(value) = value {
+                                return Ok(value);
+                            }
+                            assert!(std::time::Instant::now() < deadline, "no frame received");
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                    };
+                reader.start()?;
+                assert_eq!(read_value(&mut reader)?, 0);
+                queued_rx.recv_timeout(Duration::from_secs(10))?;
+                if reset {
+                    reader.reset()?;
+                } else {
+                    reader.seek(
+                        gstreamer::SeekFlags::FLUSH | gstreamer::SeekFlags::ACCURATE,
+                        Duration::ZERO,
+                    )?;
+                }
+                let mut replay = Vec::new();
+                for _ in 0..10 {
+                    replay.push(read_value(&mut reader)?);
+                }
+                reader.close()?;
+                assert_eq!(
+                    replay,
+                    [0, 20, 40, 60, 80, 100, 120, 140, 160, 180],
+                    "grayscale={grayscale}, reset={reset}: replay retained or reordered old frames"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Only actual flush events invalidate queued frames, including rate-change seeks.
+    #[test]
+    fn video_reader_flush_preserves_other_seek_behaviour() -> Result<(), Box<dyn std::error::Error>>
+    {
+        for operation in ["non-flushing", "failed", "speed"] {
+            let tmp = tempfile::tempdir()?;
+            let path = tmp.path().join("seek-controls.mov");
+            let mut writer = VideoWriter::from_pipeline_description(
+                RAW_MOV,
+                &path,
+                ImageFormat::Rgb8,
+                30,
+                SIZE,
+            )?;
+            writer.start()?;
+            write_and_close(writer, &[0, 20, 40, 60, 80, 100, 120, 140, 160, 180])?;
+            let mut reader = VideoReader::new(&path, ImageFormat::Rgb8)?;
+            reader.start()?;
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while !reader.is_eos() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "file never reached EOS"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            // All ten frames were decoded; the five-frame ring holds values 100..=180.
+            match operation {
+                "failed" => {
+                    reader.0.pipeline.set_state(gstreamer::State::Null)?;
+                    assert!(reader
+                        .seek(gstreamer::SeekFlags::FLUSH, Duration::ZERO)
+                        .is_err());
+                }
+                "non-flushing" => {
+                    let _ = reader.seek(gstreamer::SeekFlags::ACCURATE, Duration::ZERO);
+                }
+                "speed" => reader.set_playback_speed(2.0)?,
+                _ => unreachable!(),
+            }
+            let first = reader.try_grab_rgb8()?;
+            reader.close()?;
+            if operation == "speed" {
+                // The rate change seeks at EOS: no pre-seek frame may be returned.
+                assert!(
+                    !matches!(first, Grab::Frame(_)),
+                    "rate change retained an old frame"
+                );
+            } else {
+                let Grab::Frame(image) = first else {
+                    panic!("{operation} seek discarded buffered data");
+                };
+                assert_eq!(
+                    image.as_slice()[0],
+                    100,
+                    "{operation} seek changed buffered data"
+                );
+            }
+        }
         Ok(())
     }
 }

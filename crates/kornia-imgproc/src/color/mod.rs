@@ -59,7 +59,7 @@ pub use kornia_image::color_spaces::{
 mod convert;
 #[cfg(feature = "cuda")]
 pub(crate) mod cuda_dispatch;
-mod kernel_common;
+pub(crate) mod kernel_common;
 
 pub(crate) mod bayer;
 pub(crate) mod cie;

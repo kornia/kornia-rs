@@ -3,8 +3,9 @@
 
   check   --base-ref origin/main --pr-number N [--skip-presence]
           CI: fragment names/content are valid; the PR adds changelog.d/N.<type>.md
-          and does not edit CHANGELOG.md. --skip-presence (the `no-changelog`
-          label) waives those two rules, never the validity checks.
+          and does not edit CHANGELOG.md. Presence is waived for internal-only
+          changes (CI, tooling, dev config, tests, benches) and by --skip-presence
+          (the `no-changelog` label); validity is always checked.
   preview Print the pending notes; changes nothing.
   build   --version X.Y.Z --date YYYY-MM-DD
           Move [Unreleased] (legacy prose + rendered fragments) into a dated
@@ -25,6 +26,53 @@ TYPES = {"breaking": "Breaking changes", "added": "Added", "perf": "Performance"
 NAME = re.compile(rf"([0-9]+)\.({'|'.join(TYPES)})\.md")
 PR_URL = "https://github.com/kornia/kornia-rs/pull/{}"
 UNRELEASED = "## [Unreleased]"
+
+# Files/dirs that never affect users of the crates or wheels: CI, tooling,
+# agent guidance, dev config, tests and benches. A PR that touches only these
+# needs no fragment. Source, bindings, examples and user-facing docs (crates/,
+# kornia-py/, kornia-cpp/, examples/, docs/, README*) are NOT internal.
+INTERNAL_PREFIXES = (
+    ".github/",
+    ".claude/",
+    ".agents/",
+    ".devcontainer/",
+    "scripts/",
+    "ci/",
+)
+INTERNAL_FILES = {
+    ".coderabbit.yaml",
+    ".gitignore",
+    ".gitmodules",
+    ".pre-commit-config.yaml",
+    "AGENTS.md",
+    "AI_POLICY.md",
+    "CLAUDE.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "best_practices.md",
+    "changelog.d/README.md",
+    "Cross.toml",
+    "pixi.toml",
+    "pixi.lock",
+    "Cargo.lock",
+    "devel-aarch64.Dockerfile",
+    "devel-i686.Dockerfile",
+    "devel-x86_64.Dockerfile",
+}
+
+
+def is_internal(path: str) -> bool:
+    p = path.replace("\\", "/")
+    parts = p.split("/")
+    if "tests" in parts or "benches" in parts:
+        return True
+    if p in INTERNAL_FILES:
+        return True
+    return p.startswith(INTERNAL_PREFIXES)
+
+
+def internal_only(paths: set) -> bool:
+    return bool(paths) and all(is_internal(p) for p in paths)
 
 
 def fragments() -> list:
@@ -79,7 +127,7 @@ def check(args) -> int:
         paths = changed(args.base_ref)
         mine = [p for p in paths if p.startswith("changelog.d/") and NAME.fullmatch(Path(p).name)
                 and Path(p).name.startswith(f"{args.pr_number}.") and (ROOT / p).is_file()]
-        if not mine:
+        if not mine and not internal_only(paths):
             errors.append(f"no changelog.d/{args.pr_number}.<type>.md in this PR; add one for a user-visible change, "
                           "or ask a maintainer for the no-changelog label (internal, CI-only or release PRs)")
         if "CHANGELOG.md" in paths:

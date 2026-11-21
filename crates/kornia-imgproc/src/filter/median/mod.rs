@@ -7,8 +7,16 @@
 //! what `cv2.medianBlur` hardwires) and an exact median. Sorting networks
 //! (min/max only) give that on CPU and GPU alike; the CUDA kernels in
 //! `cuda/median.rs` are textual twins of the networks below.
+//!
+//! `u8` runs the kernels in this file; `u16` and `f32` run the portable
+//! sorted-column kernels of [`kernels`] (same networks, vectorized by the
+//! compiler).
+
+mod kernels;
 
 use kornia_image::{Image, ImageError};
+
+use crate::color::kernel_common::{check_size, sealed};
 use rayon::prelude::*;
 
 /// Compare-exchange: after the call `*a <= *b`.
@@ -166,37 +174,179 @@ pub(crate) fn median25(v: &mut [u8; 25]) -> u8 {
     v[12]
 }
 
-/// Median blur for 8-bit images — byte-for-byte with
-/// `cv2.medianBlur(src, ksize)` and VPI's CUDA `MedianFilter` (the two are
-/// themselves bit-identical for these kernel sizes). `ksize` must be 3
-/// or 5; borders replicate. Device pairs run the CUDA sorting-network
-/// kernels, byte-identical to the CPU path.
-pub fn median_blur<const C: usize>(
-    src: &Image<u8, C>,
-    dst: &mut Image<u8, C>,
+/// Calls `$callback!($($arg)* [pairs])` with the 71-exchange median-of-25
+/// network on five sorted 5-sample columns (wire `col * 5 + rank`), so the
+/// literal list has one definition: it feeds [`MED25_SORTED_COLUMNS`] and
+/// the unrolled `u16` / `f32` 5×5 kernel of [`kernels`]. Derived from Smith's
+/// 99-exchange [`NET25`] by greedy deletion; wire 12 is the exact median
+/// on every column-sorted input (zero-one principle, pinned in the tests).
+/// The NEON `u8` 5×5 kernel below is its hand-unrolled spelling.
+macro_rules! with_med25_sorted_columns {
+    ($callback:ident!($($arg:tt)*)) => {
+        $callback! { $($arg)* [
+            (9, 10), (8, 9), (14, 16), (14, 15), (2, 5), (3, 6), (0, 3), (4, 7),
+            (1, 4), (11, 14), (8, 11), (12, 15), (9, 15), (9, 12), (10, 16), (10, 13),
+            (17, 23), (17, 20), (18, 24), (18, 21), (19, 22), (8, 17), (9, 18), (0, 9),
+            (10, 19), (1, 19), (1, 10), (11, 20), (2, 20), (2, 11), (12, 21), (3, 21),
+            (3, 12), (13, 22), (4, 22), (4, 13), (5, 23), (5, 14), (6, 24), (6, 15),
+            (7, 16), (7, 19), (13, 21), (15, 23), (7, 13), (7, 15), (1, 9), (3, 11),
+            (5, 17), (11, 17), (9, 17), (4, 10), (6, 12), (7, 14), (4, 6), (4, 7),
+            (12, 14), (10, 14), (6, 7), (10, 12), (6, 10), (6, 17), (12, 17), (7, 17),
+            (7, 10), (12, 18), (7, 12), (10, 18), (12, 20), (10, 20), (10, 12),
+        ] }
+    };
+}
+pub(crate) use with_med25_sorted_columns;
+
+/// A literal pair list as an array expression.
+#[cfg(test)]
+macro_rules! pair_array {
+    ([$(($a:literal, $b:literal)),* $(,)?]) => {
+        [$(($a, $b)),*]
+    };
+}
+
+/// The 71-exchange sorted-column median-of-25 network (see
+/// `with_med25_sorted_columns`): wire 12 holds the median of 25 samples
+/// arranged as five sorted columns.
+// Read by the tests (the kernels use the unrolled macro form).
+#[cfg(test)]
+pub(crate) const MED25_SORTED_COLUMNS: [(usize, usize); 71] =
+    with_med25_sorted_columns!(pair_array!());
+
+/// Pixel types [`median_blur`] accepts: `u8`, `u16` and `f32`. Sealed.
+///
+/// | Type  | CPU kernels                                              |
+/// |-------|----------------------------------------------------------|
+/// | `u8`  | NEON (aarch64, single channel), portable per-pixel networks |
+/// | `u16` | portable sorted-column networks, AVX2 build on x86_64    |
+/// | `f32` | same as `u16`, on the IEEE 754 totalOrder key            |
+pub trait MedianBlur: sealed::Sealed + Copy + Send + Sync + 'static {
+    #[doc(hidden)]
+    fn median_blur_impl<const C: usize>(
+        src: &Image<Self, C>,
+        dst: &mut Image<Self, C>,
+        ksize: usize,
+    ) -> Result<(), ImageError>;
+}
+
+/// Median blur, `ksize × ksize` window, per channel, replicate border.
+///
+/// Reference: OpenCV `cv::medianBlur` (`CV_8U`, `CV_16U`, `CV_32F`; ksize 3
+/// or 5; `BORDER_REPLICATE`, the only border it offers). Each output sample
+/// is the exact median of the `ksize²` window samples, so the output is
+/// identical to `cv2.medianBlur(src, ksize)` (`tests/opencv_median.rs` pins
+/// `cv2.medianBlur` outputs). `u8` is also byte-identical with VPI's CUDA
+/// `MedianFilter`. Device pairs (feature `cuda`) run CUDA sorting-network
+/// kernels, identical to the CPU path.
+///
+/// `f32` samples are ordered by IEEE 754 totalOrder ([`f32::total_cmp`]):
+/// `-NaN < -inf < … < -0.0 < +0.0 < … < +inf < +NaN`. The output is always
+/// one of the window's samples, bit for bit, and deterministic for every
+/// input, NaN included: a NaN with the sign bit clear counts as larger than
+/// every number, one with it set as smaller. OpenCV leaves NaN unspecified,
+/// and does not order `-0.0` below `+0.0`, so on inputs with NaN or with
+/// both signed zeros the output can differ from OpenCV's (for zeros only in
+/// the sign bit).
+///
+/// # Arguments
+///
+/// * `src` - Input image, `u8`, `u16` or `f32`, any channel count (each
+///   channel is filtered independently).
+/// * `dst` - Pre-allocated output with the same size as `src`.
+/// * `ksize` - Window side, 3 or 5.
+///
+/// # Returns
+///
+/// `Ok(())` on success; `dst` holds the filtered image.
+///
+/// # Errors
+///
+/// * [`ImageError::InvalidImageSize`] if `src` and `dst` sizes differ.
+/// * [`ImageError::InvalidKernelLength`] if `ksize` is not 3 or 5.
+/// * [`ImageError::MixedResidency`] / [`ImageError::Cuda`] for device images
+///   (feature `cuda`) on mixed residency or a launch failure.
+///
+/// # Example
+///
+/// ```rust
+/// use kornia_image::{Image, ImageSize};
+/// use kornia_imgproc::filter::median_blur;
+///
+/// let size = ImageSize { width: 3, height: 3 };
+/// let src = Image::<u16, 1>::new(size, vec![10, 900, 12, 11, 13, 14, 15, 16, 17])?;
+/// let mut dst = Image::<u16, 1>::from_size_val(size, 0)?;
+/// median_blur(&src, &mut dst, 3)?;
+/// // Centre window: the outlier 900 is the largest of nine samples.
+/// assert_eq!(dst.as_slice()[4], 14);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+pub fn median_blur<T: MedianBlur, const C: usize>(
+    src: &Image<T, C>,
+    dst: &mut Image<T, C>,
     ksize: usize,
 ) -> Result<(), ImageError> {
-    if src.size() != dst.size() {
-        return Err(ImageError::InvalidImageSize(
-            src.cols(),
-            src.rows(),
-            dst.cols(),
-            dst.rows(),
-        ));
-    }
+    T::median_blur_impl(src, dst, ksize)
+}
+
+/// Shared argument checks of every [`MedianBlur`] impl.
+fn check_args<T, const C: usize>(
+    src: &Image<T, C>,
+    dst: &Image<T, C>,
+    ksize: usize,
+) -> Result<(), ImageError> {
+    check_size(src, dst)?;
     if ksize != 3 && ksize != 5 {
         return Err(ImageError::InvalidKernelLength(ksize, ksize));
     }
+    Ok(())
+}
 
-    #[cfg(feature = "cuda")]
-    {
-        use crate::try_device;
-        try_device!(src, dst, |stream| cuda_adapters::median_blur_cuda(
+impl MedianBlur for u8 {
+    fn median_blur_impl<const C: usize>(
+        src: &Image<u8, C>,
+        dst: &mut Image<u8, C>,
+        ksize: usize,
+    ) -> Result<(), ImageError> {
+        check_args(src, dst, ksize)?;
+        crate::try_device!(src, dst, |stream| cuda_adapters::median_blur_cuda(
             src, dst, ksize, stream
         ));
+        median_blur_u8(src, dst, ksize);
+        Ok(())
     }
+}
 
+/// `u16` / `f32` impls: checks, CUDA arm, then the [`kernels`] entry point.
+macro_rules! impl_median_blur {
+    ($t:ty, $kernel:path) => {
+        impl MedianBlur for $t {
+            fn median_blur_impl<const C: usize>(
+                src: &Image<$t, C>,
+                dst: &mut Image<$t, C>,
+                ksize: usize,
+            ) -> Result<(), ImageError> {
+                check_args(src, dst, ksize)?;
+                crate::try_device!(src, dst, |stream| cuda_adapters::median_blur_cuda(
+                    src, dst, ksize, stream
+                ));
+                let (w, h) = (src.cols(), src.rows());
+                $kernel(src.as_slice(), dst.as_slice_mut(), w, h, ksize);
+                Ok(())
+            }
+        }
+    };
+}
+
+impl_median_blur!(u16, kernels::median_blur_u16::<C>);
+impl_median_blur!(f32, kernels::median_blur_f32::<C>);
+
+/// The `u8` CPU path (`ksize` validated by the caller).
+fn median_blur_u8<const C: usize>(src: &Image<u8, C>, dst: &mut Image<u8, C>, ksize: usize) {
     let (w, h) = (src.cols(), src.rows());
+    if w == 0 || h == 0 {
+        return;
+    }
     let s = src.as_slice();
     let r = (ksize / 2) as i64;
 
@@ -204,7 +354,7 @@ pub fn median_blur<const C: usize>(
     // (two-rows-per-pass 3×3, sorted-column 5×5, per-op-size chunking).
     #[cfg(target_arch = "aarch64")]
     if C == 1 && neon::par_c1(s, dst.as_slice_mut(), w, h, ksize) {
-        return Ok(());
+        return;
     }
 
     let min_rows = (h.div_ceil(rayon::current_num_threads() * 4)).max(16);
@@ -243,7 +393,6 @@ pub fn median_blur<const C: usize>(
                 }
             }
         });
-    Ok(())
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -901,7 +1050,7 @@ mod neon {
 mod cuda_adapters {
     use super::*;
     use crate::cuda::dispatch::{device_slices, untyped_device_err};
-    use crate::cuda::median::launch_median_u8;
+    use crate::cuda::median::{launch_median, CudaMedianPixel};
     use cudarc::driver::CudaStream;
     use std::sync::Arc;
 
@@ -909,15 +1058,15 @@ mod cuda_adapters {
         ImageError::Cuda(e.to_string())
     }
 
-    pub(super) fn median_blur_cuda<const C: usize>(
-        src: &Image<u8, C>,
-        dst: &mut Image<u8, C>,
+    pub(super) fn median_blur_cuda<T: CudaMedianPixel, const C: usize>(
+        src: &Image<T, C>,
+        dst: &mut Image<T, C>,
         ksize: usize,
         stream: &Arc<CudaStream>,
     ) -> Result<(), ImageError> {
         let ctx = stream.context();
         let (s, d) = device_slices!(src, dst);
-        launch_median_u8(ctx, stream, s, d, src.cols(), src.rows(), C, ksize).map_err(err)
+        launch_median(ctx, stream, s, d, src.cols(), src.rows(), C, ksize).map_err(err)
     }
 }
 
@@ -931,6 +1080,29 @@ mod tests {
             width: w,
             height: h,
         }
+    }
+
+    /// Zero-width and zero-height images are a no-op for every pixel type
+    /// (the `u8` path used to hand rayon a zero chunk size).
+    #[test]
+    fn empty_images_are_a_no_op() -> Result<(), ImageError> {
+        for size in [sz(0, 4), sz(4, 0), sz(0, 0)] {
+            for ksize in [3, 5] {
+                let src = Image::<u8, 1>::from_size_val(size, 0)?;
+                let mut dst = Image::<u8, 1>::from_size_val(size, 0)?;
+                median_blur(&src, &mut dst, ksize)?;
+                let src = Image::<u8, 3>::from_size_val(size, 0)?;
+                let mut dst = Image::<u8, 3>::from_size_val(size, 0)?;
+                median_blur(&src, &mut dst, ksize)?;
+                let src = Image::<u16, 1>::from_size_val(size, 0)?;
+                let mut dst = Image::<u16, 1>::from_size_val(size, 0)?;
+                median_blur(&src, &mut dst, ksize)?;
+                let src = Image::<f32, 1>::from_size_val(size, 0.0)?;
+                let mut dst = Image::<f32, 1>::from_size_val(size, 0.0)?;
+                median_blur(&src, &mut dst, ksize)?;
+            }
+        }
+        Ok(())
     }
 
     fn median_naive(win: &mut [u8]) -> u8 {
@@ -968,79 +1140,6 @@ mod tests {
     #[test]
     fn reduced_net_exact_on_sorted_columns() {
         // Mirrors the NEON median5_row layout: idx = col*5 + rank.
-        const NET71: [(usize, usize); 71] = [
-            (9, 10),
-            (8, 9),
-            (14, 16),
-            (14, 15),
-            (2, 5),
-            (3, 6),
-            (0, 3),
-            (4, 7),
-            (1, 4),
-            (11, 14),
-            (8, 11),
-            (12, 15),
-            (9, 15),
-            (9, 12),
-            (10, 16),
-            (10, 13),
-            (17, 23),
-            (17, 20),
-            (18, 24),
-            (18, 21),
-            (19, 22),
-            (8, 17),
-            (9, 18),
-            (0, 9),
-            (10, 19),
-            (1, 19),
-            (1, 10),
-            (11, 20),
-            (2, 20),
-            (2, 11),
-            (12, 21),
-            (3, 21),
-            (3, 12),
-            (13, 22),
-            (4, 22),
-            (4, 13),
-            (5, 23),
-            (5, 14),
-            (6, 24),
-            (6, 15),
-            (7, 16),
-            (7, 19),
-            (13, 21),
-            (15, 23),
-            (7, 13),
-            (7, 15),
-            (1, 9),
-            (3, 11),
-            (5, 17),
-            (11, 17),
-            (9, 17),
-            (4, 10),
-            (6, 12),
-            (7, 14),
-            (4, 6),
-            (4, 7),
-            (12, 14),
-            (10, 14),
-            (6, 7),
-            (10, 12),
-            (6, 10),
-            (6, 17),
-            (12, 17),
-            (7, 17),
-            (7, 10),
-            (12, 18),
-            (7, 12),
-            (10, 18),
-            (12, 20),
-            (10, 20),
-            (10, 12),
-        ];
         for pattern in 0..6usize.pow(5) {
             let mut v = [0u8; 25];
             let mut ones = 0;
@@ -1053,7 +1152,7 @@ mod tests {
                 }
                 ones += t;
             }
-            for &(a, b) in NET71.iter() {
+            for &(a, b) in MED25_SORTED_COLUMNS.iter() {
                 let (lo, hi) = (v[a].min(v[b]), v[a].max(v[b]));
                 v[a] = lo;
                 v[b] = hi;
@@ -1130,6 +1229,72 @@ mod cuda_tests {
                 "C3 {w}x{h} k={ksize}"
             );
         }
+    }
+}
+
+#[cfg(all(test, feature = "cuda"))]
+mod cuda_wide_tests {
+    use super::*;
+    use crate::cuda::color::test_utils::default_stream;
+    use kornia_image::ImageSize;
+
+    fn device_equals_host<T, const C: usize>(gen: impl Fn(usize) -> T, bits: impl Fn(T) -> u32)
+    where
+        T: MedianBlur + Default + cudarc::driver::DeviceRepr + cudarc::driver::ValidAsZeroBits,
+    {
+        let stream = default_stream();
+        for (w, h) in [(64usize, 48usize), (67, 43), (5, 4), (1, 1), (2, 9)] {
+            let size = ImageSize {
+                width: w,
+                height: h,
+            };
+            let data: Vec<T> = (0..w * h * C).map(&gen).collect();
+            let src = Image::<T, C>::new(size, data).unwrap();
+            for ksize in [3usize, 5] {
+                let mut cpu = Image::<T, C>::from_size_val(size, T::default()).unwrap();
+                median_blur(&src, &mut cpu, ksize).unwrap();
+                let d_src = src.to_cuda(&stream).unwrap();
+                let mut d_dst = Image::<T, C>::zeros_cuda(size, &stream).unwrap();
+                median_blur(&d_src, &mut d_dst, ksize).unwrap();
+                let dev: Vec<u32> = d_dst
+                    .to_host_owned()
+                    .unwrap()
+                    .as_slice()
+                    .iter()
+                    .map(|&v| bits(v))
+                    .collect();
+                let host: Vec<u32> = cpu.as_slice().iter().map(|&v| bits(v)).collect();
+                assert_eq!(dev, host, "C{C} {w}x{h} k={ksize}");
+            }
+        }
+    }
+
+    #[test]
+    fn median_u16_device_equals_host() {
+        device_equals_host::<u16, 1>(|i| ((i * 2654435761) >> 16) as u16, u32::from);
+        device_equals_host::<u16, 3>(|i| ((i * 2654435761) >> 16) as u16, u32::from);
+    }
+
+    #[test]
+    fn median_f32_device_equals_host_bit_exact() {
+        // Both signs, both zeros, ±inf and NaNs of both signs.
+        let special = [
+            0.0,
+            -0.0,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NAN,
+            -f32::NAN,
+        ];
+        let gen = |i: usize| {
+            if i.is_multiple_of(7) {
+                special[(i / 7) % special.len()]
+            } else {
+                (((i * 2654435761) >> 16) as u16) as f32 * 1e-3 - 30.0
+            }
+        };
+        device_equals_host::<f32, 1>(gen, f32::to_bits);
+        device_equals_host::<f32, 3>(gen, f32::to_bits);
     }
 }
 

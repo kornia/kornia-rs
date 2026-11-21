@@ -259,6 +259,21 @@ class Sift:
         ``ratio`` is Lowe's ratio; ``>= 1.0`` disables it. Returns an ``(M, 2)``
         int32 array of indices into the two keypoint lists."""
 
+    def match_smnn(
+        self,
+        descriptors_a: np.ndarray | Any,
+        descriptors_b: np.ndarray | Any,
+        th: float = 0.95,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Mutual nearest neighbors passing the ratio test in both directions.
+
+        The contract of ``kornia.feature.match_smnn``. Dispatches like ``match``.
+        Device matching takes integer descriptors in 0..=255, which is what
+        ``detect_and_compute`` returns, and refuses others such as RootSIFT.
+
+        Returns ``(dists, idxs)``: ``(K, 1)`` float32 larger ratio of each match,
+        and ``(K, 2)`` int64 index pairs, in the order of ``descriptors_a``."""
+
 
 class SiftKeypoint:
     """A single detected keypoint. ``detect_and_compute`` returns a list of

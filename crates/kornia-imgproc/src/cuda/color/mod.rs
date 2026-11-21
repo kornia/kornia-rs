@@ -28,7 +28,7 @@
 
 use std::sync::{Arc, OnceLock};
 
-use cudarc::driver::CudaStream;
+use cudarc::driver::{CudaStream, DevicePtr, DevicePtrMut};
 use kornia_tensor::CudaKernel;
 
 pub mod bayer;
@@ -56,7 +56,8 @@ __device__ __forceinline__ float clamp01(float v) {
 
 // BT.601 luma weights.
 // u8: OpenCV's Q14 fixed point — matches color/gray/kernels.rs
-// (4899*R + 9617*G + 1868*B + 8192) >> 14, byte-parity with cv2.
+// (4899*R + 9617*G + 1868*B + 8192) >> 14, byte-parity with cv2. Used by the
+// NVRTC fallback of the cuda-oxide gray kernel (gray.rs).
 #define GRAY_WR_Q14 4899u
 #define GRAY_WG_Q14 9617u
 #define GRAY_WB_Q14 1868u
@@ -133,8 +134,10 @@ __device__ __forceinline__ void store_c3_quad(
 /// Error type returned by the CUDA color-conversion launchers.
 #[derive(Debug, thiserror::Error)]
 pub enum CudaColorError {
-    /// NVRTC compilation failure (deterministic; cached and returned on every call).
-    #[error("CUDA color kernel compile error: {0}")]
+    /// The kernel is unavailable: NVRTC compilation failed (deterministic;
+    /// cached and returned on every call). A cuda-oxide kernel that cannot
+    /// load falls back to NVRTC, so this means the fallback failed too.
+    #[error("CUDA color kernel unavailable: {0}")]
     Compile(String),
     /// CUDA driver / launch failure.
     #[error("CUDA color kernel launch error: {0}")]
@@ -149,6 +152,23 @@ pub enum CudaColorError {
         /// Minimum required length.
         need: usize,
     },
+    /// The element count (`npixels` × elements per pixel) does not fit the
+    /// kernels' 32-bit index.
+    #[error("{npixels} pixels exceed the 32-bit kernel index range")]
+    TooManyPixels {
+        /// Requested pixel count.
+        npixels: usize,
+    },
+    /// A word-vectorized kernel got a device pointer that is not 4-byte aligned
+    /// (e.g. a DLPack alias at an odd `byte_offset`); launching it would fault
+    /// with a sticky `CUDA_ERROR_MISALIGNED_ADDRESS`.
+    #[error("{what} device pointer {addr:#x} is not 4-byte aligned")]
+    Misaligned {
+        /// Which operand is misaligned ("src" or "dst").
+        what: &'static str,
+        /// The device address.
+        addr: u64,
+    },
 }
 
 impl From<CudaColorError> for kornia_image::ImageError {
@@ -157,6 +177,12 @@ impl From<CudaColorError> for kornia_image::ImageError {
     /// string by design — but it is stringified exactly once, here).
     fn from(e: CudaColorError) -> Self {
         kornia_image::ImageError::Cuda(e.to_string())
+    }
+}
+
+impl From<kornia_oxide_kernels::OxideError> for CudaColorError {
+    fn from(e: kornia_oxide_kernels::OxideError) -> Self {
+        CudaColorError::Compile(e.to_string())
     }
 }
 
@@ -237,7 +263,8 @@ pub(crate) enum PxPerThread {
 
 /// Shared elementwise launch tail: length checks, then
 /// `kernel(src, dst, npixels)` on a 1-D grid sized by `px_per_thread`.
-/// `src_mul`/`dst_mul` are elements-per-pixel of each buffer.
+/// `src_mul`/`dst_mul` are elements-per-pixel of each buffer. Zero pixels is a
+/// no-op; element counts past `u32::MAX` are rejected (kernels index in u32).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn launch_map<T>(
     kernel: &CudaKernel,
@@ -252,8 +279,25 @@ pub(crate) fn launch_map<T>(
 where
     T: cudarc::driver::DeviceRepr,
 {
+    let elems = npixels
+        .checked_mul(src_mul.max(dst_mul))
+        .filter(|&e| e <= u32::MAX as usize)
+        .ok_or(CudaColorError::TooManyPixels { npixels })?;
     check_len("src", src.len(), npixels * src_mul)?;
     check_len("dst", dst.len(), npixels * dst_mul)?;
+    if elems == 0 {
+        return Ok(());
+    }
+    // One device_ptr per slice: each call waits on and records cudarc's sync
+    // events, so the pointers checked are the ones launched, and the guards
+    // record after the launch as `.arg(slice)` would.
+    let (src_ptr, _src_sync) = src.device_ptr(stream);
+    let (dst_ptr, _dst_sync) = dst.device_ptr_mut(stream);
+    if let PxPerThread::Four = px_per_thread {
+        // The four-pixel kernels load and store whole u32 words.
+        check_aligned("src", src_ptr)?;
+        check_aligned("dst", dst_ptr)?;
+    }
     let n = npixels as u32;
     let threads = match px_per_thread {
         PxPerThread::One => n,
@@ -261,8 +305,8 @@ where
     };
     kernel
         .launch_builder(stream)
-        .arg(src)
-        .arg(dst)
+        .arg(&src_ptr)
+        .arg(&dst_ptr)
         .arg(&n)
         .launch_1d(threads)?;
     Ok(())
@@ -280,6 +324,14 @@ pub(crate) fn config_2d(width: u32, height: u32) -> cudarc::driver::LaunchConfig
         grid_dim: (width.div_ceil(BLOCK_W), height.div_ceil(BLOCK_H), 1),
         shared_mem_bytes: 0,
     }
+}
+
+/// Validate that a device address is 4-byte aligned.
+fn check_aligned(what: &'static str, addr: u64) -> Result<(), CudaColorError> {
+    if !addr.is_multiple_of(4) {
+        return Err(CudaColorError::Misaligned { what, addr });
+    }
+    Ok(())
 }
 
 /// Validate that a device slice holds at least `need` elements.

@@ -1,5 +1,5 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use kornia_imgproc::features::match_descriptors;
+use kornia_imgproc::features::{match_descriptors, match_smnn};
 
 fn descriptors(count: usize, mut seed: u64) -> Vec<[u8; 32]> {
     (0..count)
@@ -26,8 +26,23 @@ fn bench_hamming_match(c: &mut Criterion) {
         for count in [512, 1024, 4096] {
             let queries = descriptors(count, 0x1234_5678);
             let candidates = descriptors(count, 0x9876_5432);
-            for cross_check in [false, true] {
-                let direction = if cross_check { "mutual" } else { "forward" };
+            group.bench_with_input(BenchmarkId::new("match_smnn", count), &count, |b, _| {
+                b.iter(|| {
+                    pool.install(|| {
+                        std::hint::black_box(match_smnn(
+                            std::hint::black_box(&queries),
+                            std::hint::black_box(&candidates),
+                            0.95,
+                        ))
+                    })
+                });
+            });
+            for (direction, cross_check, max_ratio) in [
+                ("forward", false, None),
+                ("forward_ratio", false, Some(0.9)),
+                ("mutual", true, None),
+                ("mutual_ratio", true, Some(0.9)),
+            ] {
                 group.bench_with_input(BenchmarkId::new(direction, count), &count, |b, _| {
                     b.iter(|| {
                         pool.install(|| {
@@ -36,7 +51,7 @@ fn bench_hamming_match(c: &mut Criterion) {
                                 std::hint::black_box(&candidates),
                                 None,
                                 cross_check,
-                                None,
+                                max_ratio,
                             ))
                         })
                     });

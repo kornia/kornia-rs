@@ -84,6 +84,24 @@ static SEPIA_F32: KernelCell = KernelCell::new();
 
 /// Launch sepia tone on RGB8 (Q8 fixed point, bit-exact vs CPU;
 /// word-vectorized 4 px/thread).
+///
+/// # Arguments
+///
+/// * `stream` - Stream to launch on.
+/// * `src` - Interleaved RGB bytes, at least `3 * npixels` long.
+/// * `dst` - Interleaved sepia RGB output, at least `3 * npixels` long.
+/// * `npixels` - Pixel count; zero is a no-op.
+///
+/// # Returns
+///
+/// `Ok(())` once the kernel is enqueued.
+///
+/// # Errors
+///
+/// [`CudaColorError::TooManyPixels`] if `3 * npixels` exceeds `u32::MAX`,
+/// [`CudaColorError::SliceTooSmall`] if a buffer is short,
+/// [`CudaColorError::Misaligned`] if `src` or `dst` is not 4-byte aligned (an
+/// alias at an odd offset), or a compile or launch error.
 pub fn launch_sepia_from_rgb_u8(
     stream: &Arc<CudaStream>,
     src: &CudaSlice<u8>,
@@ -230,5 +248,31 @@ mod tests {
         let gpu: Vec<u8> = stream.clone_dtoh(&d_dst).unwrap();
         stream.synchronize().unwrap();
         assert_eq!(gpu, cpu);
+    }
+
+    /// Sepia u8 is word-vectorized like gray u8: an alias at an odd offset is
+    /// rejected by `launch_map` before the word loads would fault.
+    #[test]
+    fn sepia_u8_misaligned_alias() {
+        use cudarc::driver::DevicePtr;
+        let stream = default_stream();
+        let d_src = stream.clone_htod(&[7u8; 64]).unwrap();
+        let d_dst = stream.clone_htod(&[0u8; 64]).unwrap();
+        let src_base = d_src.device_ptr(&stream).0;
+        let dst_base = d_dst.device_ptr(&stream).0;
+        for (src_off, dst_off, what) in [(9, 0, "src"), (0, 1, "dst")] {
+            // SAFETY: both aliases stay inside the live allocations above and
+            // are leaked below, so they never free memory they do not own.
+            let src = unsafe { stream.upgrade_device_ptr::<u8>(src_base + src_off, 48) };
+            let mut dst = unsafe { stream.upgrade_device_ptr::<u8>(dst_base + dst_off, 48) };
+            let r = launch_sepia_from_rgb_u8(&stream, &src, &mut dst, 16);
+            src.leak();
+            dst.leak();
+            assert!(
+                matches!(r, Err(CudaColorError::Misaligned { what: w, .. }) if w == what),
+                "{what} offset: {r:?}"
+            );
+        }
+        stream.synchronize().unwrap();
     }
 }

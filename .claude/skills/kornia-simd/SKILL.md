@@ -28,3 +28,6 @@ The authoritative guide is `crates/kornia-imgproc/SIMD.md`; read it first.
   in the PR. iai-callgrind runner version must exactly match the
   `iai-callgrind` dev-dependency version.
 - Avoid allocations in hot paths; mind rayon row chunking.
+- Lane types in kornia-algebra (`F32x8`) pick their backend by
+  `cfg(target_feature)` at compile time, so a default build never compiles the
+  AVX2 one; `pixi run rust-test-algebra-avx2` (a CI job) does.

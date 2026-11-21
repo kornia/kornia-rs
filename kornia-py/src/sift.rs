@@ -24,8 +24,8 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use kornia_imgproc::features::{
-    sift_detect_and_compute, sift_match_descriptors, FirstOctave as CpuFirstOctave, SiftConfig,
-    SiftKeypoint as CoreKeypoint, SiftWorkspace, DESCR_LEN,
+    match_smnn_f32, sift_detect_and_compute, sift_match_descriptors, FirstOctave as CpuFirstOctave,
+    SiftConfig, SiftKeypoint as CoreKeypoint, SiftWorkspace, DESCR_LEN,
 };
 use numpy::{PyArray2, PyArray3, PyArrayMethods, PyUntypedArrayMethods};
 
@@ -55,13 +55,7 @@ pub(crate) type DetectOut = PyResult<(Vec<PyKeypoint>, Py<PyAny>)>;
 /// work wants a column, so build it once
 /// (`np.fromiter((k.x for k in kp), np.float32, len(kp))`) rather than
 /// re-walking the list per operation.
-#[pyclass(
-    name = "SiftKeypoint",
-    module = "kornia_rs.imgproc",
-    frozen,
-    get_all,
-    skip_from_py_object
-)]
+#[pyclass(name = "SiftKeypoint", module = "kornia_rs.imgproc", frozen, get_all)]
 #[derive(Clone, Copy)]
 pub struct PyKeypoint {
     /// Column coordinate, in pixels of the **input** image.
@@ -332,6 +326,63 @@ impl Sift {
             }
         }
         self.match_host(py, descriptors_a, descriptors_b, ratio, cross_check)
+    }
+
+    /// Match mutual nearest neighbors that pass Lowe's ratio test in both directions.
+    ///
+    /// The contract of `kornia.feature.match_smnn`. Dispatches like [`Self::match`]: two
+    /// device `Tensor`s match on device, two numpy arrays on the host, and mixing them
+    /// is refused. Device matching takes integer descriptors in 0..=255, which is what
+    /// `detect_and_compute` returns, and refuses others such as RootSIFT.
+    ///
+    /// Returns `(dists, idxs)`: `(K, 1)` float32 larger ratio of each match, and `(K, 2)`
+    /// int64 index pairs, in the order of the rows of `descriptors_a`.
+    #[pyo3(signature = (descriptors_a, descriptors_b, th=0.95))]
+    fn match_smnn<'py>(
+        &mut self,
+        py: Python<'py>,
+        descriptors_a: &Bound<'py, PyAny>,
+        descriptors_b: &Bound<'py, PyAny>,
+        th: f32,
+    ) -> PyResult<crate::feature_match::SmnnArrays> {
+        #[cfg(feature = "cuda")]
+        {
+            use crate::cuda_ext::PyTensor;
+            let (a, b) = (
+                descriptors_a.cast::<PyTensor>(),
+                descriptors_b.cast::<PyTensor>(),
+            );
+            match (a, b) {
+                (Ok(a), Ok(b)) => {
+                    let matches = crate::cuda_ext::cuda_sift::sift_match_smnn_device(
+                        &a.borrow(),
+                        &b.borrow(),
+                        &mut self.store,
+                        self.max_keypoints,
+                        th,
+                    )?;
+                    return crate::feature_match::smnn_arrays(py, &matches);
+                }
+                (Ok(_), Err(_)) | (Err(_), Ok(_)) => {
+                    return Err(PyValueError::new_err(
+                        "Sift.match_smnn: got one device Tensor and one host array; both \
+                         descriptor blocks must have the same residency.",
+                    ));
+                }
+                (Err(_), Err(_)) => {}
+            }
+        }
+        let (da, db) = (
+            host_descriptors(descriptors_a, "descriptors_a")?,
+            host_descriptors(descriptors_b, "descriptors_b")?,
+        );
+        let (ra, rb) = (da.readonly(), db.readonly());
+        let (sa, sb) = (
+            ra.as_slice().map_err(|_| contiguity_err())?,
+            rb.as_slice().map_err(|_| contiguity_err())?,
+        );
+        let matches = py.detach(|| match_smnn_f32(sa, sb, DESCR_LEN, th));
+        crate::feature_match::smnn_arrays(py, &matches)
     }
 
     fn __repr__(&self) -> String {

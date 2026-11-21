@@ -37,6 +37,8 @@ jobs:
           fi
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false # builds third-party code (cuda-oxide)
 
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
 
@@ -49,6 +51,10 @@ jobs:
             libjpeg-turbo8-dev \
             pkg-config \
             libssl-dev
+
+      # kornia-oxide-kernels ships the PTX; the dry-run below verifies the
+      # packaged crate with `ptx`, so it fails if the file is missing or stale.
+      - uses: ./.github/actions/cuda-oxide-ptx
 
       - name: Show planned publish order (dry-run leaves)
         run: ./scripts/release_rust.sh

@@ -47,6 +47,10 @@ pub enum PnPError {
         right_len: usize,
     },
 
+    /// The input points or the initial pose cannot be used, e.g. a value is not finite.
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
+
     /// Singular value decomposition failed.
     #[error("SVD computation failed: {0}")]
     SvdFailed(String),

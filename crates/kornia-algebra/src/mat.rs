@@ -326,6 +326,22 @@ impl Mat3F64 {
     }
 }
 
+impl From<Mat3F64> for nalgebra::Matrix3<f64> {
+    /// Converts to a `nalgebra::Matrix3<f64>` with the same rows and columns.
+    #[inline]
+    fn from(m: Mat3F64) -> Self {
+        Self::from_column_slice(&m.to_cols_array())
+    }
+}
+
+impl From<nalgebra::Matrix3<f64>> for Mat3F64 {
+    /// Converts from a `nalgebra::Matrix3<f64>` with the same rows and columns.
+    #[inline]
+    fn from(m: nalgebra::Matrix3<f64>) -> Self {
+        Self(glam::DMat3::from_cols_array_2d(&m.data.0))
+    }
+}
+
 // 3x3 matrix (aligned, single precision).
 define_matrix_type!(
     Mat3AF32,
@@ -373,9 +389,68 @@ pub type DMatF32 = nalgebra::DMatrix<f32>;
 /// Dynamic-sized matrix with f64 elements.
 pub type DMatF64 = nalgebra::DMatrix<f64>;
 
+// Fixed 6x6 from nalgebra: glam stops at 4x4. Six is the tangent size of SE(3) and of a
+// rotation-plus-translation pose, so normal equations of a pose solve live here.
+/// 6x6 matrix with f64 elements, e.g. the `J^T W J` normal matrix of a 6-DoF pose solve.
+///
+/// A stack value (no allocation). Factorisations are nalgebra's: `cholesky()`,
+/// `symmetric_eigen()`.
+pub type Mat6F64 = nalgebra::Matrix6<f64>;
+
+/// `R`x`C` matrix with f64 elements, for fixed sizes past glam's 4x4.
+///
+/// A stack value (no allocation); [`Mat6F64`], [`Mat9F64`] and [`Mat15F64`] are instances.
+pub type SMatF64<const R: usize, const C: usize> = nalgebra::SMatrix<f64, R, C>;
+
+/// 9x9 matrix with f64 elements, e.g. the covariance of an IMU navigation state
+/// (rotation, velocity, position).
+///
+/// A stack value (no allocation).
+pub type Mat9F64 = SMatF64<9, 9>;
+
+/// 15x15 matrix with f64 elements, e.g. the covariance of an IMU navigation state plus
+/// gyroscope and accelerometer biases.
+///
+/// A stack value (no allocation).
+pub type Mat15F64 = SMatF64<15, 15>;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{SVecF64, Vec15F64, Vec6F64, Vec9F64};
+
+    #[test]
+    fn named_fixed_sizes_are_smat_aliases() {
+        let _: SMatF64<6, 6> = Mat6F64::identity();
+        let _: SVecF64<6> = Vec6F64::zeros();
+        let _: SMatF64<9, 9> = Mat9F64::identity();
+        let _: SVecF64<9> = Vec9F64::zeros();
+        let _: SMatF64<15, 15> = Mat15F64::identity();
+        let _: SVecF64<15> = Vec15F64::zeros();
+    }
+
+    #[test]
+    fn mat3f64_nalgebra_roundtrip_keeps_rows_and_columns() {
+        let m = Mat3F64::from_cols_array(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
+        let n = nalgebra::Matrix3::from(m);
+        let rows = nalgebra::Matrix3::new(1.0, 4.0, 7.0, 2.0, 5.0, 8.0, 3.0, 6.0, 9.0);
+        assert_eq!(n, rows);
+        assert_eq!(Mat3F64::from(n), m);
+
+        let v = Vec3F64::new(-1.0, 0.5, 2.0);
+        assert_eq!(Vec3F64::from(n * nalgebra::Vector3::from(v)), m * v);
+    }
+
+    #[test]
+    fn mat6_cholesky_solves_spd_system() {
+        // A = M^T M + I is symmetric positive definite
+        let m = Mat6F64::from_fn(|i, k| ((i * 7 + k * 3) % 5) as f64 - 2.0);
+        let a = m.transpose() * m + Mat6F64::identity();
+        let x = Vec6F64::new(1.0, -2.0, 0.5, 3.0, -0.25, 4.0);
+        let b = a * x;
+        let solved = a.cholesky().map(|c| c.solve(&b)).unwrap();
+        assert!((solved - x).amax() < 1e-12);
+    }
 
     // Mat2 tests
     #[test]

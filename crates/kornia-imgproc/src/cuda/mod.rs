@@ -4,6 +4,9 @@
 //! for device memory and launches. The whole module is gated on the `cuda`
 //! feature at its declaration in `lib.rs`.
 
+/// Fused Harris response without shared memory.
+pub mod harris;
+
 /// Native CUDA downscale kernels using `__ldg` read-only cache.
 pub mod resize;
 
@@ -52,6 +55,13 @@ pub mod histogram;
 /// Median-blur sorting-network kernels (byte-exact vs the CPU path, cv2
 /// and VPI).
 pub mod median;
+
+/// Flying-pixel mask and removal kernels (bit-identical to the CPU `depth`
+/// ops).
+pub(crate) mod depth;
+/// Label-boundary erosion kernels (identical to the CPU
+/// `morphology::erode_label_boundaries`).
+pub(crate) mod label_boundaries;
 /// Native CUDA u8 morphology kernels (dilate / erode, byte-exact with the
 /// CPU ops).
 pub mod morphology;

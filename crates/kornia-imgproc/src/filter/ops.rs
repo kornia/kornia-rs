@@ -1,3 +1,4 @@
+use kornia_algebra::simd::F32x8;
 use kornia_image::{Image, ImageError, ImageSize};
 use rayon::{
     iter::{IndexedParallelIterator, ParallelIterator},
@@ -501,6 +502,86 @@ pub fn spatial_gradient_float_parallel<const C: usize>(
     Ok(())
 }
 
+/// Vectors per step of [`scharr_row_interior_c1`]: a wide step whose
+/// independent add chains overlap on the add ports, then single vectors.
+const SCHARR_VECTORS_PER_STEP: [usize; 2] = [4, 1];
+
+/// Interior columns of one single-channel row of
+/// [`scharr_spatial_gradient_float`], [`F32x8::LANES`] outputs per vector.
+///
+/// Each lane runs the scalar kernel's exact sequence (nine products added in
+/// `dy`-major order, separate `*` and `+`, no FMA), so the output is
+/// bit-identical to the per-pixel loop.
+///
+/// # Returns
+///
+/// The first column not written: columns `1..` it are done, the caller's
+/// per-pixel loop covers the rest of the row.
+fn scharr_row_interior_c1(
+    src: &[f32],
+    cols: usize,
+    r: usize,
+    kx: &[[f32; 3]; 3],
+    ky: &[[f32; 3]; 3],
+    dx_row: &mut [f32],
+    dy_row: &mut [f32],
+) -> usize {
+    const LANES: usize = F32x8::LANES;
+    let wx = kx.map(|row| row.map(F32x8::splat));
+    let wy = ky.map(|row| row.map(F32x8::splat));
+    let end = cols - 1;
+    let mut c = 1usize;
+    for width in SCHARR_VECTORS_PER_STEP {
+        while c + LANES * width <= end {
+            let Some((sum_x, sum_y)) = scharr_lanes(src, cols, r, c, width, &wx, &wy) else {
+                return c;
+            };
+            for v in 0..width {
+                let cv = c + LANES * v;
+                let stored = dx_row
+                    .get_mut(cv..)
+                    .and_then(|d| sum_x[v].write_to_slice(d))
+                    .and_then(|_| dy_row.get_mut(cv..))
+                    .and_then(|d| sum_y[v].write_to_slice(d));
+                if stored.is_none() {
+                    return c;
+                }
+            }
+            c += LANES * width;
+        }
+    }
+    c
+}
+
+type ScharrSums = [F32x8; SCHARR_VECTORS_PER_STEP[0]];
+
+/// `width` vectors of [`scharr_row_interior_c1`] sums starting at column `c`
+/// of row `r`; `None` if a load runs past `src`.
+#[inline(always)]
+fn scharr_lanes(
+    src: &[f32],
+    cols: usize,
+    r: usize,
+    c: usize,
+    width: usize,
+    wx: &[[F32x8; 3]; 3],
+    wy: &[[F32x8; 3]; 3],
+) -> Option<(ScharrSums, ScharrSums)> {
+    let mut sum_x = [F32x8::ZERO; SCHARR_VECTORS_PER_STEP[0]];
+    let mut sum_y = [F32x8::ZERO; SCHARR_VECTORS_PER_STEP[0]];
+    for (dy, (wx_row, wy_row)) in wx.iter().zip(wy).enumerate() {
+        let row = (r + dy - 1) * cols + c - 1;
+        for (dx, (&wx, &wy)) in wx_row.iter().zip(wy_row).enumerate() {
+            for v in 0..width {
+                let val = F32x8::from_slice(src.get(row + dx + F32x8::LANES * v..)?)?;
+                sum_x[v] += val * wx;
+                sum_y[v] += val * wy;
+            }
+        }
+    }
+    Some((sum_x, sum_y))
+}
+
 /// Compute the first order image derivative in both x and y using a Scharr operator.
 ///
 /// # Arguments
@@ -541,11 +622,23 @@ pub fn scharr_spatial_gradient_float<const C: usize>(
         .zip(dy.as_slice_mut().par_chunks_mut(cols * C))
         .enumerate()
         .for_each(|(r, (dx_row, dy_row))| {
-            dx_row
+            // Single-channel interior rows: vectors cover columns 1..vector_end,
+            // so the per-pixel loop visits column 0 and vector_end.. only.
+            let vector_end =
+                if C == 1 && src.rows() >= 2 && src.cols() >= 2 && r > 0 && r < src.rows() - 1 {
+                    scharr_row_interior_c1(src_data, cols, r, &scharr_x, &scharr_y, dx_row, dy_row)
+                } else {
+                    1
+                };
+            let (dx_head, dx_tail) = dx_row.split_at_mut(vector_end * C);
+            let (dy_head, dy_tail) = dy_row.split_at_mut(vector_end * C);
+            dx_head
                 .chunks_mut(C)
-                .zip(dy_row.chunks_mut(C))
-                .enumerate()
-                .for_each(|(c, (dx_c, dy_c))| {
+                .zip(dy_head.chunks_mut(C))
+                .take(1)
+                .chain(dx_tail.chunks_mut(C).zip(dy_tail.chunks_mut(C)))
+                .zip((0..1).chain(vector_end..cols))
+                .for_each(|((dx_c, dy_c), c)| {
                     let mut sum_x = [0.0; C];
                     let mut sum_y = [0.0; C];
                     if src.rows() >= 2
@@ -752,6 +845,61 @@ pub fn gaussian_blur_u8<const C: usize>(
 
     Ok(())
 }
+/// Q8 weights of the 7-tap Gaussian that [`gaussian_blur_u8`] uses for
+/// `kernel_size = (7, 7)` and this `sigma`.
+pub(crate) fn gaussian_kernel_7_q8(sigma: f32) -> [u8; 7] {
+    let q = quantize_kernel_256(&kernels::gaussian_kernel_1d(7, sigma));
+    std::array::from_fn(|i| q[i])
+}
+
+/// Serial 7x7 Gaussian blur of a 1-channel u8 plane into `dst` with the
+/// caller's row buffers: the same bytes as [`gaussian_blur_u8`] with
+/// `kernel_size = (7, 7)` and the sigma `kx`/`ky` came from
+/// ([`gaussian_kernel_7_q8`]), without allocating once `ring` and `padded`
+/// have grown to the largest plane.
+///
+/// Returns `false`, leaving `dst` untouched, when this CPU has no 7x7 SIMD
+/// path (x86-64 without AVX2); the caller then uses [`gaussian_blur_u8`].
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn gaussian_blur_7x7_u8_serial(
+    src: &[u8],
+    dst: &mut [u8],
+    rows: usize,
+    cols: usize,
+    kx: &[u8; 7],
+    ky: &[u8; 7],
+    ring: &mut Vec<u8>,
+    padded: &mut Vec<u8>,
+) -> bool {
+    let (ring_len, padded_len) = (7 * cols, cols + 6);
+    if ring.len() < ring_len {
+        ring.resize(ring_len, 0);
+    }
+    if padded.len() < padded_len {
+        padded.resize(padded_len, 0);
+    }
+    let (ring, padded) = (&mut ring[..ring_len], &mut padded[..padded_len]);
+    #[cfg(target_arch = "aarch64")]
+    {
+        blur7_strip_neon::<1>(src, dst, 0, rows, rows, cols, kx, ky, ring, padded);
+        true
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        if !crate::simd::cpu_features().has_avx2 {
+            return false;
+        }
+        // SAFETY: AVX2 is present.
+        unsafe { blur7_strip_avx2::<1>(src, dst, 0, rows, rows, cols, kx, ky, ring, padded) };
+        true
+    }
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    {
+        let _ = (src, dst, rows, kx, ky, ring, padded);
+        false
+    }
+}
+
 /// Quantize a float kernel (summing to 1.0) to u8 weights summing to 256.
 fn quantize_kernel_256(kernel: &[f32]) -> Vec<u8> {
     let half = kernel.len() / 2;
@@ -1309,16 +1457,6 @@ fn gaussian_blur_7x7_sym_u8<const C: usize>(
     debug_assert_eq!(kx.len(), 7);
     debug_assert_eq!(ky.len(), 7);
 
-    // Four unique weights: outer, mid-outer, mid-inner, center.
-    let kx0 = kx[0] as u16;
-    let kx1 = kx[1] as u16;
-    let kx2 = kx[2] as u16;
-    let kx3 = kx[3] as u16;
-    let ky0 = ky[0] as u16;
-    let ky1 = ky[1] as u16;
-    let ky2 = ky[2] as u16;
-    let ky3 = ky[3] as u16;
-
     let stride = cols * C;
     const KSIZE: usize = 7;
     const HALF: usize = 3;
@@ -1334,114 +1472,130 @@ fn gaussian_blur_7x7_sym_u8<const C: usize>(
 
     strip_slices.par_iter_mut().zip(strips.par_iter()).for_each(
         |(strip_dst, &(out_start, out_end))| {
-            let out_rows = out_end - out_start;
-            let ring_len = KSIZE * stride;
             // Zero-initialised: see `separable_blur_u8_striped`.
-            let mut ring: Vec<u8> = vec![0u8; ring_len];
+            let mut ring: Vec<u8> = vec![0u8; KSIZE * stride];
             let mut padded = vec![0u8; padded_stride];
-
-            // Prime: H-pass rows [out_start - HALF, out_start + HALF] into the ring.
-            for k in 0..KSIZE {
-                let r_abs = out_start as isize + k as isize - HALF as isize;
-                let slot = r_abs.rem_euclid(KSIZE as isize) as usize;
-                let dst_row = &mut ring[slot * stride..(slot + 1) * stride];
-                hpass_sym7_row::<C>(
-                    src,
-                    r_abs,
-                    rows,
-                    cols,
-                    stride,
-                    kx0,
-                    kx1,
-                    kx2,
-                    kx3,
-                    &mut padded,
-                    dst_row,
-                );
-            }
-
-            for oi in 0..out_rows {
-                if oi > 0 {
-                    let r_new = out_start as isize + oi as isize + HALF as isize;
-                    let slot = r_new.rem_euclid(KSIZE as isize) as usize;
-                    let dst_row = &mut ring[slot * stride..(slot + 1) * stride];
-                    hpass_sym7_row::<C>(
-                        src,
-                        r_new,
-                        rows,
-                        cols,
-                        stride,
-                        kx0,
-                        kx1,
-                        kx2,
-                        kx3,
-                        &mut padded,
-                        dst_row,
-                    );
-                }
-
-                let ring_ptr = ring.as_ptr();
-                let mut tap_ptrs: [*const u8; KSIZE] = [std::ptr::null(); KSIZE];
-                for (k, slot_ptr) in tap_ptrs.iter_mut().enumerate() {
-                    let r_abs = out_start as isize + oi as isize - HALF as isize + k as isize;
-                    let slot = r_abs.rem_euclid(KSIZE as isize) as usize;
-                    *slot_ptr = unsafe { ring_ptr.add(slot * stride) };
-                }
-
-                let out_row = &mut strip_dst[oi * stride..(oi + 1) * stride];
-                unsafe {
-                    use std::arch::aarch64::*;
-                    let dp = out_row.as_mut_ptr();
-                    let t0 = tap_ptrs[0];
-                    let t1 = tap_ptrs[1];
-                    let t2 = tap_ptrs[2];
-                    let t3 = tap_ptrs[3];
-                    let t4 = tap_ptrs[4];
-                    let t5 = tap_ptrs[5];
-                    let t6 = tap_ptrs[6];
-                    let bulk16 = stride & !15;
-                    let mut j = 0usize;
-                    while j < bulk16 {
-                        let s0 = vld1q_u8(t0.add(j));
-                        let s1 = vld1q_u8(t1.add(j));
-                        let s2 = vld1q_u8(t2.add(j));
-                        let s3 = vld1q_u8(t3.add(j));
-                        let s4 = vld1q_u8(t4.add(j));
-                        let s5 = vld1q_u8(t5.add(j));
-                        let s6 = vld1q_u8(t6.add(j));
-                        let p0_lo = vaddl_u8(vget_low_u8(s0), vget_low_u8(s6));
-                        let p1_lo = vaddl_u8(vget_low_u8(s1), vget_low_u8(s5));
-                        let p2_lo = vaddl_u8(vget_low_u8(s2), vget_low_u8(s4));
-                        let c_lo = vmovl_u8(vget_low_u8(s3));
-                        let p0_hi = vaddl_u8(vget_high_u8(s0), vget_high_u8(s6));
-                        let p1_hi = vaddl_u8(vget_high_u8(s1), vget_high_u8(s5));
-                        let p2_hi = vaddl_u8(vget_high_u8(s2), vget_high_u8(s4));
-                        let c_hi = vmovl_u8(vget_high_u8(s3));
-                        let mut al = vmulq_n_u16(p0_lo, ky0);
-                        let mut ah = vmulq_n_u16(p0_hi, ky0);
-                        al = vmlaq_n_u16(al, p1_lo, ky1);
-                        ah = vmlaq_n_u16(ah, p1_hi, ky1);
-                        al = vmlaq_n_u16(al, p2_lo, ky2);
-                        ah = vmlaq_n_u16(ah, p2_hi, ky2);
-                        al = vmlaq_n_u16(al, c_lo, ky3);
-                        ah = vmlaq_n_u16(ah, c_hi, ky3);
-                        let packed = vcombine_u8(vrshrn_n_u16(al, 8), vrshrn_n_u16(ah, 8));
-                        vst1q_u8(dp.add(j), packed);
-                        j += 16;
-                    }
-                    while j < stride {
-                        let a = *t0.add(j) as u32 + *t6.add(j) as u32;
-                        let b = *t1.add(j) as u32 + *t5.add(j) as u32;
-                        let c = *t2.add(j) as u32 + *t4.add(j) as u32;
-                        let d = *t3.add(j) as u32;
-                        let acc = a * ky0 as u32 + b * ky1 as u32 + c * ky2 as u32 + d * ky3 as u32;
-                        *dp.add(j) = ((acc + 128) >> 8) as u8;
-                        j += 1;
-                    }
-                }
-            }
+            blur7_strip_neon::<C>(
+                src,
+                strip_dst,
+                out_start,
+                out_end,
+                rows,
+                cols,
+                kx,
+                ky,
+                &mut ring,
+                &mut padded,
+            );
         },
     );
+}
+
+/// One output strip `[out_start, out_end)` of the symmetric 7x7 blur, with
+/// the caller's ring (`7 * cols * C` bytes) and padded-row (`(cols + 6) * C`
+/// bytes) buffers; every ring row is written before it is read.
+#[cfg(target_arch = "aarch64")]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn blur7_strip_neon<const C: usize>(
+    src: &[u8],
+    strip_dst: &mut [u8],
+    out_start: usize,
+    out_end: usize,
+    rows: usize,
+    cols: usize,
+    kx: &[u8],
+    ky: &[u8],
+    ring: &mut [u8],
+    padded: &mut [u8],
+) {
+    // Four unique weights: outer, mid-outer, mid-inner, center.
+    let (kx0, kx1, kx2, kx3) = (kx[0] as u16, kx[1] as u16, kx[2] as u16, kx[3] as u16);
+    let (ky0, ky1, ky2, ky3) = (ky[0] as u16, ky[1] as u16, ky[2] as u16, ky[3] as u16);
+    let stride = cols * C;
+    const KSIZE: usize = 7;
+    const HALF: usize = 3;
+    let out_rows = out_end - out_start;
+
+    // Prime: H-pass rows [out_start - HALF, out_start + HALF] into the ring.
+    for k in 0..KSIZE {
+        let r_abs = out_start as isize + k as isize - HALF as isize;
+        let slot = r_abs.rem_euclid(KSIZE as isize) as usize;
+        let dst_row = &mut ring[slot * stride..(slot + 1) * stride];
+        hpass_sym7_row::<C>(
+            src, r_abs, rows, cols, stride, kx0, kx1, kx2, kx3, padded, dst_row,
+        );
+    }
+
+    for oi in 0..out_rows {
+        if oi > 0 {
+            let r_new = out_start as isize + oi as isize + HALF as isize;
+            let slot = r_new.rem_euclid(KSIZE as isize) as usize;
+            let dst_row = &mut ring[slot * stride..(slot + 1) * stride];
+            hpass_sym7_row::<C>(
+                src, r_new, rows, cols, stride, kx0, kx1, kx2, kx3, padded, dst_row,
+            );
+        }
+
+        let ring_ptr = ring.as_ptr();
+        let mut tap_ptrs: [*const u8; KSIZE] = [std::ptr::null(); KSIZE];
+        for (k, slot_ptr) in tap_ptrs.iter_mut().enumerate() {
+            let r_abs = out_start as isize + oi as isize - HALF as isize + k as isize;
+            let slot = r_abs.rem_euclid(KSIZE as isize) as usize;
+            *slot_ptr = unsafe { ring_ptr.add(slot * stride) };
+        }
+
+        let out_row = &mut strip_dst[oi * stride..(oi + 1) * stride];
+        unsafe {
+            use std::arch::aarch64::*;
+            let dp = out_row.as_mut_ptr();
+            let t0 = tap_ptrs[0];
+            let t1 = tap_ptrs[1];
+            let t2 = tap_ptrs[2];
+            let t3 = tap_ptrs[3];
+            let t4 = tap_ptrs[4];
+            let t5 = tap_ptrs[5];
+            let t6 = tap_ptrs[6];
+            let bulk16 = stride & !15;
+            let mut j = 0usize;
+            while j < bulk16 {
+                let s0 = vld1q_u8(t0.add(j));
+                let s1 = vld1q_u8(t1.add(j));
+                let s2 = vld1q_u8(t2.add(j));
+                let s3 = vld1q_u8(t3.add(j));
+                let s4 = vld1q_u8(t4.add(j));
+                let s5 = vld1q_u8(t5.add(j));
+                let s6 = vld1q_u8(t6.add(j));
+                let p0_lo = vaddl_u8(vget_low_u8(s0), vget_low_u8(s6));
+                let p1_lo = vaddl_u8(vget_low_u8(s1), vget_low_u8(s5));
+                let p2_lo = vaddl_u8(vget_low_u8(s2), vget_low_u8(s4));
+                let c_lo = vmovl_u8(vget_low_u8(s3));
+                let p0_hi = vaddl_u8(vget_high_u8(s0), vget_high_u8(s6));
+                let p1_hi = vaddl_u8(vget_high_u8(s1), vget_high_u8(s5));
+                let p2_hi = vaddl_u8(vget_high_u8(s2), vget_high_u8(s4));
+                let c_hi = vmovl_u8(vget_high_u8(s3));
+                let mut al = vmulq_n_u16(p0_lo, ky0);
+                let mut ah = vmulq_n_u16(p0_hi, ky0);
+                al = vmlaq_n_u16(al, p1_lo, ky1);
+                ah = vmlaq_n_u16(ah, p1_hi, ky1);
+                al = vmlaq_n_u16(al, p2_lo, ky2);
+                ah = vmlaq_n_u16(ah, p2_hi, ky2);
+                al = vmlaq_n_u16(al, c_lo, ky3);
+                ah = vmlaq_n_u16(ah, c_hi, ky3);
+                let packed = vcombine_u8(vrshrn_n_u16(al, 8), vrshrn_n_u16(ah, 8));
+                vst1q_u8(dp.add(j), packed);
+                j += 16;
+            }
+            while j < stride {
+                let a = *t0.add(j) as u32 + *t6.add(j) as u32;
+                let b = *t1.add(j) as u32 + *t5.add(j) as u32;
+                let c = *t2.add(j) as u32 + *t4.add(j) as u32;
+                let d = *t3.add(j) as u32;
+                let acc = a * ky0 as u32 + b * ky1 as u32 + c * ky2 as u32 + d * ky3 as u32;
+                *dp.add(j) = ((acc + 128) >> 8) as u8;
+                j += 1;
+            }
+        }
+    }
 }
 
 /// Horizontal pass for the symmetric 7-tap path. Writes Q8-shifted u8 into `dst_row`.
@@ -1702,15 +1856,6 @@ fn gaussian_blur_7x7_sym_u8_avx2<const C: usize>(
     debug_assert_eq!(kx.len(), 7);
     debug_assert_eq!(ky.len(), 7);
 
-    let kx0 = kx[0] as u16;
-    let kx1 = kx[1] as u16;
-    let kx2 = kx[2] as u16;
-    let kx3 = kx[3] as u16;
-    let ky0 = ky[0] as u16;
-    let ky1 = ky[1] as u16;
-    let ky2 = ky[2] as u16;
-    let ky3 = ky[3] as u16;
-
     let stride = cols * C;
     const KSIZE: usize = 7;
     const HALF: usize = 3;
@@ -1726,70 +1871,91 @@ fn gaussian_blur_7x7_sym_u8_avx2<const C: usize>(
 
     strip_slices.par_iter_mut().zip(strips.par_iter()).for_each(
         |(strip_dst, &(out_start, out_end))| {
-            let out_rows = out_end - out_start;
-            let ring_len = KSIZE * stride;
             // Zero-initialised: see `separable_blur_u8_striped`.
-            let mut ring: Vec<u8> = vec![0u8; ring_len];
+            let mut ring: Vec<u8> = vec![0u8; KSIZE * stride];
             let mut padded = vec![0u8; padded_stride];
-
-            for k in 0..KSIZE {
-                let r_abs = out_start as isize + k as isize - HALF as isize;
-                let slot = r_abs.rem_euclid(KSIZE as isize) as usize;
-                let dst_row = &mut ring[slot * stride..(slot + 1) * stride];
-                unsafe {
-                    hpass_sym7_row_avx2::<C>(
-                        src,
-                        r_abs,
-                        rows,
-                        cols,
-                        stride,
-                        kx0,
-                        kx1,
-                        kx2,
-                        kx3,
-                        &mut padded,
-                        dst_row,
-                    )
-                };
-            }
-
-            for oi in 0..out_rows {
-                if oi > 0 {
-                    let r_new = out_start as isize + oi as isize + HALF as isize;
-                    let slot = r_new.rem_euclid(KSIZE as isize) as usize;
-                    let dst_row = &mut ring[slot * stride..(slot + 1) * stride];
-                    unsafe {
-                        hpass_sym7_row_avx2::<C>(
-                            src,
-                            r_new,
-                            rows,
-                            cols,
-                            stride,
-                            kx0,
-                            kx1,
-                            kx2,
-                            kx3,
-                            &mut padded,
-                            dst_row,
-                        )
-                    };
-                }
-
-                let ring_ptr = ring.as_ptr();
-                let mut tap_ptrs: [*const u8; KSIZE] = [std::ptr::null(); KSIZE];
-                for (k, slot_ptr) in tap_ptrs.iter_mut().enumerate() {
-                    let r_abs = out_start as isize + oi as isize - HALF as isize + k as isize;
-                    let slot = r_abs.rem_euclid(KSIZE as isize) as usize;
-                    *slot_ptr = unsafe { ring_ptr.add(slot * stride) };
-                }
-
-                let out_row = &mut strip_dst[oi * stride..(oi + 1) * stride];
-                unsafe {
-                    vpass_sym7_row_avx2(&tap_ptrs, out_row.as_mut_ptr(), stride, ky0, ky1, ky2, ky3)
-                };
-            }
+            // SAFETY: the caller dispatched here after checking AVX2.
+            unsafe {
+                blur7_strip_avx2::<C>(
+                    src,
+                    strip_dst,
+                    out_start,
+                    out_end,
+                    rows,
+                    cols,
+                    kx,
+                    ky,
+                    &mut ring,
+                    &mut padded,
+                )
+            };
         },
     );
+}
+
+/// One output strip `[out_start, out_end)` of the symmetric 7x7 blur, with
+/// the caller's ring (`7 * cols * C` bytes) and padded-row (`(cols + 6) * C`
+/// bytes) buffers; every ring row is written before it is read.
+///
+/// # Safety
+///
+/// The CPU must support AVX2.
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::too_many_arguments)]
+pub(crate) unsafe fn blur7_strip_avx2<const C: usize>(
+    src: &[u8],
+    strip_dst: &mut [u8],
+    out_start: usize,
+    out_end: usize,
+    rows: usize,
+    cols: usize,
+    kx: &[u8],
+    ky: &[u8],
+    ring: &mut [u8],
+    padded: &mut [u8],
+) {
+    // Four unique weights: outer, mid-outer, mid-inner, center.
+    let (kx0, kx1, kx2, kx3) = (kx[0] as u16, kx[1] as u16, kx[2] as u16, kx[3] as u16);
+    let (ky0, ky1, ky2, ky3) = (ky[0] as u16, ky[1] as u16, ky[2] as u16, ky[3] as u16);
+    let stride = cols * C;
+    const KSIZE: usize = 7;
+    const HALF: usize = 3;
+    let out_rows = out_end - out_start;
+
+    for k in 0..KSIZE {
+        let r_abs = out_start as isize + k as isize - HALF as isize;
+        let slot = r_abs.rem_euclid(KSIZE as isize) as usize;
+        let dst_row = &mut ring[slot * stride..(slot + 1) * stride];
+        unsafe {
+            hpass_sym7_row_avx2::<C>(
+                src, r_abs, rows, cols, stride, kx0, kx1, kx2, kx3, padded, dst_row,
+            )
+        };
+    }
+
+    for oi in 0..out_rows {
+        if oi > 0 {
+            let r_new = out_start as isize + oi as isize + HALF as isize;
+            let slot = r_new.rem_euclid(KSIZE as isize) as usize;
+            let dst_row = &mut ring[slot * stride..(slot + 1) * stride];
+            unsafe {
+                hpass_sym7_row_avx2::<C>(
+                    src, r_new, rows, cols, stride, kx0, kx1, kx2, kx3, padded, dst_row,
+                )
+            };
+        }
+
+        let ring_ptr = ring.as_ptr();
+        let mut tap_ptrs: [*const u8; KSIZE] = [std::ptr::null(); KSIZE];
+        for (k, slot_ptr) in tap_ptrs.iter_mut().enumerate() {
+            let r_abs = out_start as isize + oi as isize - HALF as isize + k as isize;
+            let slot = r_abs.rem_euclid(KSIZE as isize) as usize;
+            *slot_ptr = unsafe { ring_ptr.add(slot * stride) };
+        }
+
+        let out_row = &mut strip_dst[oi * stride..(oi + 1) * stride];
+        unsafe { vpass_sym7_row_avx2(&tap_ptrs, out_row.as_mut_ptr(), stride, ky0, ky1, ky2, ky3) };
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -1985,6 +2151,59 @@ unsafe fn hpass_sym7_row_avx2<const C: usize>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Independent per-pixel Scharr for one channel: every output reads its
+    /// nine taps with replicated borders and adds the products in `dy`-major
+    /// order, the order of the library kernel, so the two agree bit for bit.
+    fn scharr_c1_reference(src: &[f32], width: usize, height: usize) -> (Vec<f32>, Vec<f32>) {
+        let (kx, ky) = kernels::normalized_scharr_kernel3();
+        let mut dx = vec![0.0f32; width * height];
+        let mut dy = vec![0.0f32; width * height];
+        for (i, (out_x, out_y)) in dx.iter_mut().zip(dy.iter_mut()).enumerate() {
+            let (x, y) = (i % width, i / width);
+            let (mut sum_x, mut sum_y) = (0.0f32, 0.0f32);
+            for j in 0..3 {
+                let sy = (y + j).clamp(1, height) - 1;
+                for k in 0..3 {
+                    let sx = (x + k).clamp(1, width) - 1;
+                    let val = src[sy * width + sx];
+                    sum_x += val * kx[j][k];
+                    sum_y += val * ky[j][k];
+                }
+            }
+            (*out_x, *out_y) = (sum_x, sum_y);
+        }
+        (dx, dy)
+    }
+
+    /// The single-channel vector rows, the per-pixel tail and the borders
+    /// must match the per-pixel reference bit for bit (no FMA anywhere).
+    #[test]
+    fn test_scharr_float_vector_matches_scalar_bits() -> Result<(), ImageError> {
+        let mut state = 0x2545_f491_u32;
+        for (width, height) in [(2, 2), (3, 5), (9, 4), (17, 9), (94, 60), (752, 480)] {
+            let size = ImageSize { width, height };
+            let plane: Vec<f32> = (0..width * height)
+                .map(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 17;
+                    state ^= state << 5;
+                    (state % 25_500) as f32 / 100.0
+                })
+                .collect();
+            let (expected_dx, expected_dy) = scharr_c1_reference(&plane, width, height);
+            let src = Image::<f32, 1>::new(size, plane)?;
+            let mut dx = Image::<f32, 1>::from_size_val(size, 0.0)?;
+            let mut dy = Image::<f32, 1>::from_size_val(size, 0.0)?;
+            scharr_spatial_gradient_float(&src, &mut dx, &mut dy)?;
+            for i in 0..width * height {
+                let at = format!("{width}x{height} at {i}");
+                assert_eq!(dx.as_slice()[i].to_bits(), expected_dx[i].to_bits(), "{at}");
+                assert_eq!(dy.as_slice()[i].to_bits(), expected_dy[i].to_bits(), "{at}");
+            }
+        }
+        Ok(())
+    }
 
     #[cfg(target_arch = "aarch64")]
     #[test]
