@@ -31,8 +31,10 @@ fn unsupported_mode_err(modes: &str) -> PyErr {
 /// * `ValueError`: If the mode is unsupported (case-sensitive) or the file fails to read.
 #[pyfunction]
 pub fn read_image_tiff_u8(py: Python<'_>, file_path: &str, mode: &str) -> PyResult<PyImage> {
-    let bytes = read_file_bytes(file_path)?;
-    let layout = k_tiff::decode_image_tiff_layout(&bytes).map_err(to_pyerr)?;
+    let bytes = py.detach(|| read_file_bytes(file_path))?;
+    let layout = py
+        .detach(|| k_tiff::decode_image_tiff_layout(&bytes))
+        .map_err(to_pyerr)?;
     match mode {
         "rgb" => {
             // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only
@@ -40,7 +42,8 @@ pub fn read_image_tiff_u8(py: Python<'_>, file_path: &str, mode: &str) -> PyResu
             let (dst, out) =
                 unsafe { alloc_output_pyarray_t::<u8, 3, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Rgb8(dst);
-            k_tiff::decode_image_tiff_rgb8(&bytes, &mut wrapped).map_err(to_pyerr)?;
+            py.detach(|| k_tiff::decode_image_tiff_rgb8(&bytes, &mut wrapped))
+                .map_err(to_pyerr)?;
             Ok(out)
         }
         "mono" => {
@@ -49,7 +52,8 @@ pub fn read_image_tiff_u8(py: Python<'_>, file_path: &str, mode: &str) -> PyResu
             let (dst, out) =
                 unsafe { alloc_output_pyarray_t::<u8, 1, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Gray8(dst);
-            k_tiff::decode_image_tiff_mono8(&bytes, &mut wrapped).map_err(to_pyerr)?;
+            py.detach(|| k_tiff::decode_image_tiff_mono8(&bytes, &mut wrapped))
+                .map_err(to_pyerr)?;
             Ok(out)
         }
         _ => Err(unsupported_mode_err(
@@ -61,8 +65,10 @@ pub fn read_image_tiff_u8(py: Python<'_>, file_path: &str, mode: &str) -> PyResu
 /// Reads a TIFF image from a file path into a 16-bit tensor.
 #[pyfunction]
 pub fn read_image_tiff_u16(py: Python<'_>, file_path: &str, mode: &str) -> PyResult<PyImageU16> {
-    let bytes = read_file_bytes(file_path)?;
-    let layout = k_tiff::decode_image_tiff_layout(&bytes).map_err(to_pyerr)?;
+    let bytes = py.detach(|| read_file_bytes(file_path))?;
+    let layout = py
+        .detach(|| k_tiff::decode_image_tiff_layout(&bytes))
+        .map_err(to_pyerr)?;
     match mode {
         "rgb" => {
             // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only
@@ -70,7 +76,8 @@ pub fn read_image_tiff_u16(py: Python<'_>, file_path: &str, mode: &str) -> PyRes
             let (dst, out) =
                 unsafe { alloc_output_pyarray_t::<u16, 3, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Rgb16(dst);
-            k_tiff::decode_image_tiff_rgb16(&bytes, &mut wrapped).map_err(to_pyerr)?;
+            py.detach(|| k_tiff::decode_image_tiff_rgb16(&bytes, &mut wrapped))
+                .map_err(to_pyerr)?;
             Ok(out)
         }
         "mono" => {
@@ -79,7 +86,8 @@ pub fn read_image_tiff_u16(py: Python<'_>, file_path: &str, mode: &str) -> PyRes
             let (dst, out) =
                 unsafe { alloc_output_pyarray_t::<u16, 1, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Gray16(dst);
-            k_tiff::decode_image_tiff_mono16(&bytes, &mut wrapped).map_err(to_pyerr)?;
+            py.detach(|| k_tiff::decode_image_tiff_mono16(&bytes, &mut wrapped))
+                .map_err(to_pyerr)?;
             Ok(out)
         }
         _ => Err(unsupported_mode_err(
@@ -91,15 +99,18 @@ pub fn read_image_tiff_u16(py: Python<'_>, file_path: &str, mode: &str) -> PyRes
 /// Reads a TIFF image from a file path into a 32-bit float tensor.
 #[pyfunction]
 pub fn read_image_tiff_f32(py: Python<'_>, file_path: &str, mode: &str) -> PyResult<PyImageF32> {
-    let bytes = read_file_bytes(file_path)?;
-    let layout = k_tiff::decode_image_tiff_layout(&bytes).map_err(to_pyerr)?;
+    let bytes = py.detach(|| read_file_bytes(file_path))?;
+    let layout = py
+        .detach(|| k_tiff::decode_image_tiff_layout(&bytes))
+        .map_err(to_pyerr)?;
     match mode {
         "mono" => {
             // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only
             // handed to Python after the last write through `dst`.
             let (dst, out) = unsafe { alloc_output_pyarray_t::<f32, 1, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Grayf32(dst);
-            k_tiff::decode_image_tiff_mono32f(&bytes, &mut wrapped).map_err(to_pyerr)?;
+            py.detach(|| k_tiff::decode_image_tiff_mono32f(&bytes, &mut wrapped))
+                .map_err(to_pyerr)?;
             Ok(out)
         }
         "rgb" => {
@@ -107,7 +118,8 @@ pub fn read_image_tiff_f32(py: Python<'_>, file_path: &str, mode: &str) -> PyRes
             // handed to Python after the last write through `dst`.
             let (dst, out) = unsafe { alloc_output_pyarray_t::<f32, 3, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Rgbf32(dst);
-            k_tiff::decode_image_tiff_rgb32f(&bytes, &mut wrapped).map_err(to_pyerr)?;
+            py.detach(|| k_tiff::decode_image_tiff_rgb32f(&bytes, &mut wrapped))
+                .map_err(to_pyerr)?;
             Ok(out)
         }
         _ => Err(unsupported_mode_err(
@@ -127,11 +139,13 @@ pub fn write_image_tiff_u8(
     match mode {
         "rgb" => {
             let image = unsafe { numpy_as_image::<3>(py, &image)? };
-            k_tiff::write_image_tiff_rgb8(file_path, &image).map_err(to_pyerr)?;
+            py.detach(|| k_tiff::write_image_tiff_rgb8(file_path, &image))
+                .map_err(to_pyerr)?;
         }
         "mono" => {
             let image = unsafe { numpy_as_image::<1>(py, &image)? };
-            k_tiff::write_image_tiff_mono8(file_path, &image).map_err(to_pyerr)?;
+            py.detach(|| k_tiff::write_image_tiff_mono8(file_path, &image))
+                .map_err(to_pyerr)?;
         }
         _ => {
             return Err(unsupported_mode_err(
@@ -155,13 +169,15 @@ pub fn write_image_tiff_u16(
             // SAFETY: the view borrows the numpy array, which the caller keeps alive and does not
             // mutate for the duration of this call.
             let image = unsafe { numpy_as_image_t::<u16, 3>(py, &image)? };
-            k_tiff::write_image_tiff_rgb16(file_path, &image).map_err(to_pyerr)?;
+            py.detach(|| k_tiff::write_image_tiff_rgb16(file_path, &image))
+                .map_err(to_pyerr)?;
         }
         "mono" => {
             // SAFETY: the view borrows the numpy array, which the caller keeps alive and does not
             // mutate for the duration of this call.
             let image = unsafe { numpy_as_image_t::<u16, 1>(py, &image)? };
-            k_tiff::write_image_tiff_mono16(file_path, &image).map_err(to_pyerr)?;
+            py.detach(|| k_tiff::write_image_tiff_mono16(file_path, &image))
+                .map_err(to_pyerr)?;
         }
         _ => {
             return Err(unsupported_mode_err(
@@ -185,13 +201,15 @@ pub fn write_image_tiff_f32(
             // SAFETY: the view borrows the numpy array, which the caller keeps alive and does not
             // mutate for the duration of this call.
             let image = unsafe { numpy_as_image_t::<f32, 1>(py, &image)? };
-            k_tiff::write_image_tiff_mono32f(file_path, &image).map_err(to_pyerr)?;
+            py.detach(|| k_tiff::write_image_tiff_mono32f(file_path, &image))
+                .map_err(to_pyerr)?;
         }
         "rgb" => {
             // SAFETY: the view borrows the numpy array, which the caller keeps alive and does not
             // mutate for the duration of this call.
             let image = unsafe { numpy_as_image_t::<f32, 3>(py, &image)? };
-            k_tiff::write_image_tiff_rgb32f(file_path, &image).map_err(to_pyerr)?;
+            py.detach(|| k_tiff::write_image_tiff_rgb32f(file_path, &image))
+                .map_err(to_pyerr)?;
         }
         _ => {
             return Err(unsupported_mode_err(

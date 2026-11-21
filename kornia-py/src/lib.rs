@@ -196,7 +196,7 @@ pub fn icp_vanilla_deprecated(
         "kornia_rs.icp_vanilla is deprecated. Use kornia_rs.k3d.icp_vanilla.",
     )?;
 
-    icp::icp_vanilla(source, target, initial_rot, initial_trans, criteria)
+    icp::icp_vanilla(py, source, target, initial_rot, initial_trans, criteria)
 }
 
 // IO

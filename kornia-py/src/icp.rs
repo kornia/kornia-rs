@@ -91,6 +91,7 @@ impl PyICPResult {
 
 #[pyfunction]
 pub fn icp_vanilla(
+    py: Python<'_>,
     source: PyPointCloud,
     target: PyPointCloud,
     initial_rot: Py<PyArray2<f64>>,
@@ -126,8 +127,12 @@ pub fn icp_vanilla(
         Ok([d[0], d[1], d[2]])
     })?;
 
-    let result = icp_vanilla_fn(&source, &target, initial_rot, initial_trans, criteria.0)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
+    let result = py
+        .detach(|| {
+            icp_vanilla_fn(&source, &target, initial_rot, initial_trans, criteria.0)
+                .map_err(|e| e.to_string())
+        })
+        .map_err(PyErr::new::<pyo3::exceptions::PyException, _>)?;
 
     Ok(PyICPResult(result))
 }

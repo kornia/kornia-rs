@@ -118,25 +118,30 @@ pub fn fundamental(
     seed: Option<u64>,
     solver: &str,
 ) -> PyResult<PyRansacTwoViewResult> {
+    let py = matches.py();
     let samples = parse_two_view_matches(matches)?;
     let mut sampler = UniformSampler::new(StdRng::seed_from_u64(seed.unwrap_or(0)));
     let consensus = ThresholdConsensus { threshold };
     let cfg = make_cfg(threshold, max_iters, confidence)?;
     let result = match solver {
-        "7point" => run(
-            &FundamentalEstimator,
-            &consensus,
-            &mut sampler,
-            &samples,
-            &cfg,
-        ),
-        "8point" => run(
-            &Fundamental8PointEstimator,
-            &consensus,
-            &mut sampler,
-            &samples,
-            &cfg,
-        ),
+        "7point" => py.detach(|| {
+            run(
+                &FundamentalEstimator,
+                &consensus,
+                &mut sampler,
+                &samples,
+                &cfg,
+            )
+        }),
+        "8point" => py.detach(|| {
+            run(
+                &Fundamental8PointEstimator,
+                &consensus,
+                &mut sampler,
+                &samples,
+                &cfg,
+            )
+        }),
         _ => {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "solver must be '7point' or '8point'",
@@ -163,17 +168,20 @@ pub fn essential(
     confidence: f64,
     seed: Option<u64>,
 ) -> PyResult<PyRansacTwoViewResult> {
+    let py = matches.py();
     let samples = parse_two_view_matches(matches)?;
     let mut sampler = UniformSampler::new(StdRng::seed_from_u64(seed.unwrap_or(0)));
     let consensus = ThresholdConsensus { threshold };
     let cfg = make_cfg(threshold, max_iters, confidence)?;
-    let result = run(
-        &EssentialEstimator,
-        &consensus,
-        &mut sampler,
-        &samples,
-        &cfg,
-    );
+    let result = py.detach(|| {
+        run(
+            &EssentialEstimator,
+            &consensus,
+            &mut sampler,
+            &samples,
+            &cfg,
+        )
+    });
     Ok(PyRansacTwoViewResult {
         model: result.model.as_ref().map(mat3_to_row_major_vec),
         inliers: result.inliers,
@@ -193,17 +201,20 @@ pub fn homography(
     confidence: f64,
     seed: Option<u64>,
 ) -> PyResult<PyRansacTwoViewResult> {
+    let py = matches.py();
     let samples = parse_two_view_matches(matches)?;
     let mut sampler = UniformSampler::new(StdRng::seed_from_u64(seed.unwrap_or(0)));
     let consensus = ThresholdConsensus { threshold };
     let cfg = make_cfg(threshold, max_iters, confidence)?;
-    let result = run(
-        &HomographyEstimator,
-        &consensus,
-        &mut sampler,
-        &samples,
-        &cfg,
-    );
+    let result = py.detach(|| {
+        run(
+            &HomographyEstimator,
+            &consensus,
+            &mut sampler,
+            &samples,
+            &cfg,
+        )
+    });
     Ok(PyRansacTwoViewResult {
         model: result.model.as_ref().map(mat3_to_row_major_vec),
         inliers: result.inliers,

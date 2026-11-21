@@ -16,7 +16,8 @@ use pyo3::prelude::*;
 /// * `ValueError`: If the mode is unsupported (case-sensitive) or if the image fails to decode.
 #[pyfunction]
 pub fn read_image_jpeg(py: Python<'_>, file_path: &str, mode: &str) -> PyResult<PyImage> {
-    let bytes = std::fs::read(file_path)
+    let bytes = py
+        .detach(|| std::fs::read(file_path))
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string()))?;
     decode_image_jpeg_with_mode(py, &bytes, mode)
 }
@@ -47,11 +48,13 @@ pub fn write_image_jpeg(
     match mode {
         "rgb" => {
             let image = unsafe { numpy_as_image::<3>(py, &image)? };
-            J::write_image_jpeg_rgb8(file_path, &image, quality).map_err(to_pyerr)?;
+            py.detach(|| J::write_image_jpeg_rgb8(file_path, &image, quality))
+                .map_err(to_pyerr)?;
         }
         "mono" => {
             let image = unsafe { numpy_as_image::<1>(py, &image)? };
-            J::write_image_jpeg_gray8(file_path, &image, quality).map_err(to_pyerr)?;
+            py.detach(|| J::write_image_jpeg_gray8(file_path, &image, quality))
+                .map_err(to_pyerr)?;
         }
         _ => {
             return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
@@ -83,14 +86,17 @@ pub fn write_image_jpeg(
 /// *Python-only helper; not part of kornia-io's Rust API.*
 #[pyfunction]
 pub fn decode_image_jpeg(py: Python<'_>, src: &[u8]) -> PyResult<PyImage> {
-    let layout = J::decode_image_jpeg_layout(src).map_err(to_pyerr)?;
+    let layout = py
+        .detach(|| J::decode_image_jpeg_layout(src))
+        .map_err(to_pyerr)?;
     match layout.channels {
         3 => {
             // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only
             // handed to Python after the last write through `dst`.
             let (mut dst, out) =
                 unsafe { alloc_output_pyarray_t::<u8, 3, ZEROED>(py, layout.image_size)? };
-            J::decode_image_jpeg_rgb8(src, &mut dst).map_err(to_pyerr)?;
+            py.detach(|| J::decode_image_jpeg_rgb8(src, &mut dst))
+                .map_err(to_pyerr)?;
             Ok(out)
         }
         1 => {
@@ -98,7 +104,8 @@ pub fn decode_image_jpeg(py: Python<'_>, src: &[u8]) -> PyResult<PyImage> {
             // handed to Python after the last write through `dst`.
             let (mut dst, out) =
                 unsafe { alloc_output_pyarray_t::<u8, 1, ZEROED>(py, layout.image_size)? };
-            J::decode_image_jpeg_mono8(src, &mut dst).map_err(to_pyerr)?;
+            py.detach(|| J::decode_image_jpeg_mono8(src, &mut dst))
+                .map_err(to_pyerr)?;
             Ok(out)
         }
         ch => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
@@ -110,14 +117,17 @@ pub fn decode_image_jpeg(py: Python<'_>, src: &[u8]) -> PyResult<PyImage> {
 
 /// Decode JPEG bytes into a numpy array using a `mode` string ("rgb"/"mono").
 fn decode_image_jpeg_with_mode(py: Python<'_>, src: &[u8], mode: &str) -> PyResult<PyImage> {
-    let layout = J::decode_image_jpeg_layout(src).map_err(to_pyerr)?;
+    let layout = py
+        .detach(|| J::decode_image_jpeg_layout(src))
+        .map_err(to_pyerr)?;
     match mode {
         "rgb" => {
             // SAFETY: `dst` aliases the fresh zeroed array `out`, which stays alive and is only
             // handed to Python after the last write through `dst`.
             let (mut dst, out) =
                 unsafe { alloc_output_pyarray_t::<u8, 3, ZEROED>(py, layout.image_size)? };
-            J::decode_image_jpeg_rgb8(src, &mut dst).map_err(to_pyerr)?;
+            py.detach(|| J::decode_image_jpeg_rgb8(src, &mut dst))
+                .map_err(to_pyerr)?;
             Ok(out)
         }
         "mono" => {
@@ -125,7 +135,8 @@ fn decode_image_jpeg_with_mode(py: Python<'_>, src: &[u8], mode: &str) -> PyResu
             // handed to Python after the last write through `dst`.
             let (mut dst, out) =
                 unsafe { alloc_output_pyarray_t::<u8, 1, ZEROED>(py, layout.image_size)? };
-            J::decode_image_jpeg_mono8(src, &mut dst).map_err(to_pyerr)?;
+            py.detach(|| J::decode_image_jpeg_mono8(src, &mut dst))
+                .map_err(to_pyerr)?;
             Ok(out)
         }
         _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
@@ -155,6 +166,7 @@ fn decode_image_jpeg_with_mode(py: Python<'_>, src: &[u8], mode: &str) -> PyResu
 pub fn encode_image_jpeg(py: Python<'_>, image: PyImage, quality: u8) -> PyResult<Vec<u8>> {
     let image = unsafe { numpy_as_image::<3>(py, &image)? };
     let mut buffer = Vec::new();
-    J::encode_image_jpeg_rgb8(&image, quality, &mut buffer).map_err(to_pyerr)?;
+    py.detach(|| J::encode_image_jpeg_rgb8(&image, quality, &mut buffer))
+        .map_err(to_pyerr)?;
     Ok(buffer)
 }
