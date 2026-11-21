@@ -26,7 +26,7 @@ pub fn encode_image_rvl(py: Python<'_>, image: PyImageU16) -> PyResult<Vec<u8>> 
     // SAFETY: the view borrows the numpy array, which the caller keeps alive and does not mutate
     // for the duration of this call.
     let img = unsafe { numpy_as_image_t::<u16, 1>(py, &image)? };
-    R::encode_image_rvl(&img).map_err(to_pyerr)
+    py.detach(|| R::encode_image_rvl(&img)).map_err(to_pyerr)
 }
 
 /// Decodes RVL-compressed bytes back to a single-channel 16-bit depth image.
@@ -39,7 +39,7 @@ pub fn encode_image_rvl(py: Python<'_>, image: PyImageU16) -> PyResult<Vec<u8>> 
 ///     numpy array of shape ``(H, W, 1)`` and dtype ``uint16``.
 #[pyfunction]
 pub fn decode_image_rvl(py: Python<'_>, src: &[u8]) -> PyResult<PyImageU16> {
-    let img = R::decode_image_rvl(src).map_err(to_pyerr)?;
+    let img = py.detach(|| R::decode_image_rvl(src)).map_err(to_pyerr)?;
     let size = ImageSize {
         width: img.width(),
         height: img.height(),
@@ -61,7 +61,8 @@ pub fn write_image_rvl(py: Python<'_>, file_path: &str, image: PyImageU16) -> Py
     // SAFETY: the view borrows the numpy array, which the caller keeps alive and does not mutate
     // for the duration of this call.
     let img = unsafe { numpy_as_image_t::<u16, 1>(py, &image)? };
-    R::write_image_rvl(file_path, &img).map_err(to_pyerr)
+    py.detach(|| R::write_image_rvl(file_path, &img))
+        .map_err(to_pyerr)
 }
 
 /// Reads an RVL file into a single-channel 16-bit depth image.
@@ -73,7 +74,9 @@ pub fn write_image_rvl(py: Python<'_>, file_path: &str, image: PyImageU16) -> Py
 ///     numpy array of shape ``(H, W, 1)`` and dtype ``uint16``.
 #[pyfunction]
 pub fn read_image_rvl(py: Python<'_>, file_path: &str) -> PyResult<PyImageU16> {
-    let img = R::read_image_rvl(file_path).map_err(to_pyerr)?;
+    let img = py
+        .detach(|| R::read_image_rvl(file_path))
+        .map_err(to_pyerr)?;
     let size = ImageSize {
         width: img.width(),
         height: img.height(),
