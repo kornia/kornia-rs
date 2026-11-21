@@ -161,6 +161,8 @@ fn bench_umeyama_robust(c: &mut Criterion) {
     group.finish();
 }
 
+/// Gravity-preserving 4-DoF `umeyama_yaw_f64` benchmark over unweighted and
+/// weighted point sets at `n` = 8, 50, 200.
 fn bench_umeyama_yaw(c: &mut Criterion) {
     let mut group = c.benchmark_group("umeyama_yaw_f64");
     let gravity = Vec3F64::new(0.0, 0.0, 1.0);
