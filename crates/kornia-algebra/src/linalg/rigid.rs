@@ -305,9 +305,10 @@ pub fn umeyama_f64(
     Ok(UmeyamaOutputF64 { r, t, s: scale })
 }
 
-/// Minimum in-plane source variance and cross-correlation norm for yaw
-/// recovery; below this threshold the point cloud is collinear with the
-/// gravity axis (or coincides), so yaw is unobservable and falls back to `0.0`.
+/// Relative threshold for yaw degeneracy: yaw falls back to `0.0` when the
+/// in-plane source variance is `<= DEGENERATE_YAW_TOL * var_src` (collinear
+/// with gravity or coincident) or when the dimensionless in-plane correlation
+/// `hypot(a, b) / (sqrt(var_src_perp) * sqrt(var_dst_perp))` is `<= DEGENERATE_YAW_TOL`.
 const DEGENERATE_YAW_TOL: f64 = 1e-15;
 
 /// Gravity-preserving yaw-only (4-DoF) rigid alignment with optional per-point
@@ -323,9 +324,11 @@ const DEGENERATE_YAW_TOL: f64 = 1e-15;
 /// the plane orthogonal to `u` (`p_⊥ = p − (p · u) u`, `q_⊥ = q − (q · u) u`),
 /// the optimal yaw angle is `θ = atan2(b, a)` with
 /// `a = Σ wᵢ (p_⊥ · q_⊥) / Σ wᵢ` and `b = Σ wᵢ (u · (p_⊥ × q_⊥)) / Σ wᵢ`.
-/// When the in-plane source variance or `hypot(a, b)` is `<= 1e-15`, yaw is
-/// unobservable and `R` falls back to [`Mat3F64::IDENTITY`]. Point coordinates
-/// are assumed finite; a point with weight `0` is ignored entirely.
+/// When `var_src_perp <= 1e-15 * var_src` or
+/// `hypot(a, b) <= 1e-15 * sqrt(var_src_perp) * sqrt(var_dst_perp)` (scale-
+/// invariant degeneracy checks), yaw is unobservable and `R` falls back to
+/// [`Mat3F64::IDENTITY`]. Point coordinates are assumed finite; a point with
+/// weight `0` is ignored entirely.
 ///
 /// # Arguments
 ///
@@ -389,10 +392,17 @@ pub fn umeyama_yaw_f64(
         return Err(UmeyamaError::InvalidGravityAxis { axis: gravity_axis });
     }
 
-    let (mu_s, mu_d, max_w, sum_w) = weighted_centroids(src, dst, weights)?;
+    let WeightedCentroids {
+        mu_s,
+        mu_d,
+        max_w,
+        sum_w,
+    } = weighted_centroids(src, dst, weights)?;
     let mut a = 0.0f64;
     let mut b = 0.0f64;
+    let mut var_src = 0.0f64;
     let mut var_src_perp = 0.0f64;
+    let mut var_dst_perp = 0.0f64;
     for (i, (s, d)) in src.iter().zip(dst).enumerate() {
         let wi = weights.map_or(1.0, |w| w[i] / max_w);
         if wi == 0.0 {
@@ -404,13 +414,20 @@ pub fn umeyama_yaw_f64(
         let dc_perp = dc - u * dc.dot(u);
         a += sc_perp.dot(dc_perp) * wi;
         b += u.dot(sc_perp.cross(dc_perp)) * wi;
+        var_src += sc.dot(sc) * wi;
         var_src_perp += sc_perp.dot(sc_perp) * wi;
+        var_dst_perp += dc_perp.dot(dc_perp) * wi;
     }
     a /= sum_w;
     b /= sum_w;
+    var_src /= sum_w;
     var_src_perp /= sum_w;
+    var_dst_perp /= sum_w;
 
-    let r = if var_src_perp > DEGENERATE_YAW_TOL && a.hypot(b) > DEGENERATE_YAW_TOL {
+    let has_in_plane_spread = var_src_perp > DEGENERATE_YAW_TOL * var_src;
+    let has_correlation =
+        a.hypot(b) > DEGENERATE_YAW_TOL * var_src_perp.sqrt() * var_dst_perp.sqrt();
+    let r = if has_in_plane_spread && has_correlation {
         SO3F64::exp(u * b.atan2(a)).matrix()
     } else {
         Mat3F64::IDENTITY
@@ -692,12 +709,22 @@ pub fn umeyama_f64_robust(
     Ok(fit)
 }
 
-/// Validates `weights` (when present) and accumulates `(mu_s, mu_d, max_w, sum_w)`.
+/// Normalized weighted centroids and weight-scaling factors shared by the
+/// 6/7-DoF and 4-DoF alignment solvers.
+struct WeightedCentroids {
+    mu_s: Vec3F64,
+    mu_d: Vec3F64,
+    max_w: f64,
+    sum_w: f64,
+}
+
+/// Validates `weights` (when present) and computes the normalized weighted
+/// centroids (`mu_s`, `mu_d`) along with weight-scaling factors (`max_w`, `sum_w`).
 fn weighted_centroids(
     src: &[Vec3F64],
     dst: &[Vec3F64],
     weights: Option<&[f64]>,
-) -> Result<(Vec3F64, Vec3F64, f64, f64), UmeyamaError> {
+) -> Result<WeightedCentroids, UmeyamaError> {
     // Unit weights when unweighted; otherwise validate and normalize by the
     // maximum. Invalid weights take precedence over the length check (see
     // `umeyama_f64`'s `# Errors`).
@@ -744,7 +771,12 @@ fn weighted_centroids(
         mu_s += *s * wi;
         mu_d += *d * wi;
     }
-    Ok((mu_s / sum_w, mu_d / sum_w, max_w, sum_w))
+    Ok(WeightedCentroids {
+        mu_s: mu_s / sum_w,
+        mu_d: mu_d / sum_w,
+        max_w,
+        sum_w,
+    })
 }
 
 /// Accumulated first- and second-order statistics of the two point sets.
@@ -767,7 +799,12 @@ fn moments(
     dst: &[Vec3F64],
     weights: Option<&[f64]>,
 ) -> Result<Moments, UmeyamaError> {
-    let (mu_s, mu_d, max_w, sum_w) = weighted_centroids(src, dst, weights)?;
+    let WeightedCentroids {
+        mu_s,
+        mu_d,
+        max_w,
+        sum_w,
+    } = weighted_centroids(src, dst, weights)?;
 
     // Weighted cross-covariance columns and source variance.
     let mut h_x = Vec3F64::ZERO;
@@ -2468,5 +2505,25 @@ mod tests {
             umeyama_yaw_f64(&src, &src, g, Some(&[1.0, 2.0])),
             Err(UmeyamaError::MismatchedWeightsLength)
         ));
+    }
+
+    #[test]
+    fn test_umeyama_yaw_f64_small_scale_cloud_recovers_yaw() -> Result<(), UmeyamaError> {
+        // Coordinates ~1e-8 give length² variances ~1e-16 (below an absolute 1e-15
+        // threshold), yet yaw is well-defined and must be recovered scale-invariantly.
+        let gravity = Vec3F64::new(1.0, -2.0, 2.0);
+        let u = gravity.normalize();
+        let r_true = SO3F64::exp(u * 0.85).matrix();
+        let t_true = Vec3F64::new(3e-8, -2e-8, 5e-8);
+        let src: Vec<Vec3F64> = random_points(0x7A04, 5, 1.0)
+            .into_iter()
+            .map(|p| p * 1e-8)
+            .collect();
+        let dst: Vec<Vec3F64> = src.iter().map(|p| r_true * *p + t_true).collect();
+
+        let out = umeyama_yaw_f64(&src, &dst, gravity, None)?;
+        assert_matches_true(&out, &r_true, &t_true, 1.0, 1e-12);
+        assert!((out.r * u - u).length() < 1e-14);
+        Ok(())
     }
 }
