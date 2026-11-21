@@ -403,10 +403,20 @@ pub fn umeyama_yaw_f64(
     let mut var_src = 0.0f64;
     let mut var_src_perp = 0.0f64;
     let mut var_dst_perp = 0.0f64;
+    let mut first_active: Option<(Vec3F64, Vec3F64)> = None;
+    let mut all_src_coincident = true;
+    let mut all_dst_coincident = true;
     for (i, (s, d)) in src.iter().zip(dst).enumerate() {
         let wi = weights.map_or(1.0, |w| w[i] / max_w);
         if wi == 0.0 {
             continue;
+        }
+        match first_active {
+            None => first_active = Some((*s, *d)),
+            Some((s0, d0)) => {
+                all_src_coincident &= *s == s0;
+                all_dst_coincident &= *d == d0;
+            }
         }
         let sc = *s - mu_s;
         let dc = *d - mu_d;
@@ -427,7 +437,8 @@ pub fn umeyama_yaw_f64(
     let has_in_plane_spread = var_src_perp > DEGENERATE_YAW_TOL * var_src;
     let has_correlation =
         a.hypot(b) > DEGENERATE_YAW_TOL * var_src_perp.sqrt() * var_dst_perp.sqrt();
-    let r = if has_in_plane_spread && has_correlation {
+    let r = if !all_src_coincident && !all_dst_coincident && has_in_plane_spread && has_correlation
+    {
         SO3F64::exp(u * b.atan2(a)).matrix()
     } else {
         Mat3F64::IDENTITY
@@ -2392,6 +2403,24 @@ mod tests {
         let g = Vec3F64::new(1.0, 2.0, 3.0);
         let out_id = umeyama_yaw_f64(&[p, p, p], &[q, q, q], g, None)?;
         assert_matches_true(&out_id, &Mat3F64::IDENTITY, &(q - p), 1.0, 1e-12);
+
+        // Coincident fractional points: `(0.1 + 0.1 + 0.1) / 3.0 != 0.1` in f64 leaves
+        // 1-ULP centered residuals that would otherwise look like a 90° yaw.
+        let p_frac = Vec3F64::new(0.1, 0.0, 0.0);
+        let q_frac = Vec3F64::new(0.0, 0.1, 0.0);
+        let out_frac = umeyama_yaw_f64(
+            &[p_frac; 3],
+            &[q_frac; 3],
+            Vec3F64::new(0.0, 0.0, 1.0),
+            None,
+        )?;
+        assert_matches_true(
+            &out_frac,
+            &Mat3F64::IDENTITY,
+            &(q_frac - p_frac),
+            1.0,
+            1e-12,
+        );
 
         let src3 = [Vec3F64::ZERO, Vec3F64::new(1.0, 2.0, 3.0), p];
         let dst3 = [Vec3F64::new(9.0, 9.0, 9.0), Vec3F64::new(-5.0, 4.0, 1.0), q];
