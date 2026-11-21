@@ -1,0 +1,1 @@
+`kornia_algebra::linalg::rigid::umeyama_yaw_f64` for 4-DoF gravity-preserving yaw-only rigid alignment (`R = exp(θ·[u]×)` about a caller-supplied gravity axis plus 3D translation, with optional per-point weights and fixed unit scale), and `UmeyamaError::InvalidGravityAxis`.
