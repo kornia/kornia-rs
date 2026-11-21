@@ -393,18 +393,6 @@ pub(crate) unsafe fn alloc_output_pyarray<const C: usize>(
     unsafe { alloc_output_pyarray_t::<u8, C, UNINIT>(py, size) }
 }
 
-/// Copy numpy u8 data into a kornia_image::allocator::host_alloc() f32 Image (for Category B ops needing f32).
-///
-/// Uses zero-copy read via numpy_as_image, then a single u8→f32 collect.
-pub(crate) fn numpy_to_f32_image<const C: usize>(
-    py: Python<'_>,
-    image: &Py<PyArray3<u8>>,
-) -> PyResult<Image<f32, C>> {
-    let src = unsafe { numpy_as_image::<C>(py, image)? };
-    let f32_data: Vec<f32> = src.as_slice().iter().map(|&v| v as f32).collect();
-    Image::new(src.size(), f32_data).map_err(to_pyerr)
-}
-
 /// Get raw u8 data and dimensions from a PyArray3.
 ///
 /// Errors (instead of reading out of bounds) if the array is strided /
