@@ -677,6 +677,7 @@ mod impl_f64 {
         r: Mat3F64,
     }
 
+    /// Givens rotation that zeroes `a2` against `a1` (Algorithm 4).
     #[inline(always)]
     fn qr_givens_quaternion(a1: f64, a2: f64) -> GivensF64 {
         // `hypot` and an exact-zero test instead of an absolute threshold, so
@@ -826,6 +827,7 @@ mod impl_f64 {
         *v = Mat3F64::from_cols(v_x.into(), v_y.into(), v_z.into());
     }
 
+    /// SVD of a 3x3 matrix: `mat = U * S * V^T`.
     pub fn svd3(mat: &Mat3F64) -> SVD3Set {
         // `from_mat3x3` already forms the Gram matrix AᵀA from the columns of A.
         let mut s_mat = Symmetric3x3::from_mat3x3(mat);
