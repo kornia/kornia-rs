@@ -14,6 +14,7 @@
 
 *   **Point Cloud I/O:** Read and write support for standard 3D formats (e.g., PLY, PCD, XYZ).
 *   **Geometric Transforms:** Apply rigid body transformations (rotation + translation) to point clouds.
+*   **Rigid Poses:** `pose::Pose3d` is a world-to-camera `(R, t)`. `Pose3d::rotation_defect` reports how far a composed rotation has drifted off SO(3), and `Pose3d::orthonormalized` projects it back through its renormalised quaternion; `Pose3d::inverse` assumes a rigid pose.
 *   **Lie Algebra Integration:** Built on `kornia-algebra` for robust SE(3) and SO(3) manipulations.
 *   **Registration:** Algorithms like Iterative Closest Point (ICP) for aligning point clouds.
 *   **Fundamental RANSAC:** Seven-point minimal hypotheses (every real solution that satisfies the oriented epipolar constraint on its sample, as in DEGENSAC), with eight-point inlier refinement. `pose::fundamental_7point` exposes the minimal solver; `ransac::estimators::Fundamental8PointEstimator` and `pose::ransac_fundamental_8point` retain the original sampling path for comparisons. The two-view builder also accepts `Fundamental7ptSolver`; its existing `Fundamental8ptSolver` default is preserved.

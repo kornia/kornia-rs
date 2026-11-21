@@ -51,6 +51,11 @@ jobs:
           - python-version: "3.14t"
             pixi-env: py314t
             threaded: true
+          - python-version: "3.15"
+            pixi-env: py315
+          - python-version: "3.15t"
+            pixi-env: py315t
+            threaded: true
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

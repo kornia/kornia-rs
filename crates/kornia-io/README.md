@@ -12,6 +12,7 @@
 
 ## 🔑 Key Features
 
+*   **BMP reads:** `bmp::read_image_bmp_rgb8` and `functional::read_image_any_rgb8` read uncompressed Windows 24-bit and indexed 8-bit BMP files as RGB8. This Rust API is not exposed through the Python or C++ bindings.
 *   **Image I/O:** Read and write support for JPEG, PNG, and TIFF formats.
 *   **In-memory encode + decode:** Symmetric `encode_image_{jpeg,png}_*` ↔ `decode_image_{jpeg,png}_*` for round-tripping pixels through `Vec<u8>` without touching disk — including lossless PNG-16 (`encode_image_png_gray16`) for depth maps.
 *   **TurboJPEG Support:** Optional integration with `turbojpeg` for high-performance JPEG encoding and decoding.

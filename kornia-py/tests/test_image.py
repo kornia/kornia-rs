@@ -805,6 +805,34 @@ class TestCachedParams:
             assert np.array_equal(img_out.data, img.data)
             assert np.array_equal(mask_out.data, mask.data)
 
+    @pytest.mark.parametrize(
+        "name, make, key",
+        [
+            ("ColorJitter", lambda: ColorJitter(0.5, 0.3, 0.2, 0.1), "brightness"),
+            ("ColorJitter", lambda: ColorJitter(0.5, 0.3, 0.2, 0.1), "contrast"),
+            ("ColorJitter", lambda: ColorJitter(0.5, 0.3, 0.2, 0.1), "saturation"),
+            ("ColorJitter", lambda: ColorJitter(0.5, 0.3, 0.2, 0.1), "hue"),
+            ("ColorJitter", lambda: ColorJitter(0.5, 0.3, 0.2, 0.1), "order"),
+            ("RandomHorizontalFlip", lambda: RandomHorizontalFlip(p=0.5), "flip"),
+            ("RandomVerticalFlip", lambda: RandomVerticalFlip(p=0.5), "flip"),
+            ("RandomCrop", lambda: RandomCrop((20, 30)), "x"),
+            ("RandomCrop", lambda: RandomCrop((20, 30)), "y"),
+            ("RandomRotation", lambda: RandomRotation(30.0), "angle"),
+        ],
+    )
+    def test_missing_params_key_raises_value_error(self, name, make, key):
+        """A missing required key raises ValueError, not a Rust panic."""
+        transform = make()
+        if name == "RandomCrop":
+            params = transform.sample(self.img)
+        else:
+            params = transform.sample()
+        del params[key]
+
+        with pytest.raises(ValueError, match=rf"{name}.*'{key}'"):
+            transform(self.img, params=params)
+        assert transform.last_params is None
+
 
 # --- Decode tests ---
 

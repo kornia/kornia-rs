@@ -41,8 +41,24 @@ impl std::fmt::Display for GrabFormat {
 /// The terminal state a capture pipeline reports on its bus.
 #[derive(Default)]
 struct StreamStatus {
-    eos: bool,
+    eos: EosStatus,
+    previous_eos: Option<EosStatus>,
     error: Option<gstreamer::glib::Error>,
+}
+
+/// EOS belongs to the segment selected by the last seek, not just to the pipeline.
+#[derive(Clone, Copy, Default)]
+struct EosStatus {
+    seqnum: Option<gstreamer::Seqnum>,
+    received: bool,
+}
+
+impl EosStatus {
+    fn record(&mut self, seqnum: gstreamer::Seqnum) {
+        if self.seqnum.is_none_or(|expected| expected == seqnum) {
+            self.received = true;
+        }
+    }
 }
 
 /// The outcome of [`StreamCapture::try_grab_rgb8`] and [`StreamCapture::try_grab_gray8`].
@@ -95,6 +111,8 @@ pub struct StreamCapture {
     fps: Arc<Mutex<gstreamer::Fraction>>,
     /// End-of-stream and errors seen on the bus, updated by its sync handler.
     status: Arc<Mutex<StreamStatus>>,
+    /// Serialize seeks without blocking the bus handler on the status lock.
+    seek_lock: Mutex<()>,
 }
 
 impl StreamCapture {
@@ -107,6 +125,11 @@ impl StreamCapture {
     /// # Returns
     ///
     /// A Result containing the StreamCapture instance or a StreamCaptureError.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if GStreamer initialization or pipeline construction fails, the named
+    /// appsink or bus is unavailable, or the appsink flush probe cannot be installed.
     pub fn new(pipeline_desc: &str) -> Result<Self, StreamCaptureError> {
         if !gstreamer::INITIALIZED.load(std::sync::atomic::Ordering::Relaxed) {
             gstreamer::init()?;
@@ -135,7 +158,15 @@ impl StreamCapture {
             move |_bus, msg| {
                 if let Ok(mut status) = status.lock() {
                     match msg.view() {
-                        gstreamer::MessageView::Eos(_) => status.eos = true,
+                        gstreamer::MessageView::Eos(_) => {
+                            status.eos.record(msg.seqnum());
+                            // Preserve old-segment EOS received during a rejected seek.
+                            if status.eos.seqnum != Some(msg.seqnum()) {
+                                if let Some(previous) = &mut status.previous_eos {
+                                    previous.record(msg.seqnum());
+                                }
+                            }
+                        }
                         gstreamer::MessageView::Error(err) => {
                             let error = detailed_error(msg, err);
                             log::error!("{error}");
@@ -147,6 +178,40 @@ impl StreamCapture {
                 gstreamer::BusSyncReply::Pass
             }
         });
+
+        let sink_pad = appsink
+            .static_pad("sink")
+            .ok_or_else(|| StreamCaptureError::InvalidConfig("appsink has no sink pad".into()))?;
+        sink_pad
+            .add_probe(
+                gstreamer::PadProbeType::EVENT_DOWNSTREAM | gstreamer::PadProbeType::EVENT_FLUSH,
+                {
+                    let circular_buffer = circular_buffer.clone();
+                    move |_pad, info| {
+                        if info
+                            .event()
+                            .is_some_and(|event| event.type_() == gstreamer::EventType::FlushStop)
+                        {
+                            // FLUSH_STOP takes the sink pad's stream lock before probes run,
+                            // so an in-flight new_sample callback finishes before this clear.
+                            // The ordering is exercised by tests::flush_stop_discards_inflight_sample.
+                            // Background on GStreamer's FLUSH_START/STOP events:
+                            // https://gstreamer.freedesktop.org/documentation/additional/design/events.html
+                            let mut ring = match circular_buffer.lock() {
+                                Ok(ring) => ring,
+                                // Discard invalidated buffers even after a panic. Keep the
+                                // poison flag: subsequent grabs still return MutexPoisonError.
+                                Err(poisoned) => poisoned.into_inner(),
+                            };
+                            ring.clear();
+                        }
+                        gstreamer::PadProbeReturn::Ok
+                    }
+                },
+            )
+            .ok_or_else(|| {
+                StreamCaptureError::InvalidConfig("could not install appsink flush probe".into())
+            })?;
 
         appsink.set_callbacks(
             gstreamer_app::AppSinkCallbacks::builder()
@@ -188,6 +253,7 @@ impl StreamCapture {
             circular_buffer,
             fps,
             status,
+            seek_lock: Mutex::new(()),
         })
     }
 
@@ -221,7 +287,7 @@ impl StreamCapture {
     /// remain buffered for the `try_grab_*` methods.
     pub fn is_eos(&self) -> bool {
         self.drain_bus();
-        self.status.lock().is_ok_and(|status| status.eos)
+        self.status.lock().is_ok_and(|status| status.eos.received)
     }
 
     /// Returns the first error the pipeline posted on its bus, if any.
@@ -459,7 +525,7 @@ impl StreamCapture {
                 .status
                 .lock()
                 .map_err(|_| StreamCaptureError::MutexPoisonError)?;
-            (status.error.clone(), status.eos)
+            (status.error.clone(), status.eos.received)
         };
         // The final frame can land between the empty check above and the terminal state below:
         // take one more look before reporting the end.
@@ -497,18 +563,70 @@ impl StreamCapture {
         Ok(())
     }
 
-    /// Forgets end-of-stream after a flushing seek, which clears EOS in GStreamer and lets the
-    /// pipeline deliver frames again. Pipeline errors are kept: they do not recover.
-    pub(crate) fn clear_eos(&self) {
-        if let Ok(mut status) = self.status.lock() {
-            status.eos = false;
+    /// Sends a seek while tracking the EOS sequence number of its segment.
+    ///
+    /// GStreamer propagates the seek seqnum to the segment's EOS message:
+    /// <https://gstreamer.freedesktop.org/documentation/additional/design/seqnums.html>.
+    /// The status lock must not be held across send_event: its sync bus handler can run there.
+    ///
+    /// # Arguments
+    ///
+    /// * `rate` - Playback rate.
+    /// * `flags` - Seek flags; only `FLUSH` clears the previous EOS state.
+    /// * `position` - Start position in stream time.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` when the pipeline accepts the seek.
+    ///
+    /// # Errors
+    ///
+    /// Returns a seek error if rejected, or a capture error if a lock is poisoned.
+    pub(crate) fn seek(
+        &self,
+        rate: f64,
+        flags: gstreamer::SeekFlags,
+        position: gstreamer::ClockTime,
+    ) -> Result<(), super::error::VideoReaderError> {
+        let _seek = self
+            .seek_lock
+            .lock()
+            .map_err(|_| StreamCaptureError::MutexPoisonError)?;
+        let event = gstreamer::event::Seek::new(
+            rate,
+            flags,
+            gstreamer::SeekType::Set,
+            position,
+            gstreamer::SeekType::None,
+            gstreamer::ClockTime::NONE,
+        );
+        {
+            let mut status = self
+                .status
+                .lock()
+                .map_err(|_| StreamCaptureError::MutexPoisonError)?;
+            status.previous_eos = Some(status.eos);
+            status.eos = EosStatus {
+                seqnum: Some(event.seqnum()),
+                received: !flags.contains(gstreamer::SeekFlags::FLUSH) && status.eos.received,
+            };
         }
-    }
-
-    /// Restores end-of-stream after a failed seek, which did not clear it in GStreamer.
-    pub(crate) fn mark_eos(&self) {
-        if let Ok(mut status) = self.status.lock() {
-            status.eos = true;
+        let accepted = self.pipeline.send_event(event);
+        let mut status = self
+            .status
+            .lock()
+            .map_err(|_| StreamCaptureError::MutexPoisonError)?;
+        if let Some(previous) = status.previous_eos.take() {
+            if !accepted {
+                status.eos = previous;
+            } else if !flags.contains(gstreamer::SeekFlags::FLUSH) {
+                status.eos.received |= previous.received;
+            }
+        }
+        if accepted {
+            Ok(())
+        } else {
+            Err(super::error::VideoReaderError::SeekError)
         }
     }
 
@@ -564,5 +682,122 @@ impl Drop for StreamCapture {
         if let Err(e) = self.close() {
             log::warn!("Failed to close stream safely on drop: {:?}", e);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{sync::mpsc, time::Duration};
+
+    const CAPTURE_PIPELINE: &str = "appsrc name=src format=time ! video/x-raw,format=RGB,width=4,height=1,framerate=1/1 ! appsink name=sink sync=false async=false";
+    const DEADLINE: Duration = Duration::from_secs(5);
+
+    /// The real constructor's probe must clear a frame queued by a callback already in flight.
+    #[test]
+    fn flush_stop_discards_inflight_sample() -> Result<(), Box<dyn std::error::Error>> {
+        let capture = StreamCapture::new(CAPTURE_PIPELINE)?;
+        let sink = capture
+            .pipeline
+            .by_name("sink")
+            .ok_or("missing sink")?
+            .downcast::<gstreamer_app::AppSink>()
+            .map_err(|_| "not appsink")?;
+        let source = capture
+            .pipeline
+            .by_name("src")
+            .ok_or("missing src")?
+            .downcast::<gstreamer_app::AppSrc>()
+            .map_err(|_| "not appsrc")?;
+        let pad = sink.static_pad("sink").ok_or("missing sink pad")?;
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let release_rx = Mutex::new(release_rx);
+        sink.set_callbacks(
+            gstreamer_app::AppSinkCallbacks::builder()
+                .new_sample({
+                    let ring = capture.circular_buffer.clone();
+                    move |sink| {
+                        let (frame, _) = StreamCapture::extract_frame_buffer(sink)
+                            .map_err(|_| gstreamer::FlowError::Error)?;
+                        entered_tx
+                            .send(())
+                            .map_err(|_| gstreamer::FlowError::Error)?;
+                        release_rx
+                            .lock()
+                            .map_err(|_| gstreamer::FlowError::Error)?
+                            .recv_timeout(DEADLINE)
+                            .map_err(|_| gstreamer::FlowError::Error)?;
+                        ring.lock()
+                            .map_err(|_| gstreamer::FlowError::Error)?
+                            .push_back(frame);
+                        Ok(gstreamer::FlowSuccess::Ok)
+                    }
+                })
+                .build(),
+        );
+        let (stopped_tx, stopped_rx) = mpsc::channel();
+        pad.add_probe(
+            gstreamer::PadProbeType::EVENT_DOWNSTREAM | gstreamer::PadProbeType::EVENT_FLUSH,
+            move |_pad, info| {
+                if info
+                    .event()
+                    .is_some_and(|event| event.type_() == gstreamer::EventType::FlushStop)
+                {
+                    let _ = stopped_tx.send(());
+                }
+                gstreamer::PadProbeReturn::Ok
+            },
+        );
+        capture.start()?;
+        source.push_buffer(gstreamer::Buffer::from_mut_slice(vec![100u8; 12]))?;
+        entered_rx.recv_timeout(DEADLINE)?;
+        let (attempt_tx, attempt_rx) = mpsc::channel();
+        let flush = std::thread::spawn(move || {
+            let _ = attempt_tx.send(());
+            pad.send_event(gstreamer::event::FlushStart::new())
+                && pad.send_event(gstreamer::event::FlushStop::new(true))
+        });
+        attempt_rx.recv_timeout(DEADLINE)?;
+        // A descheduled flush thread can make this window vacuous; the final queue check still applies.
+        let early_stop = stopped_rx.recv_timeout(Duration::from_millis(100));
+        release_tx.send(())?;
+        stopped_rx.recv_timeout(DEADLINE)?;
+        let flushed = flush.join().map_err(|_| "flush thread panicked")?;
+        let empty = capture
+            .circular_buffer
+            .lock()
+            .map_err(|_| "poisoned queue")?
+            .is_empty();
+        capture.pipeline.set_state(gstreamer::State::Null)?;
+        assert!(
+            matches!(early_stop, Err(mpsc::RecvTimeoutError::Timeout)),
+            "flush-stop overtook a sample callback"
+        );
+        assert!(flushed, "flush events were rejected");
+        assert!(empty, "a pre-flush callback's frame survived flush-stop");
+        Ok(())
+    }
+
+    /// Clearing invalidated frames must not hide the queue's existing poison error.
+    #[test]
+    fn flush_stop_keeps_queue_poison_visible() -> Result<(), Box<dyn std::error::Error>> {
+        let mut capture = StreamCapture::new(CAPTURE_PIPELINE)?;
+        capture.start()?;
+        let ring = capture.circular_buffer.clone();
+        assert!(std::thread::spawn(move || {
+            let _guard = ring.lock().unwrap();
+            panic!("poison the frame queue");
+        })
+        .join()
+        .is_err());
+        let sink = capture.pipeline.by_name("sink").ok_or("missing sink")?;
+        let pad = sink.static_pad("sink").ok_or("missing sink pad")?;
+        assert!(pad.send_event(gstreamer::event::FlushStart::new()));
+        assert!(pad.send_event(gstreamer::event::FlushStop::new(true)));
+        let result = capture.try_grab_rgb8();
+        capture.pipeline.set_state(gstreamer::State::Null)?;
+        assert!(matches!(result, Err(StreamCaptureError::MutexPoisonError)));
+        Ok(())
     }
 }

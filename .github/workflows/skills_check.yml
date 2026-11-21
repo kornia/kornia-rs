@@ -3,6 +3,9 @@ name: Skills Check
 # Checks .claude/skills structure and the facts they restate (MSRV, pixi tasks,
 # crates, publish set, cited paths) against their sources. It cannot check that
 # a skill was applied. Blocking only once added to branch protection.
+# A review eval case whose quoted code moved fails only a PR that touches the
+# skills or their checkers; any other PR gets a warning. A manual run lists every
+# stale case as an error, for the maintainer who re-syncs them.
 on:
   workflow_dispatch:
   push:
@@ -21,6 +24,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # compare against the merge base, as changelog.yml does
 
       - name: Validate skills
-        run: python3 scripts/check_skills.py
+        env:
+          BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || 'origin/main' }}
+          SKILLS_STRICT_EVALS: ${{ github.event_name == 'workflow_dispatch' && '1' || '' }}
+        run: python3 scripts/check_skills.py --base-ref "$BASE_REF"
+
+      - name: Test the stale-eval rule
+        run: python3 scripts/test_check_skills.py
