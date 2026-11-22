@@ -5,6 +5,75 @@ from typing import Any, Sequence
 import numpy as np
 import numpy.typing as npt
 
+import numpy as np
+
+
+class PinholeCamera:
+    def __init__(
+        self,
+        fx: float,
+        fy: float,
+        cx: float,
+        cy: float,
+        k1: float = ...,
+        k2: float = ...,
+        p1: float = ...,
+        p2: float = ...,
+    ) -> None: ...
+
+    def project(self, points_cam: np.ndarray) -> np.ndarray: ...
+
+
+class FisheyeCamera:
+    def __init__(
+        self,
+        fx: float,
+        fy: float,
+        cx: float,
+        cy: float,
+        k1: float = ...,
+        k2: float = ...,
+        k3: float = ...,
+        k4: float = ...,
+    ) -> None: ...
+
+    def project(self, points_cam: np.ndarray) -> np.ndarray: ...
+
+    def unproject(self, pixels: np.ndarray) -> np.ndarray: ...
+
+
+class Camera:
+    @staticmethod
+    def pinhole(
+        fx: float,
+        fy: float,
+        cx: float,
+        cy: float,
+        k1: float = ...,
+        k2: float = ...,
+        p1: float = ...,
+        p2: float = ...,
+    ) -> "Camera": ...
+
+    @staticmethod
+    def fisheye(
+        fx: float,
+        fy: float,
+        cx: float,
+        cy: float,
+        k1: float = ...,
+        k2: float = ...,
+        k3: float = ...,
+        k4: float = ...,
+    ) -> "Camera": ...
+
+    def project(self, points_cam: np.ndarray) -> np.ndarray: ...
+
+    def project_with_jacobian(self, points_cam: np.ndarray) -> tuple[np.ndarray, np.ndarray]: ...
+
+    def unproject(self, pixels: np.ndarray) -> np.ndarray: ...
+
+
 def __getattr__(name: str) -> Any: ...
 
 class AffineBaResult:
