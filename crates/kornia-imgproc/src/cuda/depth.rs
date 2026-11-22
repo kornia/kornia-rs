@@ -413,6 +413,14 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_dims_width_near_i32_max() {
+        let (w, h, count) = validate_dims(i32::MAX as usize, 1).unwrap().unwrap();
+        assert_eq!(w, i32::MAX);
+        assert_eq!(h, 1);
+        assert_eq!(count, i32::MAX as usize);
+    }
+
+    #[test]
     fn test_validate_dims_dimension_exceeds_i32() {
         let err_w = validate_dims(i32::MAX as usize + 1, 10).unwrap_err();
         assert!(matches!(err_w, CudaDepthError::Cuda(msg) if msg.contains("width exceeds i32")));
@@ -470,6 +478,8 @@ mod tests {
             !rem_src.contains("int i = y * w + x;"),
             "remove_flagged should not use 32-bit indexing"
         );
+        assert!(rem_src.contains("long long x = (long long)blockIdx.x"));
+        assert!(rem_src.contains("long long y = (long long)blockIdx.y"));
 
         // Also verify f32
         let (_mask_f32_name, mask_f32_src) = kernel_src::<f32>(Kind::FlyingMask);
