@@ -5,9 +5,6 @@ from typing import Any, Sequence
 import numpy as np
 import numpy.typing as npt
 
-import numpy as np
-
-
 class PinholeCamera:
     def __init__(
         self,
@@ -22,6 +19,12 @@ class PinholeCamera:
     ) -> None: ...
 
     def project(self, points_cam: np.ndarray) -> np.ndarray: ...
+
+    def project_with_jacobian(self, points_cam: np.ndarray) -> tuple[np.ndarray, np.ndarray]: ...
+
+    def unproject(self, pixels: np.ndarray) -> np.ndarray: ...
+
+    def undistort(self, pixels: np.ndarray) -> np.ndarray: ...
 
 
 class FisheyeCamera:
@@ -38,6 +41,8 @@ class FisheyeCamera:
     ) -> None: ...
 
     def project(self, points_cam: np.ndarray) -> np.ndarray: ...
+
+    def project_with_jacobian(self, points_cam: np.ndarray) -> tuple[np.ndarray, np.ndarray]: ...
 
     def unproject(self, pixels: np.ndarray) -> np.ndarray: ...
 
