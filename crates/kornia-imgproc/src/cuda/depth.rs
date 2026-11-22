@@ -128,7 +128,8 @@ __device__ __forceinline__ T median_tile(
         #pragma unroll
         for (int i = 0; i < {ksize}; ++i) {{
             int sy = min(max(y + i - {r}, 0), h - 1);
-            T s = __ldg(&src[(sy * w + sx) * {channels} + c]);
+            size_t idx = ((size_t)sy * w + sx) * {channels} + c;
+            T s = __ldg(&src[idx]);
             n += is_valid(s) ? 1 : 0;
             v[i] = to_key(s);
         }}
@@ -194,7 +195,8 @@ extern "C" __global__ void {name}(
     int n;
     T m = median_tile(src, w, h, 0, &n);
     if (threadIdx.x >= {tile_w} || x >= w || y >= h) return;
-    T d = src[y * w + x];
+    size_t idx = (size_t)y * w + x;
+    T d = src[idx];
     unsigned char out = 0;
     if (is_valid(d)) {{
         if (n < min_valid) {{
@@ -204,7 +206,7 @@ extern "C" __global__ void {name}(
             if (abs_diff_f32(d, m) > threshold) out = {MASK_FLAGGED};
         }}
     }}
-    mask[y * w + x] = out;
+    mask[idx] = out;
 }}
 "#
             );
@@ -221,7 +223,7 @@ extern "C" __global__ void {name}(
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
     if (x >= w || y >= h) return;
-    int i = y * w + x;
+    size_t i = (size_t)y * w + x;
     dst[i] = mask[i] != 0 ? invalid_value() : src[i];
 }}
 "#
@@ -286,6 +288,22 @@ fn dims_i32(width: usize, height: usize) -> Result<(i32, i32), CudaDepthError> {
     Ok((w, h))
 }
 
+/// Validate image dimensions and compute total element count with overflow protection.
+///
+/// Returns `Ok(None)` if the image is empty (`width == 0 || height == 0`),
+/// or `Ok(Some((w, h, num_elements)))` with `w` and `h` fitting `i32` and `num_elements`
+/// fitting `usize`.
+fn validate_dims(width: usize, height: usize) -> Result<Option<(i32, i32, usize)>, CudaDepthError> {
+    if is_empty(width, height) {
+        return Ok(None);
+    }
+    let (w, h) = dims_i32(width, height)?;
+    let num_elements = width
+        .checked_mul(height)
+        .ok_or_else(|| CudaDepthError::Cuda("image element count overflow".into()))?;
+    Ok(Some((w, h, num_elements)))
+}
+
 /// Flying-pixel mask on device; same contract as
 /// [`crate::depth::flying_pixel_mask`], which validates the thresholds
 /// before dispatching here.
@@ -301,12 +319,12 @@ pub(crate) fn launch_flying_pixel_mask<T: CudaDepthPixel>(
     rel_threshold: f32,
     min_valid: usize,
 ) -> Result<(), CudaDepthError> {
-    if is_empty(width, height) {
-        return Ok(());
-    }
-    let (w, h) = dims_i32(width, height)?;
-    CudaDepthError::check_slice("src", src.len(), width * height)?;
-    CudaDepthError::check_slice("mask", mask.len(), width * height)?;
+    let (w, h, num_elements) = match validate_dims(width, height)? {
+        Some(dims) => dims,
+        None => return Ok(()),
+    };
+    CudaDepthError::check_slice("src", src.len(), num_elements)?;
+    CudaDepthError::check_slice("mask", mask.len(), num_elements)?;
     // Any value above the tap count flags every valid pixel, as on the CPU.
     let min_valid = i32::try_from(min_valid).unwrap_or(i32::MAX);
     let kernel = get_kernel::<T>(ctx, Kind::FlyingMask)?;
@@ -335,13 +353,13 @@ pub(crate) fn launch_remove_flagged<T: CudaDepthPixel>(
     width: usize,
     height: usize,
 ) -> Result<(), CudaDepthError> {
-    if is_empty(width, height) {
-        return Ok(());
-    }
-    let (w, h) = dims_i32(width, height)?;
-    CudaDepthError::check_slice("src", src.len(), width * height)?;
-    CudaDepthError::check_slice("mask", mask.len(), width * height)?;
-    CudaDepthError::check_slice("dst", dst.len(), width * height)?;
+    let (w, h, num_elements) = match validate_dims(width, height)? {
+        Some(dims) => dims,
+        None => return Ok(()),
+    };
+    CudaDepthError::check_slice("src", src.len(), num_elements)?;
+    CudaDepthError::check_slice("mask", mask.len(), num_elements)?;
+    CudaDepthError::check_slice("dst", dst.len(), num_elements)?;
     let kernel = get_kernel::<T>(ctx, Kind::RemoveFlagged)?;
     let cfg = super::make_config(w as u32, h as u32, None);
     kernel
@@ -353,4 +371,97 @@ pub(crate) fn launch_remove_flagged<T: CudaDepthPixel>(
         .arg(&h)
         .launch_cfg(cfg)
         .map_err(|e| CudaDepthError::Cuda(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_dims_empty() {
+        assert_eq!(validate_dims(0, 0).unwrap(), None);
+        assert_eq!(validate_dims(0, 100).unwrap(), None);
+        assert_eq!(validate_dims(100, 0).unwrap(), None);
+    }
+
+    #[test]
+    fn test_validate_dims_valid() {
+        let (w, h, count) = validate_dims(64, 48).unwrap().unwrap();
+        assert_eq!(w, 64);
+        assert_eq!(h, 48);
+        assert_eq!(count, 3072);
+    }
+
+    #[test]
+    fn test_validate_dims_exceeding_i32_pixels() {
+        // Dimensions that fit in i32 individually, but total pixel count exceeds i32::MAX.
+        // 50,000 * 50,000 = 2,500,000,000 > 2,147,483,647 (i32::MAX).
+        let (w, h, count) = validate_dims(50_000, 50_000).unwrap().unwrap();
+        assert_eq!(w, 50_000);
+        assert_eq!(h, 50_000);
+        assert_eq!(count, 2_500_000_000);
+    }
+
+    #[test]
+    fn test_validate_dims_dimension_exceeds_i32() {
+        let err_w = validate_dims(i32::MAX as usize + 1, 10).unwrap_err();
+        assert!(matches!(err_w, CudaDepthError::Cuda(msg) if msg.contains("width exceeds i32")));
+
+        let err_h = validate_dims(10, i32::MAX as usize + 1).unwrap_err();
+        assert!(matches!(err_h, CudaDepthError::Cuda(msg) if msg.contains("height exceeds i32")));
+    }
+
+    #[test]
+    fn test_check_slice_large_buffer() {
+        // Verify check_slice works with large element counts exceeding i32::MAX without allocating.
+        let need = 2_500_000_000;
+        assert!(CudaDepthError::check_slice("src", need, need).is_ok());
+        let err = CudaDepthError::check_slice("src", need - 1, need).unwrap_err();
+        assert!(matches!(
+            err,
+            CudaDepthError::SliceTooSmall {
+                what: "src",
+                got,
+                need: n
+            } if got == need - 1 && n == need
+        ));
+    }
+
+    #[test]
+    fn test_kernel_src_64bit_indexing() {
+        let (_mask_name, mask_src) = kernel_src::<u16>(Kind::FlyingMask);
+        assert!(
+            mask_src.contains("size_t idx = ((size_t)sy * w + sx) * 1 + c;"),
+            "median_tile should use 64-bit size_t indexing"
+        );
+        assert!(
+            mask_src.contains("size_t idx = (size_t)y * w + x;"),
+            "flying_pixel_mask should use 64-bit size_t indexing"
+        );
+        assert!(
+            !mask_src.contains("src[y * w + x]"),
+            "flying_pixel_mask should not use 32-bit indexing for src"
+        );
+        assert!(
+            !mask_src.contains("mask[y * w + x]"),
+            "flying_pixel_mask should not use 32-bit indexing for mask"
+        );
+
+        let (_rem_name, rem_src) = kernel_src::<u16>(Kind::RemoveFlagged);
+        assert!(
+            rem_src.contains("size_t i = (size_t)y * w + x;"),
+            "remove_flagged should use 64-bit size_t indexing"
+        );
+        assert!(
+            !rem_src.contains("int i = y * w + x;"),
+            "remove_flagged should not use 32-bit indexing"
+        );
+
+        // Also verify f32
+        let (_mask_f32_name, mask_f32_src) = kernel_src::<f32>(Kind::FlyingMask);
+        assert!(mask_f32_src.contains("size_t idx = ((size_t)sy * w + sx) * 1 + c;"));
+        assert!(mask_f32_src.contains("size_t idx = (size_t)y * w + x;"));
+        let (_rem_f32_name, rem_f32_src) = kernel_src::<f32>(Kind::RemoveFlagged);
+        assert!(rem_f32_src.contains("size_t i = (size_t)y * w + x;"));
+    }
 }
