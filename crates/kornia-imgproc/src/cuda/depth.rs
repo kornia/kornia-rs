@@ -118,16 +118,16 @@ __device__ __forceinline__ T median_tile(
     __shared__ T sk[{tile_h}][{ksize}][{span}];
     __shared__ unsigned char sn[{tile_h}][{span}];
     int ty = threadIdx.y;
-    int x0 = blockIdx.x * {tile_w};
-    int y = min((int)(blockIdx.y * {tile_h}) + ty, h - 1);
+    long long x0 = (long long)blockIdx.x * {tile_w};
+    long long y = min((long long)blockIdx.y * {tile_h} + ty, (long long)h - 1);
     {{
         int cx = threadIdx.x;
-        int sx = min(max(x0 + cx - {r}, 0), w - 1);
+        long long sx = min(max(x0 + (long long)cx - {r}, 0LL), (long long)w - 1);
         T v[{ksize}];
         int n = 0;
         #pragma unroll
         for (int i = 0; i < {ksize}; ++i) {{
-            int sy = min(max(y + i - {r}, 0), h - 1);
+            long long sy = min(max(y + (long long)i - {r}, 0LL), (long long)h - 1);
             size_t idx = ((size_t)sy * w + sx) * {channels} + c;
             T s = __ldg(&src[idx]);
             n += is_valid(s) ? 1 : 0;
@@ -190,8 +190,8 @@ extern "C" __global__ void {name}(
     const T* __restrict__ src, unsigned char* __restrict__ mask, int w, int h,
     float abs_threshold, float rel_threshold, int min_valid
 ) {{
-    int x = blockIdx.x * {tile_w} + threadIdx.x;
-    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    long long x = (long long)blockIdx.x * {tile_w} + threadIdx.x;
+    long long y = (long long)blockIdx.y * blockDim.y + threadIdx.y;
     // No early return: every thread takes part in the tile's barriers.
     int n;
     T m = median_tile(src, w, h, 0, &n);
@@ -221,8 +221,8 @@ extern "C" __global__ void {name}(
     const T* __restrict__ src, const unsigned char* __restrict__ mask,
     T* __restrict__ dst, int w, int h
 ) {{
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    long long x = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    long long y = (long long)blockIdx.y * blockDim.y + threadIdx.y;
     if (x >= w || y >= h) return;
     size_t i = (size_t)y * w + x;
     dst[i] = mask[i] != 0 ? invalid_value() : src[i];
@@ -456,6 +456,10 @@ mod tests {
             !mask_src.contains("mask[y * w + x]"),
             "flying_pixel_mask should not use 32-bit indexing for mask"
         );
+        assert!(mask_src.contains("long long x = (long long)blockIdx.x"));
+        assert!(mask_src.contains("long long x0 = (long long)blockIdx.x"));
+        assert!(mask_src.contains("long long sx = min(max(x0"));
+        assert!(mask_src.contains("long long sy = min(max(y"));
 
         let (_rem_name, rem_src) = kernel_src::<u16>(Kind::RemoveFlagged);
         assert!(
