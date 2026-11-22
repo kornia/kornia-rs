@@ -175,7 +175,7 @@ enum Kind {
     RemoveFlagged,
 }
 
-/// Generate the CUDA kernel name and source for the requested depth operation.
+/// Generate the CUDA kernel name and source for the requested [`Kind`] and pixel type.
 fn kernel_src<T: CudaDepthPixel>(kind: Kind) -> (String, String) {
     let tag = T::TAG;
     let prelude = T::PRELUDE;
