@@ -1,0 +1,1 @@
+`kornia_imgproc::cuda::pyramid::launch_pyrup_u8` takes its `scratch` as `CudaSlice<u16>` (same length, `2 * src_w * src_h * channels`) instead of `CudaSlice<u8>`, as `launch_pyrdown_u8` already does: the pass between the two kernels now keeps unrounded sums. Callers that allocate the scratch themselves allocate `u16`.

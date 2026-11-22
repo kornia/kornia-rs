@@ -10,8 +10,10 @@
 //!   of `dst_w × src_h` — bit-exact.
 //! * `pyrdown_u8`: separable `[1,4,6,4,1]` with a u16 H-intermediate and the
 //!   V-pass `(sum + 128) >> 8` (clamped) — byte-exact.
-//! * `pyrup_u8`: integer polyphase pair (`(p + 6c + n + 4) >> 3`,
-//!   `(c + n + 1) >> 1`) with a u8 intermediate — byte-exact.
+//! * `pyrup_u8`: integer polyphase pair keeping the unrounded horizontal
+//!   sums (`p + 6c + n`, `4(c + n)`; `p + 7c`, `8c` at the last column) in a
+//!   u16 intermediate and rounding once in the V-pass with `(sum + 32) >> 6`,
+//!   last row as the last column — byte-exact.
 //!
 //! Launchers take caller-provided scratch so `PyramidPlan` can own every
 //! buffer (zero-alloc steady state, graph-capturable); they validate all
@@ -323,7 +325,7 @@ fn pyrup_h_u8_src(channels: usize) -> String {
 {REFLECT_101}{REFLECT_101_NEAR}
 extern "C" __global__ void pyrup_h_u8_c{channels}(
     const unsigned char* __restrict__ src,
-    unsigned char* __restrict__       buf,
+    unsigned short* __restrict__      buf,
     unsigned int src_w,
     unsigned int src_h,
     unsigned int dst_w
@@ -337,16 +339,17 @@ extern "C" __global__ void pyrup_h_u8_c{channels}(
 
     int prev_i = reflect_101_near((int)x - 1, (int)src_w);
     int next_i = reflect_101_near((int)x + 1, (int)src_w);
+    bool last = src_w > 1u && x == src_w - 1u;
     #pragma unroll
     for (unsigned int ch = 0; ch < C; ++ch) {{
         unsigned int curr = __ldg(&src[row + (size_t)x * C + ch]);
         unsigned int prev = __ldg(&src[row + (size_t)prev_i * C + ch]);
         unsigned int next = __ldg(&src[row + (size_t)next_i * C + ch]);
-        buf[drow + (size_t)(2u * x) * C + ch] =
-            (unsigned char)((prev + 6u * curr + next + 4u) >> 3);
+        unsigned int even = last ? prev + 7u * curr : prev + 6u * curr + next;
+        unsigned int odd = last ? 8u * curr : 4u * (curr + next);
+        buf[drow + (size_t)(2u * x) * C + ch] = (unsigned short)even;
         if ((size_t)(2u * x + 1u) * C + ch < dst_stride) {{
-            buf[drow + (size_t)(2u * x + 1u) * C + ch] =
-                (unsigned char)((curr + next + 1u) >> 1);
+            buf[drow + (size_t)(2u * x + 1u) * C + ch] = (unsigned short)odd;
         }}
     }}
 }}
@@ -360,8 +363,8 @@ fn pyrup_v_u8_src(channels: usize) -> String {
 #define C {channels}
 {REFLECT_101}{REFLECT_101_NEAR}
 extern "C" __global__ void pyrup_v_u8_c{channels}(
-    const unsigned char* __restrict__ buf,
-    unsigned char* __restrict__       dst,
+    const unsigned short* __restrict__ buf,
+    unsigned char* __restrict__        dst,
     unsigned int stride_elems,
     unsigned int src_h
 ) {{
@@ -370,15 +373,16 @@ extern "C" __global__ void pyrup_v_u8_c{channels}(
     if (i >= stride_elems || y >= src_h) return;
     int yp = reflect_101_near((int)y - 1, (int)src_h);
     int yn = reflect_101_near((int)y + 1, (int)src_h);
+    bool last = src_h > 1u && y == src_h - 1u;
 
     unsigned int c = __ldg(&buf[(size_t)y  * stride_elems + i]);
     unsigned int p = __ldg(&buf[(size_t)yp * stride_elems + i]);
     unsigned int n = __ldg(&buf[(size_t)yn * stride_elems + i]);
+    unsigned int even = last ? p + 7u * c : p + 6u * c + n;
+    unsigned int odd = last ? 8u * c : 4u * (c + n);
 
-    dst[(size_t)(2u * y) * stride_elems + i] =
-        (unsigned char)((p + 6u * c + n + 4u) >> 3);
-    dst[(size_t)(2u * y + 1u) * stride_elems + i] =
-        (unsigned char)((c + n + 1u) >> 1);
+    dst[(size_t)(2u * y) * stride_elems + i] = (unsigned char)((even + 32u) >> 6);
+    dst[(size_t)(2u * y + 1u) * stride_elems + i] = (unsigned char)((odd + 32u) >> 6);
 }}
 "#
     )
@@ -595,15 +599,15 @@ pub fn launch_pyrdown_u8(
         .map_err(|e| CudaPyramidError::Cuda(e.to_string()))
 }
 
-/// Integer polyphase u8 pyrup: H pass into a u8 `scratch` (`2*src_w ×
-/// src_h`), V pass into `dst` (`2*src_w × 2*src_h`).
+/// Integer polyphase u8 pyrup: H pass into a u16 `scratch` (`2*src_w ×
+/// src_h`) of unrounded sums, V pass into `dst` (`2*src_w × 2*src_h`).
 #[allow(clippy::too_many_arguments)] // mirrors the kernel's parameter surface
 pub fn launch_pyrup_u8(
     ctx: &Arc<CudaContext>,
     stream: &Arc<CudaStream>,
     src: &CudaSlice<u8>,
     dst: &mut CudaSlice<u8>,
-    scratch: &mut CudaSlice<u8>,
+    scratch: &mut CudaSlice<u16>,
     src_w: u32,
     src_h: u32,
     channels: u32,
