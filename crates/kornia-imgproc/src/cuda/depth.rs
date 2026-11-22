@@ -298,10 +298,10 @@ fn validate_dims(width: usize, height: usize) -> Result<Option<(i32, i32, usize)
     if is_empty(width, height) {
         return Ok(None);
     }
-    let (w, h) = dims_i32(width, height)?;
     let num_elements = width
         .checked_mul(height)
         .ok_or_else(|| CudaDepthError::Cuda("image element count overflow".into()))?;
+    let (w, h) = dims_i32(width, height)?;
     Ok(Some((w, h, num_elements)))
 }
 
@@ -401,6 +401,15 @@ mod tests {
         assert_eq!(w, 50_000);
         assert_eq!(h, 50_000);
         assert_eq!(count, 2_500_000_000);
+    }
+
+    #[test]
+    fn test_validate_dims_element_count_overflow() {
+        let err = validate_dims(usize::MAX, 2).unwrap_err();
+        assert!(matches!(
+            err,
+            CudaDepthError::Cuda(msg) if msg.contains("image element count overflow")
+        ));
     }
 
     #[test]
