@@ -610,6 +610,11 @@ pub fn launch_pyrdown_u8(
 ///   contents on entry are ignored: the H pass writes every element before
 ///   the V pass reads it.
 ///
+/// # Returns
+///
+/// `Ok(())` once both kernels are enqueued on `stream`. The launch is
+/// asynchronous: synchronize `stream` before reading `dst` on the host.
+///
 /// # Errors
 ///
 /// Returns [`CudaPyramidError::Cuda`] if `src_w` or `src_h` is 0, if
