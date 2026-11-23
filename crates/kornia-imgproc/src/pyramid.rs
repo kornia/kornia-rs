@@ -1981,6 +1981,10 @@ mod cuda_adapters {
         let ctx = stream.context();
         let (s, d) = device_slices!(src, dst);
         let n = (sw as usize * 2) * sh as usize * C;
+        // SAFETY: the scratch is never read uninitialized. launch_pyrup_u8's H
+        // kernel writes all `2 * sw * C` elements of each of the `sh` rows, i.e.
+        // all `n`, and the V kernel that reads them is launched after it on the
+        // same stream.
         let mut scratch = unsafe { stream.alloc::<u16>(n) }.map_err(err)?;
         launch_pyrup_u8(ctx, stream, s, d, &mut scratch, sw, sh, C as u32).map_err(err)
     }

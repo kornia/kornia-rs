@@ -601,6 +601,21 @@ pub fn launch_pyrdown_u8(
 
 /// Integer polyphase u8 pyrup: H pass into a u16 `scratch` (`2*src_w ×
 /// src_h`) of unrounded sums, V pass into `dst` (`2*src_w × 2*src_h`).
+///
+/// # Arguments
+///
+/// * `src` - `src_w × src_h` interleaved u8 image with `channels` channels.
+/// * `dst` - `2*src_w × 2*src_h` output with the same channel count.
+/// * `scratch` - at least `2 * src_w * src_h * channels` u16 elements. Its
+///   contents on entry are ignored: the H pass writes every element before
+///   the V pass reads it.
+///
+/// # Errors
+///
+/// Returns [`CudaPyramidError::Cuda`] if `src_w` or `src_h` is 0, if
+/// `channels` is 0, or if a kernel fails to compile or launch, and
+/// [`CudaPyramidError::SliceTooSmall`] if `src`, `scratch` or `dst` is shorter
+/// than the sizes above.
 #[allow(clippy::too_many_arguments)] // mirrors the kernel's parameter surface
 pub fn launch_pyrup_u8(
     ctx: &Arc<CudaContext>,
