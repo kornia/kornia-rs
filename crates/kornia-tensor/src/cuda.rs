@@ -1091,7 +1091,10 @@ where
     /// moved (unchanged) into a [`CudaResource<T>`]; its own `Drop` remains the sole
     /// owner of the device memory and frees it exactly once when the tensor drops.
     ///
-    /// The tensor's cached device pointer equals the input slice's device pointer.
+    /// For a non-empty `slice`, the tensor's cached device pointer equals the
+    /// input slice's device pointer. An empty `slice` has a null device pointer,
+    /// so its tensor caches a dangling one instead; [`as_cudaslice`](Self::as_cudaslice)
+    /// still returns the original slice.
     ///
     /// # Arguments
     ///
