@@ -1,0 +1,1 @@
+Zero-element CUDA tensors (`zeros_cuda`, `uninit_cuda`, `Tensor::from_cudaslice`, and `Image::zeros_cuda` with a zero width or height) no longer build a `NonNull` from the null device pointer cudarc gives an empty slice. That was undefined behaviour: debug builds aborted, and in release `to_host` on such a tensor could fail with `NotCudaBacked`.
