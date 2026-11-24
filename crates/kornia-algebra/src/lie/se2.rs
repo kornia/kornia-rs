@@ -1,4 +1,5 @@
 use super::so2::SO2F32;
+use super::so3::jacobian_coefficients_f32;
 use crate::{
     param::{Param, ParamError},
     Mat2F32, Mat3AF32, Vec2F32, Vec3AF32,
@@ -11,9 +12,10 @@ pub struct SE2F32 {
     pub t: Vec2F32,
 }
 
-/// Below this `|θ|` (0.1 rad) the small-angle coefficients use their Taylor
-/// series: in f32, `1 − cos θ` and the Jacobians' `θ²`-scale numerators cancel
-/// to a few ulps or to 0 there. The truncation error at 0.1 rad is below 1e-8.
+/// Below this `|θ|` (0.1 rad, the cutoff of [`jacobian_coefficients_f32`]) the
+/// small-angle coefficients come from that helper's Taylor series: in f32,
+/// `1 − cos θ` and the Jacobians' `θ²`-scale numerators cancel to a few ulps
+/// or to 0 there.
 const TAYLOR_THRESHOLD: f32 = 0.1;
 
 impl SE2F32 {
@@ -181,14 +183,14 @@ impl SE2F32 {
     }
 
     /// `(sin θ / θ, (1 − cos θ) / θ)`, the entries of `V(θ)` in `exp`, `log`
-    /// and the Jacobians. Taylor series below [`TAYLOR_THRESHOLD`].
+    /// and the Jacobians. Below [`TAYLOR_THRESHOLD`] they are formed from the
+    /// series `u = (1 − cos θ)/θ²` and `b = (θ − sin θ)/θ³` as `1 − θ²·b` and `θ·u`.
     #[inline]
     fn sc(theta: f32) -> (f32, f32) {
         if theta.abs() < TAYLOR_THRESHOLD {
             let t2 = theta * theta;
-            let s = 1.0 - t2 / 6.0 + t2 * t2 / 120.0;
-            let c = theta * (0.5 - t2 / 24.0 + t2 * t2 / 720.0);
-            (s, c)
+            let (u, b) = jacobian_coefficients_f32(t2);
+            (1.0 - t2 * b, theta * u)
         } else {
             let s = theta.sin() / theta;
             let c = (1.0 - theta.cos()) / theta;
@@ -210,8 +212,10 @@ impl SE2F32 {
         let p2 = v.y;
 
         let (third_col_x, third_col_y) = if theta.abs() < TAYLOR_THRESHOLD {
-            // Taylor series; the limit as theta -> 0 is [-p2/2, p1/2].
-            let (u, w) = third_col_series(theta);
+            // u = (1 − cos θ)/θ², w = (θ − sin θ)/θ², from their Taylor series;
+            // the limit as theta -> 0 is [-p2/2, p1/2].
+            let (u, b) = jacobian_coefficients_f32(theta * theta);
+            let w = theta * b;
             (-p2 * u + p1 * w, p1 * u + p2 * w)
         } else {
             let theta_sq = theta * theta;
@@ -244,8 +248,10 @@ impl SE2F32 {
         let p2 = v.y;
 
         let (third_col_x, third_col_y) = if theta.abs() < TAYLOR_THRESHOLD {
-            // Taylor series; the limit as theta -> 0 is [p2/2, -p1/2].
-            let (u, w) = third_col_series(theta);
+            // u = (1 − cos θ)/θ², w = (θ − sin θ)/θ², from their Taylor series;
+            // the limit as theta -> 0 is [p2/2, -p1/2].
+            let (u, b) = jacobian_coefficients_f32(theta * theta);
+            let w = theta * b;
             (p2 * u + p1 * w, -p1 * u + p2 * w)
         } else {
             let theta_sq = theta * theta;
@@ -262,17 +268,6 @@ impl SE2F32 {
             Vec3AF32::new(third_col_x, third_col_y, 1.0),
         )
     }
-}
-
-/// Taylor series of the two coefficients in the Jacobians' third column,
-/// `u = (1 − cos θ) / θ²` and `w = (θ − sin θ) / θ²`: each entry there is
-/// `±p·u ± p·w` (see `right_jacobian` and `left_jacobian`).
-#[inline]
-fn third_col_series(theta: f32) -> (f32, f32) {
-    let t2 = theta * theta;
-    let u = 0.5 - t2 / 24.0 + t2 * t2 / 720.0;
-    let w = theta * (1.0 / 6.0 - t2 / 120.0 + t2 * t2 / 5040.0);
-    (u, w)
 }
 
 impl std::ops::Mul<SE2F32> for SE2F32 {
