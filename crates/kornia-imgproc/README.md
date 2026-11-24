@@ -21,7 +21,7 @@
 *   **Calibration:** Camera calibration and image undistortion.
 *   **Normalization:** Min/max scaling, mean/std normalization.
 *   **Histograms:** Compute and manipulate image histograms.
-*   **Feature Detection:** (Experimental) Corner detection and feature extraction.
+*   **Feature Detection:** (Experimental) Corner detection and feature extraction. For u8 ORB stage timings, set `KORNIA_ORB_TRACE` before the first extraction. Both detectors share this process-wide setting: any value (including `0` or empty) enables timing; leave it unset to disable it.
     With the `cuda` feature, `cuda::harris::launch_harris_f32` computes f32 Harris responses on device buffers.
 *   **Contours:** Find image contours and compute their properties.
 

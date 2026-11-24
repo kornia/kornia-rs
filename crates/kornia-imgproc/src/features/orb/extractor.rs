@@ -493,7 +493,7 @@ impl OrbDetector {
         trace: bool,
     ) -> Result<(Vec<(f32, f32)>, Vec<f32>, Vec<f32>, Vec<f32>), ImageError> {
         const EDGE_THRESHOLD: usize = 19;
-        let ta = std::time::Instant::now();
+        let ta = trace.then(std::time::Instant::now);
         // Selective nesting: oct 0 (>=1000 rows) is the single-core wall.
         // Let rayon steal into its row work from cores that finished smaller
         // octaves. Oct 1+ stays serial — spawn/join overhead of nested
@@ -545,7 +545,7 @@ impl OrbDetector {
         // Scale NMS cap by the octave's budget share (floor at 512 so
         // low-contrast octaves still feed the distributor a usable pool).
         let nms_cap = features_per_level[octave].saturating_mul(20).max(512);
-        let t_before_nms = std::time::Instant::now();
+        let t_before_nms = trace.then(std::time::Instant::now);
         let kp_with_resp = crate::features::fast::suppress_direct_standalone(
             candidates,
             nms_cap,
@@ -553,8 +553,8 @@ impl OrbDetector {
             octave_image.height(),
             1,
         );
-        let t_after_nms = std::time::Instant::now();
-        if trace {
+        let t_after_nms = trace.then(std::time::Instant::now);
+        if let (Some(t_before_nms), Some(ta), Some(t_after_nms)) = (t_before_nms, ta, t_after_nms) {
             eprintln!(
                 "  oct[{:4}x{:4}] fast={:.2} nms={:.2} kp_raw={} kp_filt={}",
                 octave_image.width(),
@@ -592,14 +592,14 @@ impl OrbDetector {
             candidates.truncate(cap);
         }
 
-        let t_before_octree = std::time::Instant::now();
+        let t_before_octree = trace.then(std::time::Instant::now);
         let image_f32_size = octave_image.size();
         let min_x = 19 - 3;
         let min_y = 19 - 3;
         let max_x = image_f32_size.width as i32 - 19 + 3;
         let max_y = image_f32_size.height as i32 - 19 + 3;
         let distributed = distribute_octree(&candidates, min_x, max_x, min_y, max_y, target);
-        let t_after_octree = std::time::Instant::now();
+        let t_after_octree = trace.then(std::time::Instant::now);
 
         let survivor_positions: Vec<[usize; 2]> =
             distributed.iter().map(|c| [c.row, c.col]).collect();
@@ -608,9 +608,9 @@ impl OrbDetector {
             .iter()
             .map(|&[r, c]| harris_response_at_u8(octave_image, r, c, self.harris_k))
             .collect();
-        let t_after_harris = std::time::Instant::now();
+        let t_after_harris = trace.then(std::time::Instant::now);
         let survivor_orientations = corner_orientations_u8(octave_image, &survivor_positions);
-        let t_after_ori = std::time::Instant::now();
+        let t_after_ori = trace.then(std::time::Instant::now);
 
         let scale = self.downscale.powi(octave as i32);
         let mut kps = Vec::with_capacity(distributed.len());
@@ -628,7 +628,13 @@ impl OrbDetector {
             resps.push(harris);
         }
 
-        if trace {
+        if let (
+            Some(t_after_octree),
+            Some(t_before_octree),
+            Some(t_after_harris),
+            Some(t_after_ori),
+        ) = (t_after_octree, t_before_octree, t_after_harris, t_after_ori)
+        {
             eprintln!(
                 "  pyramid[{octave}] octree={:.2} harris={:.2} ori={:.2} survivors={}",
                 (t_after_octree - t_before_octree).as_secs_f64() * 1000.0,
@@ -652,10 +658,10 @@ impl OrbDetector {
     fn build_pyramid_and_process_u8(
         &self,
         img: &Image<u8, 1>,
+        trace: bool,
     ) -> Result<Vec<ProcessedOctaveU8>, ImageError> {
         use std::sync::{Arc, OnceLock};
 
-        let trace = std::env::var("KORNIA_ORB_TRACE").is_ok();
         let features_per_level = self.features_per_level();
 
         let level0 = Image::from_size_slice(img.size(), img.as_slice())?;
@@ -681,9 +687,9 @@ impl OrbDetector {
 
             let base = pyramid_arcs[0].size();
             for octave in 1..self.n_scales {
-                let t_resize = std::time::Instant::now();
+                let t_resize = trace.then(std::time::Instant::now);
                 let next = self.next_level_u8(base, &pyramid_arcs[octave - 1], octave);
-                if trace {
+                if let Some(t_resize) = t_resize {
                     eprintln!(
                         "  resize[{octave}]={:.2}",
                         t_resize.elapsed().as_secs_f64() * 1000.0
@@ -749,13 +755,13 @@ impl OrbDetector {
         // Pre-BRIEF blur via the Q8+Q8 u8 NEON path: ≤1 LSB off a float
         // reference, which is well under the bit-flip threshold that would
         // drift the 256-bit Hamming distance.
-        let t_blur = std::time::Instant::now();
+        let t_blur = trace.then(std::time::Instant::now);
         let mut blurred = Image::from_size_val(octave_image.size(), 0u8)?;
         gaussian_blur_u8(octave_image, &mut blurred, (7, 7), (2.0, 2.0))?;
-        let t_brief = std::time::Instant::now();
+        let t_brief = trace.then(std::time::Instant::now);
 
         let descriptors = orb_loop_u8(&blurred, &filtered_keypoints, &filtered_orientations);
-        if trace {
+        if let (Some(t_brief), Some(t_blur)) = (t_brief, t_blur) {
             eprintln!(
                 "  extract[{}x{}] blur={:.2} brief={:.2}",
                 octave_image.width(),
@@ -824,14 +830,14 @@ impl OrbDetector {
     /// detection, Harris scoring, orientation, and BRIEF. Takes u8 pixels
     /// in and returns packed 32-byte descriptors out.
     pub fn detect_and_extract_u8(&self, src: &Image<u8, 1>) -> Result<OrbFeatures, ImageError> {
-        let trace = std::env::var("KORNIA_ORB_TRACE").is_ok();
-        let t0 = std::time::Instant::now();
-        let per_octave = self.build_pyramid_and_process_u8(src)?;
-        let t1 = std::time::Instant::now();
+        let trace = *super::TRACE;
+        let t0 = trace.then(std::time::Instant::now);
+        let per_octave = self.build_pyramid_and_process_u8(src, trace)?;
+        let t1 = trace.then(std::time::Instant::now);
 
         let features = concat_octaves(per_octave);
 
-        if trace {
+        if let (Some(t1), Some(t0)) = (t1, t0) {
             eprintln!(
                 "orb_trace: build_detect_extract={:.2}ms kps={}",
                 (t1 - t0).as_secs_f64() * 1000.0,
@@ -1018,7 +1024,7 @@ impl OrbDetector {
         &self,
         pyramid: &[&Image<u8, 1>],
     ) -> Result<OrbFeatures, ImageError> {
-        let trace = std::env::var("KORNIA_ORB_TRACE").is_ok();
+        let trace = *super::TRACE;
         let features_per_level = self.features_per_level();
         let levels = &pyramid[..pyramid.len().min(self.n_scales)];
         if let Some(base) = levels.first().map(|l| l.size()) {
@@ -1095,8 +1101,8 @@ impl OrbDetector {
         scratch: &mut OrbScratch,
         out: &mut OrbFeatures,
     ) -> Result<(), ImageError> {
-        let trace = std::env::var_os("KORNIA_ORB_TRACE").is_some();
-        let t0 = std::time::Instant::now();
+        let trace = *super::TRACE;
+        let t0 = trace.then(std::time::Instant::now);
         out.clear();
         if self.n_scales == 0 {
             return Ok(());
@@ -1108,7 +1114,7 @@ impl OrbDetector {
         let mut built = 0;
         for octave in 0..self.n_scales {
             if octave > 0 {
-                let t_resize = std::time::Instant::now();
+                let t_resize = trace.then(std::time::Instant::now);
                 let prev_size = if octave == 1 {
                     base
                 } else {
@@ -1137,7 +1143,7 @@ impl OrbDetector {
                     &mut ws.lut,
                 )?;
                 built = octave;
-                if trace {
+                if let Some(t_resize) = t_resize {
                     eprintln!(
                         "  resize[{octave}]={:.2}",
                         t_resize.elapsed().as_secs_f64() * 1000.0
@@ -1153,7 +1159,7 @@ impl OrbDetector {
         }
         levels.truncate(built);
 
-        if trace {
+        if let Some(t0) = t0 {
             eprintln!(
                 "orb_trace: build_detect_extract={:.2}ms kps={}",
                 t0.elapsed().as_secs_f64() * 1000.0,
@@ -1177,7 +1183,7 @@ impl OrbDetector {
         const EDGE_THRESHOLD: usize = 19;
         const DESC_BORDER: isize = 20;
         let (width, height) = (image.width(), image.height());
-        let ta = std::time::Instant::now();
+        let ta = trace.then(std::time::Instant::now);
 
         let fast_rows = 0..height;
         crate::features::fast::fast_detect_rows_u8_serial_into(
@@ -1216,7 +1222,7 @@ impl OrbDetector {
 
         let target = ws.features_per_level[octave];
         let cap = target.saturating_mul(20).max(512);
-        let t_before_nms = std::time::Instant::now();
+        let t_before_nms = trace.then(std::time::Instant::now);
         // With `min_distance = 1` the NMS sorts and truncates in place and
         // returns the same buffer.
         ws.fast = crate::features::fast::suppress_direct_standalone(
@@ -1226,8 +1232,8 @@ impl OrbDetector {
             height,
             1,
         );
-        let t_after_nms = std::time::Instant::now();
-        if trace {
+        let t_after_nms = trace.then(std::time::Instant::now);
+        if let (Some(t_before_nms), Some(ta), Some(t_after_nms)) = (t_before_nms, ta, t_after_nms) {
             eprintln!(
                 "  oct[{width:4}x{height:4}] fast={:.2} nms={:.2} kp_raw={raw_len} kp_filt={}",
                 (t_before_nms - ta).as_secs_f64() * 1000.0,
@@ -1255,7 +1261,7 @@ impl OrbDetector {
             ws.candidates.truncate(cap);
         }
 
-        let t_before_octree = std::time::Instant::now();
+        let t_before_octree = trace.then(std::time::Instant::now);
         let bounds = (
             EDGE_THRESHOLD as i32 - 3,
             width as i32 - EDGE_THRESHOLD as i32 + 3,
@@ -1269,7 +1275,7 @@ impl OrbDetector {
             &mut ws.octree,
             &mut ws.survivors,
         );
-        let t_after_octree = std::time::Instant::now();
+        let t_after_octree = trace.then(std::time::Instant::now);
         if ws.survivors.is_empty() {
             return Ok(());
         }
@@ -1279,8 +1285,10 @@ impl OrbDetector {
         for cand in ws.survivors.iter_mut() {
             cand.angle = orientation_u8_at(image.as_slice(), width, cand.row, cand.col, simd);
         }
-        let t_after_ori = std::time::Instant::now();
-        if trace {
+        let t_after_ori = trace.then(std::time::Instant::now);
+        if let (Some(t_after_octree), Some(t_before_octree), Some(t_after_ori)) =
+            (t_after_octree, t_before_octree, t_after_ori)
+        {
             eprintln!(
                 "  pyramid[{octave}] octree={:.2} harris=0.00 ori={:.2} survivors={}",
                 (t_after_octree - t_before_octree).as_secs_f64() * 1000.0,
@@ -1289,7 +1297,7 @@ impl OrbDetector {
             );
         }
 
-        let t_blur = std::time::Instant::now();
+        let t_blur = trace.then(std::time::Instant::now);
         let n = width * height;
         if ws.blurred.len() < n {
             ws.blurred.resize(n, 0);
@@ -1312,7 +1320,7 @@ impl OrbDetector {
             gaussian_blur_u8(image, &mut dst, (7, 7), (BLUR_SIGMA, BLUR_SIGMA))?;
             blurred.copy_from_slice(dst.as_slice());
         }
-        let t_brief = std::time::Instant::now();
+        let t_brief = trace.then(std::time::Instant::now);
 
         let scale = self.downscale.powi(octave as i32);
         let inv_scale = 1.0 / scale;
@@ -1338,7 +1346,7 @@ impl OrbDetector {
             out.orientations.push(cand.angle);
             out.octaves.push(oct_u8);
         }
-        if trace {
+        if let (Some(t_brief), Some(t_blur)) = (t_brief, t_blur) {
             eprintln!(
                 "  extract[{width}x{height}] blur={:.2} brief={:.2}",
                 (t_brief - t_blur).as_secs_f64() * 1000.0,

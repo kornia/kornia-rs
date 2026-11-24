@@ -1,0 +1,1 @@
+The u8 ORB detectors now read `KORNIA_ORB_TRACE` once per process and skip stage clock reads when it is unset. Set the variable before the first extraction to enable timing. On one x86-64 run with two Rayon threads and a 1,000-keypoint budget, fused extraction went from 2.44 ms to 2.36 ms.
