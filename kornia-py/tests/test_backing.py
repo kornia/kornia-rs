@@ -97,3 +97,39 @@ def test_from_numpy_broadcast_array():
     assert out.shape == (10, 20, 3)
     np.testing.assert_array_equal(out, broadcast)
 
+
+def test_from_numpy_negative_and_broadcast_channel_strides():
+    """Test non-contiguous / zero channel strides hitting the general ndarray fallback."""
+    raw = np.arange(12 * 16 * 3, dtype=np.uint8).reshape(12, 16, 3)
+    bgr = raw[:, :, ::-1]
+    assert bgr.strides[2] == -1
+    np.testing.assert_array_equal(Image(bgr).numpy(), bgr)
+
+    gray_broadcast = np.broadcast_to(raw[:, :, :1], (12, 16, 3))
+    assert gray_broadcast.strides[2] == 0
+    np.testing.assert_array_equal(Image(gray_broadcast).numpy(), gray_broadcast)
+
+    chw_to_hwc = np.arange(3 * 12 * 16, dtype=np.uint8).reshape(3, 12, 16).transpose(1, 2, 0)
+    assert chw_to_hwc.strides[2] == 12 * 16
+    np.testing.assert_array_equal(Image(chw_to_hwc).numpy(), chw_to_hwc)
+
+
+def test_from_numpy_empty_strided_slice():
+    """Zero-width strided slice with non-zero height must not trigger pointer offset UB."""
+    raw = np.empty((6, 4, 3), dtype=np.uint8)
+    empty_w = raw[::2, :0, :]
+    img = Image(empty_w)
+    out = img.numpy()
+    assert out.shape == (3, 0, 3)
+    assert out.dtype == np.uint8
+
+
+def test_from_numpy_strided_misaligned_borrow():
+    """Strided view with misaligned element strides still copies safely when copy=False."""
+    rec = np.zeros((3, 4, 3), dtype=np.dtype([("val", "<f4"), ("pad", "u1")], align=False))
+    rec["val"] = np.arange(36, dtype=np.float32).reshape(3, 4, 3)
+    view = rec["val"]
+    assert not view.flags.aligned
+    img = Image(view)
+    np.testing.assert_array_equal(img.numpy(), np.arange(36, dtype=np.float32).reshape(3, 4, 3))
+

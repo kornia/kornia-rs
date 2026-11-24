@@ -1294,13 +1294,16 @@ impl PyImageApi {
             let contig = py
                 .import("numpy")?
                 .call_method1("ascontiguousarray", (b,))?
-                .extract::<Py<PyArray3<T>>>()?;
-            return Self::copy_numpy_into_owned(py, contig.bind(py), dtype, cs, mode);
+                .cast_into::<PyArray3<T>>()?;
+            return Self::copy_numpy_into_owned(py, &contig, dtype, cs, mode);
         }
         // Strided / broadcast / reversed but aligned view: gather it straight
         // into the owned buffer in logical (row-major) order — one copy, no
         // intermediate contiguous numpy array.
         let mut bytes = backing::AlignedBytes::uninit(n_bytes)?;
+        if b.is_empty() {
+            return Ok(Self::from_owned_bytes(bytes, dtype, [h, w, c], cs, mode));
+        }
         // SAFETY: `bytes` uniquely owns `n_bytes = b.len() * size_of::<T>()`
         // bytes at a 64-byte (hence `T`-) aligned address; viewing them as
         // `MaybeUninit<T>` makes no initialisation claim.
@@ -1313,44 +1316,79 @@ impl PyImageApi {
 
         let strides = b.strides();
         let item_size = std::mem::size_of::<T>() as isize;
-        let elem_stride_0 = strides[0] / item_size;
-        let elem_stride_1 = strides[1] / item_size;
-
-        if strides[2] == item_size {
+        let strides_element_aligned = strides.iter().all(|&st| st % item_size == 0);
+        if strides_element_aligned {
+            let elem_stride_0 = strides[0] / item_size;
+            let elem_stride_1 = strides[1] / item_size;
+            let elem_stride_2 = strides[2] / item_size;
             let src_base = b.data() as *const T;
             let mut dst_ptr = dst.as_mut_ptr() as *mut T;
-            if strides[1] == (c as isize) * item_size {
-                // Entire rows are contiguous (e.g. slice along height only: arr[::2, :, :])
-                let row_len = w * c;
+
+            if elem_stride_2 == 1 {
+                if elem_stride_1 == c as isize {
+                    // Entire rows are contiguous (e.g. slice along height only: arr[::2, :, :])
+                    let row_len = w * c;
+                    for y in 0..h {
+                        // SAFETY: `b` is non-empty, `y < h`, and `strides[0]` / `strides[1]` place
+                        // every `[row_src .. row_src + row_len)` inside numpy's live buffer.
+                        unsafe {
+                            let row_src = src_base.offset(y as isize * elem_stride_0);
+                            std::ptr::copy_nonoverlapping(row_src, dst_ptr, row_len);
+                            dst_ptr = dst_ptr.add(row_len);
+                        }
+                    }
+                } else {
+                    // Each pixel's channels are contiguous (e.g. arr[::2, ::2, :], transpose(1, 0, 2))
+                    for y in 0..h {
+                        let row_src_offset = y as isize * elem_stride_0;
+                        for x in 0..w {
+                            // SAFETY: `b` is non-empty, `y < h`, `x < w`, and `strides[2] == item_size`
+                            // place every pixel's `c` channels inside numpy's live buffer.
+                            unsafe {
+                                let pix_src =
+                                    src_base.offset(row_src_offset + x as isize * elem_stride_1);
+                                std::ptr::copy_nonoverlapping(pix_src, dst_ptr, c);
+                                dst_ptr = dst_ptr.add(c);
+                            }
+                        }
+                    }
+                }
+            } else if elem_stride_2 == -1 && c == 3 {
+                // Reversed 3-channel pixels (e.g. BGR <-> RGB `arr[:, :, ::-1]`).
                 for y in 0..h {
-                    // SAFETY: y < h and strides ensure within-bounds access
+                    // SAFETY: `b` is non-empty, `c == 3`, `elem_stride_2 == -1`, and every
+                    // `(y, x, 0..3)` element offset stays within numpy's live buffer.
                     unsafe {
                         let row_src = src_base.offset(y as isize * elem_stride_0);
-                        std::ptr::copy_nonoverlapping(row_src, dst_ptr, row_len);
-                        dst_ptr = dst_ptr.add(row_len);
+                        for x in 0..w {
+                            let pix_src = row_src.offset(x as isize * elem_stride_1);
+                            dst_ptr.write(*pix_src);
+                            dst_ptr.add(1).write(*pix_src.offset(-1));
+                            dst_ptr.add(2).write(*pix_src.offset(-2));
+                            dst_ptr = dst_ptr.add(3);
+                        }
                     }
                 }
             } else {
-                // Each pixel's channels are contiguous (e.g. arr[::2, ::2, :], transpose(1, 0, 2))
+                // General element-aligned arbitrary striding (e.g. planar CHW -> HWC, broadcasts).
                 for y in 0..h {
-                    let row_src_offset = y as isize * elem_stride_0;
-                    for x in 0..w {
-                        // SAFETY: coordinates are in-bounds and dst has room for b.len() items
-                        unsafe {
-                            let pix_src =
-                                src_base.offset(row_src_offset + x as isize * elem_stride_1);
-                            std::ptr::copy_nonoverlapping(pix_src, dst_ptr, c);
-                            dst_ptr = dst_ptr.add(c);
+                    // SAFETY: `b` is non-empty and all element-aligned `(y, x, ch)` offsets
+                    // remain within numpy's live buffer while the GIL is held.
+                    unsafe {
+                        let row_src = src_base.offset(y as isize * elem_stride_0);
+                        for x in 0..w {
+                            let pix_src = row_src.offset(x as isize * elem_stride_1);
+                            for ch in 0..c {
+                                dst_ptr.write(*pix_src.offset(ch as isize * elem_stride_2));
+                                dst_ptr = dst_ptr.add(1);
+                            }
                         }
                     }
                 }
             }
         } else {
-            // General arbitrary striding fallback (e.g. non-contiguous channel axis)
-            // SAFETY: the data pointer and every stride are aligned for `T` (checked
-            // above), so every element is aligned; numpy
-            // guarantees every in-shape strided index is in bounds; the GIL is held
-            // and nothing mutates the array while the read-only view is alive.
+            // Fallback for rare types with `align_of::<T>() < size_of::<T>()`.
+            // SAFETY: the data pointer and every stride are aligned for `T` (checked above).
             let view = unsafe { b.as_array() };
             for (d, &v) in dst.iter_mut().zip(view.iter()) {
                 d.write(v);
