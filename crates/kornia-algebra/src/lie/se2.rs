@@ -11,7 +11,10 @@ pub struct SE2F32 {
     pub t: Vec2F32,
 }
 
-const SMALL_ANGLE_EPSILON: f32 = 1.0e-8;
+/// Below this `|θ|` (0.1 rad) the small-angle coefficients use their Taylor
+/// series: in f32, `1 − cos θ` and the Jacobians' `θ²`-scale numerators cancel
+/// to a few ulps or to 0 there. The truncation error at 0.1 rad is below 1e-8.
+const TAYLOR_THRESHOLD: f32 = 0.1;
 
 impl SE2F32 {
     pub const IDENTITY: Self = Self {
@@ -119,9 +122,8 @@ impl SE2F32 {
         Self {
             r: so2,
             t: {
-                let (a, b) = if theta.abs() < SMALL_ANGLE_EPSILON {
-                    // Small-angle approximation path
-                    (1.0 - theta * theta / 6.0, theta / 2.0)
+                let (a, b) = if theta.abs() < TAYLOR_THRESHOLD {
+                    Self::sc(theta)
                 } else {
                     (so2.z.y / theta, (1.0 - so2.z.x) / theta)
                 };
@@ -133,14 +135,14 @@ impl SE2F32 {
     pub fn log(&self) -> Vec3AF32 {
         let theta = self.r.log();
 
-        if theta.abs() < SMALL_ANGLE_EPSILON {
-            return Vec3AF32::new(self.t.x, self.t.y, 0.0);
-        }
-
-        let sin_t = self.r.z.y; // sin θ
-        let cos_t = self.r.z.x; // cos θ
-        let a = sin_t / theta; //  sinθ / θ
-        let b = (1.0 - cos_t) / theta; // (1-cosθ)/θ
+        // a = sinθ / θ, b = (1 − cosθ) / θ
+        let (a, b) = if theta.abs() < TAYLOR_THRESHOLD {
+            Self::sc(theta)
+        } else {
+            let sin_t = self.r.z.y; // sin θ
+            let cos_t = self.r.z.x; // cos θ
+            (sin_t / theta, (1.0 - cos_t) / theta)
+        };
         let denom = a * a + b * b; // det(V)
 
         // V⁻¹ = 1/det(V) * [[ a,  b],[-b,  a]]
@@ -178,12 +180,15 @@ impl SE2F32 {
         )
     }
 
+    /// `(sin θ / θ, (1 − cos θ) / θ)`, the entries of `V(θ)` in `exp`, `log`
+    /// and the Jacobians. Taylor series below [`TAYLOR_THRESHOLD`].
     #[inline]
     fn sc(theta: f32) -> (f32, f32) {
-        if theta.abs() < 1e-6 {
+        if theta.abs() < TAYLOR_THRESHOLD {
             let t2 = theta * theta;
-            let s = 1.0 - t2 / 6.0;
-            (s, 0.0) // (1 - cos θ) / θ ≈ 0 for small θ
+            let s = 1.0 - t2 / 6.0 + t2 * t2 / 120.0;
+            let c = theta * (0.5 - t2 / 24.0 + t2 * t2 / 720.0);
+            (s, c)
         } else {
             let s = theta.sin() / theta;
             let c = (1.0 - theta.cos()) / theta;
@@ -204,9 +209,10 @@ impl SE2F32 {
         let p1 = v.x;
         let p2 = v.y;
 
-        let (third_col_x, third_col_y) = if theta.abs() < 1e-6 {
-            // Limit as theta -> 0: [p2, -p1, 1]
-            (p2, -p1)
+        let (third_col_x, third_col_y) = if theta.abs() < TAYLOR_THRESHOLD {
+            // Taylor series; the limit as theta -> 0 is [-p2/2, p1/2].
+            let (u, w) = third_col_series(theta);
+            (-p2 * u + p1 * w, p1 * u + p2 * w)
         } else {
             let theta_sq = theta * theta;
             let sin_t = theta.sin();
@@ -237,9 +243,10 @@ impl SE2F32 {
         let p1 = v.x;
         let p2 = v.y;
 
-        let (third_col_x, third_col_y) = if theta.abs() < 1e-6 {
-            // Limit as theta -> 0: [p2, -p1, 1]
-            (p2, -p1)
+        let (third_col_x, third_col_y) = if theta.abs() < TAYLOR_THRESHOLD {
+            // Taylor series; the limit as theta -> 0 is [p2/2, -p1/2].
+            let (u, w) = third_col_series(theta);
+            (p2 * u + p1 * w, -p1 * u + p2 * w)
         } else {
             let theta_sq = theta * theta;
             let sin_t = theta.sin();
@@ -255,6 +262,17 @@ impl SE2F32 {
             Vec3AF32::new(third_col_x, third_col_y, 1.0),
         )
     }
+}
+
+/// Taylor series of the two coefficients in the Jacobians' third column,
+/// `u = (1 − cos θ) / θ²` and `w = (θ − sin θ) / θ²`: each entry there is
+/// `±p·u ± p·w` (see `right_jacobian` and `left_jacobian`).
+#[inline]
+fn third_col_series(theta: f32) -> (f32, f32) {
+    let t2 = theta * theta;
+    let u = 0.5 - t2 / 24.0 + t2 * t2 / 720.0;
+    let w = theta * (1.0 / 6.0 - t2 / 120.0 + t2 * t2 / 5040.0);
+    (u, w)
 }
 
 impl std::ops::Mul<SE2F32> for SE2F32 {
@@ -907,7 +925,7 @@ mod tests {
         let expected_jr = Mat3AF32::from_cols(
             Vec3AF32::new(1.0, 0.0, 0.0),
             Vec3AF32::new(0.0, 1.0, 0.0),
-            Vec3AF32::new(p2, -p1, 1.0),
+            Vec3AF32::new(-p2 / 2.0, p1 / 2.0, 1.0),
         );
 
         for col in 0..3 {
@@ -958,12 +976,89 @@ mod tests {
         let expected_jl = Mat3AF32::from_cols(
             Vec3AF32::new(1.0, 0.0, 0.0),
             Vec3AF32::new(0.0, 1.0, 0.0),
-            Vec3AF32::new(p2, -p1, 1.0),
+            Vec3AF32::new(p2 / 2.0, -p1 / 2.0, 1.0),
         );
 
         for col in 0..3 {
             for row in 0..3 {
                 assert_relative_eq!(jl.col(col)[row], expected_jl.col(col)[row], epsilon = 1e-5);
+            }
+        }
+    }
+
+    /// f64 reference for `exp`'s `V(θ)` entries and the Jacobians' third
+    /// column: Taylor series below 1e-2 (truncation < 1e-14), closed form above.
+    fn small_angle_reference(t: f64, p1: f64, p2: f64) -> ((f64, f64), [f64; 4]) {
+        let (s, c, u, w) = if t.abs() < 1e-2 {
+            let t2 = t * t;
+            (
+                1.0 - t2 / 6.0 + t2 * t2 / 120.0,
+                t * (0.5 - t2 / 24.0 + t2 * t2 / 720.0),
+                0.5 - t2 / 24.0 + t2 * t2 / 720.0,
+                t * (1.0 / 6.0 - t2 / 120.0 + t2 * t2 / 5040.0),
+            )
+        } else {
+            let t2 = t * t;
+            (
+                t.sin() / t,
+                (1.0 - t.cos()) / t,
+                (1.0 - t.cos()) / t2,
+                (t - t.sin()) / t2,
+            )
+        };
+        (
+            (s * p1 - c * p2, c * p1 + s * p2),
+            [
+                -p2 * u + p1 * w, // right Jacobian, third column
+                p1 * u + p2 * w,
+                p2 * u + p1 * w, // left Jacobian, third column
+                -p1 * u + p2 * w,
+            ],
+        )
+    }
+
+    /// In f32, `1 − cos θ` cancels to 0 below ~3e-4 rad, so `exp` and `log`
+    /// lost the `(1 − cos θ)/θ` entry of `V(θ)`, and the Jacobians' third
+    /// column (θ²-scale numerators over θ²) blew up just above their old 1e-6
+    /// limit branch, which itself returned [p2, -p1] instead of [∓p2/2, ±p1/2].
+    #[test]
+    fn test_small_angles_match_f64_reference() {
+        let (p1, p2) = (1.0f64, 2.0f64);
+        for theta in [
+            0.0f64, 1e-7, -1e-7, 1e-6, 1e-5, -1e-5, 1e-4, 3e-4, 1e-3, -1e-3, 1e-2, 5e-2, 0.099,
+        ] {
+            let ((tx, ty), jac) = small_angle_reference(theta, p1, p2);
+            let v = Vec3AF32::new(p1 as f32, p2 as f32, theta as f32);
+
+            let t = SE2F32::exp(v).t;
+            assert!(
+                (t.x as f64 - tx).abs() < 1e-6 && (t.y as f64 - ty).abs() < 1e-6,
+                "exp, theta = {theta:e}: {t:?} vs ({tx}, {ty})"
+            );
+
+            // log of a pose whose translation is exact to f32 rounding.
+            let pose = SE2F32::new(
+                SO2F32::exp(theta as f32),
+                Vec2F32::new(tx as f32, ty as f32),
+            );
+            let l = pose.log();
+            assert!(
+                (l.x as f64 - p1).abs() < 1e-6 && (l.y as f64 - p2).abs() < 1e-6,
+                "log, theta = {theta:e}: {l:?}"
+            );
+
+            let jr = SE2F32::right_jacobian(v).col(2);
+            let jl = SE2F32::left_jacobian(v).col(2);
+            for (got, want, name) in [
+                (jr.x, jac[0], "right x"),
+                (jr.y, jac[1], "right y"),
+                (jl.x, jac[2], "left x"),
+                (jl.y, jac[3], "left y"),
+            ] {
+                assert!(
+                    (got as f64 - want).abs() < 1e-6,
+                    "{name} Jacobian, theta = {theta:e}: {got} vs {want}"
+                );
             }
         }
     }
