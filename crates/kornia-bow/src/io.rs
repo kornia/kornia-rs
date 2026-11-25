@@ -13,10 +13,20 @@ const MAX_DECODE_BYTES: usize = 64 * 1024 * 1024;
 const PREALLOC_BLOCKS: usize = 1 << 16;
 
 impl<const B: usize, M: DistanceMetric> Vocabulary<B, M> {
-    /// Persists the vocabulary to a file.
-    pub fn save(&self, path: &str) -> BowResult<()> {
-        let file = File::create(path)?;
-        let mut writer = BufWriter::new(file);
+    /// Serializes the vocabulary into any [`Write`] destination and flushes it.
+    ///
+    /// # Arguments
+    ///
+    /// * `writer` - Output destination implementing [`Write`].
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` on success.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BowError::Bincode`] on serialization failure, or [`BowError::Io`] on write or flush failure.
+    pub fn save_to_writer<W: Write>(&self, mut writer: W) -> BowResult<()> {
         let config = bincode::config::standard();
 
         bincode::encode_into_std_write(B as u64, &mut writer, config)
@@ -28,6 +38,26 @@ impl<const B: usize, M: DistanceMetric> Vocabulary<B, M> {
         writer.flush()?;
 
         Ok(())
+    }
+
+    /// Persists the vocabulary to a file.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Destination file path.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` on success.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BowError::Io`] if creating or writing to the file fails, or
+    /// [`BowError::Bincode`] on serialization failure.
+    pub fn save(&self, path: &str) -> BowResult<()> {
+        let file = File::create(path)?;
+        let writer = BufWriter::new(file);
+        self.save_to_writer(writer)
     }
 
     /// Loads the vocabulary from a file and verifies compatibility.
@@ -250,6 +280,31 @@ mod tests {
             root_idx: 0,
         };
         let result = vocab.save("/path/to/non/existent/directory/vocab.bow");
+        assert!(matches!(result, Err(BowError::Io(_))));
+    }
+
+    struct FailOnFlushWriter<W: Write> {
+        inner: W,
+    }
+
+    impl<W: Write> Write for FailOnFlushWriter<W> {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.inner.write(buf)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Err(std::io::Error::other("disk full on flush"))
+        }
+    }
+
+    #[test]
+    fn test_save_flush_failure_propagates_error() {
+        let vocab: Vocabulary<B, Hamming<D>> = Vocabulary {
+            blocks: Vec::new(),
+            root_idx: 0,
+        };
+        let writer = FailOnFlushWriter { inner: Vec::new() };
+        let result = vocab.save_to_writer(writer);
         assert!(matches!(result, Err(BowError::Io(_))));
     }
 
