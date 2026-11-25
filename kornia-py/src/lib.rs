@@ -354,6 +354,7 @@ pub(crate) fn add_imagenet_consts(module: &Bound<'_, PyModule>) -> PyResult<()> 
     Ok(())
 }
 
+/// Top-level Python module for `kornia_rs` computer vision and image processing operations.
 #[pymodule(gil_used = false)]
 pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let py = m.py();

@@ -491,3 +491,8 @@ def test_unpickle_validation():
     vocab = K.bow.OrbVocabulary()
     with pytest.raises(ValueError):
         vocab.__setstate__(b"corrupted binary payload")
+
+    # OrbVocabulary: oversized block count payload (bincode varint declaring >16M blocks)
+    oversized_payload = b"\x0a\x00\xfc\xff\xff\xff\x00"
+    with pytest.raises(ValueError, match="declared block count"):
+        vocab.__setstate__(oversized_payload)

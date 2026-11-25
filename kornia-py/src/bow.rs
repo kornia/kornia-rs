@@ -484,11 +484,11 @@ impl PyOrbVocabulary {
         })
     }
 
-    /// Pickle support deserialization (releases GIL and validates tree structure).
+    /// Pickle support deserialization (releases GIL, bounds preallocation, and validates tree structure).
     pub fn __setstate__(&mut self, py: Python<'_>, state: &[u8]) -> PyResult<()> {
         let vocab: OrbVocabulary = py.detach(|| {
             let mut reader = std::io::Cursor::new(state);
-            let config = bincode::config::standard();
+            let config = bincode::config::standard().with_limit::<{ 64 * 1024 * 1024 }>();
             let loaded_b: u64 = bincode::decode_from_std_read(&mut reader, config)
                 .map_err(|e| PyValueError::new_err(e.to_string()))?;
             let loaded_metric: kornia_bow::metric::MetricType =
@@ -499,8 +499,29 @@ impl PyOrbVocabulary {
             {
                 return Err(PyValueError::new_err("Invalid vocabulary binary state"));
             }
-            let v: OrbVocabulary = bincode::decode_from_std_read(&mut reader, config)
+
+            let n_blocks: u64 = bincode::decode_from_std_read(&mut reader, config)
                 .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            if n_blocks > state.len() as u64 {
+                return Err(PyValueError::new_err(format!(
+                    "declared block count {n_blocks} exceeds state size {}",
+                    state.len()
+                )));
+            }
+            let n_blocks = n_blocks as usize;
+            let mut blocks = Vec::with_capacity(n_blocks.min(65536));
+            for _ in 0..n_blocks {
+                let block: kornia_bow::BlockCluster<
+                    ORB_BRANCHING,
+                    kornia_bow::metric::Hamming<ORB_WORDS>,
+                > = bincode::decode_from_std_read(&mut reader, config)
+                    .map_err(|e| PyValueError::new_err(e.to_string()))?;
+                blocks.push(block);
+            }
+            let root_idx: u32 = bincode::decode_from_std_read(&mut reader, config)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            let v = OrbVocabulary { blocks, root_idx };
+
             // If vocabulary has blocks, validate its structural integrity
             if !v.blocks.is_empty() {
                 validate_vocab_tree(&v)?;

@@ -25,7 +25,23 @@ impl<const B: usize, M: DistanceMetric> Vocabulary<B, M> {
     ///
     /// # Errors
     ///
-    /// Returns [`BowError::Bincode`] on serialization failure, or [`BowError::Io`] on write or flush failure.
+    /// Returns [`BowError::Bincode`] on serialization or encoding-time write failure,
+    /// or [`BowError::Io`] on explicit flush failure.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use kornia_bow::{metric::Hamming, Vocabulary};
+    ///
+    /// let vocab = Vocabulary::<10, Hamming<4>> {
+    ///     blocks: Vec::new(),
+    ///     root_idx: 0,
+    /// };
+    /// let mut bytes = Vec::new();
+    /// vocab.save_to_writer(&mut bytes)?;
+    /// assert!(!bytes.is_empty());
+    /// # Ok::<(), kornia_bow::BowError>(())
+    /// ```
     pub fn save_to_writer<W: Write>(&self, mut writer: W) -> BowResult<()> {
         let config = bincode::config::standard();
 
@@ -52,8 +68,8 @@ impl<const B: usize, M: DistanceMetric> Vocabulary<B, M> {
     ///
     /// # Errors
     ///
-    /// Returns [`BowError::Io`] if creating or writing to the file fails, or
-    /// [`BowError::Bincode`] on serialization failure.
+    /// Returns [`BowError::Io`] if creating the file or flushing the writer fails, or
+    /// [`BowError::Bincode`] on serialization or encoding-time write failure.
     pub fn save(&self, path: &str) -> BowResult<()> {
         let file = File::create(path)?;
         let writer = BufWriter::new(file);
