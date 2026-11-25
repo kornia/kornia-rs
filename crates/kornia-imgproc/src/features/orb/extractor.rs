@@ -484,6 +484,9 @@ impl OrbDetector {
         Ok((descriptors_list, mask_list))
     }
 
+    /// Detect features on one u8 pyramid level using its keypoint budget.
+    /// Returns full-resolution (row, column) positions, scales, orientations,
+    /// and Harris responses in matching order.
     #[allow(clippy::type_complexity)]
     fn detect_octave_u8(
         &self,
@@ -733,6 +736,9 @@ impl OrbDetector {
         Ok(per_octave)
     }
 
+    /// Compute BRIEF descriptors from octave-local positions and orientations.
+    /// Returns descriptors for the retained keypoints and a border mask indexed
+    /// by the original input positions.
     fn extract_octave_u8(
         &self,
         octave_image: &Image<u8, 1>,
