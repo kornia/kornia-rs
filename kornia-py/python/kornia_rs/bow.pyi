@@ -41,10 +41,13 @@ class BoW:
         """Gets the weight of a specific word ID, returning 0.0 if not present."""
         ...
     def score(self, other: "BoW", metric: str = "l1") -> float:
-        """Computes similarity score with another BoW vector using the specified metric."""
+        """Computes similarity score with another BoW vector using the specified metric.
+
+        For ``metric="l1"``, returns a score in range [0.0, 1.0] for non-negative, L1-normalized vectors.
+        """
         ...
     def l1_similarity(self, other: "BoW") -> float:
-        """Computes L1 similarity score in range [0.0, 1.0]."""
+        """Computes L1 similarity score (in range [0.0, 1.0] for non-negative, L1-normalized vectors)."""
         ...
     def l2_similarity(self, other: "BoW") -> float:
         """Computes L2 similarity score."""
@@ -140,7 +143,7 @@ class OrbVocabulary:
         """Transforms descriptors into a sparse BoW vector and a Direct Index at tree ``level``."""
         ...
     def transform_one(
-        self, descriptor: Union[npt.NDArray[np.uint8], Sequence[int]]
+        self, descriptor: npt.NDArray[np.uint8]
     ) -> Tuple[int, float]:
         """Maps a single 32-byte descriptor to its ``(word_id, idf_weight)``."""
         ...

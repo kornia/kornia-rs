@@ -27,6 +27,11 @@ impl BoW {
     }
 
     /// Computes L1 similarity score.
+    ///
+    /// The score is defined as `1.0 - 0.5 * ||self - other||_1`.
+    /// When both vectors are non-negative and L1-normalized (`||v||_1 = 1.0`),
+    /// this score falls strictly in the range `[0.0, 1.0]`, where 1.0 indicates
+    /// identical distributions and 0.0 indicates completely disjoint distributions.
     pub fn l1_similarity(&self, other: &Self) -> f32 {
         let mut it1 = self.0.iter().peekable();
         let mut it2 = other.0.iter().peekable();

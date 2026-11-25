@@ -209,9 +209,9 @@ def test_transform_with_direct_index():
     assert isinstance(di_dict, dict)
     assert len(di_dict) == len(di1)
 
-    # Total feature count across all node buckets must equal query length (12)
-    total_features = sum(len(f_idxs) for f_idxs in di_dict.values())
-    assert total_features == 12
+    # The feature indices partitioned across all node buckets must cover all query indices exactly
+    all_feature_indices = sorted(idx for f_idxs in di_dict.values() for idx in f_idxs)
+    assert all_feature_indices == list(range(len(query)))
 
     # Python container protocol verification (keys, values, items, __iter__)
     iter_nodes = [node for node in di1]
@@ -339,7 +339,7 @@ def test_save_and_load_binary_roundtrip(tmp_path):
     np.testing.assert_allclose(bow_orig.weights(), bow_loaded.weights(), rtol=1e-5)
 
 
-def test_pickle_multiprocessing_roundtrip():
+def test_pickle_roundtrip():
     data = _generate_synthetic_descriptors(60)
     vocab = K.bow.OrbVocabulary.train(data, max_depth=3)
     bow, di = vocab.transform_with_direct_index(data[:10], level=1)
@@ -397,7 +397,7 @@ def test_load_orb_slam3_text_vocabulary_mismatch(tmp_path):
 # -------------------------------------------------------------------------
 
 
-def test_error_handling_shapes_and_layouts():
+def test_error_handling_shapes_and_layouts(tmp_path):
     data = _generate_synthetic_descriptors(50)
     vocab = K.bow.OrbVocabulary.train(data, max_depth=3)
 
@@ -421,17 +421,73 @@ def test_error_handling_shapes_and_layouts():
     with pytest.raises(ValueError, match="must be a C-contiguous array"):
         vocab.transform(f_desc)
 
-    # Non-contiguous arrays: reversed step stride
-    stride_desc = data[::2]
-    # Slicing along row dimension in C order is contiguous if rows are intact,
-    # but negative or column slicing is strided:
+    # Non-contiguous arrays: row-strided slicing (step 2)
+    row_strided = data[::2]
+    with pytest.raises(ValueError, match="must be a C-contiguous array"):
+        vocab.transform(row_strided)
+
+    # Non-contiguous arrays: column-strided slicing (reversed columns)
     col_strided = data[:10, ::-1]
     with pytest.raises(ValueError, match="must be a C-contiguous array"):
         vocab.transform(col_strided)
 
     # Non-existent files
     with pytest.raises(IOError):
-        K.bow.OrbVocabulary.from_file("non_existent_file.bow")
+        K.bow.OrbVocabulary.from_file(str(tmp_path / "non_existent.bow"))
 
     with pytest.raises(IOError):
-        K.bow.OrbVocabulary.from_orb_slam3("non_existent_file.txt")
+        K.bow.OrbVocabulary.from_orb_slam3(str(tmp_path / "non_existent.txt"))
+
+
+def test_train_invalid_arguments():
+    data = _generate_synthetic_descriptors(50)
+
+    # max_depth must be between 1 and 16
+    with pytest.raises(ValueError, match="max_depth must be between 1 and 16"):
+        K.bow.OrbVocabulary.train(data, max_depth=0)
+
+    with pytest.raises(ValueError, match="max_depth must be between 1 and 16"):
+        K.bow.OrbVocabulary.train(data, max_depth=17)
+
+    # Minimum descriptors for branching factor 10
+    with pytest.raises(ValueError, match="at least 10 descriptors"):
+        K.bow.OrbVocabulary.train(data[:5], max_depth=3)
+
+
+def test_save_empty_vocabulary(tmp_path):
+    empty_vocab = K.bow.OrbVocabulary()
+    with pytest.raises(ValueError, match="cannot save an empty vocabulary"):
+        empty_vocab.save(str(tmp_path / "empty.bow"))
+
+
+def test_unpickle_validation():
+    # BoW: unsorted word IDs
+    bow = K.bow.BoW()
+    with pytest.raises(ValueError, match="strictly increasing, unique word IDs"):
+        bow.__setstate__([(5, 0.5), (2, 0.5)])
+
+    # BoW: duplicate word IDs
+    with pytest.raises(ValueError, match="strictly increasing, unique word IDs"):
+        bow.__setstate__([(2, 0.5), (2, 0.5)])
+
+    # BoW: non-positive or non-finite weight
+    with pytest.raises(ValueError, match="positive and finite"):
+        bow.__setstate__([(1, 0.0)])
+    with pytest.raises(ValueError, match="positive and finite"):
+        bow.__setstate__([(1, -0.5)])
+    with pytest.raises(ValueError, match="positive and finite"):
+        bow.__setstate__([(1, float("nan"))])
+
+    # DirectIndex: unsorted node IDs
+    di = K.bow.DirectIndex()
+    with pytest.raises(ValueError, match="strictly increasing, unique node IDs"):
+        di.__setstate__([(10, [1, 2]), (5, [3])])
+
+    # DirectIndex: duplicate node IDs
+    with pytest.raises(ValueError, match="strictly increasing, unique node IDs"):
+        di.__setstate__([(5, [1, 2]), (5, [3])])
+
+    # OrbVocabulary: corrupt binary payload
+    vocab = K.bow.OrbVocabulary()
+    with pytest.raises(ValueError):
+        vocab.__setstate__(b"corrupted binary payload")

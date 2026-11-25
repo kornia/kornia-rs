@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{BufReader, BufWriter};
+use std::io::{BufReader, BufWriter, Write};
 
 use crate::{
     metric::{DistanceMetric, MetricType},
@@ -25,6 +25,7 @@ impl<const B: usize, M: DistanceMetric> Vocabulary<B, M> {
             .map_err(|e| BowError::Bincode(e.to_string()))?;
         bincode::encode_into_std_write(self, &mut writer, config)
             .map_err(|e| BowError::Bincode(e.to_string()))?;
+        writer.flush()?;
 
         Ok(())
     }

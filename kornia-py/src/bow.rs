@@ -70,10 +70,7 @@ fn validate_and_get_descriptor_slice<'a>(arr: &'a Bound<'_, PyArray2<u8>>) -> Py
 /// Can be safely executed without the Python GIL.
 fn pack_orb_descriptors_slice(slice: &[u8]) -> Vec<Feature<u64, ORB_WORDS>> {
     let to_feat = |chunk: &[u8]| {
-        let arr32: &[u8; 32] = match chunk.try_into() {
-            Ok(arr) => arr,
-            Err(_) => &[0u8; 32],
-        };
+        let arr32: &[u8; 32] = chunk.try_into().unwrap_or(&[0u8; 32]);
         pack_orb_descriptor(arr32)
     };
 
@@ -160,9 +157,24 @@ impl PyBoW {
         self.inner.0.clone()
     }
 
-    /// Pickle support deserialization.
-    pub fn __setstate__(&mut self, state: Vec<(u32, f32)>) {
+    /// Pickle support deserialization with canonical validation.
+    pub fn __setstate__(&mut self, state: Vec<(u32, f32)>) -> PyResult<()> {
+        for window in state.windows(2) {
+            if window[0].0 >= window[1].0 {
+                return Err(PyValueError::new_err(
+                    "BoW state must have strictly increasing, unique word IDs",
+                ));
+            }
+        }
+        for &(w, wt) in &state {
+            if !wt.is_finite() || wt <= 0.0 {
+                return Err(PyValueError::new_err(format!(
+                    "BoW state weights must be positive and finite, got weight {wt} for word {w}"
+                )));
+            }
+        }
         self.inner = CoreBoW(state);
+        Ok(())
     }
 
     /// Returns an iterator over non-zero word IDs in the sparse vector.
@@ -225,7 +237,7 @@ impl PyBoW {
     /// Computes similarity score with another BoW vector using the specified metric.
     ///
     /// Metric choices:
-    /// - `"l1"` (default): L1 similarity in range [0, 1] (standard DBoW2 scoring).
+    /// - `"l1"` (default): L1 similarity in range [0, 1] (standard DBoW2 scoring, for L1-normalized non-negative vectors).
     /// - `"l2"`: L2 similarity.
     /// - `"dot"`: Dot product similarity.
     /// - `"chi_square"`: Chi-square similarity.
@@ -246,7 +258,7 @@ impl PyBoW {
         }
     }
 
-    /// Computes L1 similarity score in range [0.0, 1.0].
+    /// Computes L1 similarity score (in range [0.0, 1.0] for L1-normalized non-negative vectors).
     pub fn l1_similarity(&self, other: &PyBoW) -> f32 {
         self.inner.l1_similarity(&other.inner)
     }
@@ -364,9 +376,17 @@ impl PyDirectIndex {
         self.inner.0.clone()
     }
 
-    /// Pickle support deserialization.
-    pub fn __setstate__(&mut self, state: Vec<(u32, Vec<u32>)>) {
+    /// Pickle support deserialization with canonical validation.
+    pub fn __setstate__(&mut self, state: Vec<(u32, Vec<u32>)>) -> PyResult<()> {
+        for window in state.windows(2) {
+            if window[0].0 >= window[1].0 {
+                return Err(PyValueError::new_err(
+                    "DirectIndex state must have strictly increasing, unique node IDs",
+                ));
+            }
+        }
         self.inner = CoreDirectIndex(state);
+        Ok(())
     }
 
     /// Look up feature indices associated with a node ID. Returns None if node is not present.
@@ -398,6 +418,32 @@ impl PyDirectIndex {
     }
 }
 
+/// Validate that a vocabulary tree is non-empty, non-cyclic, and all internal indices are within bounds.
+fn validate_vocab_tree(vocab: &OrbVocabulary) -> PyResult<()> {
+    if vocab.blocks.is_empty() {
+        return Err(PyValueError::new_err("Vocabulary contains no blocks"));
+    }
+    let num_blocks = vocab.blocks.len();
+    if (vocab.root_idx as usize) >= num_blocks {
+        return Err(PyValueError::new_err(format!(
+            "Root block index {} out of bounds (total blocks: {})",
+            vocab.root_idx, num_blocks
+        )));
+    }
+    for (i, block) in vocab.blocks.iter().enumerate() {
+        if let kornia_bow::BlockContent::Internal(ref meta) = block.content {
+            let base = meta.children_base_idx as usize;
+            if base >= num_blocks || base + ORB_BRANCHING > num_blocks {
+                return Err(PyValueError::new_err(format!(
+                    "Internal block {i} has children base index {base} out of bounds (total blocks: {})",
+                    num_blocks
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Hierarchical Bag of Words vocabulary for ORB descriptors.
 ///
 /// Branching factor 10, Hamming distance over 256-bit (32-byte) descriptors.
@@ -419,35 +465,48 @@ impl PyOrbVocabulary {
         }
     }
 
-    /// Pickle support serialization.
-    pub fn __getstate__(&self) -> PyResult<Vec<u8>> {
-        let mut buf = Vec::new();
-        let config = bincode::config::standard();
-        bincode::encode_into_std_write(ORB_BRANCHING as u64, &mut buf, config)
+    /// Pickle support serialization (releases GIL during serialization).
+    pub fn __getstate__(&self, py: Python<'_>) -> PyResult<Vec<u8>> {
+        py.detach(|| {
+            let mut buf = Vec::new();
+            let config = bincode::config::standard();
+            bincode::encode_into_std_write(ORB_BRANCHING as u64, &mut buf, config)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            bincode::encode_into_std_write(
+                kornia_bow::metric::MetricType::Hamming,
+                &mut buf,
+                config,
+            )
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        bincode::encode_into_std_write(kornia_bow::metric::MetricType::Hamming, &mut buf, config)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        bincode::encode_into_std_write(&self.inner, &mut buf, config)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        Ok(buf)
+            bincode::encode_into_std_write(&self.inner, &mut buf, config)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            Ok(buf)
+        })
     }
 
-    /// Pickle support deserialization.
-    pub fn __setstate__(&mut self, state: &[u8]) -> PyResult<()> {
-        let mut reader = std::io::Cursor::new(state);
-        let config = bincode::config::standard();
-        let loaded_b: u64 = bincode::decode_from_std_read(&mut reader, config)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        let loaded_metric: kornia_bow::metric::MetricType =
-            bincode::decode_from_std_read(&mut reader, config)
+    /// Pickle support deserialization (releases GIL and validates tree structure).
+    pub fn __setstate__(&mut self, py: Python<'_>, state: &[u8]) -> PyResult<()> {
+        let vocab: OrbVocabulary = py.detach(|| {
+            let mut reader = std::io::Cursor::new(state);
+            let config = bincode::config::standard();
+            let loaded_b: u64 = bincode::decode_from_std_read(&mut reader, config)
                 .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        if loaded_b != ORB_BRANCHING as u64
-            || loaded_metric != kornia_bow::metric::MetricType::Hamming
-        {
-            return Err(PyValueError::new_err("Invalid vocabulary binary state"));
-        }
-        let vocab: OrbVocabulary = bincode::decode_from_std_read(&mut reader, config)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            let loaded_metric: kornia_bow::metric::MetricType =
+                bincode::decode_from_std_read(&mut reader, config)
+                    .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            if loaded_b != ORB_BRANCHING as u64
+                || loaded_metric != kornia_bow::metric::MetricType::Hamming
+            {
+                return Err(PyValueError::new_err("Invalid vocabulary binary state"));
+            }
+            let v: OrbVocabulary = bincode::decode_from_std_read(&mut reader, config)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            // If vocabulary has blocks, validate its structural integrity
+            if !v.blocks.is_empty() {
+                validate_vocab_tree(&v)?;
+            }
+            Ok(v)
+        })?;
         self.inner = vocab;
         Ok(())
     }
@@ -482,8 +541,8 @@ impl PyOrbVocabulary {
     /// Trains a new hierarchical ORB vocabulary from a NumPy descriptor array.
     ///
     /// Args:
-    ///     descriptors: `(N, 32)` uint8 ORB descriptors.
-    ///     max_depth: maximum depth of the vocabulary tree (default 6).
+    ///     descriptors: `(N, 32)` uint8 ORB descriptors (minimum 10 required).
+    ///     max_depth: maximum depth of the vocabulary tree (between 1 and 16, default 6).
     ///
     /// Returns:
     ///     Trained `OrbVocabulary`.
@@ -494,10 +553,22 @@ impl PyOrbVocabulary {
         descriptors: Bound<'_, PyArray2<u8>>,
         max_depth: usize,
     ) -> PyResult<Self> {
-        let slice = validate_and_get_descriptor_slice(&descriptors)?;
+        if max_depth == 0 || max_depth > 16 {
+            return Err(PyValueError::new_err(format!(
+                "max_depth must be between 1 and 16, got {max_depth}"
+            )));
+        }
+        let shape = descriptors.shape();
+        if shape[0] < ORB_BRANCHING {
+            return Err(PyValueError::new_err(format!(
+                "training requires at least {ORB_BRANCHING} descriptors for branching factor {ORB_BRANCHING}, got {}",
+                shape[0]
+            )));
+        }
+        let raw_bytes: Vec<u8> = validate_and_get_descriptor_slice(&descriptors)?.to_vec();
         let inner = py
             .detach(|| {
-                let features = pack_orb_descriptors_slice(slice);
+                let features = pack_orb_descriptors_slice(&raw_bytes);
                 OrbVocabulary::train(&features, max_depth)
             })
             .map_err(bow_to_pyerr)?;
@@ -509,6 +580,11 @@ impl PyOrbVocabulary {
     /// Args:
     ///     path: destination file path.
     pub fn save(&self, py: Python<'_>, path: &str) -> PyResult<()> {
+        if self.inner.blocks.is_empty() {
+            return Err(PyValueError::new_err(
+                "cannot save an empty vocabulary to a file",
+            ));
+        }
         py.detach(|| self.inner.save(path)).map_err(bow_to_pyerr)
     }
 
@@ -524,10 +600,10 @@ impl PyOrbVocabulary {
         py: Python<'_>,
         descriptors: Bound<'_, PyArray2<u8>>,
     ) -> PyResult<PyBoW> {
-        let slice = validate_and_get_descriptor_slice(&descriptors)?;
+        let raw_bytes: Vec<u8> = validate_and_get_descriptor_slice(&descriptors)?.to_vec();
         let bow = py
             .detach(|| {
-                let features = pack_orb_descriptors_slice(slice);
+                let features = pack_orb_descriptors_slice(&raw_bytes);
                 self.inner.transform(&features)
             })
             .map_err(bow_to_pyerr)?;
@@ -549,10 +625,10 @@ impl PyOrbVocabulary {
         descriptors: Bound<'_, PyArray2<u8>>,
         level: usize,
     ) -> PyResult<(PyBoW, PyDirectIndex)> {
-        let slice = validate_and_get_descriptor_slice(&descriptors)?;
+        let raw_bytes: Vec<u8> = validate_and_get_descriptor_slice(&descriptors)?.to_vec();
         let (bow, di) = py
             .detach(|| {
-                let features = pack_orb_descriptors_slice(slice);
+                let features = pack_orb_descriptors_slice(&raw_bytes);
                 self.inner.transform_with_direct_index(&features, level)
             })
             .map_err(bow_to_pyerr)?;
@@ -604,13 +680,33 @@ impl PyOrbVocabulary {
     }
 }
 
-/// Convenience function to load an ORB-SLAM3 / DBoW2 text vocabulary file.
+/// Convenience function to load an ORB-SLAM3 / DBoW2 text vocabulary file (`ORBvoc.txt`).
+///
+/// Args:
+///     path: path to the text vocabulary file.
+///
+/// Returns:
+///     Loaded `OrbVocabulary`.
+///
+/// Raises:
+///     IOError: if the file cannot be opened or read.
+///     ValueError: if the vocabulary format is invalid or corrupted.
 #[pyfunction]
 pub fn load_orb_slam3_vocabulary(py: Python<'_>, path: &str) -> PyResult<PyOrbVocabulary> {
     PyOrbVocabulary::from_orb_slam3(py, path)
 }
 
-/// Convenience function to load a binary vocabulary file.
+/// Convenience function to load a binary vocabulary file (`.bow`) previously saved with `save`.
+///
+/// Args:
+///     path: path to the binary vocabulary file.
+///
+/// Returns:
+///     Loaded `OrbVocabulary`.
+///
+/// Raises:
+///     IOError: if the file cannot be opened or read.
+///     ValueError: if the binary header or structure is invalid.
 #[pyfunction]
 pub fn load_vocabulary(py: Python<'_>, path: &str) -> PyResult<PyOrbVocabulary> {
     PyOrbVocabulary::from_file(py, path)
@@ -699,24 +795,38 @@ mod tests {
         };
         let state = b.__getstate__();
         let mut restored = PyBoW::new();
-        restored.__setstate__(state);
+        restored.__setstate__(state).unwrap();
         assert_eq!(b, restored);
     }
 
     #[test]
-    fn test_py_vocab_pickle_state() {
-        let dummy_feat = Feature([0u64; ORB_WORDS]);
-        let vocab = OrbVocabulary::train(&[dummy_feat; 10], 2).unwrap();
-        let py_vocab = PyOrbVocabulary { inner: vocab };
-        let state = py_vocab.__getstate__().unwrap();
-
-        let mut restored = PyOrbVocabulary {
-            inner: OrbVocabulary {
-                blocks: Vec::new(),
-                root_idx: 0,
-            },
+    fn test_py_direct_index_pickle_state() {
+        let di = PyDirectIndex {
+            inner: CoreDirectIndex(vec![(5, vec![0, 1]), (10, vec![2])]),
         };
-        restored.__setstate__(&state).unwrap();
-        assert_eq!(py_vocab.num_blocks(), restored.num_blocks());
+        let state = di.__getstate__();
+        let mut restored = PyDirectIndex::new();
+        restored.__setstate__(state).unwrap();
+        assert_eq!(di, restored);
+    }
+
+    #[test]
+    fn test_py_vocab_pickle_state() {
+        pyo3::Python::initialize();
+        Python::attach(|py| {
+            let dummy_feat = Feature([0u64; ORB_WORDS]);
+            let vocab = OrbVocabulary::train(&[dummy_feat; 10], 2).unwrap();
+            let py_vocab = PyOrbVocabulary { inner: vocab };
+            let state = py_vocab.__getstate__(py).unwrap();
+
+            let mut restored = PyOrbVocabulary {
+                inner: OrbVocabulary {
+                    blocks: Vec::new(),
+                    root_idx: 0,
+                },
+            };
+            restored.__setstate__(py, &state).unwrap();
+            assert_eq!(py_vocab.num_blocks(), restored.num_blocks());
+        });
     }
 }

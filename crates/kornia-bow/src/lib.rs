@@ -251,6 +251,8 @@ impl<const B: usize, M: DistanceMetric> Vocabulary<B, M> {
             compacted_bow.push((current_id, current_val));
         }
 
+        compacted_bow.retain(|&(_, v)| v != 0.0);
+
         let sum: f32 = compacted_bow.iter().map(|&(_, v)| v).sum();
         if sum > 0.0 {
             for (_, v) in compacted_bow.iter_mut() {
@@ -310,6 +312,8 @@ impl<const B: usize, M: DistanceMetric> Vocabulary<B, M> {
             }
             compacted_bow.push((current_id, current_val));
         }
+
+        compacted_bow.retain(|&(_, v)| v != 0.0);
 
         let sum: f32 = compacted_bow.iter().map(|&(_, v)| v).sum();
         if sum > 0.0 {
