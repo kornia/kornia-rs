@@ -257,13 +257,15 @@ impl Pose3d {
     /// assert!(pose.rotation_defect() < 1e-12);
     /// ```
     pub fn from_quat_translation(q: QuatF64, t: Vec3F64) -> Self {
-        let max_abs = q.x.abs().max(q.y.abs()).max(q.z.abs()).max(q.w.abs());
-        let q_scaled = if max_abs > 0.0 && max_abs.is_finite() {
-            QuatF64::from_xyzw(q.x / max_abs, q.y / max_abs, q.z / max_abs, q.w / max_abs)
-        } else {
-            q
-        };
-        Self::new(Mat3F64::from_quat(q_scaled.normalize()), t)
+        if q.is_finite() {
+            let max_abs = q.x.abs().max(q.y.abs()).max(q.z.abs()).max(q.w.abs());
+            if max_abs > 0.0 {
+                let q_scaled =
+                    QuatF64::from_xyzw(q.x / max_abs, q.y / max_abs, q.z / max_abs, q.w / max_abs);
+                return Self::new(Mat3F64::from_quat(q_scaled.normalize()), t);
+            }
+        }
+        Self::new(Mat3F64::from_cols_array(&[f64::NAN; 9]), t)
     }
 
     /// Extract the pose as a unit quaternion and a translation vector `(q, t)`.
