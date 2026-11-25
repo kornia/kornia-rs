@@ -15,12 +15,14 @@ crate-type = ["cdylib"]
 name = "kornia_rs"
 
 [dependencies]
+bincode = { workspace = true }
 cudarc = { workspace = true, optional = true }
 dlpack-rs = { version = "0.4.0", features = ["pyo3"] }
 half = { workspace = true }
 kornia-3d = { workspace = true }
 kornia-algebra = { workspace = true }
 kornia-apriltag = { workspace = true }
+kornia-bow = { workspace = true }
 kornia-image = { workspace = true }
 kornia-imgproc = { workspace = true }
 kornia-io = { workspace = true }

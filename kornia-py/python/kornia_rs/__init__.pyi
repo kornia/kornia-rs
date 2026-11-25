@@ -11,6 +11,7 @@ import numpy as np
 from . import algebra as algebra
 from . import apriltag as apriltag
 from . import augmentations as augmentations
+from . import bow as bow
 from . import cpu as cpu
 from . import depth as depth
 from . import features as features

@@ -1,0 +1,1 @@
+Expose `kornia_rs.bow` Python bindings for Visual SLAM place recognition and Bag-of-Words (DBoW2 / ORB-SLAM3). Provides `OrbVocabulary` (loading text/binary, training from NumPy), sparse `BoW` vectors with fast similarity scoring (L1, L2, Chi-Square, KL divergence, Bhattacharyya, dot product), and `DirectIndex` for geometric verification.

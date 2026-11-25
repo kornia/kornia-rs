@@ -8,6 +8,7 @@ mod augmentations;
 mod ba;
 mod ba_affine;
 mod blur;
+mod bow;
 mod brightness;
 mod canny;
 mod ccl;
@@ -658,6 +659,15 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     depth_mod.add_function(wrap_pyfunction!(depth::sample_depth, &depth_mod)?)?;
     m.add_submodule(&depth_mod)?;
 
+    // Bag of Words submodule — hierarchical vocabulary and place recognition
+    let bow_mod = PyModule::new(py, "bow")?;
+    bow_mod.add_class::<bow::PyBoW>()?;
+    bow_mod.add_class::<bow::PyDirectIndex>()?;
+    bow_mod.add_class::<bow::PyOrbVocabulary>()?;
+    bow_mod.add_function(wrap_pyfunction!(bow::load_orb_slam3_vocabulary, &bow_mod)?)?;
+    bow_mod.add_function(wrap_pyfunction!(bow::load_vocabulary, &bow_mod)?)?;
+    m.add_submodule(&bow_mod)?;
+
     // Register submodules in sys.modules so `from kornia_rs.image import Image` works
     let modules =
         unsafe { pyo3::Bound::from_borrowed_ptr(py, pyo3::ffi::PyImport_GetModuleDict()) };
@@ -673,6 +683,7 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
         ("kornia_rs.cpu", &cpu_mod),
         ("kornia_rs.segmentation", &seg_mod),
         ("kornia_rs.depth", &depth_mod),
+        ("kornia_rs.bow", &bow_mod),
     ] {
         modules.set_item(name, submod)?;
     }
