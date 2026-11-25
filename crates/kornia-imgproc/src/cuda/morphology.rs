@@ -458,6 +458,11 @@ pub fn launch_morphology_u8_cuda(
             "taps must be (dy, dx) pairs".into(),
         ));
     }
+    if taps.is_empty() {
+        return Err(CudaMorphologyError::Cuda(
+            "structuring element must have at least one active tap".into(),
+        ));
+    }
     if taps.len() / 2 > MORPH_MAX_TAPS {
         return Err(CudaMorphologyError::Cuda(format!(
             "structuring element has {} active taps; the GPU kernel supports \

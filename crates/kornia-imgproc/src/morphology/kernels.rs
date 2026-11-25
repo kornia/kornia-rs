@@ -1,8 +1,10 @@
+use kornia_image::ImageError;
+
 /// Shapes of morphological `Kernels`.
 ///
 /// Defines the geometry of the kernel used in morphological operations.
 /// All kernels are centered at their geometric center.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KernelShape {
     /// A rectangular box structuring element.
     ///
@@ -56,13 +58,32 @@ pub enum KernelShape {
 /// assert_eq!(kernel.height(), 3);
 /// assert_eq!(kernel.pad(), (1, 1));
 /// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Kernel {
-    data: Vec<u8>,
-    width: usize,
-    height: usize,
+    pub(crate) data: Vec<u8>,
+    pub(crate) width: usize,
+    pub(crate) height: usize,
 }
 
 impl Kernel {
+    /// Create a morphological kernel from a shape, validating dimensions.
+    ///
+    /// # Arguments
+    ///
+    /// * `shape` - The shape of the kernel (Box, Cross, or Ellipse).
+    ///
+    /// # Returns
+    ///
+    /// A [`Kernel`] struct on success, or [`ImageError::InvalidKernelLength`]
+    /// if dimensions are zero or overflow.
+    pub fn try_new(shape: KernelShape) -> Result<Self, ImageError> {
+        match shape {
+            KernelShape::Box { size } => try_box_kernel(size),
+            KernelShape::Cross { size } => try_cross_kernel(size),
+            KernelShape::Ellipse { width, height } => try_ellipse_kernel(width, height),
+        }
+    }
+
     /// Create a morphological kernel from a shape.
     ///
     /// # Arguments
@@ -72,11 +93,23 @@ impl Kernel {
     /// # Returns
     ///
     /// A [`Kernel`] struct with the appropriate data.
+    ///
+    /// # Panics
+    ///
+    /// Panics if dimensions are 0 or overflow. For a fallible constructor, use [`Kernel::try_new`].
     pub fn new(shape: KernelShape) -> Self {
-        match shape {
-            KernelShape::Box { size } => box_kernel(size),
-            KernelShape::Cross { size } => cross_kernel(size),
-            KernelShape::Ellipse { width, height } => ellipse_kernel(width, height),
+        Self::try_new(shape).expect("Invalid kernel length")
+    }
+
+    /// Check whether the kernel is valid (non-empty dimensions, matched data length,
+    /// and at least one active tap).
+    pub fn is_valid(&self) -> bool {
+        if self.width == 0 || self.height == 0 {
+            return false;
+        }
+        match self.width.checked_mul(self.height) {
+            Some(len) if len == self.data.len() => self.data.contains(&1),
+            _ => false,
         }
     }
 
@@ -101,6 +134,31 @@ impl Kernel {
     }
 }
 
+/// Fallibly create a box structuring element.
+///
+/// # Arguments
+///
+/// * `size` - The size of the kernel (size x size).
+///
+/// # Returns
+///
+/// A [`Kernel`] filled with 1s, or [`ImageError::InvalidKernelLength`] if `size == 0`
+/// or multiplication overflows.
+pub fn try_box_kernel(size: usize) -> Result<Kernel, ImageError> {
+    if size == 0 {
+        return Err(ImageError::InvalidKernelLength(size, size));
+    }
+    let len = size
+        .checked_mul(size)
+        .ok_or(ImageError::InvalidKernelLength(size, size))?;
+    let data = vec![1u8; len];
+    Ok(Kernel {
+        data,
+        width: size,
+        height: size,
+    })
+}
+
 /// Create a box structuring element.
 ///
 /// # Arguments
@@ -110,16 +168,15 @@ impl Kernel {
 /// # Returns
 ///
 /// A [`Kernel`] filled with 1s.
+///
+/// # Panics
+///
+/// Panics if `size == 0` or multiplication overflows. Use [`try_box_kernel`] for fallible creation.
 pub fn box_kernel(size: usize) -> Kernel {
-    let data = vec![1u8; size * size];
-    Kernel {
-        data,
-        width: size,
-        height: size,
-    }
+    try_box_kernel(size).expect("Invalid kernel length")
 }
 
-/// Create a cross structuring element.
+/// Fallibly create a cross structuring element.
 ///
 /// # Arguments
 ///
@@ -127,9 +184,16 @@ pub fn box_kernel(size: usize) -> Kernel {
 ///
 /// # Returns
 ///
-/// A [`Kernel`] with 1s along the horizontal and vertical center lines.
-pub fn cross_kernel(size: usize) -> Kernel {
-    let mut data = vec![0u8; size * size];
+/// A [`Kernel`] with 1s along the horizontal and vertical center lines,
+/// or [`ImageError::InvalidKernelLength`] if `size == 0` or multiplication overflows.
+pub fn try_cross_kernel(size: usize) -> Result<Kernel, ImageError> {
+    if size == 0 {
+        return Err(ImageError::InvalidKernelLength(size, size));
+    }
+    let len = size
+        .checked_mul(size)
+        .ok_or(ImageError::InvalidKernelLength(size, size))?;
+    let mut data = vec![0u8; len];
     let mid = size / 2;
 
     // fill horizontal line
@@ -142,14 +206,31 @@ pub fn cross_kernel(size: usize) -> Kernel {
         data[i * size + mid] = 1;
     }
 
-    Kernel {
+    Ok(Kernel {
         data,
         width: size,
         height: size,
-    }
+    })
 }
 
-/// Create an ellipse structuring element.
+/// Create a cross structuring element.
+///
+/// # Arguments
+///
+/// * `size` - The size of the kernel (size x size).
+///
+/// # Returns
+///
+/// A [`Kernel`] with 1s along the horizontal and vertical center lines.
+///
+/// # Panics
+///
+/// Panics if `size == 0` or multiplication overflows. Use [`try_cross_kernel`] for fallible creation.
+pub fn cross_kernel(size: usize) -> Kernel {
+    try_cross_kernel(size).expect("Invalid kernel length")
+}
+
+/// Fallibly create an ellipse structuring element.
 ///
 /// # Arguments
 ///
@@ -158,9 +239,28 @@ pub fn cross_kernel(size: usize) -> Kernel {
 ///
 /// # Returns
 ///
-/// A [`Kernel`] with 1s inside the ellipse boundary.
-pub fn ellipse_kernel(width: usize, height: usize) -> Kernel {
-    let mut data = vec![0u8; width * height];
+/// A [`Kernel`] with 1s inside the ellipse boundary, or [`ImageError::InvalidKernelLength`]
+/// if width or height is 0 or multiplication overflows.
+pub fn try_ellipse_kernel(width: usize, height: usize) -> Result<Kernel, ImageError> {
+    if width == 0 || height == 0 {
+        return Err(ImageError::InvalidKernelLength(width, height));
+    }
+    let len = width
+        .checked_mul(height)
+        .ok_or(ImageError::InvalidKernelLength(width, height))?;
+
+    let mut data = vec![0u8; len];
+
+    // Edge case: 1x1 ellipse acts as identity with a single active element
+    if width == 1 && height == 1 {
+        data[0] = 1;
+        return Ok(Kernel {
+            data,
+            width,
+            height,
+        });
+    }
+
     let cx = width as f32 / 2.0;
     let cy = height as f32 / 2.0;
     let rx = width as f32 / 2.0;
@@ -177,9 +277,34 @@ pub fn ellipse_kernel(width: usize, height: usize) -> Kernel {
         }
     }
 
-    Kernel {
+    // Ensure kernel has at least one active tap
+    if !data.contains(&1) {
+        let mid_y = height / 2;
+        let mid_x = width / 2;
+        data[mid_y * width + mid_x] = 1;
+    }
+
+    Ok(Kernel {
         data,
         width,
         height,
-    }
+    })
+}
+
+/// Create an ellipse structuring element.
+///
+/// # Arguments
+///
+/// * `width` - The width of the ellipse.
+/// * `height` - The height of the ellipse.
+///
+/// # Returns
+///
+/// A [`Kernel`] with 1s inside the ellipse boundary.
+///
+/// # Panics
+///
+/// Panics if width or height is 0 or multiplication overflows. Use [`try_ellipse_kernel`] for fallible creation.
+pub fn ellipse_kernel(width: usize, height: usize) -> Kernel {
+    try_ellipse_kernel(width, height).expect("Invalid kernel length")
 }

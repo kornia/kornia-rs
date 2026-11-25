@@ -3,6 +3,17 @@ use crate::padding::{spatial_padding, Padding2D, PaddingMode};
 use kornia_image::{Image, ImageError, ImageSize};
 use rayon::prelude::*;
 
+/// Validate that a morphological kernel has non-zero dimensions and at least one active tap.
+pub(crate) fn validate_kernel(kernel: &Kernel) -> Result<(), ImageError> {
+    if !kernel.is_valid() {
+        return Err(ImageError::InvalidKernelLength(
+            kernel.width(),
+            kernel.height(),
+        ));
+    }
+    Ok(())
+}
+
 /// Dilate an image using a [`Kernel`].
 ///
 /// Dilation expands white regions in the image. Each pixel is replaced
@@ -26,6 +37,7 @@ pub fn dilate<T: Copy + Default + Send + Sync + Ord + 'static, const C: usize>(
     padding_mode: PaddingMode,
     constant_value: [T; C],
 ) -> Result<(), ImageError> {
+    validate_kernel(kernel)?;
     // Device-resident operands route to the CUDA u8 kernel (bit-identical
     // output — min/max over the same tap multiset). Non-u8 device pairs and
     // mixed host/device pairs are typed errors; the CPU path below must
@@ -129,6 +141,7 @@ pub fn erode<T: Copy + Default + Send + Sync + Ord + 'static, const C: usize>(
     padding_mode: PaddingMode,
     constant_value: [T; C],
 ) -> Result<(), ImageError> {
+    validate_kernel(kernel)?;
     // See `dilate` — same device routing, min instead of max.
     #[cfg(feature = "cuda")]
     if crate::cuda::dispatch::is_device(src) || crate::cuda::dispatch::is_device(dst) {
@@ -268,7 +281,7 @@ pub fn close<T: Copy + Default + Send + Sync + Ord + 'static, const C: usize>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::morphology::kernels::KernelShape;
+    use crate::morphology::kernels::*;
 
     #[test]
     fn test_box_kernel() {
@@ -405,6 +418,191 @@ mod tests {
         );
         assert_eq!(result[6], 255);
         assert_eq!(result[18], 255);
+        Ok(())
+    }
+
+    #[test]
+    fn test_kernel_zero_sized_or_empty() {
+        assert!(matches!(
+            Kernel::try_new(KernelShape::Box { size: 0 }),
+            Err(ImageError::InvalidKernelLength(0, 0))
+        ));
+        assert!(matches!(
+            Kernel::try_new(KernelShape::Cross { size: 0 }),
+            Err(ImageError::InvalidKernelLength(0, 0))
+        ));
+        assert!(matches!(
+            Kernel::try_new(KernelShape::Ellipse {
+                width: 0,
+                height: 5
+            }),
+            Err(ImageError::InvalidKernelLength(0, 5))
+        ));
+        assert!(matches!(
+            Kernel::try_new(KernelShape::Ellipse {
+                width: 5,
+                height: 0
+            }),
+            Err(ImageError::InvalidKernelLength(5, 0))
+        ));
+        assert!(matches!(
+            try_box_kernel(0),
+            Err(ImageError::InvalidKernelLength(0, 0))
+        ));
+        assert!(matches!(
+            try_cross_kernel(0),
+            Err(ImageError::InvalidKernelLength(0, 0))
+        ));
+        assert!(matches!(
+            try_ellipse_kernel(0, 5),
+            Err(ImageError::InvalidKernelLength(0, 5))
+        ));
+        assert!(matches!(
+            try_ellipse_kernel(5, 0),
+            Err(ImageError::InvalidKernelLength(5, 0))
+        ));
+    }
+
+    #[test]
+    fn test_kernel_overflow() {
+        assert!(matches!(
+            Kernel::try_new(KernelShape::Box { size: usize::MAX }),
+            Err(ImageError::InvalidKernelLength(usize::MAX, usize::MAX))
+        ));
+        assert!(matches!(
+            Kernel::try_new(KernelShape::Ellipse {
+                width: usize::MAX,
+                height: 2
+            }),
+            Err(ImageError::InvalidKernelLength(usize::MAX, 2))
+        ));
+        assert!(matches!(
+            try_box_kernel(usize::MAX),
+            Err(ImageError::InvalidKernelLength(usize::MAX, usize::MAX))
+        ));
+        assert!(matches!(
+            try_ellipse_kernel(usize::MAX, 2),
+            Err(ImageError::InvalidKernelLength(usize::MAX, 2))
+        ));
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid kernel length")]
+    fn test_box_kernel_zero_panics() {
+        box_kernel(0);
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid kernel length")]
+    fn test_cross_kernel_zero_panics() {
+        cross_kernel(0);
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid kernel length")]
+    fn test_ellipse_kernel_zero_width_panics() {
+        ellipse_kernel(0, 5);
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid kernel length")]
+    fn test_ellipse_kernel_zero_height_panics() {
+        ellipse_kernel(5, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid kernel length")]
+    fn test_box_kernel_overflow_panics() {
+        box_kernel(usize::MAX);
+    }
+
+    #[test]
+    fn test_ellipse_kernel_1x1_identity() -> Result<(), ImageError> {
+        let kernel = Kernel::new(KernelShape::Ellipse {
+            width: 1,
+            height: 1,
+        });
+        assert_eq!(kernel.width(), 1);
+        assert_eq!(kernel.height(), 1);
+        assert_eq!(kernel.data(), &[1]);
+        assert_eq!(kernel.pad(), (0, 0));
+
+        let size = ImageSize {
+            width: 2,
+            height: 2,
+        };
+        let src = Image::new(size, vec![10u8, 20, 30, 40])?;
+        let mut dst_dilate = Image::new(size, vec![0u8; 4])?;
+        let mut dst_erode = Image::new(size, vec![0u8; 4])?;
+
+        dilate(&src, &mut dst_dilate, &kernel, PaddingMode::Constant, [0])?;
+        erode(&src, &mut dst_erode, &kernel, PaddingMode::Constant, [0])?;
+
+        assert_eq!(dst_dilate.as_slice(), src.as_slice());
+        assert_eq!(dst_erode.as_slice(), src.as_slice());
+        Ok(())
+    }
+
+    #[test]
+    fn test_dilate_erode_invalid_kernel() -> Result<(), ImageError> {
+        let size = ImageSize {
+            width: 3,
+            height: 3,
+        };
+        let src = Image::new(size, vec![255u8; 9])?;
+        let mut dst = Image::new(size, vec![0u8; 9])?;
+
+        // Zero-tap kernel with no active elements
+        let zero_tap_kernel = Kernel {
+            data: vec![0u8; 9],
+            width: 3,
+            height: 3,
+        };
+
+        assert!(matches!(
+            dilate(&src, &mut dst, &zero_tap_kernel, PaddingMode::Constant, [0]),
+            Err(ImageError::InvalidKernelLength(3, 3))
+        ));
+        assert!(matches!(
+            erode(&src, &mut dst, &zero_tap_kernel, PaddingMode::Constant, [0]),
+            Err(ImageError::InvalidKernelLength(3, 3))
+        ));
+        assert!(matches!(
+            open(&src, &mut dst, &zero_tap_kernel, PaddingMode::Constant, [0]),
+            Err(ImageError::InvalidKernelLength(3, 3))
+        ));
+        assert!(matches!(
+            close(&src, &mut dst, &zero_tap_kernel, PaddingMode::Constant, [0]),
+            Err(ImageError::InvalidKernelLength(3, 3))
+        ));
+
+        // Zero-sized kernel
+        let zero_sized_kernel = Kernel {
+            data: vec![],
+            width: 0,
+            height: 0,
+        };
+        assert!(matches!(
+            dilate(
+                &src,
+                &mut dst,
+                &zero_sized_kernel,
+                PaddingMode::Constant,
+                [0]
+            ),
+            Err(ImageError::InvalidKernelLength(0, 0))
+        ));
+        assert!(matches!(
+            erode(
+                &src,
+                &mut dst,
+                &zero_sized_kernel,
+                PaddingMode::Constant,
+                [0]
+            ),
+            Err(ImageError::InvalidKernelLength(0, 0))
+        ));
+
         Ok(())
     }
 }

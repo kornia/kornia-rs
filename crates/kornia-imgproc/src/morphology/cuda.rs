@@ -56,6 +56,7 @@ pub(super) fn morphology_device<T: 'static, const C: usize>(
     constant_value: [T; C],
     op: MorphOp,
 ) -> Result<(), ImageError> {
+    super::ops::validate_kernel(kernel)?;
     let op_name = match op {
         MorphOp::Dilate => "dilate",
         MorphOp::Erode => "erode",

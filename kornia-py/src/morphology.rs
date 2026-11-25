@@ -15,7 +15,7 @@ fn parse_kernel(shape: &str, size: (usize, usize)) -> PyResult<Kernel> {
                     "box kernel requires a square size",
                 ));
             }
-            Ok(Kernel::new(KernelShape::Box { size: w }))
+            Kernel::try_new(KernelShape::Box { size: w }).map_err(to_pyerr)
         }
         "cross" => {
             if h != w {
@@ -23,12 +23,13 @@ fn parse_kernel(shape: &str, size: (usize, usize)) -> PyResult<Kernel> {
                     "cross kernel requires a square size",
                 ));
             }
-            Ok(Kernel::new(KernelShape::Cross { size: w }))
+            Kernel::try_new(KernelShape::Cross { size: w }).map_err(to_pyerr)
         }
-        "ellipse" => Ok(Kernel::new(KernelShape::Ellipse {
+        "ellipse" => Kernel::try_new(KernelShape::Ellipse {
             width: w,
             height: h,
-        })),
+        })
+        .map_err(to_pyerr),
         other => Err(pyo3::exceptions::PyValueError::new_err(format!(
             "unknown kernel shape '{other}' (expected 'box', 'cross', or 'ellipse')"
         ))),
