@@ -1,5 +1,5 @@
 use super::so2::SO2F32;
-use super::so3::jacobian_coefficients_f32;
+use super::so3::{jacobian_coefficients_f32, JACOBIAN_TAYLOR_THRESHOLD_F32};
 use crate::{
     param::{Param, ParamError},
     Mat2F32, Mat3AF32, Vec2F32, Vec3AF32,
@@ -11,12 +11,6 @@ pub struct SE2F32 {
     pub r: SO2F32,
     pub t: Vec2F32,
 }
-
-/// Below this `|θ|` (0.1 rad, the cutoff of [`jacobian_coefficients_f32`]) the
-/// small-angle coefficients come from that helper's Taylor series: in f32,
-/// `1 − cos θ` and the Jacobians' `θ²`-scale numerators cancel to a few ulps
-/// or to 0 there.
-const TAYLOR_THRESHOLD: f32 = 0.1;
 
 impl SE2F32 {
     pub const IDENTITY: Self = Self {
@@ -117,6 +111,37 @@ impl SE2F32 {
         mat
     }
 
+    /// Exponential map: the pose for the tangent vector `v = (υ₁, υ₂, θ)`.
+    ///
+    /// The rotation is `θ` and the translation is `V(θ)·υ`, with
+    /// `V(θ) = [[sin θ/θ, −(1 − cos θ)/θ], [(1 − cos θ)/θ, sin θ/θ]]`. Below
+    /// `θ² = 1e-2` (`|θ| < 0.1` rad) the entries of `V(θ)` come from their
+    /// Taylor series, because `1 − cos θ` cancels in f32 there. At `θ = 0`,
+    /// `V` is the identity and the translation is `υ`.
+    ///
+    /// # Arguments
+    ///
+    /// * `v` - Tangent vector `(υ₁, υ₂, θ)`: the translation part, then the
+    ///   rotation angle in radians.
+    ///
+    /// # Returns
+    ///
+    /// The pose `exp(v)`.
+    ///
+    /// # Errors
+    ///
+    /// None. This function cannot fail.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_algebra::{SE2F32, Vec3AF32};
+    ///
+    /// let pose = SE2F32::exp(Vec3AF32::new(1.0, 2.0, 1e-4));
+    /// // V(θ) ≈ [[1, −θ/2], [θ/2, 1]] for small θ.
+    /// assert!((pose.t.x - 0.9999).abs() < 1e-6);
+    /// assert!((pose.t.y - 2.00005).abs() < 1e-6);
+    /// ```
     pub fn exp(v: Vec3AF32) -> Self {
         let theta = v.z;
         let so2 = SO2F32::exp(theta);
@@ -124,26 +149,57 @@ impl SE2F32 {
         Self {
             r: so2,
             t: {
-                let (a, b) = if theta.abs() < TAYLOR_THRESHOLD {
-                    Self::sc(theta)
-                } else {
-                    (so2.z.y / theta, (1.0 - so2.z.x) / theta)
+                // a = sin θ/θ, b = (1 − cos θ)/θ
+                let (a, b) = match Self::small_angle_coefficients(theta) {
+                    Some((a, b, _, _)) => (a, b),
+                    None => (so2.z.y / theta, (1.0 - so2.z.x) / theta),
                 };
                 Vec2F32::new(a * v.x - b * v.y, b * v.x + a * v.y)
             },
         }
     }
 
+    /// Logarithm map: the tangent vector `(υ₁, υ₂, θ)` of this pose, the
+    /// inverse of [`SE2F32::exp`].
+    ///
+    /// `θ` is the rotation angle and `υ = V(θ)⁻¹·t`, with `V(θ)` as in
+    /// [`SE2F32::exp`]. Below `θ² = 1e-2` (`|θ| < 0.1` rad) the entries of
+    /// `V(θ)` come from their Taylor series. At `θ = 0`, `υ = t`.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The pose.
+    ///
+    /// # Returns
+    ///
+    /// The tangent vector `(υ₁, υ₂, θ)`, with `θ` in radians in `(−π, π]`.
+    ///
+    /// # Errors
+    ///
+    /// None. This function cannot fail.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_algebra::{SE2F32, Vec3AF32};
+    ///
+    /// let v = Vec3AF32::new(1.0, 2.0, 0.5);
+    /// let back = SE2F32::exp(v).log();
+    /// assert!((back.x - v.x).abs() < 1e-6);
+    /// assert!((back.y - v.y).abs() < 1e-6);
+    /// assert!((back.z - v.z).abs() < 1e-6);
+    /// ```
     pub fn log(&self) -> Vec3AF32 {
         let theta = self.r.log();
 
-        // a = sinθ / θ, b = (1 − cosθ) / θ
-        let (a, b) = if theta.abs() < TAYLOR_THRESHOLD {
-            Self::sc(theta)
-        } else {
-            let sin_t = self.r.z.y; // sin θ
-            let cos_t = self.r.z.x; // cos θ
-            (sin_t / theta, (1.0 - cos_t) / theta)
+        // a = sin θ/θ, b = (1 − cos θ)/θ
+        let (a, b) = match Self::small_angle_coefficients(theta) {
+            Some((a, b, _, _)) => (a, b),
+            None => {
+                let sin_t = self.r.z.y; // sin θ
+                let cos_t = self.r.z.x; // cos θ
+                (sin_t / theta, (1.0 - cos_t) / theta)
+            }
         };
         let denom = a * a + b * b; // det(V)
 
@@ -182,49 +238,81 @@ impl SE2F32 {
         )
     }
 
-    /// `(sin θ / θ, (1 − cos θ) / θ)`, the entries of `V(θ)` in `exp`, `log`
-    /// and the Jacobians. Below [`TAYLOR_THRESHOLD`] they are formed from the
-    /// series `u = (1 − cos θ)/θ²` and `b = (θ − sin θ)/θ³` as `1 − θ²·b` and `θ·u`.
+    /// Small-angle coefficients `(sin θ/θ, (1 − cos θ)/θ, u, w)`, with
+    /// `u = (1 − cos θ)/θ²` and `w = (θ − sin θ)/θ²`, or `None` when `θ²` is
+    /// at or above [`JACOBIAN_TAYLOR_THRESHOLD_F32`] (`|θ| ≥ 0.1` rad).
+    ///
+    /// Below that cutoff, `1 − cos θ` and the Jacobians' `θ²`-scale numerators
+    /// cancel in f32, so all four are built from the Taylor series of
+    /// [`jacobian_coefficients_f32`], `u` and `v = (θ − sin θ)/θ³`, as
+    /// `1 − θ²·v`, `θ·u`, `u` and `θ·v`. Testing the same constant as that
+    /// helper keeps these callers on its series wherever it uses one.
     #[inline]
-    fn sc(theta: f32) -> (f32, f32) {
-        if theta.abs() < TAYLOR_THRESHOLD {
-            let t2 = theta * theta;
-            let (u, b) = jacobian_coefficients_f32(t2);
-            (1.0 - t2 * b, theta * u)
+    fn small_angle_coefficients(theta: f32) -> Option<(f32, f32, f32, f32)> {
+        let theta2 = theta * theta;
+        if theta2 < JACOBIAN_TAYLOR_THRESHOLD_F32 {
+            let (u, v) = jacobian_coefficients_f32(theta2);
+            Some((1.0 - theta2 * v, theta * u, u, theta * v))
         } else {
-            let s = theta.sin() / theta;
-            let c = (1.0 - theta.cos()) / theta;
-            (s, c)
+            None
         }
     }
 
+    /// Right Jacobian of SE(2) at the tangent vector `v = (p₁, p₂, θ)`:
+    ///
     /// JR(θ, v) =
     /// ┌                                              `                                      ┐
     /// │   sin(θ)/θ         (1 - cos(θ))/θ       (θ·p₁ - p₂ + p₂·cos(θ) - p₁·sin(θ))/θ²      │
     /// │  (cos(θ) - 1)/θ       sin(θ)/θ         (p₁ + θ·p₂ - p₁·cos(θ) - p₂·sin(θ))/θ²       │
     /// │       0                  0                                1                         │
     /// └                                                                                     ┘
-    /// ref: https://arxiv.org/pdf/1812.01537 (eq 163)
+    /// ref: <https://arxiv.org/pdf/1812.01537> (eq 163)
+    ///
+    /// Below `θ² = 1e-2` (`|θ| < 0.1` rad) every entry that depends on `θ` is
+    /// built from Taylor series, because the closed forms cancel in f32 there.
+    /// At `θ = 0` the third column is `[−p₂/2, p₁/2, 1]`.
+    ///
+    /// # Arguments
+    ///
+    /// * `v` - Tangent vector `(p₁, p₂, θ)`: the translation part, then the
+    ///   rotation angle in radians.
+    ///
+    /// # Returns
+    ///
+    /// The 3x3 matrix `JR(v)`.
+    ///
+    /// # Errors
+    ///
+    /// None. This function cannot fail.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_algebra::{SE2F32, Vec3AF32};
+    ///
+    /// let jr = SE2F32::right_jacobian(Vec3AF32::new(1.0, 2.0, 0.0));
+    /// let col = jr.col(2);
+    /// assert_eq!((col.x, col.y, col.z), (-1.0, 0.5, 1.0));
+    /// ```
     pub fn right_jacobian(v: Vec3AF32) -> Mat3AF32 {
         let theta = v.z;
-        let (s, c) = Self::sc(theta);
         let p1 = v.x;
         let p2 = v.y;
 
-        let (third_col_x, third_col_y) = if theta.abs() < TAYLOR_THRESHOLD {
-            // u = (1 − cos θ)/θ², w = (θ − sin θ)/θ², from their Taylor series;
-            // the limit as theta -> 0 is [-p2/2, p1/2].
-            let (u, b) = jacobian_coefficients_f32(theta * theta);
-            let w = theta * b;
-            (-p2 * u + p1 * w, p1 * u + p2 * w)
-        } else {
-            let theta_sq = theta * theta;
-            let sin_t = theta.sin();
-            let cos_t = theta.cos();
-            (
-                (theta * p1 - p2 + p2 * cos_t - p1 * sin_t) / theta_sq,
-                (p1 + theta * p2 - p1 * cos_t - p2 * sin_t) / theta_sq,
-            )
+        let (s, c, third_col_x, third_col_y) = match Self::small_angle_coefficients(theta) {
+            // The third column tends to [-p2/2, p1/2] as theta -> 0.
+            Some((s, c, u, w)) => (s, c, -p2 * u + p1 * w, p1 * u + p2 * w),
+            None => {
+                let theta_sq = theta * theta;
+                let sin_t = theta.sin();
+                let cos_t = theta.cos();
+                (
+                    sin_t / theta,
+                    (1.0 - cos_t) / theta,
+                    (theta * p1 - p2 + p2 * cos_t - p1 * sin_t) / theta_sq,
+                    (p1 + theta * p2 - p1 * cos_t - p2 * sin_t) / theta_sq,
+                )
+            }
         };
 
         Mat3AF32::from_cols(
@@ -234,33 +322,61 @@ impl SE2F32 {
         )
     }
 
+    /// Left Jacobian of SE(2) at the tangent vector `v = (p₁, p₂, θ)`:
+    ///
     /// JL(θ, v) =
     /// ┌                                                                                    ┐
     /// │   sin(θ)/θ         (cos(θ) - 1)/θ       (θ·p₁ + p₂ - p₂·cos(θ) - p₁·sin(θ))/θ²     │
     /// │  (1 - cos(θ))/θ       sin(θ)/θ         (-p₁ + θ·p₂ + p₁·cos(θ) - p₂·sin(θ))/θ²     │
     /// │       0                  0                                1                        │
     /// └                                                                                    ┘
-    /// ref: https://arxiv.org/pdf/1812.01537 (eq 164)
+    /// ref: <https://arxiv.org/pdf/1812.01537> (eq 164)
+    ///
+    /// Below `θ² = 1e-2` (`|θ| < 0.1` rad) every entry that depends on `θ` is
+    /// built from Taylor series, because the closed forms cancel in f32 there.
+    /// At `θ = 0` the third column is `[p₂/2, −p₁/2, 1]`.
+    ///
+    /// # Arguments
+    ///
+    /// * `v` - Tangent vector `(p₁, p₂, θ)`: the translation part, then the
+    ///   rotation angle in radians.
+    ///
+    /// # Returns
+    ///
+    /// The 3x3 matrix `JL(v)`.
+    ///
+    /// # Errors
+    ///
+    /// None. This function cannot fail.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_algebra::{SE2F32, Vec3AF32};
+    ///
+    /// let jl = SE2F32::left_jacobian(Vec3AF32::new(1.0, 2.0, 0.0));
+    /// let col = jl.col(2);
+    /// assert_eq!((col.x, col.y, col.z), (1.0, -0.5, 1.0));
+    /// ```
     pub fn left_jacobian(v: Vec3AF32) -> Mat3AF32 {
         let theta = v.z;
-        let (s, c) = Self::sc(theta);
         let p1 = v.x;
         let p2 = v.y;
 
-        let (third_col_x, third_col_y) = if theta.abs() < TAYLOR_THRESHOLD {
-            // u = (1 − cos θ)/θ², w = (θ − sin θ)/θ², from their Taylor series;
-            // the limit as theta -> 0 is [p2/2, -p1/2].
-            let (u, b) = jacobian_coefficients_f32(theta * theta);
-            let w = theta * b;
-            (p2 * u + p1 * w, -p1 * u + p2 * w)
-        } else {
-            let theta_sq = theta * theta;
-            let sin_t = theta.sin();
-            let cos_t = theta.cos();
-            (
-                (theta * p1 + p2 - p2 * cos_t - p1 * sin_t) / theta_sq,
-                (-p1 + theta * p2 + p1 * cos_t - p2 * sin_t) / theta_sq,
-            )
+        let (s, c, third_col_x, third_col_y) = match Self::small_angle_coefficients(theta) {
+            // The third column tends to [p2/2, -p1/2] as theta -> 0.
+            Some((s, c, u, w)) => (s, c, p2 * u + p1 * w, -p1 * u + p2 * w),
+            None => {
+                let theta_sq = theta * theta;
+                let sin_t = theta.sin();
+                let cos_t = theta.cos();
+                (
+                    sin_t / theta,
+                    (1.0 - cos_t) / theta,
+                    (theta * p1 + p2 - p2 * cos_t - p1 * sin_t) / theta_sq,
+                    (-p1 + theta * p2 + p1 * cos_t - p2 * sin_t) / theta_sq,
+                )
+            }
         };
         Mat3AF32::from_cols(
             Vec3AF32::new(s, c, 0.0),
@@ -981,9 +1097,10 @@ mod tests {
         }
     }
 
-    /// f64 reference for `exp`'s `V(θ)` entries and the Jacobians' third
+    /// f64 reference for `V(θ)·(p1, p2)` (the `exp` translation), the
+    /// `V(θ)` entries `(sin θ/θ, (1 − cos θ)/θ)` and the Jacobians' third
     /// column: Taylor series below 1e-2 (truncation < 1e-14), closed form above.
-    fn small_angle_reference(t: f64, p1: f64, p2: f64) -> ((f64, f64), [f64; 4]) {
+    fn small_angle_reference(t: f64, p1: f64, p2: f64) -> ((f64, f64), (f64, f64), [f64; 4]) {
         let (s, c, u, w) = if t.abs() < 1e-2 {
             let t2 = t * t;
             (
@@ -1003,6 +1120,7 @@ mod tests {
         };
         (
             (s * p1 - c * p2, c * p1 + s * p2),
+            (s, c),
             [
                 -p2 * u + p1 * w, // right Jacobian, third column
                 p1 * u + p2 * w,
@@ -1013,7 +1131,8 @@ mod tests {
     }
 
     /// In f32, `1 − cos θ` cancels to 0 below ~3e-4 rad, so `exp` and `log`
-    /// lost the `(1 − cos θ)/θ` entry of `V(θ)`, and the Jacobians' third
+    /// lost the `(1 − cos θ)/θ` entry of `V(θ)` (so did the Jacobians' 2x2
+    /// block, from the old `sc` below 1e-6 and cancellation above), and their third
     /// column (θ²-scale numerators over θ²) blew up just above their old 1e-6
     /// limit branch, which itself returned [p2, -p1] instead of [∓p2/2, ±p1/2].
     #[test]
@@ -1022,7 +1141,7 @@ mod tests {
         for theta in [
             0.0f64, 1e-7, -1e-7, 1e-6, 1e-5, -1e-5, 1e-4, 3e-4, 1e-3, -1e-3, 1e-2, 5e-2, 0.099,
         ] {
-            let ((tx, ty), jac) = small_angle_reference(theta, p1, p2);
+            let ((tx, ty), (s, c), jac) = small_angle_reference(theta, p1, p2);
             let v = Vec3AF32::new(p1 as f32, p2 as f32, theta as f32);
 
             let t = SE2F32::exp(v).t;
@@ -1042,13 +1161,23 @@ mod tests {
                 "log, theta = {theta:e}: {l:?}"
             );
 
-            let jr = SE2F32::right_jacobian(v).col(2);
-            let jl = SE2F32::left_jacobian(v).col(2);
+            let jr = SE2F32::right_jacobian(v);
+            let jl = SE2F32::left_jacobian(v);
             for (got, want, name) in [
-                (jr.x, jac[0], "right x"),
-                (jr.y, jac[1], "right y"),
-                (jl.x, jac[2], "left x"),
-                (jl.y, jac[3], "left y"),
+                // 2x2 block: right [[s, c], [-c, s]], left [[s, -c], [c, s]]
+                (jr.col(0).x, s, "right [0,0]"),
+                (jr.col(0).y, -c, "right [1,0]"),
+                (jr.col(1).x, c, "right [0,1]"),
+                (jr.col(1).y, s, "right [1,1]"),
+                (jl.col(0).x, s, "left [0,0]"),
+                (jl.col(0).y, c, "left [1,0]"),
+                (jl.col(1).x, -c, "left [0,1]"),
+                (jl.col(1).y, s, "left [1,1]"),
+                // third column
+                (jr.col(2).x, jac[0], "right x"),
+                (jr.col(2).y, jac[1], "right y"),
+                (jl.col(2).x, jac[2], "left x"),
+                (jl.col(2).y, jac[3], "left y"),
             ] {
                 assert!(
                     (got as f64 - want).abs() < 1e-6,
