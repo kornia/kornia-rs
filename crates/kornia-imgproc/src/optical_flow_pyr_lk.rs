@@ -37,6 +37,10 @@ pub enum BorderMode {
     /// Tracks are lost past the same limit as [`BorderMode::Clamp`].
     Mirror,
     /// Reject points that fall outside the image border.
+    ///
+    /// The whole window must stay inside the level. As with the other modes,
+    /// a point that leaves a coarser pyramid level skips the rest of that
+    /// level and is lost only at level 0.
     Reject,
 }
 
@@ -49,8 +53,8 @@ pub struct PyrLKParams {
     pub win_size: usize,
     /// Maximum pyramid level (0 means single-scale tracking).
     ///
-    /// Levels smaller than the window in either axis are not tracked on, as in
-    /// `cv::buildOpticalFlowPyramid`, so small images may use fewer levels.
+    /// Levels no larger than the window in either axis are not tracked on, as
+    /// in `cv::buildOpticalFlowPyramid`, so small images may use fewer levels.
     pub max_level: usize,
     /// Maximum Gauss-Newton iterations per pyramid level.
     pub max_iter: usize,
@@ -1227,11 +1231,11 @@ fn track_feature(
     initial_flow: Option<[f32; 2]>,
     precomputed: &PyrLKPrecomputed,
     params: &PyrLKParams,
+    max_level: usize,
 ) -> Option<([f32; 2], f32)> {
     const WIN_SIZE: usize = 21;
     const HALF_WIN: i32 = 10;
     const WIN_PIXELS: usize = WIN_SIZE * WIN_SIZE;
-    let max_level = max_trackable_level(precomputed, params.max_level);
 
     let initial_scale = 1.0 / 2.0_f32.powi(max_level as i32);
     let mut dx = initial_flow.map_or(0.0, |d| d[0] * initial_scale);
@@ -1266,7 +1270,10 @@ fn track_feature(
                 && xc < (prev.cols() as f32 - hw)
                 && yc < (prev.rows() as f32 - hw))
         {
-            return None;
+            if lvl == 0 {
+                return None;
+            }
+            continue;
         }
         // OpenCV's lost-point rule: at a coarser level the point skips this
         // level and keeps its estimate; at level 0 it is lost.
@@ -1358,7 +1365,10 @@ fn track_feature(
                     && xnc < (next.cols() as f32 - hw)
                     && ync < (next.rows() as f32 - hw))
             {
-                return None;
+                if lvl == 0 {
+                    return None;
+                }
+                break;
             }
             if !window_overlaps_level(xnc, ync, next.cols(), next.rows()) {
                 if lvl == 0 {
@@ -1610,6 +1620,7 @@ pub fn calc_optical_flow_pyr_lk_with_precomputed(
     let mut next_pts = vec![[0.0f32; 2]; n_features];
     let mut status = vec![0u8; n_features];
     let mut error = vec![0.0f32; n_features];
+    let max_level = max_trackable_level(precomputed, params.max_level);
 
     next_pts
         .par_iter_mut()
@@ -1627,7 +1638,9 @@ pub fn calc_optical_flow_pyr_lk_with_precomputed(
             } else {
                 None
             };
-            if let Some((np, e)) = track_feature(prev_pts[i], initial_flow, precomputed, params) {
+            if let Some((np, e)) =
+                track_feature(prev_pts[i], initial_flow, precomputed, params, max_level)
+            {
                 *next_pt = np;
                 *st = 1;
                 *err = e;
@@ -1788,7 +1801,16 @@ mod tests {
     /// the same u8 image: `2 tri(3x + 2y, 40) + 2 tri(x - 4y + 7, 33) +
     /// tri(5x + y, 57)` at `(x - sx, y - sy)`, `tri(t, p) = |t mod 2p - p|`.
     fn opencv_parity_image(sx: i64, sy: i64) -> Result<Image<f32, 1>, PyrLKError> {
-        let (w, h) = (96usize, 72usize);
+        tri_texture_image(96, 72, sx, sy)
+    }
+
+    /// The texture of [`opencv_parity_image`] on a `w` x `h` image.
+    fn tri_texture_image(
+        w: usize,
+        h: usize,
+        sx: i64,
+        sy: i64,
+    ) -> Result<Image<f32, 1>, PyrLKError> {
         let tri = |t: i64, p: i64| (t.rem_euclid(2 * p) - p).abs();
         let data = (0..w * h)
             .map(|i| {
@@ -1956,6 +1978,86 @@ mod tests {
         assert_eq!(a.next_pts, b.next_pts);
         assert_eq!(a.status, b.status);
         assert_eq!(a.error, b.error);
+        Ok(())
+    }
+
+    /// Side of the square image for the `BorderMode::Reject` tests. Its level 2
+    /// (32x32) is larger than the 21x21 window, so `max_level: 2` tracks on it.
+    const REJECT_IMAGE_SIDE: usize = 128;
+    /// Largest distance from the true position for the Reject tracks
+    /// (measured: under 0.0001 px).
+    const REJECT_TOL_PX: f32 = 0.01;
+
+    /// Tracks `start` with `BorderMode::Reject` and `max_level: 2` on a
+    /// [`REJECT_IMAGE_SIDE`] pair whose content moves by `shift`, and checks it
+    /// against the true motion. `start` and its true end are at least 17 px
+    /// from every border, so their windows fit at level 0.
+    fn assert_reject_tracks(start: [f32; 2], shift: [i64; 2]) -> Result<(), PyrLKError> {
+        let side = REJECT_IMAGE_SIDE;
+        let prev = tri_texture_image(side, side, 0, 0)?;
+        let next = tri_texture_image(side, side, shift[0], shift[1])?;
+        let params = PyrLKParams {
+            max_level: 2,
+            border_mode: BorderMode::Reject,
+            ..PyrLKParams::default()
+        };
+        let res = calc_optical_flow_pyr_lk(&prev, &next, &[start], None, &params)?;
+        let want = [start[0] + shift[0] as f32, start[1] + shift[1] as f32];
+        let got = res.next_pts[0];
+        assert_eq!(res.status[0], 1, "{start:?} lost");
+        let d = (got[0] - want[0]).hypot(got[1] - want[1]);
+        assert!(d <= REJECT_TOL_PX, "{start:?}: {got:?} vs {want:?}");
+        Ok(())
+    }
+
+    /// With `BorderMode::Reject`, a start whose window is not inside a coarser
+    /// level skips that level instead of being lost: x = 25 is x = 6.25 on
+    /// level 2, inside the 10 px margin. The motion is to the right, so the
+    /// track stays clear of the margin on levels 1 and 0.
+    #[test]
+    fn reject_start_in_coarse_margin_skips_level() -> Result<(), PyrLKError> {
+        assert_reject_tracks([25.0, 64.0], [8, 0])
+    }
+
+    /// With `BorderMode::Reject`, a track that moves into a coarser level's
+    /// margin while iterating stops iterating on that level instead of being
+    /// lost: x = 44 is x = 11 on level 2 and moves 2 px left, past x = 10.
+    /// Every start window is inside its level, so only the check made while
+    /// iterating is exercised.
+    #[test]
+    fn reject_track_into_coarse_margin_stops_level() -> Result<(), PyrLKError> {
+        assert_reject_tracks([44.0, 64.0], [-8, 0])
+    }
+
+    /// A NaN point or a NaN initial guess is lost in every border mode,
+    /// instead of coming back as a NaN position with status 1.
+    #[test]
+    fn nan_point_or_guess_is_lost() -> Result<(), PyrLKError> {
+        let prev = opencv_parity_image(0, 0)?;
+        let next = opencv_parity_image(2, -1)?;
+        let interior = [47.5, 36.5];
+        let nan = [f32::NAN, f32::NAN];
+        for border_mode in [BorderMode::Clamp, BorderMode::Mirror, BorderMode::Reject] {
+            for use_initial_flow in [false, true] {
+                let params = PyrLKParams {
+                    use_initial_flow,
+                    border_mode,
+                    ..PyrLKParams::default()
+                };
+                let (start, guess) = if use_initial_flow {
+                    (interior, nan)
+                } else {
+                    ([f32::NAN, interior[1]], interior)
+                };
+                let res =
+                    calc_optical_flow_pyr_lk(&prev, &next, &[start], Some(&[guess]), &params)?;
+                assert_eq!(
+                    res.status[0], 0,
+                    "{border_mode:?}, start {start:?}, guess {guess:?}: tracked to {:?}",
+                    res.next_pts[0]
+                );
+            }
+        }
         Ok(())
     }
 
