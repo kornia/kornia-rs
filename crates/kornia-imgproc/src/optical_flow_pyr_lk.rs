@@ -1423,6 +1423,14 @@ fn track_feature(
         if lvl == 0 {
             let ex = pt[0] + dx;
             let ey = pt[1] + dy;
+            if params.border_mode == BorderMode::Reject
+                && !(ex >= hw
+                    && ey >= hw
+                    && ex < (next.cols() as f32 - hw)
+                    && ey < (next.rows() as f32 - hw))
+            {
+                return None;
+            }
             if !window_overlaps_level(ex, ey, next.cols(), next.rows()) {
                 return None;
             }
@@ -2027,6 +2035,29 @@ mod tests {
     #[test]
     fn reject_track_into_coarse_margin_stops_level() -> Result<(), PyrLKError> {
         assert_reject_tracks([44.0, 64.0], [-8, 0])
+    }
+
+    /// With `BorderMode::Reject`, the final position also needs its whole
+    /// window inside the image. With no iterations, the result is the initial
+    /// guess: x = 9 puts the window's left edge at x = -1 (lost), x = 33
+    /// keeps it inside (tracked).
+    #[test]
+    fn reject_final_window_outside_image_is_lost() -> Result<(), PyrLKError> {
+        let side = REJECT_IMAGE_SIDE;
+        let prev = tri_texture_image(side, side, 0, 0)?;
+        let next = tri_texture_image(side, side, 8, 0)?;
+        let params = PyrLKParams {
+            max_level: 2,
+            max_iter: 0,
+            use_initial_flow: true,
+            border_mode: BorderMode::Reject,
+            ..PyrLKParams::default()
+        };
+        let start = [[25.0, 64.0], [25.0, 64.0]];
+        let guess = [[9.0, 64.0], [33.0, 64.0]];
+        let res = calc_optical_flow_pyr_lk(&prev, &next, &start, Some(&guess), &params)?;
+        assert_eq!(res.status, vec![0, 1], "tracked to {:?}", res.next_pts);
+        Ok(())
     }
 
     /// A NaN point or a NaN initial guess is lost in every border mode,
