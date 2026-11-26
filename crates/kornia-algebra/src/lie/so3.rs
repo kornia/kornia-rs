@@ -177,8 +177,8 @@ impl SO3F32 {
     ///
     /// For any finite, non-zero quaternion, the calculated angle is invariant under common non-zero
     /// rescaling, provided the scaled quaternion remains finite and non-zero. Components are
-    /// scaled by their maximum magnitude before computing the vector norm, avoiding intermediate
-    /// overflow or underflow even at extreme magnitudes.
+    /// scaled by their maximum magnitude and the vector norm is computed via `hypot`, avoiding
+    /// intermediate overflow or underflow even at extreme or mixed magnitudes.
     ///
     /// Uses the numerically stable quaternion-based formula:
     /// `2.0 * atan2(|v|, |w|)`, where `v` is the quaternion's vector part and `w` is its scalar part.
@@ -231,7 +231,7 @@ impl SO3F32 {
         let zs = self.q.z / m;
         let ws = self.q.w / m;
 
-        let v_norm = (xs * xs + ys * ys + zs * zs).sqrt();
+        let v_norm = xs.hypot(ys).hypot(zs);
         2.0 * v_norm.atan2(ws.abs())
     }
 
@@ -559,8 +559,8 @@ impl SO3F64 {
     ///
     /// For any finite, non-zero quaternion, the calculated angle is invariant under common non-zero
     /// rescaling, provided the scaled quaternion remains finite and non-zero. Components are
-    /// scaled by their maximum magnitude before computing the vector norm, avoiding intermediate
-    /// overflow or underflow even at extreme magnitudes.
+    /// scaled by their maximum magnitude and the vector norm is computed via `hypot`, avoiding
+    /// intermediate overflow or underflow even at extreme or mixed magnitudes.
     ///
     /// Uses the numerically stable quaternion-based formula:
     /// `2.0 * atan2(|v|, |w|)`, where `v` is the quaternion's vector part and `w` is its scalar part.
@@ -613,7 +613,7 @@ impl SO3F64 {
         let zs = self.q.z / m;
         let ws = self.q.w / m;
 
-        let v_norm = (xs * xs + ys * ys + zs * zs).sqrt();
+        let v_norm = xs.hypot(ys).hypot(zs);
         2.0 * v_norm.atan2(ws.abs())
     }
 
@@ -1397,6 +1397,29 @@ mod tests {
     }
 
     #[test]
+    fn angle_mixed_magnitudes() {
+        // When vector components are tiny compared to the scalar component, squaring them
+        // naively in f32 would underflow to zero (< 1e-38). Using hypot preserves the norm.
+        let rot_tiny_x = SO3F32 {
+            q: QuatF32::from_xyzw(1e-30, 0.0, 0.0, 1.0),
+        };
+        let expected_tiny_x: f32 = 2e-30;
+        assert!(
+            ((rot_tiny_x.angle() - expected_tiny_x) / expected_tiny_x).abs() < 1e-6,
+            "failed for single tiny component"
+        );
+
+        let rot_tiny_xyz = SO3F32 {
+            q: QuatF32::from_xyzw(1e-30, 2e-30, -2e-30, 1.0),
+        };
+        let expected_tiny_xyz: f32 = 6e-30;
+        assert!(
+            ((rot_tiny_xyz.angle() - expected_tiny_xyz) / expected_tiny_xyz).abs() < 1e-6,
+            "failed for multiple tiny components"
+        );
+    }
+
+    #[test]
     fn angle_non_finite_quaternion_returns_nan() {
         let rot_inf = SO3F32 {
             q: QuatF32::from_xyzw(f32::INFINITY, 0.0, 0.0, 1.0),
@@ -1642,6 +1665,29 @@ mod tests_f64 {
             q: QuatF64::from_xyzw(1e-315, 0.0, 0.0, 1e-315),
         };
         assert!((rot_subnormal.angle() - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+    }
+
+    #[test]
+    fn angle_mixed_magnitudes() {
+        // When vector components are tiny compared to the scalar component, squaring them
+        // naively in f64 would underflow to zero (< 1e-308). Using hypot preserves the norm.
+        let rot_tiny_x = SO3F64 {
+            q: QuatF64::from_xyzw(1e-200, 0.0, 0.0, 1.0),
+        };
+        let expected_tiny_x = 2e-200;
+        assert!(
+            ((rot_tiny_x.angle() - expected_tiny_x) / expected_tiny_x).abs() < 1e-12,
+            "failed for single tiny component"
+        );
+
+        let rot_tiny_xyz = SO3F64 {
+            q: QuatF64::from_xyzw(1e-200, 2e-200, -2e-200, 1.0),
+        };
+        let expected_tiny_xyz = 6e-200;
+        assert!(
+            ((rot_tiny_xyz.angle() - expected_tiny_xyz) / expected_tiny_xyz).abs() < 1e-12,
+            "failed for multiple tiny components"
+        );
     }
 
     #[test]
