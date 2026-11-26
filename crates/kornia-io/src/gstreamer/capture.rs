@@ -119,8 +119,8 @@ pub struct StreamCapture {
     appsink: gstreamer_app::AppSink,
     /// End-of-stream and errors seen on the bus, updated by its sync handler.
     status: Arc<Mutex<StreamStatus>>,
-    /// Serialize seeks without blocking the bus handler on the status lock.
-    seek_lock: Mutex<()>,
+    /// Serialize start, close and seeks without blocking the bus handler on the status lock.
+    lifecycle_lock: Mutex<()>,
 }
 
 impl StreamCapture {
@@ -200,7 +200,7 @@ impl StreamCapture {
             bus,
             appsink,
             status,
-            seek_lock: Mutex::new(()),
+            lifecycle_lock: Mutex::new(()),
         })
     }
 
@@ -309,6 +309,10 @@ impl StreamCapture {
 
     /// Starts the stream capture pipeline and processes messages on the bus.
     pub fn start(&self) -> Result<(), StreamCaptureError> {
+        let _lifecycle = self
+            .lifecycle_lock
+            .lock()
+            .map_err(|_| StreamCaptureError::MutexPoisonError)?;
         self.drain_bus();
         // Starting a stopped pipeline begins a fresh run, so its previous terminal state is
         // discarded. Resuming a PLAYING/PAUSED one keeps it: a pipeline that already reached
@@ -554,8 +558,13 @@ impl StreamCapture {
     ///
     /// # Errors
     ///
-    /// Returns an error if EOS is rejected, finalization times out, or a state change fails.
+    /// Returns an error if EOS is rejected, finalization times out, a state change fails,
+    /// or the lifecycle lock is poisoned.
     pub fn close(&self) -> Result<(), StreamCaptureError> {
+        let _lifecycle = self
+            .lifecycle_lock
+            .lock()
+            .map_err(|_| StreamCaptureError::MutexPoisonError)?;
         let (_, current, pending) = self.pipeline.state(gstreamer::ClockTime::ZERO);
         if current == gstreamer::State::Null && pending == gstreamer::State::VoidPending {
             return Ok(());
@@ -668,8 +677,8 @@ impl StreamCapture {
             )
             .into());
         }
-        let _seek = self
-            .seek_lock
+        let _lifecycle = self
+            .lifecycle_lock
             .lock()
             .map_err(|_| StreamCaptureError::MutexPoisonError)?;
         let event = gstreamer::event::Seek::new(
