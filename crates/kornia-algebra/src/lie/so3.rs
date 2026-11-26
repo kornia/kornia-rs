@@ -169,6 +169,49 @@ impl SO3F32 {
         }
     }
 
+    /// Return the rotation angle in radians.
+    ///
+    /// Computes the shortest rotation angle corresponding to this rotation element.
+    /// The returned angle is in radians and belongs to `[0, π]` for any non-zero quaternion.
+    /// Scaling a non-zero quaternion does not change the calculated angle.
+    /// The zero quaternion is excluded because it does not represent a valid rotation.
+    ///
+    /// Uses the numerically stable quaternion-based formula:
+    /// `2.0 * atan2(|v|, |w|)`, where `v` is the quaternion's vector part and `w` is its scalar part.
+    /// This formulation naturally accounts for quaternion double-cover (`q` and `-q`).
+    /// When comparing against the identity rotation, this directly matches the geodesic
+    /// distance formula implemented in Eigen's [`QuaternionBase::angularDistance()`](https://gitlab.com/libeigen/eigen/-/blob/master/Eigen/src/Geometry/Quaternion.h)
+    /// (`2 * atan2(d.vec().norm(), abs(d.w()))`).
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The rotation represented by a non-zero quaternion.
+    ///
+    /// # Returns
+    ///
+    /// The shortest rotation angle in radians, in the range `[0, π]`.
+    ///
+    /// # Errors
+    ///
+    /// This method does not return an error.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use kornia_algebra::{SO3F32, Vec3AF32};
+    ///
+    /// let rot = SO3F32::IDENTITY;
+    /// assert_eq!(rot.angle(), 0.0);
+    ///
+    /// let rot_90 = SO3F32::exp(Vec3AF32::new(std::f32::consts::FRAC_PI_2, 0.0, 0.0));
+    /// assert!((rot_90.angle() - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+    /// ```
+    #[inline]
+    pub fn angle(&self) -> f32 {
+        let v = Vec3AF32::new(self.q.x, self.q.y, self.q.z);
+        2.0 * v.length().atan2(self.q.w.abs())
+    }
+
     pub fn exp(v: Vec3AF32) -> Self {
         let theta_sq = v.dot(v);
         let theta = theta_sq.sqrt();
@@ -488,7 +531,9 @@ impl SO3F64 {
     /// Return the rotation angle in radians.
     ///
     /// Computes the shortest rotation angle corresponding to this rotation element.
-    /// The returned angle is in radians and lies in `[0, π]`, assuming a normalized quaternion.
+    /// The returned angle is in radians and belongs to `[0, π]` for any non-zero quaternion.
+    /// Scaling a non-zero quaternion does not change the calculated angle.
+    /// The zero quaternion is excluded because it does not represent a valid rotation.
     ///
     /// Uses the numerically stable quaternion-based formula:
     /// `2.0 * atan2(|v|, |w|)`, where `v` is the quaternion's vector part and `w` is its scalar part.
@@ -499,7 +544,7 @@ impl SO3F64 {
     ///
     /// # Arguments
     ///
-    /// * `self` - The rotation represented by a normalized quaternion.
+    /// * `self` - The rotation represented by a non-zero quaternion.
     ///
     /// # Returns
     ///
@@ -1218,6 +1263,63 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn angle_identity_returns_zero() {
+        let rot = SO3F32::IDENTITY;
+        assert_eq!(rot.angle(), 0.0);
+    }
+
+    #[test]
+    fn angle_general_rotation() {
+        let angle_expected: f32 = 1.2345;
+        let axis = Vec3AF32::new(1.0, -2.0, 3.0).normalize();
+        let rot = SO3F32::exp(axis * angle_expected);
+        assert!((rot.angle() - angle_expected).abs() < 1e-6);
+    }
+
+    #[test]
+    fn angle_near_zero_rotation() {
+        let angle_expected: f32 = 1e-6;
+        let axis = Vec3AF32::new(0.0, 1.0, 0.0);
+        let rot = SO3F32::exp(axis * angle_expected);
+        assert!((rot.angle() - angle_expected).abs() < 1e-7);
+    }
+
+    #[test]
+    fn angle_near_pi_rotation() {
+        let angle_expected: f32 = std::f32::consts::PI - 1e-4;
+        let axis = Vec3AF32::new(0.0, 0.0, 1.0);
+        let rot = SO3F32::exp(axis * angle_expected);
+        assert!((rot.angle() - angle_expected).abs() < 1e-5);
+    }
+
+    #[test]
+    fn angle_quaternion_sign_invariance() {
+        let axis = Vec3AF32::new(1.0, 2.0, -1.0).normalize();
+        let rot = SO3F32::exp(axis * 0.75);
+        let rot_neg = SO3F32 {
+            q: QuatF32::from_xyzw(-rot.q.x, -rot.q.y, -rot.q.z, -rot.q.w),
+        };
+        assert!((rot.angle() - 0.75).abs() < 1e-6);
+        assert_eq!(rot.angle(), rot_neg.angle());
+    }
+
+    #[test]
+    fn angle_scale_invariance() {
+        let axis = Vec3AF32::new(1.0, 2.0, -1.0).normalize();
+        let rot_unit = SO3F32::exp(axis * 0.75);
+        let rot_scaled = SO3F32 {
+            q: QuatF32::from_xyzw(
+                rot_unit.q.x * 3.5,
+                rot_unit.q.y * 3.5,
+                rot_unit.q.z * 3.5,
+                rot_unit.q.w * 3.5,
+            ),
+        };
+        assert!((rot_scaled.angle() - rot_unit.angle()).abs() < 1e-6);
+        assert!((rot_scaled.angle() - 0.75).abs() < 1e-6);
+    }
 }
 
 #[cfg(test)]
@@ -1399,5 +1501,21 @@ mod tests_f64 {
         // For the identity comparison, Eigen's formula gives:
         // 2 * atan2(|d.vec()|, |d.w|) = 2 * atan2(1/sqrt(2), 1/sqrt(2)) = pi/2.
         assert!((rot.angle() - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+    }
+
+    #[test]
+    fn angle_scale_invariance() {
+        let axis = Vec3F64::new(1.0, 2.0, -1.0).normalize();
+        let rot_unit = SO3F64::exp(axis * 0.75);
+        let rot_scaled = SO3F64 {
+            q: QuatF64::from_xyzw(
+                rot_unit.q.x * 3.5,
+                rot_unit.q.y * 3.5,
+                rot_unit.q.z * 3.5,
+                rot_unit.q.w * 3.5,
+            ),
+        };
+        assert!((rot_scaled.angle() - rot_unit.angle()).abs() < 1e-12);
+        assert!((rot_scaled.angle() - 0.75).abs() < 1e-12);
     }
 }
