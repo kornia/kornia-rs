@@ -370,10 +370,13 @@ where
 /// Implements Otsu's method by finding the threshold that maximizes the between-class
 /// variance of pixel intensities.
 ///
+/// When all pixels share the same intensity (a uniform/flat image), no between-class
+/// variance can be established. In this case, following OpenCV (`cv2.THRESH_OTSU`),
+/// the function returns threshold `0`.
+///
 /// # Arguments
 ///
 /// * `hist` - The 256-bin histogram of pixel intensity counts.
-/// * `total_pixels` - The total number of pixels in the image.
 ///
 /// # Returns
 ///
@@ -381,7 +384,7 @@ where
 ///
 /// # Errors
 ///
-/// Returns [`ImageError::ImageDataNotInitialized`] if `total_pixels` is zero.
+/// Returns [`ImageError::ImageDataNotInitialized`] if the total pixel count in `hist` is zero.
 ///
 /// # Reference
 ///
@@ -398,13 +401,11 @@ where
 /// hist[50] = 100;
 /// hist[200] = 100;
 ///
-/// let threshold = otsu_threshold_from_histogram(&hist, 200).unwrap();
+/// let threshold = otsu_threshold_from_histogram(&hist).unwrap();
 /// assert_eq!(threshold, 50);
 /// ```
-pub fn otsu_threshold_from_histogram(
-    hist: &[usize; 256],
-    total_pixels: usize,
-) -> Result<u8, ImageError> {
+pub fn otsu_threshold_from_histogram(hist: &[usize; 256]) -> Result<u8, ImageError> {
+    let total_pixels: usize = hist.iter().sum();
     if total_pixels == 0 {
         return Err(ImageError::ImageDataNotInitialized);
     }
@@ -452,12 +453,8 @@ pub fn otsu_threshold_from_histogram(
     }
 
     if !found_split {
-        // If all pixels share the same intensity (no split found), return that intensity.
-        return Ok(hist
-            .iter()
-            .position(|&c| c > 0)
-            .map(|idx| idx as u8)
-            .unwrap_or(0));
+        // When all pixels share the same intensity (no split found), return 0 to match OpenCV THRESH_OTSU.
+        return Ok(0);
     }
 
     Ok(best_threshold)
@@ -467,6 +464,10 @@ pub fn otsu_threshold_from_histogram(
 ///
 /// Otsu's method automatically calculates the optimum threshold separating two classes
 /// of pixels (foreground and background) so that their intra-class variance is minimal.
+///
+/// When all pixels share the same intensity (a uniform/flat image), no between-class
+/// variance can be established. In this case, following OpenCV (`cv2.THRESH_OTSU`),
+/// the function returns threshold `0`.
 ///
 /// Note: This function only computes and returns the threshold value. To both compute
 /// and apply binary thresholding to a destination image, use [`threshold_otsu`].
@@ -515,13 +516,18 @@ pub fn compute_otsu_threshold(src: &Image<u8, 1>) -> Result<u8, ImageError> {
     let mut hist = [0usize; 256];
     crate::histogram::compute_histogram(src, &mut hist, 256)?;
 
-    otsu_threshold_from_histogram(&hist, src.numel())
+    otsu_threshold_from_histogram(&hist)
 }
 
 /// Apply Otsu's automatic thresholding to an 8-bit, 1-channel image.
 ///
 /// Computes the optimal threshold via [`compute_otsu_threshold`] and applies binary thresholding
 /// to `dst`.
+///
+/// On uniform/flat images (where all pixels share the same intensity), following OpenCV
+/// (`cv2.THRESH_OTSU`), the threshold evaluates to `0`. Consequently, for any non-zero
+/// uniform image, all pixels satisfy `src > 0` and are set to `max_value`, while an
+/// all-zero image produces all zeros.
 ///
 /// Note: This function computes the threshold and writes the binarized image to `dst`.
 /// To compute only the threshold value without writing to a destination image, use [`compute_otsu_threshold`].
@@ -799,6 +805,8 @@ mod tests {
 
     #[test]
     fn test_otsu_threshold_uniform() -> Result<(), ImageError> {
+        // Flat non-zero image (128): threshold is 0 (matching OpenCV THRESH_OTSU),
+        // and all pixels > 0 become max_value (255).
         let data = vec![128u8; 16];
         let image = Image::<u8, 1>::new(
             ImageSize {
@@ -809,11 +817,32 @@ mod tests {
         )?;
 
         let threshold = super::compute_otsu_threshold(&image)?;
-        assert_eq!(threshold, 128);
+        assert_eq!(threshold, 0);
 
         let mut dst = Image::<u8, 1>::from_size_val(image.size(), 0)?;
-        super::threshold_otsu(&image, &mut dst, 255)?;
-        assert_eq!(dst.as_slice(), &[0u8; 16]);
+        let thresh_otsu = super::threshold_otsu(&image, &mut dst, 255)?;
+        assert_eq!(thresh_otsu, 0);
+        assert_eq!(dst.as_slice(), &[255u8; 16]);
+
+        // Flat zero image: threshold is 0, 0 > 0 is false, so all pixels remain 0.
+        let image_zero = Image::<u8, 1>::from_size_val(image.size(), 0)?;
+        let threshold_zero = super::compute_otsu_threshold(&image_zero)?;
+        assert_eq!(threshold_zero, 0);
+
+        let mut dst_zero = Image::<u8, 1>::from_size_val(image.size(), 255)?;
+        let thresh_otsu_zero = super::threshold_otsu(&image_zero, &mut dst_zero, 255)?;
+        assert_eq!(thresh_otsu_zero, 0);
+        assert_eq!(dst_zero.as_slice(), &[0u8; 16]);
+
+        // Flat max image (255): threshold is 0, 255 > 0 is true, so all pixels become 255.
+        let image_max = Image::<u8, 1>::from_size_val(image.size(), 255)?;
+        let threshold_max = super::compute_otsu_threshold(&image_max)?;
+        assert_eq!(threshold_max, 0);
+
+        let mut dst_max = Image::<u8, 1>::from_size_val(image.size(), 0)?;
+        let thresh_otsu_max = super::threshold_otsu(&image_max, &mut dst_max, 255)?;
+        assert_eq!(thresh_otsu_max, 0);
+        assert_eq!(dst_max.as_slice(), &[255u8; 16]);
 
         Ok(())
     }
@@ -853,18 +882,35 @@ mod tests {
         hist[180] = 50;
         hist[190] = 50;
 
-        let threshold = super::otsu_threshold_from_histogram(&hist, 200)?;
+        let threshold = super::otsu_threshold_from_histogram(&hist)?;
         assert_eq!(threshold, 50);
 
-        let empty_result = super::otsu_threshold_from_histogram(&hist, 0);
-        assert!(empty_result.is_err());
+        // Reviewer example: hist[50]=100, hist[200]=100
+        // Total is derived from hist (200), yielding threshold 50 without mismatch bugs.
+        let mut hist2 = [0usize; 256];
+        hist2[50] = 100;
+        hist2[200] = 100;
+        assert_eq!(super::otsu_threshold_from_histogram(&hist2)?, 50);
+
+        // Uniform histogram: single non-zero bin returns 0 (matching OpenCV THRESH_OTSU)
+        let mut hist_uniform = [0usize; 256];
+        hist_uniform[128] = 200;
+        assert_eq!(super::otsu_threshold_from_histogram(&hist_uniform)?, 0);
+
+        // Empty histogram: returns ImageDataNotInitialized error
+        let empty_hist = [0usize; 256];
+        let empty_result = super::otsu_threshold_from_histogram(&empty_hist);
+        assert!(matches!(
+            empty_result,
+            Err(ImageError::ImageDataNotInitialized)
+        ));
 
         Ok(())
     }
 
     #[test]
     fn test_otsu_threshold_reference_pinned() -> Result<(), ImageError> {
-        // 8x8 bimodal image pinned against OpenCV 4.x
+        // 1. 8x8 bimodal image pinned against OpenCV 4.x
         // cv2.threshold(img, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
         // Reference output: threshold = 45
         let data = vec![
@@ -893,6 +939,35 @@ mod tests {
             assert_eq!(&row_slice[4..], &[255, 255, 255, 255]);
         }
 
+        // 2. Flat images pinned against OpenCV 4.x
+        // cv2.threshold(np.full((4,4), 128, dtype=np.uint8), 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+        // Reference output: threshold = 0.0, dst = all 255
+        let img_128 = Image::<u8, 1>::from_size_val(
+            ImageSize {
+                width: 4,
+                height: 4,
+            },
+            128,
+        )?;
+        let mut dst_128 = Image::<u8, 1>::from_size_val(img_128.size(), 0)?;
+        let thresh_128 = super::threshold_otsu(&img_128, &mut dst_128, 255)?;
+        assert_eq!(thresh_128, 0);
+        assert_eq!(dst_128.as_slice(), &[255u8; 16]);
+
+        // cv2.threshold(np.full((4,4), 0, dtype=np.uint8), 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+        // Reference output: threshold = 0.0, dst = all 0
+        let img_0 = Image::<u8, 1>::from_size_val(
+            ImageSize {
+                width: 4,
+                height: 4,
+            },
+            0,
+        )?;
+        let mut dst_0 = Image::<u8, 1>::from_size_val(img_0.size(), 255)?;
+        let thresh_0 = super::threshold_otsu(&img_0, &mut dst_0, 255)?;
+        assert_eq!(thresh_0, 0);
+        assert_eq!(dst_0.as_slice(), &[0u8; 16]);
+
         Ok(())
     }
 
@@ -904,8 +979,93 @@ mod tests {
         hist[200] = 20_000_000;
         hist[250] = 20_000_000;
 
-        let threshold = super::otsu_threshold_from_histogram(&hist, 50_000_000)?;
+        let threshold = super::otsu_threshold_from_histogram(&hist)?;
         assert_eq!(threshold, 100);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_otsu_threshold_empty_image() -> Result<(), ImageError> {
+        let empty_src = Image::<u8, 1>::new(
+            ImageSize {
+                width: 0,
+                height: 0,
+            },
+            vec![],
+        )?;
+        let res_compute = super::compute_otsu_threshold(&empty_src);
+        assert!(matches!(
+            res_compute,
+            Err(ImageError::ImageDataNotInitialized)
+        ));
+
+        let mut empty_dst = Image::<u8, 1>::new(
+            ImageSize {
+                width: 0,
+                height: 0,
+            },
+            vec![],
+        )?;
+        let res_thresh = super::threshold_otsu(&empty_src, &mut empty_dst, 255);
+        assert!(matches!(
+            res_thresh,
+            Err(ImageError::ImageDataNotInitialized)
+        ));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_otsu_threshold_single_pixel() -> Result<(), ImageError> {
+        let single_pixel = Image::<u8, 1>::new(
+            ImageSize {
+                width: 1,
+                height: 1,
+            },
+            vec![42u8],
+        )?;
+
+        let thresh = super::compute_otsu_threshold(&single_pixel)?;
+        assert_eq!(thresh, 0);
+
+        let mut dst = Image::<u8, 1>::from_size_val(single_pixel.size(), 0)?;
+        let thresh_otsu = super::threshold_otsu(&single_pixel, &mut dst, 255)?;
+        assert_eq!(thresh_otsu, 0);
+        assert_eq!(dst.as_slice(), &[255u8]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_otsu_threshold_ramp_matches_opencv() -> Result<(), ImageError> {
+        // Uniform ramp 0..=255 (16x16)
+        // cv2.threshold(np.arange(256, dtype=np.uint8).reshape(16, 16), 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+        // Reference threshold = 127
+        let data: Vec<u8> = (0u8..=255).collect();
+        let image = Image::<u8, 1>::new(
+            ImageSize {
+                width: 16,
+                height: 16,
+            },
+            data,
+        )?;
+
+        let thresh = super::compute_otsu_threshold(&image)?;
+        assert_eq!(thresh, 127);
+
+        let mut dst = Image::<u8, 1>::from_size_val(image.size(), 0)?;
+        let thresh_otsu = super::threshold_otsu(&image, &mut dst, 255)?;
+        assert_eq!(thresh_otsu, 127);
+
+        // Values <= 127 are 0; values > 127 are 255
+        for (i, &pixel) in dst.as_slice().iter().enumerate() {
+            if i <= 127 {
+                assert_eq!(pixel, 0);
+            } else {
+                assert_eq!(pixel, 255);
+            }
+        }
 
         Ok(())
     }
