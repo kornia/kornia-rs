@@ -87,7 +87,13 @@ pub fn mse<const C: usize>(
 ///
 /// # Returns
 ///
-/// The peak signal-to-noise ratio between the two images.
+/// The peak signal-to-noise ratio between the two images, in dB, or
+/// `f32::INFINITY` when the images are identical (MSE = 0).
+///
+/// # Errors
+///
+/// Returns [`ImageError::InvalidImageSize`] if the two images have different
+/// sizes.
 ///
 /// # Example
 /// ```
@@ -99,7 +105,7 @@ pub fn mse<const C: usize>(
 ///     width: 1,
 ///     height: 2,
 ///   },
-///   vec![0f32, 1f32, 2f32, 3f32, 4f32, 5f32],
+///   vec![0.0f32, 0.1, 0.2, 0.3, 0.4, 0.5],
 /// )
 /// .unwrap();
 ///
@@ -108,19 +114,16 @@ pub fn mse<const C: usize>(
 ///     width: 1,
 ///     height: 2,
 ///   },
-///   vec![1f32, 3f32, 2f32, 4f32, 5f32, 6f32],
+///   vec![0.1f32, 0.2, 0.3, 0.4, 0.5, 0.6],
 /// )
 /// .unwrap();
 ///
 /// let psnr = psnr(&image1, &image2, 1.0).unwrap();
 ///
-/// // MSE = 4/3, so PSNR = 20·log10(1 / √(4/3)) ≈ -1.249 dB.
-/// assert!((psnr - (-1.249_387_4)).abs() < 1e-5);
+/// // Pixel values in [0, 1], every pixel off by 0.1: MSE = 0.01, so
+/// // PSNR = 20·log10(1 / 0.1) = 20 dB.
+/// assert!((psnr - 20.0).abs() < 1e-4);
 /// ```
-///
-/// # Panics
-///
-/// Panics if the two images have different shapes.
 ///
 /// # Note
 ///
