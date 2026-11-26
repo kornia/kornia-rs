@@ -1016,7 +1016,19 @@ fn pyrup_vertical_pass_u8<const C: usize>(
 ///
 /// # Returns
 ///
-/// * `Result<(), ImageError>` - Ok if successful, Err otherwise.
+/// `Ok(())` once `dst` holds the upsampled image.
+///
+/// # Errors
+///
+/// * [`ImageError::InvalidImageSize`] if `dst` is not exactly
+///   `(2 * width, 2 * height)` of `src`.
+/// * [`ImageError::MixedResidency`] if one image is on the host and the other
+///   on the device (feature `cuda`).
+/// * [`ImageError::DeviceMismatch`] if the two device images are on different
+///   CUDA devices (feature `cuda`).
+/// * [`ImageError::Cuda`] for a device image that is not backed by a typed
+///   `CudaResource`, a dimension that does not fit in `u32`, or a CUDA
+///   allocation or launch failure (feature `cuda`).
 pub fn pyrup_u8<const C: usize>(
     src: &Image<u8, C>,
     dst: &mut Image<u8, C>,
@@ -2124,7 +2136,18 @@ mod cuda_tests {
     #[test]
     fn u8_pyramid_device_equals_host_byte_exact() {
         let stream = default_stream();
-        for (w, h) in [(64usize, 48usize), (67, 43), (5, 4), (1, 7), (8, 1)] {
+        // (2, 2), (2, 5) and (5, 2): a 2-wide or 2-tall source, where pyrup's
+        // reflect_101_near falls back to reflect_101 on its `last` row/column.
+        for (w, h) in [
+            (64usize, 48usize),
+            (67, 43),
+            (5, 4),
+            (1, 7),
+            (8, 1),
+            (2, 2),
+            (2, 5),
+            (5, 2),
+        ] {
             let src = Image::<u8, 3>::new(sz(w, h), pattern_u8(w * h * 3)).unwrap();
             let d_src = src.to_cuda(&stream).unwrap();
 
