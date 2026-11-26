@@ -4,7 +4,7 @@ use gstreamer::prelude::*;
 use kornia_image::Image;
 use std::{
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 #[derive(Clone, Copy)]
@@ -108,6 +108,7 @@ impl From<gstreamer::State> for StreamerState {
 
 /// Frames retained when a custom pipeline leaves max-buffers unbounded.
 const DEFAULT_MAX_BUFFERS: u32 = 5;
+const CLOSE_EOS_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Represents a stream capture pipeline using GStreamer.
 pub struct StreamCapture {
@@ -211,7 +212,8 @@ impl StreamCapture {
     ///
     /// # Returns
     ///
-    /// `None` before negotiation, `Some(0.0)` for an unknown/variable rate, otherwise FPS.
+    /// `None` before negotiation or after closing, `Some(0.0)` for an unknown/variable rate,
+    /// otherwise the current negotiated FPS. Queued frames may predate a caps change.
     ///
     /// # Errors
     ///
@@ -537,15 +539,100 @@ impl StreamCapture {
         Ok(Grab::Pending)
     }
 
-    /// Closes the stream capture pipeline.
+    /// Closes capture and lets any recording branches finish writing.
+    ///
+    /// An active stream is sent EOS with appsink backpressure and clock pacing disabled.
+    /// The pipeline is stopped even if it rejects EOS or does not finish within three seconds.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The stream capture.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` once the pipeline is stopped.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if EOS is rejected, finalization times out, or a state change fails.
     pub fn close(&self) -> Result<(), StreamCaptureError> {
-        // A serialized EOS can block behind a full backpressure queue with no consumer.
-        // Stopping directly wakes the producer and releases queued samples.
-        self.pipeline.set_state(gstreamer::State::Null)?;
-        // Auto-flush is off, so drop the messages posted while stopping: they retain references
-        // to the pipeline elements.
+        let (_, current, pending) = self.pipeline.state(gstreamer::ClockTime::ZERO);
+        if current == gstreamer::State::Null && pending == gstreamer::State::VoidPending {
+            return Ok(());
+        }
+
+        let drop = self.appsink.is_drop();
+        let sync = self.appsink.property::<bool>("sync");
+        let finished = if !self.is_eos() && self.stream_error().is_none() {
+            self.appsink.set_drop(true);
+            self.appsink.set_sync(false);
+            // Wake any producer already waiting for room in the queue.
+            let _ = self.appsink.try_pull_sample(gstreamer::ClockTime::ZERO);
+            self.finish_stream(current, pending)
+        } else {
+            Ok(())
+        };
+
+        let stopped = self.pipeline.set_state(gstreamer::State::Null);
+        if stopped.is_ok() {
+            self.appsink.set_drop(drop);
+            self.appsink.set_sync(sync);
+        }
         self.drain_bus();
+        finished?;
+        stopped?;
         Ok(())
+    }
+
+    fn finish_stream(
+        &self,
+        current: gstreamer::State,
+        pending: gstreamer::State,
+    ) -> Result<(), StreamCaptureError> {
+        // Pipeline EOS is only posted in Playing, including if close follows pause.
+        if pending != gstreamer::State::Playing
+            && (current != gstreamer::State::Playing || pending == gstreamer::State::Paused)
+        {
+            self.pipeline.set_state(gstreamer::State::Playing)?;
+        }
+
+        let deadline = Instant::now() + CLOSE_EOS_TIMEOUT;
+        let (sent, result) = std::sync::mpsc::sync_channel(1);
+        // A custom branch can still delay a serialized event. Send it off-thread so
+        // close can transition to NULL and release the branch if it does not finish.
+        self.pipeline.call_async(move |pipeline| {
+            let _ = sent.send(pipeline.send_event(gstreamer::event::Eos::new()));
+        });
+        match result.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(true) => {}
+            Ok(false) if self.is_eos() => return Ok(()),
+            Ok(false) => return Err(StreamCaptureError::SendEosError),
+            Err(_) => return Err(Self::eos_timeout()),
+        }
+
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let timeout = gstreamer::ClockTime::from_nseconds(remaining.as_nanos() as u64);
+        let types = [gstreamer::MessageType::Eos, gstreamer::MessageType::Error];
+        // is_eos drains the bus, so check cached EOS/error only after the wait.
+        match self.bus.timed_pop_filtered(timeout, &types) {
+            Some(msg) => match msg.view() {
+                gstreamer::MessageView::Eos(_) => Ok(()),
+                gstreamer::MessageView::Error(err) => Err(detailed_error(&msg, err).into()),
+                _ => unreachable!("only EOS and errors were requested"),
+            },
+            None if self.is_eos() => Ok(()),
+            None => Err(self
+                .stream_error()
+                .map_or_else(Self::eos_timeout, Into::into)),
+        }
+    }
+
+    fn eos_timeout() -> StreamCaptureError {
+        gstreamer::glib::Error::new(
+            gstreamer::CoreError::Failed,
+            "capture EOS did not reach all sinks within three seconds; recording may be incomplete",
+        )
+        .into()
     }
 
     /// Sends a seek while tracking the EOS sequence number of its segment.
@@ -841,6 +928,72 @@ mod tests {
         let custom = StreamCapture::new(&format!("{CAPTURE_PIPELINE} max-buffers=2 drop=true"))?;
         assert_eq!(custom.appsink.max_buffers(), 2);
         assert!(custom.appsink.is_drop());
+        Ok(())
+    }
+
+    #[test]
+    fn close_and_drop_finalize_recording_with_full_capture_queue(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use super::super::video::{ImageFormat, VideoReader};
+
+        for drop_capture in [false, true] {
+            let tmp = tempfile::tempdir()?;
+            let path = tmp.path().join("capture.mov");
+            let location =
+                super::super::quote_pipeline_value(path.to_str().ok_or("invalid path")?)?;
+            // qtmux writes its index at EOS, so successful playback checks actual finalization.
+            let capture = StreamCapture::new(&format!(
+                "appsrc name=src is-live=true format=time !                  video/x-raw,format=RGB,width=64,height=48,framerate=30/1 ! tee name=t                  t. ! queue ! appsink name=sink sync=false max-buffers=1 drop=false                  t. ! queue ! qtmux ! filesink location={location}"
+            ))?;
+            let queued = queue_notifications(&capture);
+            let (blocked_tx, blocked_rx) = mpsc::channel();
+            let seen = std::sync::atomic::AtomicBool::new(false);
+            capture
+                .appsink
+                .static_pad("sink")
+                .ok_or("missing sink pad")?
+                .add_probe(gstreamer::PadProbeType::BUFFER, move |_, _| {
+                    if seen.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                        let _ = blocked_tx.send(());
+                    }
+                    gstreamer::PadProbeReturn::Ok
+                });
+
+            capture.start()?;
+            let src = source(&capture)?;
+            for (index, value) in [20, 40].into_iter().enumerate() {
+                let mut buffer = gstreamer::Buffer::from_mut_slice(vec![value; 64 * 48 * 3]);
+                let buffer_mut = buffer.get_mut().ok_or("new buffer is shared")?;
+                buffer_mut.set_pts(gstreamer::ClockTime::from_nseconds(
+                    index as u64 * 33_333_333,
+                ));
+                buffer_mut.set_duration(gstreamer::ClockTime::from_nseconds(33_333_333));
+                src.push_buffer(buffer)?;
+            }
+            queued.recv_timeout(DEADLINE)?;
+            blocked_rx.recv_timeout(DEADLINE)?;
+            if drop_capture {
+                drop(capture);
+            } else {
+                capture.close()?;
+                assert!(!capture.appsink.is_drop(), "close changed the queue policy");
+            }
+
+            let mut reader = VideoReader::new(path, ImageFormat::Rgb8)?;
+            reader.start()?;
+            let deadline = Instant::now() + DEADLINE;
+            let mut recorded = Vec::new();
+            loop {
+                match reader.try_grab_rgb8()? {
+                    Grab::Frame { image, .. } => recorded.push(image.as_slice()[0]),
+                    Grab::Eos => break,
+                    Grab::Pending => std::thread::sleep(Duration::from_millis(1)),
+                }
+                assert!(Instant::now() < deadline, "recorded file did not reach EOS");
+            }
+            assert_eq!(recorded, [20, 40]);
+            reader.close()?;
+        }
         Ok(())
     }
 

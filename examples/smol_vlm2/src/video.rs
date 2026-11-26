@@ -152,10 +152,7 @@ pub fn from_video_path<const N: usize, P: AsRef<std::path::Path>>(
         .start()
         .map_err(|_| VideoError::VideoReaderStart)?;
 
-    let fps = video_reader
-        .get_fps()
-        .map(|f| f.round() as u32)
-        .filter(|fps| *fps > 0);
+    let mut fps = None;
     let duration = video_reader.get_duration().map(|d| d.as_secs() as u32);
 
     let mut all_frames = Vec::new();
@@ -183,6 +180,10 @@ pub fn from_video_path<const N: usize, P: AsRef<std::path::Path>>(
                 pts,
             }) => {
                 use kornia_image::Image;
+
+                if fps.is_none() {
+                    fps = video_reader.get_fps();
+                }
 
                 // Convert kornia_image::allocator::host_alloc() image to target allocator
                 let size = gst_image.size();

@@ -483,7 +483,7 @@ impl VideoReader {
         Ok(())
     }
 
-    /// Gets negotiated FPS, or `None` before caps negotiation (zero means unknown rate).
+    /// Gets negotiated FPS, or `None` before caps negotiation or after closing (zero means unknown rate).
     ///
     /// # Arguments
     ///
