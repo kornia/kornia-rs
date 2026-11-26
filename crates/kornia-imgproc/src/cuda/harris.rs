@@ -31,7 +31,7 @@ extern "C" __global__ void harris_fused_f32(
     const int tid = threadIdx.y * TILE_W + threadIdx.x;
     for (int i = tid; i < G_W * G_H; i += TILE_W * TILE_H) {
         const int r = i / G_W, c = i % G_W;
-        const int nx = blockIdx.x * TILE_W - 1 + c, ny = blockIdx.y * TILE_H - 1 + r;
+        const int nx = (int)(blockIdx.x * TILE_W) - 1 + c, ny = (int)(blockIdx.y * TILE_H) - 1 + r;
         float ix = 0.0f, iy = 0.0f;
         // The CPU leaves gradient products on the image border at zero.
         if (nx >= 1 && ny >= 1 && nx < width - 1 && ny < height - 1) {
@@ -54,8 +54,8 @@ extern "C" __global__ void harris_fused_f32(
     }
     __syncthreads();
 
-    const int x = blockIdx.x * blockDim.x + threadIdx.x;
-    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    const int x = blockIdx.x * TILE_W + threadIdx.x;
+    const int y = blockIdx.y * TILE_H + threadIdx.y;
     if (x < 1 || y < 1 || x >= width - 1 || y >= height - 1)
         return;
 
