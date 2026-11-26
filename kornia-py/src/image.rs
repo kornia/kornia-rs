@@ -1273,10 +1273,9 @@ impl PyImageApi {
             return Err(value_err("array dtype does not match the image dtype"));
         }
         if b.is_c_contiguous() {
-            // SAFETY: `b` is C-contiguous with exactly `n_bytes` bytes of element
-            // data starting at `data()` (checked above; a byte view needs no
-            // alignment). It is kept alive by the `Bound` for the duration of
-            // the copy below.
+            // SAFETY: `b` is C-contiguous with exactly `n_bytes` bytes of element data starting
+            // at `data()` (checked above; a byte slice requires alignment 1), kept alive by
+            // `Bound`, and the GIL prevents concurrent Python mutation during the copy.
             let src = unsafe { std::slice::from_raw_parts(b.data() as *const u8, n_bytes) };
             let bytes = backing::AlignedBytes::from_slice(src)?;
             return Ok(Self::from_owned_bytes(bytes, dtype, [h, w, c], cs, mode));
@@ -1304,8 +1303,8 @@ impl PyImageApi {
         if b.is_empty() {
             return Ok(Self::from_owned_bytes(bytes, dtype, [h, w, c], cs, mode));
         }
-        // SAFETY: `bytes` uniquely owns `n_bytes = b.len() * size_of::<T>()`
-        // bytes at a 64-byte (hence `T`-) aligned address; viewing them as
+        // SAFETY: `bytes` uniquely owns `n_bytes = b.len() * size_of::<T>()` bytes at a 64-byte
+        // (hence `T`-) aligned address and has exclusive mutable access; viewing as
         // `MaybeUninit<T>` makes no initialisation claim.
         let dst = unsafe {
             std::slice::from_raw_parts_mut(
@@ -1316,82 +1315,90 @@ impl PyImageApi {
 
         let strides = b.strides();
         let item_size = std::mem::size_of::<T>() as isize;
-        let strides_element_aligned = strides.iter().all(|&st| st % item_size == 0);
-        if strides_element_aligned {
-            let elem_stride_0 = strides[0] / item_size;
-            let elem_stride_1 = strides[1] / item_size;
-            let elem_stride_2 = strides[2] / item_size;
-            let src_base = b.data() as *const T;
-            let mut dst_ptr = dst.as_mut_ptr() as *mut T;
+        // Every supported dtype (`u8`, `u16`, `f32`, `i32`) has `align_of::<T>() == size_of::<T>()`,
+        // so `elems_aligned` above guarantees every stride is a multiple of `item_size`.
+        debug_assert!(strides.iter().all(|&st| st % item_size == 0));
+        let elem_stride_0 = strides[0] / item_size;
+        let elem_stride_1 = strides[1] / item_size;
+        let elem_stride_2 = strides[2] / item_size;
+        let src_base = b.data() as *const T;
 
-            if elem_stride_2 == 1 {
-                if elem_stride_1 == c as isize {
-                    // Entire rows are contiguous (e.g. slice along height only: arr[::2, :, :])
-                    let row_len = w * c;
-                    for y in 0..h {
-                        // SAFETY: `b` is non-empty, `y < h`, and `strides[0]` / `strides[1]` place
-                        // every `[row_src .. row_src + row_len)` inside numpy's live buffer.
-                        unsafe {
-                            let row_src = src_base.offset(y as isize * elem_stride_0);
-                            std::ptr::copy_nonoverlapping(row_src, dst_ptr, row_len);
-                            dst_ptr = dst_ptr.add(row_len);
-                        }
-                    }
-                } else {
-                    // Each pixel's channels are contiguous (e.g. arr[::2, ::2, :], transpose(1, 0, 2))
-                    for y in 0..h {
-                        let row_src_offset = y as isize * elem_stride_0;
-                        for x in 0..w {
-                            // SAFETY: `b` is non-empty, `y < h`, `x < w`, and `strides[2] == item_size`
-                            // place every pixel's `c` channels inside numpy's live buffer.
-                            unsafe {
-                                let pix_src =
-                                    src_base.offset(row_src_offset + x as isize * elem_stride_1);
-                                std::ptr::copy_nonoverlapping(pix_src, dst_ptr, c);
-                                dst_ptr = dst_ptr.add(c);
-                            }
-                        }
-                    }
-                }
-            } else if elem_stride_2 == -1 && c == 3 {
-                // Reversed 3-channel pixels (e.g. BGR <-> RGB `arr[:, :, ::-1]`).
-                for y in 0..h {
-                    // SAFETY: `b` is non-empty, `c == 3`, `elem_stride_2 == -1`, and every
-                    // `(y, x, 0..3)` element offset stays within numpy's live buffer.
-                    unsafe {
+        // Specialized raw-source gather into safe `dst.chunks_exact_mut` slices beats safe
+        // `b.as_array().iter()` by avoiding multi-dim stepper overhead (~1.18ms vs 13.85ms on
+        // `[:,:,::-1]`, ~0.93ms vs 27.90ms on `[::2,:,:]`, and ~28.1ms vs 56.46ms on 4K
+        // transpose in PR #1386 A/B runs) while keeping destination writes 100% bounds-safe.
+        if elem_stride_2 == 1 {
+            if elem_stride_1 == c as isize {
+                // Entire rows are contiguous (e.g. slice along height only: arr[::2, :, :])
+                let row_len = w * c;
+                for (y, dst_row) in dst.chunks_exact_mut(row_len).enumerate() {
+                    // SAFETY: `b` is non-empty (`y < h`), `elem_stride_1 == c`, and
+                    // `elem_stride_2 == 1` keep `[row_src .. row_src + row_len)` in-bounds inside
+                    // numpy's live, `T`-aligned buffer; the GIL is held so nothing mutates `b`
+                    // during the read, and `[MaybeUninit<T>]` matches `[T]` layout (`T: Copy`).
+                    let src_row = unsafe {
                         let row_src = src_base.offset(y as isize * elem_stride_0);
-                        for x in 0..w {
-                            let pix_src = row_src.offset(x as isize * elem_stride_1);
-                            dst_ptr.write(*pix_src);
-                            dst_ptr.add(1).write(*pix_src.offset(-1));
-                            dst_ptr.add(2).write(*pix_src.offset(-2));
-                            dst_ptr = dst_ptr.add(3);
-                        }
-                    }
+                        std::slice::from_raw_parts(
+                            row_src as *const std::mem::MaybeUninit<T>,
+                            row_len,
+                        )
+                    };
+                    dst_row.copy_from_slice(src_row);
                 }
             } else {
-                // General element-aligned arbitrary striding (e.g. planar CHW -> HWC, broadcasts).
-                for y in 0..h {
-                    // SAFETY: `b` is non-empty and all element-aligned `(y, x, ch)` offsets
-                    // remain within numpy's live buffer while the GIL is held.
-                    unsafe {
-                        let row_src = src_base.offset(y as isize * elem_stride_0);
-                        for x in 0..w {
-                            let pix_src = row_src.offset(x as isize * elem_stride_1);
-                            for ch in 0..c {
-                                dst_ptr.write(*pix_src.offset(ch as isize * elem_stride_2));
-                                dst_ptr = dst_ptr.add(1);
-                            }
-                        }
+                // Each pixel's channels are contiguous (e.g. arr[::2, ::2, :], transpose(1, 0, 2))
+                for (y, dst_row) in dst.chunks_exact_mut(w * c).enumerate() {
+                    let row_src_offset = y as isize * elem_stride_0;
+                    for (x, dst_pix) in dst_row.chunks_exact_mut(c).enumerate() {
+                        // SAFETY: `b` is non-empty (`y < h`, `x < w`) and `elem_stride_2 == 1` keep
+                        // `[pix_src .. pix_src + c)` in-bounds inside numpy's live, `T`-aligned
+                        // buffer; the GIL prevents concurrent mutation while reading, and
+                        // `[MaybeUninit<T>]` matches `[T]` layout (`T: Copy`).
+                        let src_pix = unsafe {
+                            let pix_src =
+                                src_base.offset(row_src_offset + x as isize * elem_stride_1);
+                            std::slice::from_raw_parts(
+                                pix_src as *const std::mem::MaybeUninit<T>,
+                                c,
+                            )
+                        };
+                        dst_pix.copy_from_slice(src_pix);
                     }
                 }
             }
+        } else if elem_stride_2 == -1 && c == 3 {
+            // Reversed 3-channel pixels (e.g. BGR <-> RGB `arr[:, :, ::-1]`).
+            for (y, dst_row) in dst.chunks_exact_mut(w * 3).enumerate() {
+                let row_src_offset = y as isize * elem_stride_0;
+                for (x, [d0, d1, d2]) in dst_row.as_chunks_mut::<3>().0.iter_mut().enumerate() {
+                    // SAFETY: `b` is non-empty (`y < h`, `x < w`, `c == 3`) and `elem_stride_2 == -1`
+                    // ensure `pix_src.offset(0, -1, -2)` stay in-bounds and `T`-aligned inside
+                    // numpy's live buffer while the GIL prevents concurrent mutation.
+                    let [c0, c1, c2] = unsafe {
+                        let pix_src = src_base.offset(row_src_offset + x as isize * elem_stride_1);
+                        [*pix_src, *pix_src.offset(-1), *pix_src.offset(-2)]
+                    };
+                    d0.write(c0);
+                    d1.write(c1);
+                    d2.write(c2);
+                }
+            }
         } else {
-            // Fallback for rare types with `align_of::<T>() < size_of::<T>()`.
-            // SAFETY: the data pointer and every stride are aligned for `T` (checked above).
-            let view = unsafe { b.as_array() };
-            for (d, &v) in dst.iter_mut().zip(view.iter()) {
-                d.write(v);
+            // General element-aligned arbitrary striding (e.g. planar CHW -> HWC, broadcasts).
+            for (y, dst_row) in dst.chunks_exact_mut(w * c).enumerate() {
+                let row_src_offset = y as isize * elem_stride_0;
+                for (x, dst_pix) in dst_row.chunks_exact_mut(c).enumerate() {
+                    let pix_src_offset = row_src_offset + x as isize * elem_stride_1;
+                    for (ch, dst_elem) in dst_pix.iter_mut().enumerate() {
+                        // SAFETY: `b` is non-empty (`y < h`, `x < w`, `ch < c`) and element-aligned
+                        // strides keep every indexed offset in-bounds and `T`-aligned inside
+                        // numpy's live buffer while the GIL prevents concurrent mutation.
+                        let v = unsafe {
+                            *src_base.offset(pix_src_offset + ch as isize * elem_stride_2)
+                        };
+                        dst_elem.write(v);
+                    }
+                }
             }
         }
         // Every element was written: exactly `b.len()` items.

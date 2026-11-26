@@ -99,7 +99,11 @@ def test_from_numpy_broadcast_array():
 
 
 def test_from_numpy_negative_and_broadcast_channel_strides():
-    """Test non-contiguous / zero channel strides hitting the general ndarray fallback."""
+    """Test negative, zero-stride broadcast, and channel-outer strides across gather paths.
+
+    - ``[:, :, ::-1]`` (`strides[2] == -1`, `C == 3`) hits the reversed 3-channel loop.
+    - Broadcast (`strides[2] == 0`) and ``CHW -> HWC`` transpose hit the general aligned loop.
+    """
     raw = np.arange(12 * 16 * 3, dtype=np.uint8).reshape(12, 16, 3)
     bgr = raw[:, :, ::-1]
     assert bgr.strides[2] == -1
@@ -127,9 +131,13 @@ def test_from_numpy_empty_strided_slice():
 def test_from_numpy_strided_misaligned_borrow():
     """Strided view with misaligned element strides still copies safely when copy=False."""
     rec = np.zeros((3, 4, 3), dtype=np.dtype([("val", "<f4"), ("pad", "u1")], align=False))
-    rec["val"] = np.arange(36, dtype=np.float32).reshape(3, 4, 3)
+    expected = np.arange(36, dtype=np.float32).reshape(3, 4, 3)
+    rec["val"] = expected
     view = rec["val"]
     assert not view.flags.aligned
-    img = Image(view)
-    np.testing.assert_array_equal(img.numpy(), np.arange(36, dtype=np.float32).reshape(3, 4, 3))
-
+    img = Image.from_numpy(view, copy=False)
+    out = img.numpy()
+    np.testing.assert_array_equal(out, expected)
+    assert out.dtype == np.float32
+    rec["val"][0, 0, 0] = -1.0
+    assert out[0, 0, 0] == 0.0
