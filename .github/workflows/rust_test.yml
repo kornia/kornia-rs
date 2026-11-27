@@ -70,6 +70,12 @@ jobs:
       - name: Run ${{ matrix.command }}
         run: pixi run ${{ matrix.command }}
 
+      - name: Test examples
+        # Examples are workspace members but not in `default-members`, so the
+        # workspace test command above does not run their tests.
+        if: matrix.command == 'rust-test'
+        run: pixi run cargo test -p sfm --bin sfm
+
       - name: Show sccache stats
         if: always()
         run: |
