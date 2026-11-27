@@ -22,6 +22,7 @@
 *   **PnP Solvers:** Solve for camera pose given 3D-2D point correspondences. `pnp::refine_pose_lm_analytic` refines a pose by LM with a closed-form Jacobian and no allocation on a successful solve (Identity or Huber; `refine_pose_lm` remains the general solver).
 *   **PnP Solvers:** Solve for camera pose given 3D-2D point correspondences. `pnp::rig::ransac_lifted_ap3p` solves a multi-camera rig's pose from `camera::Ray` matches: AP3P on one camera's rays, lifted to the rig and scored on every camera.
 *   **PnP Solvers:** Solve for camera pose given 3D-2D point correspondences.
+*   **Dense Linear Algebra:** `linalg::dense_llt::DenseLlt` is a reusable dense Cholesky factor on an explicit `faer::Par`, bit-identical to `Mat::llt` on the same parallelism. `linalg::schur::schur_complement` eliminates variables from a quadratic and returns the marginal prior with its gradient and cost.
 *   **Dense Linear Algebra:** `linalg::dense_llt::DenseLlt` is a reusable dense Cholesky factor on an explicit `faer::Par`, bit-identical to `Mat::llt` on the same parallelism.
 *   **Camera Models:** `camera::Fisheye624Camera` is Aria's radial-tangential thin-prism fisheye (projectaria-tools `FISHEYE624`), also as `Camera::Fisheye624`.
 *   **Triangulation:** `pose::triangulate_matched_points_two_cameras` triangulates pairs seen by two different camera models, with optional per-pair reprojection thresholds per view.
