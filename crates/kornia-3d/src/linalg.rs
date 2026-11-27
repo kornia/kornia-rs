@@ -1,6 +1,9 @@
 /// Reusable dense Cholesky factor and solve on an explicit faer parallelism.
 pub mod dense_llt;
 
+/// Schur complement of a quadratic, the prior left by marginalization.
+pub mod schur;
+
 /// Transform a set of 3D points using a rotation and translation.
 ///
 /// # Arguments
