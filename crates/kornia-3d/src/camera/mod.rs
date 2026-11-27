@@ -5,15 +5,18 @@
 //! - [`AffineCamera`] — float64 affine world-to-image projection and Jacobians.
 //! - [`PinholeCamera`] — pinhole model with Brown-Conrady distortion.
 //! - [`FisheyeCamera`] — Kannala-Brandt equidistant fisheye model.
-//! - [`Camera`] — either model, chosen at runtime.
+//! - [`Fisheye624Camera`](crate::camera::Fisheye624Camera) — Aria radial-tangential thin-prism fisheye model.
+//! - [`Camera`] — one of the central models, chosen at runtime.
 
 mod affine;
 mod fisheye;
+mod fisheye624;
 mod model;
 mod pinhole;
 
 pub use affine::AffineCamera;
 pub use fisheye::FisheyeCamera;
+pub use fisheye624::Fisheye624Camera;
 pub use model::{Camera, CameraModel};
 pub use pinhole::{PinholeCamera, ProjectionReject};
 
