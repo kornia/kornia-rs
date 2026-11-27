@@ -66,7 +66,8 @@ impl Pose3d {
     ///
     /// # Returns
     ///
-    /// The position of the camera origin in world coordinates.
+    /// The position of the camera origin in world coordinates, in the same
+    /// units as the pose translation.
     ///
     /// # Errors
     ///
