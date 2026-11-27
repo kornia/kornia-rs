@@ -23,6 +23,8 @@ one fails here, not silently.
 
 This cannot check that guidance is complete or that it was applied.
 """
+from __future__ import annotations
+
 import argparse
 import os
 import re
@@ -152,6 +154,18 @@ PUBLISH_PROBES = [
 ]
 
 
+def diff_touches_library(diff: Path) -> bool:
+    """Check both paths of a rename or copy using Git's path filtering."""
+    includes = ["--include=crates/*", "--include=kornia-py/src/*", "--include=kornia-cpp/src/*"]
+    # git apply filters on the destination. Reversing the patch checks its source.
+    for direction in ([], ["--reverse"]):
+        stat = subprocess.run(["git", "apply", "--numstat", *direction, *includes, str(diff)],
+                              cwd=ROOT, capture_output=True, check=True)
+        if stat.stdout:
+            return True
+    return False
+
+
 def self_review_error(body: str, library: bool) -> str | None:
     """Mirror the Self-review failures in .github/workflows/pr-validation.yml."""
     body = re.sub(r"<!--.*?-->", "", body, flags=re.S)
@@ -263,12 +277,10 @@ def main() -> int:
         for diff in (merged, patch):
             if not diff.is_file():
                 continue
-            stat = subprocess.run(["git", "apply", "--numstat", "-z", str(diff)], cwd=ROOT, capture_output=True)
-            if stat.returncode:
-                errors.append(f"eval {case.name}: cannot read {diff.name}: {stat.stderr.decode(errors='replace').strip()}")
-                continue
-            paths = (row.split(b"\t", 2)[2] for row in stat.stdout.split(b"\0") if row)
-            library |= any(path.startswith((b"crates/", b"kornia-py/src/", b"kornia-cpp/src/")) for path in paths)
+            try:
+                library |= diff_touches_library(diff)
+            except subprocess.CalledProcessError as e:
+                errors.append(f"eval {case.name}: cannot read {diff.name}: {e.stderr.decode(errors='replace').strip()}")
         pr = case / "pr.md"
         if pr.is_file():
             if problem := self_review_error(pr.read_text(encoding="utf-8"), library):

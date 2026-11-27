@@ -20,7 +20,7 @@ When failing, quote the false finding.
 ## Key (expected.md)
 
 A passing review approves (negative control: measures false positives):
-1. No blocking or major finding, except optionally a request for before/after bench numbers on the changed rayon splits.
+1. No blocking or major finding except for either or both of these optional findings: a request for before/after bench numbers on the changed rayon splits, or a correction to the baseline rustdoc's 4096-pixel precision threshold. Even in a 3000×3000 image, the squared distance 2999² + 2998² = 17,982,005 rounds to 17,982,004 in `f32`.
 2. No blocking or major finding is false (`graders/precision.md`, reported, not scored).
 
 ## PR description
@@ -305,4 +305,4 @@ new file mode 100644
 +For images with zero width or height, `DistanceTransformExecutor::execute` returns an empty image of the same size and `compute_histogram` leaves the histogram unchanged.
 ```
 
-<!-- skill_evals.py sync: 010eda1da517b9ee -->
+<!-- skill_evals.py sync: 5131df640ae1bf7d -->

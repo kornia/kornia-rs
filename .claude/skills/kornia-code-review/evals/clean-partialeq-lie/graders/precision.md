@@ -37,7 +37,7 @@ User-visible fix: `changelog.d/746.fixed.md`.
 - Each struct's rustdoc says the comparison is exact and member-wise, so `q` and `-q` (the same rotation) compare unequal.
 
 ## How Was This Tested?
-The bug is a build failure, so the regression check is an all-features build. The first local build reproduces #746 without the derives. The second includes them. CI coverage came later in #1236: on today's main, both `rust-check` and `rust-test` explicitly enable `kornia-algebra/approx`.
+The bug is a build failure, so the regression check is an all-features build. The first local build reproduces #728 without the derives. The second includes them. CI coverage came later in #1236: on today's main, both `rust-check` and `rust-test` explicitly enable `kornia-algebra/approx`.
 ```text
 $ cargo check --all-targets --all-features -p kornia-algebra   # before this PR
 error[E0277]: can't compare `SE3F32` with `SE3F32`
@@ -236,4 +236,4 @@ new file mode 100644
 +`SO3F32`, `RxSO3F32`, `SE3F32` and `Sim3F32` derive `PartialEq`, so `kornia-algebra` builds with `--all-features`.
 ```
 
-<!-- skill_evals.py sync: d63d5efbe3cd0f63 -->
+<!-- skill_evals.py sync: 7d4901eeca5eab83 -->

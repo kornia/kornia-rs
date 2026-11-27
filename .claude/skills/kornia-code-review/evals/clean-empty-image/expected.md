@@ -1,6 +1,6 @@
 A passing review approves (negative control: measures false positives):
 
-1. No blocking or major finding, except optionally a request for before/after bench numbers on the changed rayon splits.
+1. No blocking or major finding except for either or both of these optional findings: a request for before/after bench numbers on the changed rayon splits, or a correction to the baseline rustdoc's 4096-pixel precision threshold. Even in a 3000×3000 image, the squared distance 2999² + 2998² = 17,982,005 rounds to 17,982,004 in `f32`.
 2. No blocking or major finding is false (`graders/precision.md`, reported, not scored).
 
 Origin: #1166 (`ead741e778`). The fixture treats the original rustdoc as baseline except for the sentence about empty output. This keeps the unrelated no-foreground and precision notes out of the simulated change. The October runs below used the original diff. The fixture PR includes the before/after test output and a changelog fragment. `issue.md` is #1163 as it was when the PR opened.
