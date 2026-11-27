@@ -308,7 +308,7 @@ mod tests {
         use std::io::Write;
         let dir = tempfile::tempdir().unwrap();
 
-        let header = "10 2\n0\n0\n";
+        let header = "10 2\n";
         let desc = "0 ".repeat(32);
 
         // Negative weight

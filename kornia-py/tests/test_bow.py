@@ -182,6 +182,19 @@ def test_l2_score_identical_transform_output():
     assert bow.l2_similarity(bow) == pytest.approx(1.0, abs=1e-5)
 
 
+def test_l2_score_large_weights_no_overflow():
+    """Verify that large finite weights do not overflow to infinity in L2 scoring."""
+    bow = K.bow.BoW()
+    bow.__setstate__([(1, 1e30)])
+    assert bow.score(bow, "l2") == pytest.approx(1.0, abs=1e-5)
+    assert bow.l2_similarity(bow) == pytest.approx(1.0, abs=1e-5)
+
+    multi = K.bow.BoW()
+    multi.__setstate__([(1, 3e30), (2, 4e30)])
+    assert multi.score(multi, "l2") == pytest.approx(1.0, abs=1e-5)
+    assert multi.l2_similarity(multi) == pytest.approx(1.0, abs=1e-5)
+
+
 def test_kl_divergence_and_score_rejection():
     """Verify that kl_divergence is exposed as a distance and rejected in score()."""
     bow_a = K.bow.BoW()

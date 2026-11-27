@@ -16,12 +16,24 @@ impl BoW {
     }
 
     /// Normalizes the BoW vector using L2 norm (sum of squares = 1.0).
+    ///
+    /// Uses maximum-scaled Euclidean norm to prevent overflow when components are large finite values.
     pub fn normalize_l2(&mut self) {
-        let sum_sq: f32 = self.0.iter().map(|&(_, v)| v * v).sum();
-        if sum_sq > 0.0 {
-            let norm = sum_sq.sqrt();
-            for (_, v) in self.0.iter_mut() {
-                *v /= norm;
+        let max_val: f32 = self.0.iter().map(|&(_, v)| v.abs()).fold(0.0f32, f32::max);
+        if max_val > 0.0 && max_val.is_finite() {
+            let sum_sq_scaled: f32 = self
+                .0
+                .iter()
+                .map(|&(_, v)| {
+                    let scaled = v / max_val;
+                    scaled * scaled
+                })
+                .sum();
+            let scale_factor = sum_sq_scaled.sqrt();
+            if scale_factor > 0.0 {
+                for (_, v) in self.0.iter_mut() {
+                    *v = (*v / max_val) / scale_factor;
+                }
             }
         }
     }
@@ -243,5 +255,19 @@ mod tests {
 
         let kl = bow1.kl_divergence(&bow2);
         assert!(kl > 9.0 && kl < 9.3);
+    }
+
+    #[test]
+    fn test_l2_normalize_large_weights_no_overflow() {
+        let mut bow = BoW(vec![(1, 1e30)]);
+        bow.normalize_l2();
+        assert!((bow.0[0].1 - 1.0).abs() < 1e-6);
+        assert!((bow.l2(&bow) - 1.0).abs() < 1e-6);
+
+        let mut multi = BoW(vec![(1, 3e30), (2, 4e30)]);
+        multi.normalize_l2();
+        assert!((multi.0[0].1 - 0.6).abs() < 1e-5);
+        assert!((multi.0[1].1 - 0.8).abs() < 1e-5);
+        assert!((multi.l2(&multi) - 1.0).abs() < 1e-5);
     }
 }
