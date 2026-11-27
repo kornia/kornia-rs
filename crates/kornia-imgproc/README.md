@@ -24,6 +24,7 @@
 *   **Feature Detection:** (Experimental) Corner detection and feature extraction. `features::good_features_to_track` finds Shi-Tomasi corners in the grid cells existing tracks leave empty, and `features::corner_sub_pix` refines corners as OpenCV's `cornerSubPix`.
     With the `cuda` feature, `cuda::harris::launch_harris_f32` computes f32 Harris responses on device buffers.
 *   **Table Remap:** `interpolation::RemapTable` precomputes a constant map's taps and weights once; `interpolation::remap_u8_table` applies it to a mono `u8` image without allocating, byte-identical to `remap_u8` or with OpenCV's `CV_16SC2` quantisation.
+*   **Window LK:** `optical_flow_pyr_lk::{LkFrame, extract_template, track_template}` track one window at a time with the fixed-point LK, computing gradients on each template's patch only; one level equals `calc_optical_flow_pyr_lk_u8` bit for bit.
 *   **Contours:** Find image contours and compute their properties.
 
 ## 📦 Installation

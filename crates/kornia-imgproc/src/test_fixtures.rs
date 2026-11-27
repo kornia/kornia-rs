@@ -11,6 +11,8 @@ pub(crate) const MIN_DISTANCE: f32 = 23.0;
 pub(crate) const BORDER: usize = 9;
 pub(crate) const SUBPIX_HALF_WIN: usize = 5;
 pub(crate) const SUBPIX_MAX_ITER: usize = 30;
+pub(crate) const LK_WIN: usize = 11;
+pub(crate) const LK_MAX_ITER: usize = 8;
 pub(crate) const EPSILON: f32 = 0.01;
 
 /// Size of the remap fixture's output, half of `mh01_frame1.png`.
