@@ -1,3 +1,6 @@
+/// Reusable dense Cholesky factor and solve on an explicit faer parallelism.
+pub mod dense_llt;
+
 /// Transform a set of 3D points using a rotation and translation.
 ///
 /// # Arguments
