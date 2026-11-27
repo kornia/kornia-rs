@@ -1,6 +1,5 @@
 //! Pose representation utilities.
 
-use kornia_algebra::linalg::svd::svd3_f64;
 use kornia_algebra::{Mat3F64, Vec3F64};
 
 /// A rigid 3D pose that maps points from world frame to camera frame.
@@ -106,14 +105,15 @@ impl Pose3d {
     ///
     /// The rotation is replaced by the nearest proper rotation in the
     /// Frobenius norm, `U·diag(1, 1, det(U·Vᵀ))·Vᵀ` from the SVD `R = U·Σ·Vᵀ`
-    /// (polar projection). A rigid pose comes back unchanged up to rounding,
+    /// (polar projection, [`Mat3F64::nearest_rotation`]). A rigid pose comes back unchanged up to rounding,
     /// `s·R` comes back as `R` for any `s > 0`, and a reflection comes back as
     /// the nearest rotation.
     ///
     /// # Returns
     ///
     /// A pose whose [`Pose3d::rotation_defect`] is at rounding level.
-    /// A non-finite rotation gives a non-finite result.
+    /// A non-finite rotation, or one whose SVD does not converge, is returned
+    /// unchanged.
     ///
     /// # Example
     ///
@@ -128,14 +128,10 @@ impl Pose3d {
     /// assert_eq!(rigid.translation, drifted.translation);
     /// ```
     pub fn orthonormalized(&self) -> Self {
-        if !self.rotation.to_cols_array().iter().all(|v| v.is_finite()) {
-            return *self;
+        match self.rotation.nearest_rotation() {
+            Some(rotation) => Self::new(rotation, self.translation),
+            None => *self,
         }
-        let svd = svd3_f64(&self.rotation);
-        let (u, v) = (svd.u(), svd.v());
-        let sign = (u.determinant() * v.determinant()).signum();
-        let rotation = *u * Mat3F64::from_diagonal(Vec3F64::new(1.0, 1.0, sign)) * v.transpose();
-        Self::new(rotation, self.translation)
     }
 
     /// Transform a world-frame point into camera frame.
@@ -208,7 +204,7 @@ mod tests {
     #[test]
     fn test_orthonormalized_restores_a_scaled_rotation() {
         let t = Vec3F64::new(4.0, -1.5, 12.0);
-        for scale in [0.999, 1.001, 1.0 + 1e-7] {
+        for scale in [0.999, 1.001, 1.0 + 1e-7, 1e100, 1e300, 1e-300] {
             let pose = Pose3d::new(rotation() * scale, t).orthonormalized();
             assert!(pose.rotation_defect() < 1e-12, "scale {scale}");
             assert_eq!(pose.translation, t);
@@ -232,6 +228,16 @@ mod tests {
         let mut pose = Pose3d::new(rotation(), Vec3F64::ZERO);
         pose.rotation.x_axis.x = f64::NAN;
         assert_eq!(pose.orthonormalized().rotation_defect(), f64::INFINITY);
+    }
+
+    /// The result is the nearest rotation, so `Rᵀ·M` is symmetric. `svd3_f64`
+    /// leaves it asymmetric by about 2e-5 on this matrix.
+    #[test]
+    fn test_orthonormalized_is_the_nearest_rotation() {
+        let m = Mat3F64::from_cols_array(&[-0.2, 0.6, -0.6, -0.3, 0.6, -0.3, 0.0, 0.9, -0.8]);
+        let rotation = Pose3d::new(m, Vec3F64::ZERO).orthonormalized().rotation;
+        let p = rotation.transpose() * m;
+        assert!(p.abs_diff_eq(p.transpose().0, 1e-12));
     }
 
     #[test]

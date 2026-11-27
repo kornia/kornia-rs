@@ -51,3 +51,6 @@ pub mod transforms;
 
 /// Voxel grids: sparse hash grid, voxel downsampling and voxel density filtering.
 pub mod voxel;
+
+#[cfg(test)]
+pub(crate) mod test_utils;
