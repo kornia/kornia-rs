@@ -4,26 +4,45 @@ use kornia_3d::pose::{
     fundamental_8point, ransac_fundamental, ransac_homography, sampson_distance, RansacParams,
 };
 use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64};
+use rand::{rngs::StdRng, RngExt, SeedableRng};
 
-/// Generate synthetic point correspondences satisfying a fundamental matrix.
+/// Generate correspondences of random 3D points seen by two cameras with the
+/// `bench_essential_pipeline` intrinsics, and their fundamental matrix
+/// `F = K⁻ᵀ [t]ₓ R K⁻¹`, rank two by construction.
 fn generate_fundamental_data(n: usize) -> (Vec<Vec2F64>, Vec<Vec2F64>, Mat3F64) {
-    let f_true = Mat3F64::from_cols(
-        Vec3F64::new(0.0, -0.001, 0.01),
-        Vec3F64::new(0.0015, 0.0, -0.02),
-        Vec3F64::new(-0.01, 0.02, 1.0),
+    let k = Mat3F64::from_cols(
+        Vec3F64::new(500.0, 0.0, 0.0),
+        Vec3F64::new(0.0, 500.0, 0.0),
+        Vec3F64::new(320.0, 240.0, 1.0),
     );
-    let mut x1 = Vec::with_capacity(n);
-    let mut x2 = Vec::with_capacity(n);
-    for i in 0..n {
-        let xi = i as f64 * 1.2 - (n as f64 / 2.0);
-        let yi = i as f64 * -0.8 + (n as f64 / 4.0);
-        let x = Vec3F64::new(xi, yi, 1.0);
-        let l = f_true * x;
-        let xp = if l.x.abs() > 1e-12 { -l.z / l.x } else { 0.0 };
-        x1.push(Vec2F64::new(xi, yi));
-        x2.push(Vec2F64::new(xp, 0.0));
-    }
-    (x1, x2, f_true)
+    let (sin, cos) = 0.1_f64.sin_cos();
+    let r = Mat3F64::from_cols(
+        Vec3F64::new(cos, 0.0, -sin),
+        Vec3F64::new(0.0, 1.0, 0.0),
+        Vec3F64::new(sin, 0.0, cos),
+    );
+    let t = Vec3F64::new(0.5, 0.1, 0.2);
+    let t_cross = Mat3F64::from_cols(
+        Vec3F64::new(0.0, t.z, -t.y),
+        Vec3F64::new(-t.z, 0.0, t.x),
+        Vec3F64::new(t.y, -t.x, 0.0),
+    );
+    let project = |p: Vec3F64| {
+        let q = k * p;
+        Vec2F64::new(q.x / q.z, q.y / q.z)
+    };
+    let mut rng = StdRng::seed_from_u64(42);
+    let (x1, x2) = (0..n)
+        .map(|_| {
+            let p = Vec3F64::new(
+                rng.random_range(-2.0..2.0),
+                rng.random_range(-1.5..1.5),
+                rng.random_range(3.0..8.0),
+            );
+            (project(p), project(r * p + t))
+        })
+        .unzip();
+    (x1, x2, k.inverse().transpose() * t_cross * r * k.inverse())
 }
 
 /// Generate synthetic point correspondences satisfying a homography.
