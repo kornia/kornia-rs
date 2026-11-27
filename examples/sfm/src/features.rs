@@ -238,7 +238,9 @@ impl FeatureExtractor for SiftCudaExtractor {
                 SiftCuda::new(&self.ctx, &stream, w, h, cfg, FirstOctave::Native, 8)?,
             ));
         }
-        let (_, _, sift) = guard.as_mut().expect("plan was just built");
+        let Some((_, _, sift)) = guard.as_mut() else {
+            return Err("sift cuda plan missing after rebuild".into());
+        };
         let feats = sift.detect_and_compute(&self.ctx, &stream, &dev)?;
 
         // Keep the descriptors on device so matching runs on the GPU too.

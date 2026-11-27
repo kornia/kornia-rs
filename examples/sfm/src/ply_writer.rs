@@ -60,6 +60,8 @@ pub(crate) fn build_vertices(
         }
     }
 
+    // One scratch buffer reused across points instead of one Vec per point.
+    let mut observers: Vec<(Vec3F64, Option<[u8; 3]>)> = Vec::new();
     reconstruction
         .points
         .iter()
@@ -70,24 +72,19 @@ pub(crate) fn build_vertices(
             let track_id = pt.track_id;
 
             // Observers that actually saw this point (surviving observations).
-            let mut observers: Vec<(Vec3F64, Option<[u8; 3]>)> = obs_by_point[pi]
-                .iter()
-                .filter_map(|&oi| {
-                    let view = reconstruction.observations[oi].view;
-                    let center = view_centre(&reconstruction.views, view)?;
-                    Some((center, colour_for_view(observation_colors, track_id, view)))
-                })
-                .collect();
+            observers.clear();
+            observers.extend(obs_by_point[pi].iter().filter_map(|&oi| {
+                let view = reconstruction.observations[oi].view;
+                let center = view_centre(&reconstruction.views, view)?;
+                Some((center, colour_for_view(observation_colors, track_id, view)))
+            }));
             // Fallback: the track's raw observations (a filtered point may have
             // no surviving observation).
             if observers.is_empty() {
                 if let Some(raw) = observation_colors.get(track_id) {
-                    observers = raw
-                        .iter()
-                        .filter_map(|&(view, color)| {
-                            view_centre(&reconstruction.views, view).map(|c| (c, Some(color)))
-                        })
-                        .collect();
+                    observers.extend(raw.iter().filter_map(|&(view, color)| {
+                        view_centre(&reconstruction.views, view).map(|c| (c, Some(color)))
+                    }));
                 }
             }
 
@@ -502,10 +499,31 @@ mod tests {
         let verts = build_vertices(&recon, &observation_colors);
         assert_eq!(verts.len(), recon.points.len());
         assert!(verts.iter().all(|v| v.normal.iter().all(|c| c.is_finite())));
-        assert!(
-            verts.iter().all(|v| palette.contains(&v.color)),
-            "every vertex must take one of the per-camera colours"
-        );
+        // Each vertex must take the colour of its head-on observer: the
+        // observer whose direction has the largest |dot| with the normal,
+        // matching `orient_normal_and_pick_color`.
+        for (pi, vert) in verts.iter().enumerate() {
+            let p = recon.points[pi].position;
+            let normal = Vec3F64::new(vert.normal[0], vert.normal[1], vert.normal[2]);
+            let mut best: Option<usize> = None;
+            let mut best_score = f64::NEG_INFINITY;
+            for obs in recon.observations.iter().filter(|o| o.point == pi) {
+                let Some(centre) = view_centre(&recon.views, obs.view) else {
+                    continue;
+                };
+                let score = normal.dot((centre - p).normalize()).abs();
+                if score > best_score {
+                    best_score = score;
+                    best = Some(obs.view);
+                }
+            }
+            if let Some(view) = best {
+                assert_eq!(
+                    vert.color, palette[view],
+                    "vertex {pi} must take its head-on observer's colour"
+                );
+            }
+        }
     }
 
     #[test]
