@@ -636,9 +636,16 @@ impl StreamCapture {
         let deadline = Instant::now() + CLOSE_EOS_TIMEOUT;
         let sink_pads: Vec<_> = self
             .pipeline
-            .iterate_sinks()
+            .iterate_recurse()
             .into_iter()
             .flatten()
+            // A sink bin may have no exposed pad. Flush the actual leaf sinks.
+            .filter(|element| {
+                !element.is::<gstreamer::Bin>()
+                    && element
+                        .element_flags()
+                        .contains(gstreamer::ElementFlags::SINK)
+            })
             .flat_map(|sink| sink.sink_pads())
             .collect();
         let flush_sinks = || {
@@ -1065,11 +1072,22 @@ mod tests {
     #[test]
     fn close_interrupts_clock_wait_and_restart_receives_frames(
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let capture = StreamCapture::new(
-            "videotestsrc name=src is-live=true timestamp-offset=30000000000 ! \
-             video/x-raw,format=RGB,width=4,height=4,framerate=30/1 ! \
-             appsink name=sink sync=true async=false max-buffers=1 drop=false",
-        )?;
+        check_clock_wait_recovery(CLOCK_WAIT_PIPELINE)
+    }
+
+    const CLOCK_WAIT_PIPELINE: &str =
+        "videotestsrc name=src is-live=true timestamp-offset=30000000000 ! \
+         video/x-raw,format=RGB,width=4,height=4,framerate=30/1 ! \
+         appsink name=sink sync=true async=false max-buffers=1 drop=false";
+
+    #[test]
+    fn nested_sink_timeout_flushes_and_restarts_capture() -> Result<(), Box<dyn std::error::Error>>
+    {
+        check_clock_wait_recovery(&format!("pipeline.( bin.( {CLOCK_WAIT_PIPELINE} ) )"))
+    }
+
+    fn check_clock_wait_recovery(pipeline: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let capture = StreamCapture::new(pipeline)?;
         let source = capture.pipeline.by_name("src").ok_or("missing source")?;
         let sink = capture
             .appsink
