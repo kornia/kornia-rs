@@ -153,7 +153,11 @@ def add_weighted(
 def normalize_mean_std(
     image: np.ndarray, mean: Sequence[float], std: Sequence[float]
 ) -> np.ndarray:
-    """Per-channel ``(x/255 - mean) / std`` (3-channel u8 -> float32 HWC)."""
+    """Per-channel ``(x - mean) / std`` (3-channel u8 -> float32 HWC).
+
+    ``x`` is the raw u8 value with no ``/255`` step, so ``mean`` and ``std`` are in
+    0..255 units.
+    """
     ...
 def compute_histogram(image: np.ndarray | Image, num_bins: int) -> list[int]: ...
 def connected_components(
