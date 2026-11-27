@@ -236,7 +236,7 @@ pub struct PnPRansacResult {
 /// * `distortion` - Lens distortion of `image`, or `None` for undistorted points. Must be `None`
 ///   with an AP3P or SQPnP kernel (see `# Errors`).
 /// * `base` - Kernel for the minimal samples (EPnP, SQPnP or AP3P). An EPnP or SQPnP `base` also
-///   configures the final refit.
+///   configures the final refit. SQPnP is the most expensive kernel per sample.
 /// * `params` - RANSAC parameters; `params.confidence` must be finite and strictly between zero
 ///   and one.
 ///

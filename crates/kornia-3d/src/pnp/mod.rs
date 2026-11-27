@@ -66,10 +66,6 @@ pub enum PnPError {
     #[error("Camera matrix K is singular or not finite")]
     InvalidCameraMatrix,
 
-    /// An input point or a value computed from the inputs is not finite.
-    #[error("Non-finite value: {0}")]
-    NonFinite(&'static str),
-
     /// The correspondences do not determine a pose.
     #[error("Degenerate correspondences: {0}")]
     DegenerateConfiguration(&'static str),

@@ -347,9 +347,10 @@ impl Mat3F64 {
     /// reflection, negating a column of `U·Vᵀ` instead gives a rotation that is in general not the
     /// nearest.
     ///
-    /// nalgebra's 3x3 SVD works on `MᵀM`, so singular values below about `1e-8` of the largest are
-    /// lost and the rotation is not reliable in their plane (e.g. the covariance of a nearly flat
-    /// point cloud).
+    /// nalgebra's 3x3 SVD works on `MᵀM`, so accuracy drops as the second singular value shrinks
+    /// next to the largest, e.g. for the covariance of nearly collinear points. On
+    /// `A·diag(1, s, 0)·B` the rotation is off by about `2e-8` at `s = 1e-4`, `2e-4` at
+    /// `s = 1e-6` and `2e-2` at `s = 1e-7`.
     ///
     /// # Returns
     ///
@@ -430,6 +431,7 @@ impl Mat3AF32 {
 }
 
 impl From<Mat3AF32> for Mat3F64 {
+    /// Converts each element to `f64` exactly.
     #[inline]
     fn from(m: Mat3AF32) -> Self {
         Self(m.0.as_dmat3())
@@ -966,7 +968,8 @@ mod tests {
         Ok(())
     }
 
-    /// `R` is the rotation nearest to `M` only if `Rᵀ·M` is symmetric (polar decomposition).
+    /// The nearest rotation `R` maximises `tr(Rᵀ·M)`: `Rᵀ·M` is symmetric (polar decomposition),
+    /// and turning `R` a little in any direction lowers the trace.
     #[test]
     fn test_mat3f64_nearest_rotation_is_exact() -> Result<(), &'static str> {
         // `svd3_f64`'s projection leaves Rᵀ·M asymmetric by about 2e-5 on this matrix.
@@ -974,6 +977,21 @@ mod tests {
         let r = m.nearest_rotation().ok_or("no rotation")?;
         let p = r.transpose() * m;
         assert!(p.abs_diff_eq(p.transpose().0, 1e-12));
+        let trace = |q: Mat3F64| {
+            let a = q.transpose() * m;
+            a.x_axis.x + a.y_axis.y + a.z_axis.z
+        };
+        let axes = [
+            Vec3F64::new(1.0, 0.0, 0.0),
+            Vec3F64::new(0.0, 1.0, 0.0),
+            Vec3F64::new(0.0, 0.0, 1.0),
+        ];
+        for axis in axes {
+            for angle in [1e-3, -1e-3] {
+                let turned = r * SO3F64::exp(axis * angle).matrix();
+                assert!(trace(turned) < trace(r), "{axis:?} {angle}");
+            }
+        }
         Ok(())
     }
 

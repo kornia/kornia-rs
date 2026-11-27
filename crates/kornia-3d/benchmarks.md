@@ -21,86 +21,85 @@ cargo test --release -p kornia-3d --lib -- --ignored --nocapture pnp_accuracy_re
 | Scenes (`bench_pnp`) | random points in a 2 m cube, or a 2 m square for `planar`, seen from 6 m; uniform noise of up to 1 px; fixed seed |
 | Batch | each `pnp` iteration solves 20 scenes, each `pnp_ransac` iteration 5 (100 inliers + 100 outliers); times below are per single solve |
 | Failing cases | every scene is solved once before timing; a case that fails is reported as skipped, never timed |
-| Timing | criterion defaults (3 s warm-up, 5 s measurement, 100 samples); the time shown is criterion's median divided by the batch size |
+| Timing | criterion defaults (3 s warm-up, 5 s measurement, 100 samples); the time shown is criterion's point estimate divided by the batch size |
 | Accuracy (`pnp_accuracy_report`) | 200 random scenes per row, fixed seeds; Gaussian pixel noise with the σ given in each table; failure = rotation error above 5° or no pose. The RANSAC rows add random outlier correspondences and use a 3 px threshold |
-
-**Note:** plain EPnP still has #1181 (wrong pose on noise-free data), which is why it fails in
-most accuracy rows and likely why the EPnP RANSAC kernel finds too few inliers on one bench scene. Expect EPnP and
-EPnP + LM numbers to change when that is fixed.
 
 ---
 
-## Results — 2026-10-22
+## Results — 2026-11-26
 
 ### Hardware / software
 
 | Field | Value |
 |-------|-------|
-| Code | #1183 with SQPnP's algebraic objective (`Q_i = A_iᵀA_i`, as OpenCV's `computeOmega`) |
+| Code | #1183 merged with main `4ada5a75` |
 | Machine | MacBook Air (Mac17,3), Apple M5 (4P+6E cores), 16 GB RAM |
-| OS | macOS 27.0.1 (arm64) |
+| OS | macOS 27.2.1 (arm64) |
 | Rust | 1.99.0 (b940084d7 2026-09-28), `--release` |
 
 ### Speed
 
-Measured on 2026-11-02 on the same machine (macOS 27.2) at commit b192dbb4, with
 `cargo bench -p kornia-3d --bench bench_pnp`, run twice. Each value is the faster of the two
-criterion medians, per single solve, in µs. The machine was not idle (load average 4 to 8), and
-the two runs differed by up to 3x on some cases, so read these as rough sizes, not exact numbers.
+criterion point estimates, per single solve, in µs. The machine was not idle (load average 3 to 8), so
+read these as rough sizes, not exact numbers.
 
 | Solver | n = 6 | n = 20 | n = 100 | n = 500 |
 |--------|-------|--------|---------|---------|
-| EPnP | 9.6 | 10.3 | 15.4 | 43.0 |
-| EPnP + LM | 101 | 277 | 1436 | 5891 |
-| SQPnP | 13.5 | 10.6 | 12.3 | 18.0 |
-| EPnP, planar | 8.1 | 11.9 | 13.6 | 34.7 |
-| EPnP + LM, planar | 103 | skipped | 1656 | 7203 |
-| SQPnP, planar | 43.3 | 41.9 | 50.8 | 50.6 |
+| EPnP | 9.9 | 10.5 | 14.1 | 33.7 |
+| EPnP + LM | 77 | 218 | 939 | 3623 |
+| SQPnP | 13.6 | 10.2 | 12.0 | 18.6 |
+| EPnP, planar | 7.9 | 8.2 | 11.7 | 31.1 |
+| EPnP + LM, planar | skipped | skipped | skipped | skipped |
+| SQPnP, planar | 44.2 | 39.0 | 40.4 | 45.0 |
 
-`solve_pnp_ransac` (100 inliers + 100 outliers), per scene: AP3P 1344 µs, SQPnP 13138 µs. EPnP is
-skipped (too few inliers on one scene), and so is EPnP + LM, planar, n = 20 (the LM step fails on one
-scene); both are likely #1181.
+EPnP + LM, planar is skipped because `refine_pose_lm` returns an error ("Point behind or too close
+to camera") on one scene of each size.
+
+`solve_pnp_ransac` (100 inliers + 100 outliers), per scene: EPnP 1050 µs, AP3P 872 µs, SQPnP
+12647 µs.
 
 ### Accuracy
 
-Median rotation error (°) and median relative translation error (%) over the scenes that returned a pose, and failure rate (%).
+`cargo test --release -p kornia-3d --lib -- --ignored --nocapture pnp_accuracy_report`. Median
+rotation error (°) and median relative translation error (%) over the scenes that returned a pose,
+and failure rate (%).
 
 #### Correspondence count (1 px noise, points in a 2 m cube 6 m away)
 
 | n | EPnP rot° | EPnP trans % | EPnP fail % | EPnP+LM rot° | EPnP+LM trans % | EPnP+LM fail % | SQPnP rot° | SQPnP trans % | SQPnP fail % |
 |---|---|---|---|---|---|---|---|---|---|
-| 4 | 2.629 | 1.785 | 42.5 | 0.881 | 0.498 | 11.5 | 0.762 | 0.442 | 0.5 |
-| 6 | 32.069 | 9.529 | 80.5 | 0.539 | 0.346 | 5.5 | 0.515 | 0.354 | 0.0 |
-| 10 | 36.286 | 8.631 | 86.5 | 0.374 | 0.242 | 1.5 | 0.365 | 0.240 | 0.0 |
-| 20 | 45.629 | 7.594 | 83.5 | 0.243 | 0.141 | 0.5 | 0.240 | 0.139 | 0.0 |
-| 50 | 36.761 | 6.243 | 82.0 | 0.153 | 0.089 | 0.0 | 0.151 | 0.098 | 0.0 |
-| 100 | 41.065 | 7.791 | 81.0 | 0.099 | 0.057 | 0.0 | 0.101 | 0.055 | 0.0 |
-| 500 | 31.401 | 7.005 | 82.5 | 0.047 | 0.029 | 0.0 | 0.048 | 0.035 | 0.0 |
+| 4 | 1.272 | 1.004 | 26.0 | 0.880 | 0.478 | 13.5 | 0.762 | 0.442 | 0.5 |
+| 6 | 0.580 | 0.397 | 0.0 | 0.515 | 0.347 | 0.0 | 0.515 | 0.354 | 0.0 |
+| 10 | 0.443 | 0.263 | 0.0 | 0.370 | 0.235 | 0.0 | 0.365 | 0.240 | 0.0 |
+| 20 | 0.275 | 0.183 | 0.0 | 0.236 | 0.129 | 0.0 | 0.240 | 0.139 | 0.0 |
+| 50 | 0.170 | 0.103 | 0.0 | 0.151 | 0.091 | 0.0 | 0.151 | 0.098 | 0.0 |
+| 100 | 0.120 | 0.068 | 0.0 | 0.099 | 0.055 | 0.0 | 0.101 | 0.055 | 0.0 |
+| 500 | 0.051 | 0.035 | 0.0 | 0.046 | 0.028 | 0.0 | 0.048 | 0.035 | 0.0 |
 
 #### Pixel noise (20 points in a 2 m cube 6 m away)
 
 | noise px | EPnP rot° | EPnP trans % | EPnP fail % | EPnP+LM rot° | EPnP+LM trans % | EPnP+LM fail % | SQPnP rot° | SQPnP trans % | SQPnP fail % |
 |---|---|---|---|---|---|---|---|---|---|
-| 0 | 38.669 | 7.001 | 81.5 | 0.000 | 0.000 | 0.5 | 0.000 | 0.000 | 0.0 |
-| 0.5 | 42.629 | 8.081 | 87.0 | 0.122 | 0.067 | 1.0 | 0.126 | 0.067 | 0.0 |
-| 1 | 48.118 | 6.627 | 84.0 | 0.252 | 0.157 | 0.5 | 0.253 | 0.155 | 0.0 |
-| 2 | 46.882 | 7.400 | 81.5 | 0.470 | 0.264 | 0.0 | 0.479 | 0.274 | 0.0 |
-| 5 | 37.627 | 6.491 | 83.0 | 1.098 | 0.701 | 0.0 | 1.128 | 0.739 | 0.0 |
+| 0 | 0.000 | 0.000 | 0.0 | 0.000 | 0.000 | 0.0 | 0.000 | 0.000 | 0.0 |
+| 0.5 | 0.146 | 0.075 | 0.0 | 0.121 | 0.066 | 0.0 | 0.126 | 0.067 | 0.0 |
+| 1 | 0.300 | 0.192 | 0.0 | 0.247 | 0.162 | 0.0 | 0.253 | 0.155 | 0.0 |
+| 2 | 0.551 | 0.365 | 0.0 | 0.477 | 0.262 | 0.0 | 0.479 | 0.274 | 0.0 |
+| 5 | 1.402 | 0.890 | 0.0 | 1.121 | 0.685 | 0.0 | 1.128 | 0.739 | 0.0 |
 
 #### Harder configurations (1 px noise)
 
 | case | EPnP rot° | EPnP trans % | EPnP fail % | EPnP+LM rot° | EPnP+LM trans % | EPnP+LM fail % | SQPnP rot° | SQPnP trans % | SQPnP fail % |
 |---|---|---|---|---|---|---|---|---|---|
-| planar, n=20 | 78.625 | 23.255 | 99.5 | 0.639 | 0.274 | 24.5 | 0.412 | 0.210 | 0.0 |
-| small object far (0.5 m cube at 30 m), n=20 | 34.747 | 10.236 | 91.5 | 8.840 | 8.322 | 81.5 | 5.147 | 7.123 | 52.0 |
-| close range (2 m cube at 2.5 m), n=20 | 52.409 | 14.725 | 67.0 | 0.093 | 0.070 | 0.5 | 0.106 | 0.075 | 0.0 |
-| minimum, n=4 (0.5 px noise) | 1.009 | 0.806 | 30.0 | 0.409 | 0.255 | 6.0 | 0.395 | 0.226 | 0.0 |
+| planar, n=20 | 64.518 | 100.000 | 98.0 | 0.497 | 0.240 | 53.0 | 0.412 | 0.210 | 0.0 |
+| small object far (0.5 m cube at 30 m), n=20 | 6.153 | 3.112 | 65.5 | 5.469 | 3.419 | 59.0 | 5.147 | 7.123 | 52.0 |
+| close range (2 m cube at 2.5 m), n=20 | 0.131 | 0.096 | 0.0 | 0.093 | 0.071 | 0.0 | 0.106 | 0.075 | 0.0 |
+| minimum, n=4 (0.5 px noise) | 0.946 | 0.674 | 32.0 | 0.455 | 0.285 | 18.5 | 0.395 | 0.226 | 0.0 |
 
 #### Inside solve_pnp_ransac (50 inliers with 1 px noise, plus random outliers)
 
 | case | EPnP rot° | EPnP trans % | EPnP fail % | AP3P rot° | AP3P trans % | AP3P fail % | SQPnP rot° | SQPnP trans % | SQPnP fail % |
 |---|---|---|---|---|---|---|---|---|---|
-| no outliers | 0.587 | 0.401 | 0.0 | 0.205 | 0.106 | 0.0 | 0.170 | 0.105 | 0.0 |
-| 25% outliers | 0.587 | 0.408 | 0.0 | 0.183 | 0.110 | 0.0 | 0.160 | 0.098 | 0.0 |
-| 50% outliers | 1.379 | 1.161 | 59.0 | 0.180 | 0.104 | 0.0 | 0.213 | 0.144 | 0.0 |
-| planar, 25% outliers | 30.507 | 5.959 | 100.0 | 0.425 | 0.196 | 0.5 | 0.268 | 0.153 | 0.0 |
+| no outliers | 0.208 | 0.110 | 0.0 | 0.206 | 0.111 | 0.0 | 0.170 | 0.105 | 0.0 |
+| 25% outliers | 0.187 | 0.120 | 0.0 | 0.177 | 0.113 | 0.0 | 0.160 | 0.098 | 0.0 |
+| 50% outliers | 0.239 | 0.144 | 2.5 | 0.178 | 0.105 | 0.0 | 0.213 | 0.144 | 0.0 |
+| planar, 25% outliers | 13.913 | 2.349 | 94.5 | 0.662 | 0.287 | 2.0 | 0.268 | 0.153 | 0.0 |

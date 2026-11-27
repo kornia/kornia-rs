@@ -265,6 +265,7 @@ define_cross_product!(Vec3F64, glam::DVec3);
 define_cross_product!(Vec3AF32, glam::Vec3A);
 
 impl From<Vec2F32> for Vec2F64 {
+    /// Converts each component to `f64` exactly.
     #[inline]
     fn from(v: Vec2F32) -> Self {
         glam::Vec2::from(v).as_dvec2().into()
@@ -272,6 +273,7 @@ impl From<Vec2F32> for Vec2F64 {
 }
 
 impl From<Vec3AF32> for Vec3F64 {
+    /// Converts each component to `f64` exactly.
     #[inline]
     fn from(v: Vec3AF32) -> Self {
         glam::Vec3A::from(v).as_dvec3().into()

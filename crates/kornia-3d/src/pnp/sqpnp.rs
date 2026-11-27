@@ -15,6 +15,7 @@
 //! - On noisy, nearly fronto-parallel planar scenes SQP can stop at `sqp_max_iterations`
 //!   (`converged == Some(false)`) slightly short of the global minimum.
 //! - Points close to the camera get little weight; set `refine_lm` when the pixel error matters.
+//! - Collinear world points leave the rotation about their line free; it returns one such pose.
 //!
 //! # Differences from OpenCV
 //!
@@ -60,6 +61,10 @@ type VecKkt = SVector<f64, KKT_LEN>;
 
 /// Minimum number of correspondences (`solve_pnp_ransac` needs 4, see `ransac.rs`).
 const MIN_CORRESPONDENCES: usize = 3;
+
+/// World points whose spread around their centroid is below this times the centroid's distance
+/// from the origin differ only by `f32` rounding (about 16 steps) and count as one point.
+const COINCIDENT_POINTS_RELATIVE_TOLERANCE: f64 = 2e-6;
 
 /// `√3`: the norm of `vec(R)` for any rotation `R`.
 const SQRT3: f64 = 1.732_050_807_568_877_2;
@@ -152,9 +157,11 @@ impl Default for SQPnPParams {
 /// * [`PnPError::MismatchedArrayLengths`] - `points_world` and `points_image` differ in length.
 /// * [`PnPError::InsufficientCorrespondences`] - Fewer than 3 correspondences.
 /// * [`PnPError::InvalidCameraMatrix`] - `K` is singular or not finite.
-/// * [`PnPError::NonFinite`] - An input point or the reprojection error is not finite.
+/// * [`PnPError::InvalidInput`] - A point is not finite, or the inputs are so extreme that `Ω` or
+///   the reprojection error is not finite.
 /// * [`PnPError::DegenerateConfiguration`] - The translation system is singular or
-///   ill-conditioned (e.g. all lines of sight are parallel), or all world points coincide.
+///   ill-conditioned (e.g. all lines of sight are parallel), or all world points coincide within
+///   `f32` rounding (spread below `2e-6` of their distance from the origin).
 /// * [`PnPError::SvdFailed`] - The eigen-decomposition of `Ω` does not converge.
 /// * [`PnPError::CheiralityCheckFailed`] - No pose puts the points in front of the camera.
 /// * With `params.refine_lm`, any error of [`refine_pose_lm`].
@@ -206,8 +213,25 @@ pub fn solve_sqpnp(
     }
 
     let sight = LineOfSight::new(*k, distortion.copied())?;
+    if let Some(i) = points_world
+        .iter()
+        .position(|p| !p.to_array().into_iter().all(f32::is_finite))
+    {
+        return Err(PnPError::InvalidInput(format!(
+            "world point {i} is not finite"
+        )));
+    }
     // Centred world points: better conditioned Ω, and the centroid's depth is t'_z.
     let world_centroid = centroid(points_world);
+    let spread = points_world
+        .iter()
+        .map(|p| (Vec3F64::from(*p) - world_centroid).length())
+        .fold(0.0, f64::max);
+    if spread <= COINCIDENT_POINTS_RELATIVE_TOLERANCE * world_centroid.length() {
+        return Err(PnPError::DegenerateConfiguration(
+            "all world points coincide within f32 rounding",
+        ));
+    }
     let objective = Objective::new(points_world, points_image, world_centroid, &sight)?;
     let best = minimize_on_so3(&objective, params)?;
 
@@ -248,7 +272,9 @@ pub fn solve_sqpnp(
     if pose.reproj_rmse.is_some_and(f32::is_finite) {
         Ok(pose)
     } else {
-        Err(PnPError::NonFinite("reprojection error"))
+        Err(PnPError::InvalidInput(
+            "the reprojection error is not finite".to_string(),
+        ))
     }
 }
 
@@ -289,7 +315,7 @@ impl LineOfSight {
     ///
     /// # Errors
     ///
-    /// Returns [`PnPError::NonFinite`] if the pixel maps to a non-finite coordinate.
+    /// Returns [`PnPError::InvalidInput`] if the pixel maps to a non-finite coordinate.
     fn direction(&self, uv: Vec2F32) -> Result<Vec3F64, PnPError> {
         let uv = Vec2F64::from(uv);
         let h = self.k_inv * Vec3F64::new(uv.x, uv.y, 1.0);
@@ -304,12 +330,18 @@ impl LineOfSight {
                 d,
                 UNDISTORT_CRITERIA,
             );
+            if !undistorted.converged {
+                log::debug!("Undistortion of pixel {uv:?} did not converge");
+            }
             (x, y) = (undistorted.x, undistorted.y);
         }
         if x.is_finite() && y.is_finite() {
             Ok(Vec3F64::new(x, y, 1.0))
         } else {
-            Err(PnPError::NonFinite("image point"))
+            Err(PnPError::InvalidInput(format!(
+                "image point ({}, {}) maps to a non-finite coordinate",
+                uv.x, uv.y
+            )))
         }
     }
 }
@@ -330,9 +362,9 @@ impl Objective {
     ///
     /// # Errors
     ///
-    /// Returns [`PnPError::NonFinite`] if an image point maps to a non-finite coordinate,
+    /// Returns [`PnPError::InvalidInput`] if an image point maps to a non-finite coordinate,
     /// [`PnPError::DegenerateConfiguration`] if `S` is singular or ill-conditioned (e.g. every
-    /// image point is the same), and [`PnPError::NonFinite`] if `Ω` is not finite.
+    /// image point is the same), and [`PnPError::InvalidInput`] if `Ω` is not finite.
     fn new(
         points_world: &[Vec3AF32],
         points_image: &[Vec2F32],
@@ -388,7 +420,9 @@ impl Objective {
         if omega.iter().all(|v| v.is_finite()) {
             Ok(Self { omega, p })
         } else {
-            Err(PnPError::NonFinite("world point"))
+            Err(PnPError::InvalidInput(
+                "the objective Ω is not finite".to_string(),
+            ))
         }
     }
 
@@ -430,8 +464,7 @@ struct Candidate {
 ///
 /// # Errors
 ///
-/// Returns [`PnPError::SvdFailed`] if the eigen-decomposition of `Ω` does not converge,
-/// [`PnPError::DegenerateConfiguration`] if `Ω` is all zeros, and
+/// Returns [`PnPError::SvdFailed`] if the eigen-decomposition of `Ω` does not converge, and
 /// [`PnPError::CheiralityCheckFailed`] if no candidate passes the depth check.
 fn minimize_on_so3(objective: &Objective, params: &SQPnPParams) -> Result<Candidate, PnPError> {
     let eig = SymmetricEigen::try_new(objective.omega, f64::EPSILON, MAX_DECOMPOSITION_ITERATIONS)
@@ -441,11 +474,6 @@ fn minimize_on_so3(objective: &Objective, params: &SQPnPParams) -> Result<Candid
     let eigenvalue = |k: usize| eig.eigenvalues[order[k]].max(0.0);
 
     let lambda_max = eigenvalue(VEC_R_LEN - 1);
-    if lambda_max <= 0.0 {
-        return Err(PnPError::DegenerateConfiguration(
-            "all world points coincide",
-        ));
-    }
     let num_null = (0..VEC_R_LEN)
         .filter(|&k| eigenvalue(k) <= params.rank_tolerance * lambda_max)
         .count();
@@ -1023,13 +1051,27 @@ mod tests {
             solve_with_k(&world, &image[..3], &k),
             Err(PnPError::MismatchedArrayLengths { .. })
         ));
-        // All world points coincide: centred, they are all zero, and so is Ω.
-        assert!(matches!(
-            solve_with_k(&[world[4]; 5], &image, &k),
-            Err(PnPError::DegenerateConfiguration(
-                "all world points coincide"
-            ))
-        ));
+        // All world points coincide, also at 0.1 (not exact in binary) and when they differ only
+        // by one f32 rounding step.
+        let p = Vec3AF32::new(0.1, 0.1, 0.1);
+        let rounded = [
+            p,
+            Vec3AF32::new(0.1f32.next_up(), 0.1, 0.1),
+            Vec3AF32::new(0.1, 0.1f32.next_down(), 0.1),
+            Vec3AF32::new(0.1, 0.1, 0.1f32.next_up()),
+            p,
+        ];
+        for coincident in [[world[4]; 5], [p; 5], rounded] {
+            assert!(
+                matches!(
+                    solve_with_k(&coincident, &image, &k),
+                    Err(PnPError::DegenerateConfiguration(
+                        "all world points coincide within f32 rounding"
+                    ))
+                ),
+                "{coincident:?}"
+            );
+        }
         // Every line of sight is the same ray. Off the principal point, rounding leaves
         // S = Σ Q_i invertible in floating point.
         for pixel in [Vec2F32::new(640.0, 480.0), Vec2F32::new(700.0, 433.0)] {
@@ -1317,16 +1359,17 @@ mod tests {
         let (mut world, mut image) = (valid_world(), valid_image());
         let plain = SQPnPParams::default();
         let with_lm = with_lm();
+        let invalid = |result: Result<PnPResult, PnPError>, reason: &str| matches!(result, Err(PnPError::InvalidInput(r)) if r == reason);
         world[1].x = f32::NAN;
-        assert!(matches!(
+        assert!(invalid(
             solve_sqpnp(&world, &image, &k, None, &plain),
-            Err(PnPError::NonFinite("world point"))
+            "world point 1 is not finite"
         ));
         world[1].x = 1.0;
         image[2].y = f32::INFINITY;
-        assert!(matches!(
+        assert!(invalid(
             solve_sqpnp(&world, &image, &k, None, &plain),
-            Err(PnPError::NonFinite("image point"))
+            "image point (650, inf) maps to a non-finite coordinate"
         ));
         // A pixel at 1e30 makes the translation system ill-conditioned.
         image[2].y = 1e30;
@@ -1340,9 +1383,9 @@ mod tests {
         }
         image[2].y = 500.0;
         world[0] = Vec3AF32::new(3e38, 3e38, 3e38);
-        assert!(matches!(
+        assert!(invalid(
             solve_sqpnp(&world, &image, &k, None, &plain),
-            Err(PnPError::NonFinite("reprojection error"))
+            "the reprojection error is not finite"
         ));
         // With LM the error may come from `refine_pose_lm` (on x86_64 Linux, "point behind camera").
         assert!(solve_sqpnp(&world, &image, &k, None, &with_lm).is_err());
