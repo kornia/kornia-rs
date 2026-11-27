@@ -15,8 +15,8 @@ MP4 ─► RGB+gray frames ─► features (ORB/SIFT) ─► pairwise matches
 | Stage | Module |
 |---|---|
 | Frame decoding (GStreamer) | `video.rs` |
-| Feature extraction (ORB / SIFT, sync or parallel) | `features.rs` |
-| Sliding-window matching (sync or parallel) | `matching.rs` |
+| Feature extraction (ORB / SIFT; parallel on CPU, sequential on device) | `features.rs` |
+| Sliding-window matching (parallel CPU or device) | `matching.rs` |
 | Track building | `kornia_calib::build_tracks` |
 | Incremental SfM | `reconstruction.rs` → `kornia_calib::reconstruct` |
 | PLY export + normals | `ply_writer.rs` |
@@ -70,9 +70,11 @@ cargo run -p sfm -- sample.mp4 out.ply \
   cuda`; needs the CUDA runtime
   on `LD_LIBRARY_PATH`). NVRTC kernels are JIT-compiled on the first frame.
 - **Noisy matches / poor ORB reconstruction**: add `--geo-verify`.
-- **Long videos**: raise `--frame-step` (fewer cameras to register). Kept RGB
-  frames stay resident until tracks are built (~2.8 MB per 1280x720 frame,
-  so a full 628-frame clip at `--frame-step 1` needs ~1.7 GB).
+- **Long videos**: raise `--frame-step` (fewer cameras to register). Peak
+  residency is RGB + gray during extraction (~3.7 MB per 1280x720 frame, ~2.3 GB
+  for 628 frames at `--frame-step 1`); gray is released after extraction and RGB
+  after colour sampling. `--cuda` SIFT additionally holds each frame's device
+  descriptors until matching ends (~1 MB/frame at 2000 features).
 
 ## Matching model and future upgrades
 
@@ -111,38 +113,39 @@ Planned upgrades (each belongs in a core crate, not this example):
 `swiss_knife.mp4` — 628 frames, 1280x720 HEVC orbit. Intrinsics
 `--fx 895 --fy 895 --cx 640 --cy 360`, `--n-features 500`, `--frame-step 10`
 (63 frames) unless noted. CUDA rows use `--cuda` (build with `--features cuda`; device SIFT extraction *and*
-matching). Decode is clock-paced at ~24 s and is included in `Total`.
+matching). Decode is clock-paced at ~24 s and is included in `Total`. Measured on `f612f8d2`.
 
 | Config | Detector | Extract (s) | Match (s) | Geo (s) | Matches (raw→verified) | Tracks | Recon (s) | Points | Views | RMSE (px) | Total (s) |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | `orb_base` | ORB | 0.0 | 0.0 | — | 17964 | 3645 | 0.0 | 69 | 2/63 | 1.013 | 23.5 |
 | `orb_geo` | ORB | 0.0 | 0.0 | 0.1 | 17964→13211 | 3688 | 0.0 | 125 | 2/63 | 0.694 | 23.4 |
-| `orb_geo --geo-min-inliers 8` | ORB | 0.0 | 0.0 | 0.1 | 17964→14315 | 3781 | 0.0 | 130 | 2/63 | 0.695 | 23.4 |
-| `orb_geo --wide-baseline 20` | ORB | 0.0 | 0.0 | 0.1 | 19029→13344 | 3663 | 0.2 | 924 | 17/63 | 1.366 | 23.6 |
-| `sift_base` | SIFT (CUDA) | 0.5 | 0.1 | — | 21667 | 3483 | 0.1 | 551 | 10/63 | 2.458 | 24.0 |
-| `sift_geo` | SIFT (CUDA) | 0.5 | 0.1 | 0.1 | 21667→17170 | 3780 | 0.4 | 1172 | 22/63 | 2.076 | 24.3 |
-| `sift_geo_sprt` (champion) | SIFT (CUDA) | 0.5 | 0.1 | 0.1 | 21667→17170 | 3780 | 0.5 | 1171 | 22/63 | 2.068 | 24.3 |
-| champion, no `--cuda` | SIFT (CPU) | 2.4 | 0.0 | 0.1 | 21667→17170 | 3780 | 0.5 | 1171 | 22/63 | 2.068 | 26.2 |
-| champion + `--refine-intrinsics` | SIFT (CUDA) | 0.5 | 0.1 | 0.1 | 21667→17170 | 3780 | 0.5 | 1171 | 22/63 | 2.045 | 24.6 |
-| champion + `--wide-baseline 20` | SIFT (CUDA) | 0.5 | 0.1 | 0.1 | 22643→17389 | 3711 | 0.7 | 1275 | 25/63 | 2.093 | 24.6 |
-| champion, `--frame-step 5` | SIFT (CUDA) | 0.9 | 0.2 | 0.1 | 70314→60896 | 6590 | 5.4 | 3882 | 84/126 | 2.299 | 30.0 |
+| `orb_geo --geo-min-inliers 8` | ORB | 0.0 | 0.0 | 0.1 | 17964→14315 | 3781 | 0.0 | 130 | 2/63 | 0.695 | 23.5 |
+| `orb_geo --wide-baseline 20` | ORB | 0.0 | 0.0 | 0.1 | 19029→13344 | 3663 | 0.2 | 924 | 17/63 | 1.366 | 23.7 |
+| `sift_base` | SIFT (CUDA) | 0.6 | 0.1 | — | 21667 | 3483 | 0.1 | 551 | 10/63 | 2.458 | 24.1 |
+| `sift_geo` | SIFT (CUDA) | 0.6 | 0.1 | 0.1 | 21667→17170 | 3780 | 0.5 | 1172 | 22/63 | 2.076 | 24.5 |
+| `sift_geo_sprt` (champion) | SIFT (CUDA) | 0.6 | 0.1 | 0.1 | 21667→17170 | 3780 | 0.4 | 1174 | 22/63 | 2.081 | 26.9 |
+| champion, no `--cuda` | SIFT (CPU) | 2.6 | 0.0 | 0.1 | 21667→17170 | 3780 | 0.4 | 1174 | 22/63 | 2.081 | 26.5 |
+| champion + `--refine-intrinsics` | SIFT (CUDA) | 0.9 | 0.1 | 0.1 | 21667→17170 | 3780 | 0.5 | 1174 | 22/63 | 2.059 | 27.6 |
+| champion + `--wide-baseline 20` | SIFT (CUDA) | 0.6 | 0.1 | 0.1 | 22643→17389 | 3711 | 0.8 | 1276 | 25/63 | 2.088 | 24.9 |
+| champion, `--frame-step 5` | SIFT (CUDA) | 0.7 | 0.1 | 0.1 | 70314→60896 | 6590 | 5.5 | 3879 | 84/126 | 2.313 | 29.8 |
 
 Observations:
 
 - **Deterministic**: two identical champion runs produce byte-identical PLY.
-- **`--cuda` == CPU output**: byte-identical PLY. It cuts extraction 2.4 s →
-  0.5 s and total 26.2 s → 24.3 s; matching is sub-0.2 s on both paths.
-- **Reconstruction is now sub-second** on this clip (0.0–0.7 s except the
-  larger `--frame-step 5` map); the run is dominated by the clock-paced decode.
+- **`--cuda` == CPU output**: byte-identical PLY. It cuts extraction 2.6 s →
+  0.6 s; totals are decode-dominated, so they move with the machine, not the
+  matcher.
+- **Reconstruction is sub-second** on this clip (0.0–0.8 s except the larger
+  `--frame-step 5` map); the run is dominated by the clock-paced decode.
 - **`--geo-verify` is the accuracy lever**: SIFT 10 → 22 views. ORB stays at
   2/63 with 500 features *without* wide-baseline (upstream ORB now honours the
   per-frame keypoint budget, which changes the keypoint distribution); it
   reaches 17/63 with `--wide-baseline 20`.
-- **`--sprt` no longer changes registration here** (22 views with or without,
-  1171 vs 1172 points); it only changes PnP cost on harder data.
+- **`--sprt` no longer changes registration here** (22 views with or without);
+  it only changes PnP cost on harder data.
 - **`--refine-intrinsics`** is near-neutral here (the EXIF focal is already
-  accurate: it fits `gamma≈1.00`; RMSE 2.068 → 2.045 px).
-- **`--frame-step 5`** gives the densest map (3882 pts, 84/126 views) at higher
+  accurate: it fits `gamma≈1.00`; RMSE 2.081 → 2.059 px).
+- **`--frame-step 5`** gives the densest map (3879 pts, 84/126 views) at higher
   RMSE.
 
 Reproduce the champion (device SIFT, requires an NVIDIA GPU with NVRTC on the
