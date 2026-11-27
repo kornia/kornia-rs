@@ -58,6 +58,18 @@ pub trait CameraModel {
     fn unproject(&self, pixel: &Vec2F64) -> Option<Vec3F64>;
 }
 
+/// A ray in 3D: an origin and a unit direction, in one frame.
+///
+/// A camera ray in a multi-camera rig is the camera centre and the bearing
+/// [`CameraModel::unproject`] returns, both expressed in the rig frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Ray {
+    /// Origin of the ray.
+    pub origin: Vec3F64,
+    /// Unit direction of the ray.
+    pub direction: Vec3F64,
+}
+
 /// A camera whose model is chosen at runtime.
 #[derive(Debug, Clone)]
 pub enum Camera {

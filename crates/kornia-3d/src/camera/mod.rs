@@ -7,6 +7,8 @@
 //! - [`FisheyeCamera`] — Kannala-Brandt equidistant fisheye model.
 //! - [`Fisheye624Camera`](crate::camera::Fisheye624Camera) — Aria radial-tangential thin-prism fisheye model.
 //! - [`Camera`] — one of the central models, chosen at runtime.
+//! - [`Camera`] — either model, chosen at runtime.
+//! - [`Ray`](crate::camera::Ray) — an origin and a unit bearing, e.g. a pixel's ray in a rig frame.
 
 mod affine;
 mod fisheye;
@@ -18,6 +20,7 @@ pub use affine::AffineCamera;
 pub use fisheye::FisheyeCamera;
 pub use fisheye624::Fisheye624Camera;
 pub use model::{Camera, CameraModel};
+pub use model::{Camera, CameraModel, Ray};
 pub use pinhole::{PinholeCamera, ProjectionReject};
 
 pub use fisheye::project_point_fisheye;
