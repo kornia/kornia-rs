@@ -456,12 +456,12 @@ impl WorkFrame {
 }
 
 /// `v` in `f64` (exact).
-fn to_f64(v: Vec3AF32) -> Vec3F64 {
+pub(super) fn to_f64(v: Vec3AF32) -> Vec3F64 {
     Vec3F64::new(v.x.into(), v.y.into(), v.z.into())
 }
 
 /// `m` in `f64` (exact).
-fn mat_to_f64(m: Mat3AF32) -> Mat3F64 {
+pub(super) fn mat_to_f64(m: Mat3AF32) -> Mat3F64 {
     Mat3F64::from_cols_array(&m.to_cols_array().map(f64::from))
 }
 
