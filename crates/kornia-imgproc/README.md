@@ -23,6 +23,7 @@
 *   **Histograms:** Compute and manipulate image histograms.
 *   **Feature Detection:** (Experimental) Corner detection and feature extraction.
     With the `cuda` feature, `cuda::harris::launch_harris_f32` computes f32 Harris responses on device buffers.
+*   **Table Remap:** `interpolation::RemapTable` precomputes a constant map's taps and weights once; `interpolation::remap_u8_table` applies it to a mono `u8` image without allocating, byte-identical to `remap_u8` or with OpenCV's `CV_16SC2` quantisation.
 *   **Contours:** Find image contours and compute their properties.
 
 ## 📦 Installation
