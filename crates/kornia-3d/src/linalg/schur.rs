@@ -13,7 +13,10 @@
 //! pseudo-inverse from a symmetric eigendecomposition is used, with
 //! eigenvalues at or below `n · ε · λ_max` cut. Basalt always pseudo-inverts
 //! (`marg_helper.cpp`); this keeps the cheaper and exact Cholesky path when it
-//! applies. Runs on faer, beside [`dense_llt`](crate::linalg::dense_llt), rather than on the
+//! applies. When `b_m` has a component outside the range of a singular `H_mm`,
+//! the quadratic is unbounded below in the eliminated variables; the
+//! pseudo-inverse then returns the prior of the projection of `b_m` onto that
+//! range, not a minimum. Runs on faer, beside [`dense_llt`](crate::linalg::dense_llt), rather than on the
 //! kornia-algebra (nalgebra) types other new solvers use: its callers already hold faer
 //! matrices, and a conversion would change the bits of their priors.
 
@@ -57,9 +60,12 @@ pub struct SchurComplement {
     /// `b' = b_k − H_km H_mm⁻¹ b_m`.
     pub b: Vec<f64>,
     /// `c = −½ b_mᵀ H_mm⁻¹ b_m`, the minimum over the eliminated variables at
-    /// `x_k = 0`.
+    /// `x_k = 0` (see [`Self::pseudo_inverse`] for the singular case).
     pub constant: f64,
-    /// `H_mm` was not positive definite, so its pseudo-inverse was used.
+    /// `H_mm` was not positive definite, so its pseudo-inverse was used. Each
+    /// right-hand side is then projected onto the range of `H_mm`: when `b_m`
+    /// or `H_mk` reaches outside it, the original quadratic has no minimum over
+    /// the eliminated variables and the prior is that of the projection.
     pub pseudo_inverse: bool,
     /// `H_mm` had an eigenvalue below `−n · ε · λ_max`: it is indefinite, not
     /// only rank-deficient. Those directions were dropped with the
@@ -83,7 +89,7 @@ impl SchurComplement {
     /// # Errors
     ///
     /// [`SchurError::DimensionMismatch`] when `d` does not have one entry per
-    /// kept variable.
+    /// kept variable, or `h` is not `b.len()` square.
     pub fn gradient(&self, d: &[f64]) -> Result<Vec<f64>, SchurError> {
         self.check_len(d)?;
         Ok((0..self.b.len())
@@ -100,12 +106,13 @@ impl SchurComplement {
     /// # Returns
     ///
     /// The minimum of the original quadratic over the eliminated variables,
-    /// with the kept variables at `d`.
+    /// with the kept variables at `d` (the projected value when
+    /// [`Self::pseudo_inverse`] is set and no minimum exists).
     ///
     /// # Errors
     ///
     /// [`SchurError::DimensionMismatch`] when `d` does not have one entry per
-    /// kept variable.
+    /// kept variable, or `h` is not `b.len()` square.
     pub fn cost(&self, d: &[f64]) -> Result<f64, SchurError> {
         self.check_len(d)?;
         let n = d.len();
@@ -117,14 +124,14 @@ impl SchurComplement {
     }
 
     fn check_len(&self, d: &[f64]) -> Result<(), SchurError> {
-        if d.len() == self.b.len() {
-            Ok(())
-        } else {
-            Err(SchurError::DimensionMismatch {
-                expected: self.b.len(),
-                got: d.len(),
-            })
+        let n = self.b.len();
+        // The fields are public, so `h` can be swapped independently of `b`.
+        for got in [self.h.nrows(), self.h.ncols(), d.len()] {
+            if got != n {
+                return Err(SchurError::DimensionMismatch { expected: n, got });
+            }
         }
+        Ok(())
     }
 }
 
@@ -205,6 +212,11 @@ pub fn schur_complement(
         });
     }
     let h_mm = Mat::<f64>::from_fn(nm, nm, |r, c| h[(marg[r], marg[c])]);
+    // The eigen path can return NaN eigenvalues that the cut then drops,
+    // hiding a non-finite H_mm from the final check.
+    if (0..nm).any(|c| h_mm.col_as_slice(c).iter().any(|v| !v.is_finite())) {
+        return Err(SchurError::NonFinite);
+    }
     // [H_mk | b_m]: one solve gives H_mm⁻¹ H_mk and H_mm⁻¹ b_m.
     let rhs = Mat::<f64>::from_fn(nm, nk + 1, |r, c| match c {
         c if c == nk => b[marg[r]],
@@ -225,7 +237,8 @@ pub fn schur_complement(
     let mut out = Mat::<f64>::from_fn(nk, nk, |r, c| h[(keep[r], keep[c])] - correction(r, c));
     for r in 0..nk {
         for c in (r + 1)..nk {
-            let avg = 0.5 * (out[(r, c)] + out[(c, r)]);
+            // Halve before adding: the sum of two finite entries can overflow.
+            let avg = 0.5 * out[(r, c)] + 0.5 * out[(c, r)];
             out[(r, c)] = avg;
             out[(c, r)] = avg;
         }
@@ -402,6 +415,44 @@ mod tests {
             schur_complement(&spd(3, 23), &[f64::INFINITY, 0.0, 0.0], &[0], &[]).unwrap_err(),
             SchurError::NonFinite
         );
+    }
+
+    #[test]
+    fn a_non_finite_marginal_block_is_refused() {
+        // Cholesky fails on the −1 pivot; the eigen path must not drop the NaN.
+        let mut h = Mat::<f64>::zeros(3, 3);
+        h[(0, 0)] = 2.0;
+        h[(1, 1)] = -1.0;
+        h[(2, 2)] = f64::NAN;
+        assert_eq!(
+            schur_complement(&h, &[0.0; 3], &[0], &[1, 2]).unwrap_err(),
+            SchurError::NonFinite
+        );
+    }
+
+    #[test]
+    fn symmetrizing_large_finite_entries_does_not_overflow() {
+        let rows = [
+            [1.5e308, 1e308, 0.0],
+            [1e308, 1.5e308, 0.0],
+            [0.0, 0.0, 1.0],
+        ];
+        let h = Mat::<f64>::from_fn(3, 3, |r, c| rows[r][c]);
+        let prior = schur_complement(&h, &[0.0; 3], &[0, 1], &[2]).unwrap();
+        assert_eq!(prior.h[(0, 1)], 1e308);
+        assert_eq!(prior.h[(1, 0)], 1e308);
+    }
+
+    #[test]
+    fn a_reshaped_prior_is_refused() {
+        let mut prior = schur_complement(&spd(3, 29), &[0.1; 3], &[0], &[1, 2]).unwrap();
+        prior.h = Mat::zeros(0, 0);
+        let mismatch = SchurError::DimensionMismatch {
+            expected: 1,
+            got: 0,
+        };
+        assert_eq!(prior.cost(&[0.0]).unwrap_err(), mismatch);
+        assert_eq!(prior.gradient(&[0.0]).unwrap_err(), mismatch);
     }
 
     #[test]
