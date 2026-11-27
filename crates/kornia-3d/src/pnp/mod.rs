@@ -15,6 +15,9 @@ pub mod refine_analytic;
 /// AP3P solver implementation.
 pub mod ap3p;
 
+/// Multi-camera rig pose from ray matches: AP3P lifted to the rig, with RANSAC.
+pub mod rig;
+
 mod ops;
 
 pub use ap3p::{AP3PParams, AP3P};

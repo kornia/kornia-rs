@@ -6,6 +6,7 @@
 //! - [`PinholeCamera`] — pinhole model with Brown-Conrady distortion.
 //! - [`FisheyeCamera`] — Kannala-Brandt equidistant fisheye model.
 //! - [`Camera`] — either model, chosen at runtime.
+//! - [`Ray`](crate::camera::Ray) — an origin and a unit bearing, e.g. a pixel's ray in a rig frame.
 
 mod affine;
 mod fisheye;
@@ -14,7 +15,7 @@ mod pinhole;
 
 pub use affine::AffineCamera;
 pub use fisheye::FisheyeCamera;
-pub use model::{Camera, CameraModel};
+pub use model::{Camera, CameraModel, Ray};
 pub use pinhole::{PinholeCamera, ProjectionReject};
 
 pub use fisheye::project_point_fisheye;
