@@ -132,7 +132,7 @@ impl FeatureExtractor for SiftExtractor {
         let h = gray.height();
         // SIFT's pipeline scales input by 1/255 internally, so feed the raw
         // 0..255 pixel values (not normalized to 0..1).
-        let buf: Vec<f32> = gray.as_slice().iter().map(|&v| v as f32).collect();
+        let gray_f32 = gray.cast::<f32>()?;
 
         let cfg = SiftConfig {
             n_features: self.n_features,
@@ -147,7 +147,7 @@ impl FeatureExtractor for SiftExtractor {
             .unwrap_or_default();
         let feats = sift_detect_and_compute(
             &mut ws,
-            &buf,
+            gray_f32.as_slice(),
             w,
             h,
             &cfg,
@@ -218,8 +218,7 @@ impl FeatureExtractor for SiftCudaExtractor {
 
         // SIFT's pipeline scales input by 1/255 internally, so feed the raw
         // 0..255 pixel values (not normalized to 0..1).
-        let buf: Vec<f32> = gray.as_slice().iter().map(|&v| v as f32).collect();
-        let gray_f32 = Image::<f32, 1>::new(gray.size(), buf)?;
+        let gray_f32 = gray.cast::<f32>()?;
         let dev = gray_f32.to_cuda(&stream)?;
 
         let cfg = SiftCudaConfig {

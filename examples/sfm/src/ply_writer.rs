@@ -248,12 +248,19 @@ fn pca_normals_axis(points: &[Vec3F64]) -> Vec<Vec3F64> {
     // (but finite) axis rather than dropping out of the map.
     let k = NonZeroUsize::new(NORMAL_K.min(points.len()).max(2)).unwrap();
 
+    // One scratch buffer reused across points: a 100k-point export would
+    // otherwise make 100k+ small allocations.
+    let mut neighbours: Vec<Vec3F64> = Vec::with_capacity(k.get());
     points
         .iter()
         .map(|p| {
-            let query = p.to_array();
-            let nn = kdtree.nearest_n::<kiddo::SquaredEuclidean>(&query, k);
-            let neighbours: Vec<Vec3F64> = nn.iter().map(|nb| points[nb.item as usize]).collect();
+            neighbours.clear();
+            neighbours.extend(
+                kdtree
+                    .nearest_n::<kiddo::SquaredEuclidean>(&p.to_array(), k)
+                    .iter()
+                    .map(|nb| points[nb.item as usize]),
+            );
             pca_normal(&neighbours)
         })
         .collect()
@@ -469,25 +476,36 @@ mod tests {
         )
         .expect("synthetic scene must reconstruct");
 
-        // Three neutral RGB frames, same size as the synthetic scene's image.
-        let mut frames = Vec::new();
-        for _ in 0..test_util::N_FRAMES {
-            frames.push(
-                Image::<u8, 3>::from_size_val(
+        // One distinct solid colour per camera, so the colour picked for a
+        // vertex identifies which observation (and therefore which track id /
+        // surviving-observation lookup) it came from. Uniform frames would let
+        // a broken mapping pass.
+        let palette = [[255u8, 0, 0], [0, 255, 0], [0, 0, 255]];
+        let frames: Vec<Image<u8, 3>> = (0..test_util::N_FRAMES)
+            .map(|i| {
+                let mut frame = Image::<u8, 3>::from_size_val(
                     ImageSize {
                         width: 640,
                         height: 480,
                     },
-                    128,
+                    0,
                 )
-                .unwrap(),
-            );
-        }
+                .unwrap();
+                for px in frame.as_slice_mut().chunks_exact_mut(3) {
+                    px.copy_from_slice(&palette[i]);
+                }
+                frame
+            })
+            .collect();
 
         let observation_colors = sample_observation_colors(&tracks, &frames);
         let verts = build_vertices(&recon, &observation_colors);
         assert_eq!(verts.len(), recon.points.len());
         assert!(verts.iter().all(|v| v.normal.iter().all(|c| c.is_finite())));
+        assert!(
+            verts.iter().all(|v| palette.contains(&v.color)),
+            "every vertex must take one of the per-camera colours"
+        );
     }
 
     #[test]
