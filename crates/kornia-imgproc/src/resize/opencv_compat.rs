@@ -329,6 +329,249 @@ fn resize_linear_f32<const C: usize>(
     Ok(())
 }
 
+/// Q8 weight scale of OpenCV's bit-exact `INTER_LINEAR_EXACT` (`ufixedpoint16`).
+const EXACT_ONE: u32 = 1 << 8;
+
+/// One axis of `INTER_LINEAR_EXACT` (`interpolationLinear::getCoeffs`):
+/// left tap and Q8 right weight per destination index, plus the first index
+/// that is not a left-border copy and the first that is a right-border copy.
+#[derive(Debug, Default, Clone)]
+struct LinearExactAxis {
+    ofs: Vec<u32>,
+    c1: Vec<u16>,
+    /// `(256 - c1) | c1 << 16`, the `pmaddwd` weights.
+    pairs: Vec<u32>,
+    min: usize,
+    max: usize,
+}
+
+impl LinearExactAxis {
+    /// OpenCV's coefficient loop. `scale = 1 / (dst / src)` and the sample
+    /// position in f64 (softdouble is IEEE double, same operations), the Q8
+    /// weight `round_ties_even(frac * 256)`.
+    fn build(&mut self, src_len: usize, dst_len: usize) {
+        let scale = 1.0 / (dst_len as f64 / src_len as f64);
+        self.ofs.clear();
+        self.c1.clear();
+        self.pairs.clear();
+        self.min = 0;
+        self.max = dst_len;
+        for v in 0..dst_len {
+            let f = scale * (v as f64 + 0.5) - 0.5;
+            let i = f.floor();
+            let (mut ofs, mut c1) = (0, 0);
+            if i >= 0.0 && src_len > 1 {
+                if (i as usize) < src_len - 1 {
+                    ofs = i as u32;
+                    c1 = ((f - i) * EXACT_ONE as f64).round_ties_even() as u16;
+                } else {
+                    ofs = src_len as u32 - 1;
+                    self.max = self.max.min(v);
+                }
+            } else {
+                self.min = self.min.max(v + 1);
+            }
+            self.ofs.push(ofs);
+            self.c1.push(c1);
+            self.pairs.push((EXACT_ONE - c1 as u32) | (c1 as u32) << 16);
+        }
+    }
+}
+
+/// Caller-owned tables and row cache of [`resize_linear_exact_u8_c1`].
+#[derive(Debug, Default, Clone)]
+pub(crate) struct LinearExactScratch {
+    x: LinearExactAxis,
+    y: LinearExactAxis,
+    rows: [Vec<u16>; 2],
+    tags: [usize; 2],
+}
+
+/// `vlineResize<uint8_t, ufixedpoint16, 2>`: `(h0 * (256 - c1) + h1 * c1 +
+/// 2^15) >> 16` per column.
+fn vline_linear_exact(h0: &[u16], h1: &[u16], c1: u32, out: &mut [u8]) {
+    #[cfg(target_arch = "x86_64")]
+    let i = if crate::simd::cpu_features().has_avx2 {
+        // SAFETY: AVX2 is present.
+        unsafe { vline_linear_exact_avx2(h0, h1, c1, out) }
+    } else {
+        0
+    };
+    #[cfg(not(target_arch = "x86_64"))]
+    let i = 0;
+    let c0 = EXACT_ONE - c1;
+    for ((o, &a), &b) in out[i..].iter_mut().zip(&h0[i..]).zip(&h1[i..]) {
+        *o = ((a as u32 * c0 + b as u32 * c1 + (1 << 15)) >> 16).min(255) as u8;
+    }
+}
+
+/// [`vline_linear_exact`] 16 columns at a time with OpenCV's own trick: the
+/// u16 values biased by -2^15 fit `pmaddwd`, and the bias, 2^15 * 256 =
+/// 128 * 2^16, comes back as +128 after the shift. Returns the first column
+/// left.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn vline_linear_exact_avx2(h0: &[u16], h1: &[u16], c1: u32, out: &mut [u8]) -> usize {
+    use std::arch::x86_64::*;
+    let n = out.len().min(h0.len()).min(h1.len());
+    let bias = _mm256_set1_epi16(i16::MIN);
+    let coef = _mm256_set1_epi32(((c1 << 16) | (EXACT_ONE - c1)) as i32);
+    let round = _mm256_set1_epi32(1 << 15);
+    let mut i = 0;
+    while i + 16 <= n {
+        let a = _mm256_xor_si256(
+            _mm256_loadu_si256(h0.as_ptr().add(i) as *const __m256i),
+            bias,
+        );
+        let b = _mm256_xor_si256(
+            _mm256_loadu_si256(h1.as_ptr().add(i) as *const __m256i),
+            bias,
+        );
+        // (a_j, b_j) pairs: lanes 0..3 and 8..11 from unpacklo, the rest from unpackhi.
+        let lo = _mm256_madd_epi16(_mm256_unpacklo_epi16(a, b), coef);
+        let hi = _mm256_madd_epi16(_mm256_unpackhi_epi16(a, b), coef);
+        let lo = _mm256_srai_epi32::<16>(_mm256_add_epi32(lo, round));
+        let hi = _mm256_srai_epi32::<16>(_mm256_add_epi32(hi, round));
+        // packs undoes the unpack interleave within each 128-bit lane.
+        let v = _mm256_packs_epi32(lo, hi);
+        let v = _mm_packs_epi16(_mm256_castsi256_si128(v), _mm256_extracti128_si256::<1>(v));
+        // v holds r - 128 as i8; adding 128 (xor 0x80) gives the u8.
+        let v = _mm_xor_si128(v, _mm_set1_epi8(i8::MIN));
+        _mm_storeu_si128(out.as_mut_ptr().add(i) as *mut __m128i, v);
+        i += 16;
+    }
+    i
+}
+
+/// The interpolated columns `[from, x.max)` of [`hline_linear_exact`], 8 at
+/// a time: a 4-byte gather at each left tap gives `(p0, p1)`, `pmaddwd`
+/// with `(256 - c1, c1)` the exact u16 sum. Stops before a gather would read
+/// past the row; returns the first column left.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn hline_linear_exact_avx2(
+    src_row: &[u8],
+    x: &LinearExactAxis,
+    from: usize,
+    out: &mut [u16],
+) -> usize {
+    use std::arch::x86_64::*;
+    let low_bytes = _mm256_set1_epi32(0xff);
+    let mut i = from;
+    while i + 8 <= x.max && x.ofs[i + 7] as usize + 4 <= src_row.len() {
+        let idx = _mm256_loadu_si256(x.ofs.as_ptr().add(i) as *const __m256i);
+        let words = _mm256_i32gather_epi32::<1>(src_row.as_ptr() as *const i32, idx);
+        // (p0, p1) as two i16 per i32 lane.
+        let pair = _mm256_or_si256(
+            _mm256_and_si256(words, low_bytes),
+            _mm256_slli_epi32::<16>(_mm256_and_si256(_mm256_srli_epi32::<8>(words), low_bytes)),
+        );
+        let w = _mm256_loadu_si256(x.pairs.as_ptr().add(i) as *const __m256i);
+        let sum = _mm256_madd_epi16(pair, w);
+        let packed = _mm_packus_epi32(
+            _mm256_castsi256_si128(sum),
+            _mm256_extracti128_si256::<1>(sum),
+        );
+        _mm_storeu_si128(out.as_mut_ptr().add(i) as *mut __m128i, packed);
+        i += 8;
+    }
+    i
+}
+
+/// `hlineResizeCn<uint8_t, ufixedpoint16, 2, true, 1>`: one source row into
+/// Q8 u16 values (exact, at most 255 * 256).
+fn hline_linear_exact(src_row: &[u8], x: &LinearExactAxis, out: &mut [u16]) {
+    let dst_w = out.len();
+    let first = src_row[0] as u16 * EXACT_ONE as u16;
+    let mut i = 0;
+    while i < x.min.min(dst_w) {
+        out[i] = first;
+        i += 1;
+    }
+    #[cfg(target_arch = "x86_64")]
+    if crate::simd::cpu_features().has_avx2 && i < x.max {
+        // SAFETY: AVX2 is present.
+        i = unsafe { hline_linear_exact_avx2(src_row, x, i, out) };
+    }
+    while i < x.max {
+        let o = x.ofs[i] as usize;
+        let c1 = x.c1[i];
+        out[i] = (EXACT_ONE as u16 - c1) * src_row[o] as u16 + c1 * src_row[o + 1] as u16;
+        i += 1;
+    }
+    if i >= dst_w {
+        return;
+    }
+    let last = src_row[x.ofs[dst_w - 1] as usize] as u16 * EXACT_ONE as u16;
+    out[i..].fill(last);
+}
+
+/// OpenCV `cv::resize(.., INTER_LINEAR_EXACT)` of a single-channel u8 plane,
+/// byte-exact (`resize_bitExact` with `ufixedpoint16` weights): each output
+/// is `(h0 * (256 - c) + h1 * c + 2^15) >> 16` of two horizontally resized
+/// source rows, and output rows past either end copy the end row
+/// (`(h + 128) >> 8`). Each source row is resized horizontally once.
+/// Allocation-free once `ws` has grown to the widest destination.
+///
+/// Errors with [`ImageError::InvalidImageSize`] for an empty source or a
+/// buffer shorter than its plane; an empty destination is a no-op.
+pub(crate) fn resize_linear_exact_u8_c1(
+    src: &[u8],
+    src_w: usize,
+    src_h: usize,
+    dst: &mut [u8],
+    dst_w: usize,
+    dst_h: usize,
+    ws: &mut LinearExactScratch,
+) -> Result<(), ImageError> {
+    if dst_w == 0 || dst_h == 0 {
+        return Ok(());
+    }
+    if src_w == 0 || src_h == 0 || src.len() < src_w * src_h {
+        return Err(ImageError::InvalidImageSize(src_w, src_h, dst_w, dst_h));
+    }
+    if dst.len() < dst_w * dst_h {
+        return Err(ImageError::InvalidImageSize(dst.len(), 1, dst_w, dst_h));
+    }
+    let LinearExactScratch { x, y, rows, tags } = ws;
+    x.build(src_w, dst_w);
+    y.build(src_h, dst_h);
+    for row in rows.iter_mut() {
+        row.clear();
+        row.resize(dst_w, 0);
+    }
+    *tags = [usize::MAX; 2];
+    let src_row = |r: usize| &src[r * src_w..(r + 1) * src_w];
+
+    // Returns the slot holding the resized source row `r`, computing it into
+    // the slot that does not hold `keep`.
+    let fetch = |r: usize, keep: usize, rows: &mut [Vec<u16>; 2], tags: &mut [usize; 2]| {
+        if let Some(slot) = tags.iter().position(|&t| t == r) {
+            return slot;
+        }
+        let slot = usize::from(tags[0] == keep);
+        hline_linear_exact(src_row(r), x, &mut rows[slot]);
+        tags[slot] = r;
+        slot
+    };
+
+    for (dy, out) in dst.chunks_exact_mut(dst_w).take(dst_h).enumerate() {
+        if dy < y.min || dy >= y.max {
+            let r = if dy < y.min { 0 } else { src_h - 1 };
+            let s = fetch(r, usize::MAX, rows, tags);
+            for (o, &h) in out.iter_mut().zip(&rows[s]) {
+                *o = ((h as u32 + (1 << 7)) >> 8).min(255) as u8;
+            }
+            continue;
+        }
+        let r0 = y.ofs[dy] as usize;
+        let s0 = fetch(r0, r0 + 1, rows, tags);
+        let s1 = fetch(r0 + 1, r0, rows, tags);
+        vline_linear_exact(&rows[s0], &rows[s1], y.c1[dy] as u32, out);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -442,5 +685,63 @@ mod tests {
         )
         .unwrap();
         assert!(resize_opencv_u8(&src, &mut dst, InterpolationMode::Bicubic).is_err());
+    }
+
+    /// The AVX2 rows of `resize_linear_exact_u8_c1` equal the scalar ones
+    /// (the fixture tests in `features/orb/cv.rs` pin the scalar arithmetic
+    /// to OpenCV), down and up, odd sizes and 1-px axes included.
+    #[test]
+    fn linear_exact_simd_rows_match_scalar() {
+        let mut x = 0x2545_f491u32;
+        let mut rnd = move || {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            x
+        };
+        let mut axis = LinearExactAxis::default();
+        for (sw, dw) in [
+            (752, 627),
+            (627, 522),
+            (37, 31),
+            (5, 64),
+            (300, 300),
+            (1, 17),
+            (64, 1),
+            (99, 40),
+        ] {
+            axis.build(sw, dw);
+            let row: Vec<u8> = (0..sw).map(|_| rnd() as u8).collect();
+            let mut simd = vec![0u16; dw];
+            hline_linear_exact(&row, &axis, &mut simd);
+            let mut scalar = vec![0u16; dw];
+            let mut i = 0;
+            while i < axis.min.min(dw) {
+                scalar[i] = row[0] as u16 * 256;
+                i += 1;
+            }
+            while i < axis.max {
+                let (o, c1) = (axis.ofs[i] as usize, axis.c1[i]);
+                scalar[i] = (256 - c1) * row[o] as u16 + c1 * row[o + 1] as u16;
+                i += 1;
+            }
+            if i < dw {
+                scalar[i..].fill(row[axis.ofs[dw - 1] as usize] as u16 * 256);
+            }
+            assert_eq!(simd, scalar, "hline {sw} -> {dw}");
+
+            let (h0, h1): (Vec<u16>, Vec<u16>) = (0..dw)
+                .map(|_| ((rnd() % 65281) as u16, (rnd() % 65281) as u16))
+                .unzip();
+            for c1 in [0u32, 1, 77, 128, 255, 256] {
+                let mut out = vec![0u8; dw];
+                vline_linear_exact(&h0, &h1, c1, &mut out);
+                for j in 0..dw {
+                    let want = ((h0[j] as u32 * (256 - c1) + h1[j] as u32 * c1 + (1 << 15)) >> 16)
+                        .min(255);
+                    assert_eq!(out[j] as u32, want, "vline c1 {c1} col {j}");
+                }
+            }
+        }
     }
 }

@@ -13,13 +13,17 @@
 //!
 //! # Why no score matrix
 //!
-//! Each query keeps its best and second-best in registers while the train set
-//! streams past. Materialising the `n1 x n2` matrix would be tens of megabytes
-//! of traffic for a result that is two small arrays.
-
-use rayon::prelude::*;
+//! Each query keeps its best and second-best while tiles of train descriptors
+//! pass over it, and the mutual check reads the same distances. Materialising the
+//! `n1 x n2` matrix would be tens of megabytes of traffic for a result that is
+//! two small arrays.
 
 use super::descriptor::DESCR_LEN;
+#[cfg(target_arch = "x86_64")]
+use crate::features::r#match::squared_l2_avx2;
+#[cfg(target_arch = "aarch64")]
+use crate::features::r#match::squared_l2_fixed_neon;
+use crate::features::r#match::{scan_float_rows, FloatMetric};
 
 /// Squared L2 between two descriptors, four lanes at a time.
 ///
@@ -40,38 +44,20 @@ use super::descriptor::DESCR_LEN;
 #[cfg(target_arch = "aarch64")]
 #[inline]
 pub fn l2_sq(a: &[f32], b: &[f32]) -> f32 {
-    use std::arch::aarch64::*;
-    // Real (release-mode) length check: the loads below read exactly
-    // `DESCR_LEN` floats from each slice.
+    // Real (release-mode) length check: the kernel reads exactly `DESCR_LEN`
+    // floats from each slice.
     if a.len() != DESCR_LEN || b.len() != DESCR_LEN {
         return l2_sq_scalar(a, b);
     }
-    // SAFETY: both slices are exactly `DESCR_LEN` long (checked above) and
-    // `DESCR_LEN % 16 == 0`, so every 4-lane load is in bounds.
-    unsafe {
-        let (mut s0, mut s1) = (vdupq_n_f32(0.0), vdupq_n_f32(0.0));
-        let (mut s2, mut s3) = (vdupq_n_f32(0.0), vdupq_n_f32(0.0));
-        let (mut pa, mut pb) = (a.as_ptr(), b.as_ptr());
-        for _ in 0..DESCR_LEN / 16 {
-            let d0 = vsubq_f32(vld1q_f32(pa), vld1q_f32(pb));
-            let d1 = vsubq_f32(vld1q_f32(pa.add(4)), vld1q_f32(pb.add(4)));
-            let d2 = vsubq_f32(vld1q_f32(pa.add(8)), vld1q_f32(pb.add(8)));
-            let d3 = vsubq_f32(vld1q_f32(pa.add(12)), vld1q_f32(pb.add(12)));
-            s0 = vfmaq_f32(s0, d0, d0);
-            s1 = vfmaq_f32(s1, d1, d1);
-            s2 = vfmaq_f32(s2, d2, d2);
-            s3 = vfmaq_f32(s3, d3, d3);
-            pa = pa.add(16);
-            pb = pb.add(16);
-        }
-        vaddvq_f32(vaddq_f32(vaddq_f32(s0, s1), vaddq_f32(s2, s3)))
-    }
+    // SAFETY: both slices are exactly `DESCR_LEN` long (checked above), and
+    // `DESCR_LEN % 16 == 0` as the kernel requires.
+    unsafe { squared_l2_fixed_neon::<DESCR_LEN>(a, b) }
 }
 
 /// Squared L2 between two descriptors.
 ///
-/// Off aarch64 this is [`l2_sq_scalar`]; the vector form is the aarch64 twin
-/// above. Mismatched lengths sum over the common prefix on every target.
+/// On x86_64 with AVX2 and FMA this is their vector form; elsewhere off aarch64 it
+/// is [`l2_sq_scalar`]. Mismatched lengths sum over the common prefix on every target.
 ///
 /// # Returns
 ///
@@ -79,11 +65,32 @@ pub fn l2_sq(a: &[f32], b: &[f32]) -> f32 {
 #[cfg(not(target_arch = "aarch64"))]
 #[inline]
 pub fn l2_sq(a: &[f32], b: &[f32]) -> f32 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let cpu = crate::simd::cpu_features();
+        if cpu.has_avx2 && cpu.has_fma {
+            // SAFETY: the shared selector confirms AVX2 and FMA.
+            return unsafe { l2_sq_avx2(a, b) };
+        }
+    }
     l2_sq_scalar(a, b)
+}
+
+/// # Safety
+///
+/// The caller must ensure AVX2 and FMA are available.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn l2_sq_avx2(a: &[f32], b: &[f32]) -> f32 {
+    // SAFETY: this function's own target features are the kernel's requirement.
+    unsafe { squared_l2_avx2(a, b) }
 }
 
 /// Squared L2, scalar. The portable fallback, and the reference the vector form
 /// is checked against.
+///
+/// A plain multiply and add: without FMA in the build's baseline, `f32::mul_add`
+/// is a software call for every dimension.
 ///
 /// Kept public and always compiled, not `#[cfg]`-ed away: a fallback that only
 /// builds on the platforms that do not use it is a fallback nobody tests.
@@ -92,38 +99,9 @@ pub fn l2_sq_scalar(a: &[f32], b: &[f32]) -> f32 {
     let mut s = 0.0f32;
     for (x, y) in a.iter().zip(b.iter()) {
         let d = x - y;
-        s = d.mul_add(d, s);
+        s += d * d;
     }
     s
-}
-
-/// Nearest and second-nearest train descriptor for each query.
-///
-/// Returns `(index, best, second)` per query, as squared distances.
-fn best2(q: &[f32], nq: usize, t: &[f32], nt: usize, scalar: bool) -> Vec<(i32, f32, f32)> {
-    (0..nq)
-        .into_par_iter()
-        .map(|i| {
-            let qd = &q[i * DESCR_LEN..(i + 1) * DESCR_LEN];
-            let (mut best, mut second, mut best_j) = (f32::MAX, f32::MAX, -1i32);
-            for j in 0..nt {
-                let td = &t[j * DESCR_LEN..(j + 1) * DESCR_LEN];
-                let d = if scalar {
-                    l2_sq_scalar(qd, td)
-                } else {
-                    l2_sq(qd, td)
-                };
-                if d < best {
-                    second = best;
-                    best = d;
-                    best_j = j as i32;
-                } else if d < second {
-                    second = d;
-                }
-            }
-            (best_j, best, second)
-        })
-        .collect()
 }
 
 /// Match `d1` against `d2`, returning the surviving `(query, train)` pairs.
@@ -174,20 +152,22 @@ fn match_descriptors_impl(
     if n1 == 0 || n2 == 0 || d1.len() < n1 * DESCR_LEN || d2.len() < n2 * DESCR_LEN {
         return Vec::new();
     }
-    let fwd = best2(d1, n1, d2, n2, scalar);
-    // The reverse scan is only needed for the mutual check.
-    let rev = if cross_check {
-        best2(d2, n2, d1, n1, scalar)
-    } else {
-        Vec::new()
-    };
+    let (fwd, rev) = scan_float_rows(
+        &d1[..n1 * DESCR_LEN],
+        &d2[..n2 * DESCR_LEN],
+        DESCR_LEN,
+        FloatMetric::SquaredL2,
+        cross_check,
+        scalar,
+    );
     let ratio2 = ratio * ratio;
 
     let mut out = Vec::new();
-    for (i, &(j, d_best, d_second)) in fwd.iter().enumerate() {
-        if j < 0 {
+    for (i, row) in fwd.iter().enumerate() {
+        if row.index == usize::MAX {
             continue;
         }
+        let (d_best, d_second) = (row.best, row.second);
         // A second-best of +inf means there was only one candidate; the
         // reference keeps such a match rather than dividing by infinity.
         // Deliberately the negated form, matching the CUDA kernel: with a NaN
@@ -198,10 +178,10 @@ fn match_descriptors_impl(
         if ratio2 < 1.0 && d_second < f32::MAX && !(d_best < ratio2 * d_second) {
             continue;
         }
-        if cross_check && rev[j as usize].0 != i as i32 {
+        if cross_check && rev.index[row.index] != i {
             continue;
         }
-        out.push([i as i32, j]);
+        out.push([i as i32, row.index as i32]);
     }
     out
 }
@@ -244,6 +224,56 @@ mod tests {
         let pairs = match_descriptors(&d, n, &d, n, 1.0, true);
         assert_eq!(pairs.len(), n);
         assert!(pairs.iter().all(|[a, b]| a == b));
+    }
+
+    #[test]
+    fn l2_sq_vector_form_agrees_with_scalar_at_every_length() {
+        for len in [0, 1, 7, 8, 9, 31, 32, 33, 64, 127, DESCR_LEN, 129, 300] {
+            let a: Vec<f32> = rand_desc(3, 5)[..len].to_vec();
+            let b: Vec<f32> = rand_desc(3, 6)[..len].to_vec();
+            assert_eq!(l2_sq(&a, &b), l2_sq_scalar(&a, &b), "length {len}");
+        }
+    }
+
+    /// Cross-checked pairs and forward pairs must match brute force on sets that cross
+    /// tiles and worker tasks, in the CUDA matcher's integer domain.
+    #[test]
+    fn one_pass_matches_brute_force() {
+        let (n1, n2) = (331usize, 217usize);
+        let (a, b) = (rand_desc(n1, 31), rand_desc(n2, 32));
+        fn row(set: &[f32], i: usize) -> &[f32] {
+            &set[i * DESCR_LEN..(i + 1) * DESCR_LEN]
+        }
+        let table: Vec<Vec<f32>> = (0..n1)
+            .map(|i| {
+                (0..n2)
+                    .map(|j| l2_sq_scalar(row(&a, i), row(&b, j)))
+                    .collect()
+            })
+            .collect();
+        let nearest = |values: Vec<f32>| {
+            let mut order: Vec<usize> = (0..values.len()).collect();
+            order.sort_by(|&p, &q| values[p].total_cmp(&values[q]).then(p.cmp(&q)));
+            (order[0], values[order[0]], values[order[1]])
+        };
+        for threads in [1, 4] {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            for (ratio, cross) in [(0.8f32, true), (0.8, false), (1.0, true), (0.95, true)] {
+                let mut want = Vec::new();
+                for (i, distances) in table.iter().enumerate() {
+                    let (j, best, second) = nearest(distances.clone());
+                    let back = nearest(table.iter().map(|r| r[j]).collect()).0;
+                    if (ratio >= 1.0 || best < ratio * ratio * second) && (!cross || back == i) {
+                        want.push([i as i32, j as i32]);
+                    }
+                }
+                let got = pool.install(|| match_descriptors(&a, n1, &b, n2, ratio, cross));
+                assert_eq!(got, want, "ratio {ratio} cross {cross} threads {threads}");
+            }
+        }
     }
 
     /// The vector and scalar kernels must agree on the *pair set*. They sum in

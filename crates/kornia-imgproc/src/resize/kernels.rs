@@ -1142,8 +1142,117 @@ pub(super) fn bilinear_row_u8<const C: usize>(
     fy1: u32,
     dst_row: &mut [u8],
 ) {
-    // Scalar only for now — add NEON/AVX2 per "Adding a new backend" above.
-    bilinear_row_u8_scalar::<C>(row0, row1, x, fy, fy1, dst_row);
+    let start = if C == 1 {
+        bilinear_row_c1_simd(row0, row1, x, fy, fy1, dst_row)
+    } else {
+        0
+    };
+    let x_tail = BilinearXTaps {
+        ofs: &x.ofs[start..],
+        fx: &x.fx[start..],
+        fx1: &x.fx1[start..],
+    };
+    bilinear_row_u8_scalar::<C>(row0, row1, &x_tail, fy, fy1, &mut dst_row[start * C..]);
+}
+
+/// Single-channel outputs done with SIMD; returns the first one left.
+#[inline(always)]
+fn bilinear_row_c1_simd(
+    row0: &[u8],
+    row1: &[u8],
+    x: &BilinearXTaps<'_>,
+    fy: u32,
+    fy1: u32,
+    dst_row: &mut [u8],
+) -> usize {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // SAFETY: SSE2 is part of x86_64; every access is bounds-checked.
+        return unsafe { bilinear_row_c1_sse2(row0, row1, x, fy, fy1, dst_row) };
+    }
+    #[allow(unreachable_code)]
+    {
+        let _ = (row0, row1, x, fy, fy1, dst_row);
+        0
+    }
+}
+
+/// Eight outputs per step, the same integers as [`bilinear_row_u8_scalar`].
+/// `pmaddwd` gives `top = p00·fx1 + p01·fx < 2^22` (and `bot`) exactly; the
+/// vertical blend would overflow i32, so it splits `top = th·2^14 + tl`:
+/// `(top·fy1 + bot·fy + 2^27) >> 28 == (H + ((L + 2^27) >> 14)) >> 14` with
+/// `H = th·fy1 + bh·fy < 2^23` and `L = tl·fy1 + bl·fy < 2^28` (floor of a
+/// floor quotient), both one more `pmaddwd`.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse2")]
+unsafe fn bilinear_row_c1_sse2(
+    row0: &[u8],
+    row1: &[u8],
+    x: &BilinearXTaps<'_>,
+    fy: u32,
+    fy1: u32,
+    dst_row: &mut [u8],
+) -> usize {
+    use std::arch::x86_64::*;
+    const STEP: usize = 8;
+    let n = dst_row
+        .len()
+        .min(x.ofs.len())
+        .min(x.fx.len())
+        .min(x.fx1.len());
+    let low14 = _mm_set1_epi32((1 << 14) - 1);
+    let round = _mm_set1_epi32(1 << 27);
+    // (fy1, fy) as i16 pairs; both <= 2^14.
+    let wy = _mm_set1_epi32((fy1 | (fy << 16)) as i32);
+    let zero = _mm_setzero_si128();
+    let pairs = |row: &[u8], ofs: &[u32]| -> __m128i {
+        let mut buf = [0u16; STEP];
+        for (b, &o) in buf.iter_mut().zip(ofs) {
+            let o = o as usize;
+            *b = u16::from_le_bytes([row[o], row[o + 1]]);
+        }
+        _mm_loadu_si128(buf.as_ptr() as *const __m128i)
+    };
+    let mut i = 0;
+    while i + STEP <= n {
+        let ofs = &x.ofs[i..i + STEP];
+        // (fx1, fx) i16 pairs per output.
+        let fx1 = _mm_packs_epi32(
+            _mm_loadu_si128(x.fx1.as_ptr().add(i) as *const __m128i),
+            _mm_loadu_si128(x.fx1.as_ptr().add(i + 4) as *const __m128i),
+        );
+        let fx = _mm_packs_epi32(
+            _mm_loadu_si128(x.fx.as_ptr().add(i) as *const __m128i),
+            _mm_loadu_si128(x.fx.as_ptr().add(i + 4) as *const __m128i),
+        );
+        let (wx_lo, wx_hi) = (_mm_unpacklo_epi16(fx1, fx), _mm_unpackhi_epi16(fx1, fx));
+        let (a, b) = (pairs(row0, ofs), pairs(row1, ofs));
+        let mut out = [zero; 2];
+        for (half, wx) in [(0, wx_lo), (1, wx_hi)] {
+            let (pa, pb) = if half == 0 {
+                (_mm_unpacklo_epi8(a, zero), _mm_unpacklo_epi8(b, zero))
+            } else {
+                (_mm_unpackhi_epi8(a, zero), _mm_unpackhi_epi8(b, zero))
+            };
+            let top = _mm_madd_epi16(pa, wx);
+            let bot = _mm_madd_epi16(pb, wx);
+            let hi = _mm_or_si128(
+                _mm_srli_epi32::<14>(top),
+                _mm_slli_epi32::<16>(_mm_srli_epi32::<14>(bot)),
+            );
+            let lo = _mm_or_si128(
+                _mm_and_si128(top, low14),
+                _mm_slli_epi32::<16>(_mm_and_si128(bot, low14)),
+            );
+            let h = _mm_madd_epi16(hi, wy);
+            let l = _mm_srli_epi32::<14>(_mm_add_epi32(_mm_madd_epi16(lo, wy), round));
+            out[half] = _mm_srli_epi32::<14>(_mm_add_epi32(h, l));
+        }
+        let v = _mm_packus_epi16(_mm_packs_epi32(out[0], out[1]), zero);
+        _mm_storel_epi64(dst_row.as_mut_ptr().add(i) as *mut __m128i, v);
+        i += STEP;
+    }
+    i
 }
 
 #[inline]
@@ -1312,6 +1421,61 @@ unsafe fn nearest_row_u8_w4_c4(src_row: &[u8], xmap: &[usize], dst_row: &mut [u8
         // `x*4 + 4 <= xmap.len()*4 <= dst_row.len()` by this function's contract.
         unsafe {
             core::ptr::copy_nonoverlapping(sp.add(xi * 4), dp.add(x * 4), 4);
+        }
+    }
+}
+
+#[cfg(test)]
+mod bilinear_row_tests {
+    use super::super::bilinear::{bilinear_axis_lut, bilinear_tap, Q14_SCALE};
+    use super::*;
+
+    /// The dispatched single-channel row (SIMD + scalar tail) equals the scalar
+    /// row byte for byte on every ORB pyramid level size and on odd widths.
+    #[test]
+    fn simd_c1_row_equals_scalar() {
+        let mut x = 0x9e37_79b9_7f4a_7c15u64;
+        let mut sizes = vec![(752usize, 480usize)];
+        let (mut w, mut h) = (752f32, 480f32);
+        for _ in 0..7 {
+            let (pw, ph) = *sizes.last().unwrap();
+            (w, h) = (w / 1.2, h / 1.2);
+            sizes.push((
+                (w.round() as usize).min(pw - 1),
+                (h.round() as usize).min(ph - 1),
+            ));
+        }
+        let pairs: Vec<_> = sizes.windows(2).map(|p| (p[0], p[1])).collect();
+        let odd = [
+            ((37, 9), (29, 7)),
+            ((17, 5), (9, 3)),
+            ((101, 4), (64, 3)),
+            ((9, 3), (17, 5)),
+        ];
+        for ((sw, sh), (dw, dh)) in pairs.into_iter().chain(odd) {
+            let src: Vec<u8> = (0..sw * sh)
+                .map(|_| {
+                    x = x
+                        .wrapping_mul(6364136223846793005)
+                        .wrapping_add(1442695040888963407);
+                    (x >> 56) as u8
+                })
+                .collect();
+            let (ofs, fx, fx1) = bilinear_axis_lut(sw, dw);
+            let taps = BilinearXTaps {
+                ofs: &ofs,
+                fx: &fx,
+                fx1: &fx1,
+            };
+            for y in 0..dh {
+                let (yi, fy) = bilinear_tap(y, sh as f64 / dh as f64, sh);
+                let yi = yi as usize;
+                let (r0, r1) = (&src[yi * sw..][..sw], &src[(yi + 1) * sw..][..sw]);
+                let (mut a, mut b) = (vec![0u8; dw], vec![0u8; dw]);
+                bilinear_row_u8::<1>(r0, r1, &taps, fy, Q14_SCALE - fy, &mut a);
+                bilinear_row_u8_scalar::<1>(r0, r1, &taps, fy, Q14_SCALE - fy, &mut b);
+                assert_eq!(a, b, "{sw}x{sh} -> {dw}x{dh} row {y}");
+            }
         }
     }
 }

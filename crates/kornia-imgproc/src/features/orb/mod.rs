@@ -1,8 +1,10 @@
+mod cv;
 mod extractor;
 mod matcher;
 mod pattern;
 
-pub use extractor::{OrbDetector, OrbFeatures};
+pub use cv::{OrbCvDetector, OrbCvScratch};
+pub use extractor::{OrbDetector, OrbFeatures, OrbScratch};
 pub use matcher::{match_orb_descriptors, OrbMatchConfig};
 
 #[cfg(all(test, feature = "opencv_bench"))]

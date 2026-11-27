@@ -1,6 +1,6 @@
 //! Kannala-Brandt equidistant fisheye projection model.
 
-use super::ProjectionReject;
+use super::{CameraModel, ProjectionReject};
 use crate::pose::Pose3d;
 use kornia_algebra::{Vec2F64, Vec3F64};
 
@@ -13,8 +13,8 @@ pub fn project_point_fisheye(
     point_world: &Vec3F64,
 ) -> Option<(f64, f64, f64)> {
     let p_cam = pose.transform_point(point_world);
-    let (pixel, z_cam) = camera.project(&p_cam)?;
-    Some((pixel.x, pixel.y, z_cam))
+    let pixel = camera.project(&p_cam)?;
+    Some((pixel.x, pixel.y, p_cam.z))
 }
 
 /// Kannala-Brandt equidistant fisheye projection model.
@@ -45,8 +45,9 @@ pub struct FisheyeCamera {
     pub k4: f64,
 }
 
-/// Maximum number of Newton-Raphson iterations for unproject.
-const NEWTON_MAX_ITER: usize = 10;
+/// Maximum number of safeguarded Newton iterations for unproject; enough for
+/// the bisection fallback alone to reach `NEWTON_EPS` on `[0, π]`.
+const NEWTON_MAX_ITER: usize = 60;
 
 /// Convergence tolerance for Newton-Raphson in unproject.
 const NEWTON_EPS: f64 = 1e-12;
@@ -75,41 +76,29 @@ impl FisheyeCamera {
         (theta_d, f_prime)
     }
 
-    /// Project a 3D camera-frame point to pixel coordinates.
+    /// Incidence angle at which `theta_d(theta)` stops increasing and the image
+    /// folds back over itself, or `π` when it increases over the whole sphere.
     ///
-    /// Returns `Some((pixel, z))` where `z` is the depth in camera frame.
-    /// Returns `None` if the point cannot be projected (e.g., exactly at optical center).
-    ///
-    /// The projection supports points behind the camera (`z < 0`) as long as
-    /// the distortion model is valid (standard for fisheye lenses with >180° FoV).
-    pub fn project(&self, point: &Vec3F64) -> Option<(Vec2F64, f64)> {
-        let x = point.x;
-        let y = point.y;
-        let z = point.z;
-
-        let r = (x * x + y * y).sqrt();
-        // Point at the optical center — undefined projection.
-        if r < EPSILON && z.abs() < EPSILON {
-            return None;
+    /// `theta_d'` is a quartic in `t = θ²`; its first root in `(0, π²]` is the fold.
+    fn fold_theta(&self) -> f64 {
+        let c = [
+            1.0,
+            3.0 * self.k1,
+            5.0 * self.k2,
+            7.0 * self.k3,
+            9.0 * self.k4,
+        ];
+        let t_max = std::f64::consts::PI * std::f64::consts::PI;
+        // Cheap sufficient test: `theta_d' ≥ 1 − Σ|cᵢ|·tⁱ`, so the lens cannot
+        // fold while that lower bound stays positive.
+        let bound = c[1..]
+            .iter()
+            .rev()
+            .fold(0.0, |acc, ci| (acc + ci.abs()) * t_max);
+        if bound < 1.0 {
+            return std::f64::consts::PI;
         }
-        // Points on the negative optical axis have undefined azimuth.
-        if r < EPSILON && z < 0.0 {
-            return None;
-        }
-
-        let theta = r.atan2(z);
-        let (theta_d, _) = self.distortion(theta);
-
-        // On the optical axis: r ≈ 0, theta ≈ 0, theta_d ≈ 0 → principal point.
-        if r < EPSILON {
-            return Some((Vec2F64::new(self.cx, self.cy), z));
-        }
-
-        let scale = theta_d / r;
-        let u = self.fx * scale * x + self.cx;
-        let v = self.fy * scale * y + self.cy;
-
-        Some((Vec2F64::new(u, v), z))
+        first_root(&c, 0.0, t_max).map_or(std::f64::consts::PI, f64::sqrt)
     }
 
     /// Projects a camera-frame 3D point and checks image bounds.
@@ -118,7 +107,7 @@ impl FisheyeCamera {
         p_cam: &Vec3F64,
         image_size: kornia_image::ImageSize,
     ) -> Result<Vec2F64, ProjectionReject> {
-        let (pixel, _) = self
+        let pixel = self
             .project(p_cam)
             .ok_or(ProjectionReject::InvalidProjection)?;
 
@@ -141,7 +130,7 @@ impl FisheyeCamera {
         u_meas: f64,
         v_meas: f64,
     ) -> Option<f64> {
-        let (projected, _) = self.project(p_cam)?;
+        let projected = self.project(p_cam)?;
         let du = projected.x - u_meas;
         let dv = projected.y - v_meas;
         Some(du * du + dv * dv)
@@ -158,44 +147,212 @@ impl FisheyeCamera {
         let p_cam = pose_world_to_cam.transform_point(p_world);
         self.reprojection_error_sq_cam(&p_cam, u_meas, v_meas)
     }
+}
 
-    /// Unproject a pixel to a unit bearing ray in the camera frame.
-    ///
-    /// Inverts the distortion model by solving
-    /// `theta_d = theta + k1·θ³ + k2·θ⁵ + k3·θ⁷ + k4·θ⁹`
-    /// for `theta` using Newton-Raphson iteration, then constructs the 3D
-    /// unit ray `(sin(theta)·cos(phi), sin(theta)·sin(phi), cos(theta))`.
-    pub fn unproject(&self, pixel: &Vec2F64) -> Vec3F64 {
+impl CameraModel for FisheyeCamera {
+    /// Supports points behind the camera (`z < 0`), as lenses past 180° FoV
+    /// image them; `None` at the optical center and on the negative optical axis.
+    fn project(&self, p_cam: &Vec3F64) -> Option<Vec2F64> {
+        let (x, y, z) = (p_cam.x, p_cam.y, p_cam.z);
+        let r = (x * x + y * y).sqrt();
+        if r < EPSILON && z < EPSILON {
+            return None;
+        }
+        // On the optical axis: r ≈ 0, theta ≈ 0, theta_d ≈ 0 → principal point.
+        if r < EPSILON {
+            return Some(Vec2F64::new(self.cx, self.cy));
+        }
+        let (theta_d, _) = self.distortion(r.atan2(z));
+        let scale = theta_d / r;
+        Some(Vec2F64::new(
+            self.fx * scale * x + self.cx,
+            self.fy * scale * y + self.cy,
+        ))
+    }
+
+    fn project_with_jacobian(&self, p_cam: &Vec3F64) -> Option<(Vec2F64, [Vec3F64; 2])> {
+        let pixel = self.project(p_cam)?;
+        let (x, y, z) = (p_cam.x, p_cam.y, p_cam.z);
+        let r2 = x * x + y * y;
+        let r = r2.sqrt();
+        // Near the axis theta_d ≈ theta ≈ r / z, so the model is a pinhole.
+        if r < EPSILON {
+            return Some((
+                pixel,
+                [
+                    Vec3F64::new(self.fx / z, 0.0, 0.0),
+                    Vec3F64::new(0.0, self.fy / z, 0.0),
+                ],
+            ));
+        }
+        let rho2 = r2 + z * z;
+        let (theta_d, dtheta_d) = self.distortion(r.atan2(z));
+        // (u, v) = f · s · (x, y) with s = theta_d / r.
+        let s = theta_d / r;
+        let ds_dr = (dtheta_d * z / rho2 - s) / r;
+        let ds_dx = ds_dr * x / r;
+        let ds_dy = ds_dr * y / r;
+        let ds_dz = -dtheta_d / rho2;
+        Some((
+            pixel,
+            [
+                Vec3F64::new(
+                    self.fx * (s + x * ds_dx),
+                    self.fx * x * ds_dy,
+                    self.fx * x * ds_dz,
+                ),
+                Vec3F64::new(
+                    self.fy * y * ds_dx,
+                    self.fy * (s + y * ds_dy),
+                    self.fy * y * ds_dz,
+                ),
+            ],
+        ))
+    }
+
+    /// `None` for a pixel past the image of the fold (see `fold_theta`), which
+    /// no incidence angle the model treats as valid projects to.
+    fn unproject(&self, pixel: &Vec2F64) -> Option<Vec3F64> {
         let mx = (pixel.x - self.cx) / self.fx;
         let my = (pixel.y - self.cy) / self.fy;
         let theta_d = (mx * mx + my * my).sqrt();
 
         // Pixel is at the principal point → on-axis ray.
         if theta_d < EPSILON {
-            return Vec3F64::new(0.0, 0.0, 1.0);
+            return Some(Vec3F64::new(0.0, 0.0, 1.0));
         }
 
-        // Newton-Raphson: solve f(theta) = theta + k1·θ³ + k2·θ⁵ + k3·θ⁷ + k4·θ⁹ - theta_d = 0
-        let mut theta = theta_d;
+        // theta_d(theta) increases on [0, fold], so a root exists there iff
+        // theta_d is in its range, and the bracket never loses it.
+        let fold = self.fold_theta();
+        if theta_d > self.distortion(fold).0 {
+            return None;
+        }
+        // Solve theta + k1·θ³ + k2·θ⁵ + k3·θ⁷ + k4·θ⁹ = theta_d by Newton steps,
+        // bisecting whenever a step would leave the bracket.
+        let (mut lo, mut hi) = (0.0, fold);
+        let mut theta = theta_d.min(fold);
+        let mut converged = false;
         for _ in 0..NEWTON_MAX_ITER {
             let (theta_d_calc, f_prime) = self.distortion(theta);
-            if f_prime.abs() < EPSILON {
-                break;
-            }
             let f = theta_d_calc - theta_d;
-            let delta = f / f_prime;
-            theta -= delta;
+            if f > 0.0 {
+                hi = theta;
+            } else {
+                lo = theta;
+            }
+            let newton = theta - f / f_prime;
+            let next = if newton > lo && newton < hi {
+                newton
+            } else {
+                0.5 * (lo + hi)
+            };
+            let delta = next - theta;
+            theta = next;
             if delta.abs() < NEWTON_EPS {
+                converged = true;
                 break;
             }
+        }
+        if !converged {
+            return None;
         }
 
         // Recover the bearing direction from the azimuthal angle phi.
         let phi = my.atan2(mx);
         let sin_theta = theta.sin();
 
-        Vec3F64::new(sin_theta * phi.cos(), sin_theta * phi.sin(), theta.cos())
+        Some(Vec3F64::new(
+            sin_theta * phi.cos(),
+            sin_theta * phi.sin(),
+            theta.cos(),
+        ))
     }
+}
+
+/// Coefficient capacity of [`first_root`]: polynomials up to degree 4.
+const MAX_COEFFS: usize = 5;
+
+/// Iteration cap for [`monotone_root`]; bisection alone halves the bracket each time.
+const ROOT_MAX_ITER: usize = 60;
+
+/// Smallest root in `(lo, hi]` of the polynomial `c[0] + c[1]·t + c[2]·t² + …`.
+///
+/// The derivative's roots split `[lo, hi]` into pieces on which the polynomial
+/// is monotonic and so has at most one root; recursing on the derivative finds
+/// them.
+fn first_root(c: &[f64], lo: f64, hi: f64) -> Option<f64> {
+    let mut roots = [0.0; MAX_COEFFS];
+    let count = roots_in(c, lo, hi, &mut roots);
+    roots[..count].first().copied()
+}
+
+/// Writes the roots of `c` in `(lo, hi]`, ascending, into `out` and returns
+/// how many there are.
+fn roots_in(c: &[f64], lo: f64, hi: f64, out: &mut [f64; MAX_COEFFS]) -> usize {
+    let degree = c.len() - 1;
+    if degree == 0 {
+        return 0;
+    }
+    let mut dc = [0.0; MAX_COEFFS];
+    for i in 1..=degree {
+        dc[i - 1] = i as f64 * c[i];
+    }
+    let dc = &dc[..degree];
+    let mut critical = [0.0; MAX_COEFFS];
+    let n_critical = roots_in(dc, lo, hi, &mut critical);
+
+    let mut count = 0;
+    let mut a = lo;
+    for b in critical[..n_critical].iter().copied().chain([hi]) {
+        if b > a {
+            if let Some(root) = monotone_root(c, dc, a, b) {
+                out[count] = root;
+                count += 1;
+            }
+        }
+        a = b;
+    }
+    count
+}
+
+/// Root in `(a, b]` of `c`, which is monotonic there, by Newton steps that fall
+/// back to bisection when they would leave the bracket.
+fn monotone_root(c: &[f64], dc: &[f64], a: f64, b: f64) -> Option<f64> {
+    let eval = |coeffs: &[f64], t: f64| coeffs.iter().rev().fold(0.0, |acc, ci| acc * t + ci);
+    let (fa, fb) = (eval(c, a), eval(c, b));
+    if fb == 0.0 {
+        return Some(b);
+    }
+    // A root at `a` itself belongs to the previous piece, or is excluded.
+    if fa == 0.0 || fa.signum() == fb.signum() {
+        return None;
+    }
+    // Keep `neg`/`pos` at the ends where the polynomial is negative/positive.
+    let (mut neg, mut pos) = if fa < 0.0 { (a, b) } else { (b, a) };
+    let mut t = 0.5 * (a + b);
+    for _ in 0..ROOT_MAX_ITER {
+        let f = eval(c, t);
+        if f == 0.0 {
+            return Some(t);
+        }
+        if f < 0.0 {
+            neg = t;
+        } else {
+            pos = t;
+        }
+        let newton = t - f / eval(dc, t);
+        let next = if newton > neg.min(pos) && newton < neg.max(pos) {
+            newton
+        } else {
+            0.5 * (neg + pos)
+        };
+        if (next - t).abs() <= NEWTON_EPS * t.abs().max(1.0) {
+            return Some(next);
+        }
+        t = next;
+    }
+    Some(t)
 }
 
 #[cfg(test)]
@@ -236,10 +393,9 @@ mod tests {
         let cam = fisheye_camera_zero_distortion();
         // Point on the optical axis → should project to principal point.
         let p = Vec3F64::new(0.0, 0.0, 5.0);
-        let (uv, z) = cam.project(&p).unwrap();
+        let uv = cam.project(&p).unwrap();
         assert!((uv.x - cam.cx).abs() < 1e-12);
         assert!((uv.y - cam.cy).abs() < 1e-12);
-        assert!((z - 5.0).abs() < 1e-12);
     }
 
     #[test]
@@ -266,18 +422,17 @@ mod tests {
         // r = 1.0, x = 1.0, y = 0.0 → scale = theta_d / r = pi/4.
         // u = fx * (pi/4) * 1.0 + cx
         let p = Vec3F64::new(1.0, 0.0, 1.0);
-        let (uv, z) = cam.project(&p).unwrap();
+        let uv = cam.project(&p).unwrap();
         let expected_u = cam.fx * std::f64::consts::FRAC_PI_4 + cam.cx;
         assert!((uv.x - expected_u).abs() < 1e-10);
         assert!((uv.y - cam.cy).abs() < 1e-10);
-        assert!((z - 1.0).abs() < 1e-12);
     }
 
     #[test]
     fn test_fisheye_unproject_principal_point() {
         let cam = fisheye_camera_zero_distortion();
         // Principal point → on-axis bearing ray (0, 0, 1).
-        let ray = cam.unproject(&Vec2F64::new(cam.cx, cam.cy));
+        let ray = cam.unproject(&Vec2F64::new(cam.cx, cam.cy)).unwrap();
         assert!((ray.x).abs() < 1e-12);
         assert!((ray.y).abs() < 1e-12);
         assert!((ray.z - 1.0).abs() < 1e-12);
@@ -295,8 +450,8 @@ mod tests {
             Vec3F64::new(0.0, 0.0, 3.0),  // on-axis
         ];
         for pt in &points {
-            let (pixel, _) = cam.project(pt).unwrap();
-            let ray = cam.unproject(&pixel);
+            let pixel = cam.project(pt).unwrap();
+            let ray = cam.unproject(&pixel).unwrap();
             // Recover the original direction (normalize the input point).
             let len = (pt.x * pt.x + pt.y * pt.y + pt.z * pt.z).sqrt();
             let dir = Vec3F64::new(pt.x / len, pt.y / len, pt.z / len);
@@ -329,8 +484,8 @@ mod tests {
             Vec3F64::new(0.1, -0.1, 3.0),
         ];
         for pt in &points {
-            let (pixel, _) = cam.project(pt).unwrap();
-            let ray = cam.unproject(&pixel);
+            let pixel = cam.project(pt).unwrap();
+            let ray = cam.unproject(&pixel).unwrap();
             let len = (pt.x * pt.x + pt.y * pt.y + pt.z * pt.z).sqrt();
             let dir = Vec3F64::new(pt.x / len, pt.y / len, pt.z / len);
             assert!(
@@ -356,7 +511,7 @@ mod tests {
         let cam = fisheye_camera_with_distortion();
         // Very small r, positive z → should be near principal point and stable.
         let p = Vec3F64::new(1e-10, 1e-10, 5.0);
-        let (uv, _) = cam.project(&p).unwrap();
+        let uv = cam.project(&p).unwrap();
         assert!((uv.x - cam.cx).abs() < 1.0);
         assert!((uv.y - cam.cy).abs() < 1.0);
     }
@@ -366,8 +521,8 @@ mod tests {
         let cam = fisheye_camera_zero_distortion();
         // Point at ~80° from the optical axis.
         let p = Vec3F64::new(5.0, 0.0, 1.0);
-        let (pixel, _) = cam.project(&p).unwrap();
-        let ray = cam.unproject(&pixel);
+        let pixel = cam.project(&p).unwrap();
+        let ray = cam.unproject(&pixel).unwrap();
         let len = (p.x * p.x + p.y * p.y + p.z * p.z).sqrt();
         let dir = Vec3F64::new(p.x / len, p.y / len, p.z / len);
         assert!((ray.x - dir.x).abs() < 1e-6);
@@ -380,10 +535,9 @@ mod tests {
         let cam = fisheye_camera_zero_distortion();
         // Point behind camera: z = -1.0, r = 1.0. theta = 3*pi/4.
         let p = Vec3F64::new(1.0, 0.0, -1.0);
-        let (uv, z) = cam.project(&p).unwrap();
+        let uv = cam.project(&p).unwrap();
         let expected_u = cam.fx * (3.0 * std::f64::consts::FRAC_PI_4) + cam.cx;
         assert!((uv.x - expected_u).abs() < 1e-10);
-        assert!((z + 1.0).abs() < 1e-12);
     }
 
     #[test]
@@ -402,7 +556,7 @@ mod tests {
     fn test_reprojection_error_sq_fisheye() {
         let cam = fisheye_camera_zero_distortion();
         let p = Vec3F64::new(1.0, 0.0, 1.0);
-        let (uv, _) = cam.project(&p).unwrap();
+        let uv = cam.project(&p).unwrap();
         let err = cam.reprojection_error_sq_cam(&p, uv.x, uv.y).unwrap();
         assert!(err < 1e-12);
 
@@ -426,5 +580,64 @@ mod tests {
             cam.project_to_image(&p_out, size).unwrap_err(),
             ProjectionReject::OutOfImage
         );
+    }
+
+    /// Hilti 2026 `cam0`, whose model folds at about 113°.
+    fn hilti() -> FisheyeCamera {
+        FisheyeCamera {
+            fx: 461.64,
+            fy: 459.72,
+            cx: 732.95,
+            cy: 720.54,
+            k1: 0.0344,
+            k2: -0.0216,
+            k3: 0.0031,
+            k4: -0.0005,
+        }
+    }
+
+    #[test]
+    fn test_fold_theta() {
+        let fold = hilti().fold_theta();
+        assert!(fold > 1.9 && fold < 2.0, "{fold}");
+        assert!(hilti().distortion(fold).1.abs() < 1e-9);
+        assert_eq!(
+            fisheye_camera_zero_distortion().fold_theta(),
+            std::f64::consts::PI
+        );
+    }
+
+    #[test]
+    fn test_unproject_rejects_pixels_past_the_fold() {
+        let cam = hilti();
+        let theta_d_max = cam.distortion(cam.fold_theta()).0;
+        let past = Vec2F64::new(cam.cx + cam.fx * (theta_d_max + 0.01), cam.cy);
+        assert!(cam.unproject(&past).is_none());
+        let before = Vec2F64::new(cam.cx + cam.fx * (theta_d_max - 0.01), cam.cy);
+        assert!(cam.unproject(&before).is_some());
+    }
+
+    #[test]
+    fn test_unproject_returns_the_ray_before_the_fold() {
+        // Past the fold theta_d(150°) ≈ theta_d(17.3°), so the rear point and
+        // the front point share a pixel; unproject must return the front one.
+        let cam = hilti();
+        let rear = Vec3F64::new(0.5, 0.0, -0.866);
+        let ray = cam.unproject(&cam.project(&rear).unwrap()).unwrap();
+        assert!(ray.z > 0.9, "{ray:?}");
+        assert!(ray.z.acos().to_degrees() < 20.0);
+    }
+
+    #[test]
+    fn test_first_root() {
+        // (t − 1)(t − 2)(t − 3)
+        let c = [-6.0, 11.0, -6.0, 1.0];
+        assert!((first_root(&c, 0.0, 10.0).unwrap() - 1.0).abs() < 1e-12);
+        assert!((first_root(&c, 1.5, 10.0).unwrap() - 2.0).abs() < 1e-12);
+        assert!(first_root(&c, 3.5, 10.0).is_none());
+        // 1 + t² has no real root.
+        assert!(first_root(&[1.0, 0.0, 1.0], 0.0, 10.0).is_none());
+        // Trailing zero coefficients: 1 − t.
+        assert!((first_root(&[1.0, -1.0, 0.0, 0.0, 0.0], 0.0, 10.0).unwrap() - 1.0).abs() < 1e-12);
     }
 }

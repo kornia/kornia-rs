@@ -134,6 +134,12 @@ pub enum SiftCudaError {
     /// Invalid launch geometry (zero dimension, or a block dim component of zero).
     #[error("invalid geometry: {0}")]
     Geometry(String),
+
+    /// A descriptor value isn't an integer in 0..=255, so the matcher's packed rows
+    /// can't hold it. RootSIFT and other float descriptors match on the host, through
+    /// `features::match_smnn_f32`.
+    #[error("descriptors must be integers in 0..=255 to match on device")]
+    NonIntegerDescriptors,
 }
 
 impl From<cudarc::driver::DriverError> for SiftCudaError {

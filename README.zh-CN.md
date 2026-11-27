@@ -46,7 +46,7 @@ Goodbyte!
 - 🔢 高效的张量和图像 API，适用于深度学习和科学计算。
 - 🐍 Python 绑定通过 [PyO3/Maturin](https://github.com/PyO3/maturin) 创建。
 - 📦 支持 Linux [amd64/arm64]、Macos 和 Windows。
-- 支持的 Python 版本有 3.7/3.8/3.9/3.10/3.11/3.12/3.13，包括 free-threaded 构建。
+- 支持的 Python 版本有 3.9 到 3.14，包括 free-threaded (3.14t) 构建。
 
 ### 支持的图像格式
 

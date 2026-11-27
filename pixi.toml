@@ -19,7 +19,6 @@ dev = { features = [
   "dev-tools",
 ], solve-group = "default" }
 # Python version-specific environments for CI matrix testing
-py38 = { features = ["rust", "python", "py38"] }
 py39 = { features = ["rust", "python", "py39"] }
 py310 = { features = ["rust", "python", "py310"] }
 py311 = { features = ["rust", "python", "py311"] }
@@ -27,6 +26,8 @@ py312 = { features = ["rust", "python", "py312"] }
 py313 = { features = ["rust", "python", "py313"] }
 py314 = { features = ["rust", "python", "py314"] }
 py314t = { features = ["rust", "py314t"] }
+py315 = { features = ["rust", "python", "py315"] }
+py315t = { features = ["rust", "py315t"] }
 
 # ------------------------------------------------------------------------------
 # Feature: Rust
@@ -76,6 +77,7 @@ pr-check = { depends-on = [
   "rust-test"
 ], description = "Pre-PR gate: skills, fmt check, clippy, check, tests (CI also runs release and cross-arch)" }
 rust-test-release = { cmd = "cargo test --release --features ci", description = "Run Rust tests (release)" }
+rust-test-algebra-avx2 = { cmd = "cargo test --release -p kornia-algebra", env = { RUSTFLAGS = "-Ctarget-feature=+avx2,+fma" }, description = "Run kornia-algebra tests (release) with AVX2 and FMA enabled at compile time, the only build that compiles its AVX2 lane backend" }
 rust-test-package = { cmd = "cargo test -p", description = "Run tests for a specific package (usage: pixi run rust-test-package <package>)" }
 rust-build-examples = { cmd = "cargo build --workspace --exclude kornia-py --exclude kornia-cpp", description = "Build examples (excluding bindings)" }
 rust-clean = { cmd = "cargo clean", description = "Clean Rust build artifacts" }
@@ -89,7 +91,7 @@ rust-cross-test-aarch64-full = { cmd = "env -u CARGO -u RUSTC -u RUSTUP_HOME PAT
 # ------------------------------------------------------------------------------
 
 [feature.python.dependencies]
-python = ">=3.8"
+python = ">=3.9"
 uv = "*"
 maturin = ">=1.9"
 pytest = "*"
@@ -108,9 +110,6 @@ py-clean = { cmd = "rm -rf .venv target dist *.egg-info && find . -type d -name 
 # ------------------------------------------------------------------------------
 # Python version overrides (only specify version, inherit tasks from python)
 # ------------------------------------------------------------------------------
-
-[feature.py38.dependencies]
-python = "3.8.*"
 
 [feature.py39.dependencies]
 python = "3.9.*"
@@ -147,6 +146,27 @@ py-test = { cmd = "python -m pytest", cwd = "kornia-py", depends-on = [
 py-test-threaded = { cmd = "python -m pytest --parallel-threads=8 --iterations=50", cwd = "kornia-py", depends-on = [
   "py-build",
 ], description = "Test kornia-py with Python 3.14t free-threaded" }
+
+[feature.py315.dependencies]
+python = "3.15.*"
+
+# Python 3.15t (free-threaded) - uses uv to provide Python since conda-forge doesn't have 3.15t yet
+[feature.py315t.dependencies]
+uv = "*"
+maturin = ">=1.9"
+pytest = "*"
+
+[feature.py315t.activation]
+scripts = ["scripts/activate-py315t.sh"]
+
+[feature.py315t.tasks]
+py-build = { cmd = "bash ../scripts/build-py315t.sh", cwd = "kornia-py", description = "Build kornia-py with Python 3.15t" }
+py-test = { cmd = "python -m pytest", cwd = "kornia-py", depends-on = [
+  "py-build",
+], description = "Test kornia-py with Python 3.15t" }
+py-test-threaded = { cmd = "python -m pytest --parallel-threads=8 --iterations=50", cwd = "kornia-py", depends-on = [
+  "py-build",
+], description = "Test kornia-py with Python 3.15t free-threaded" }
 
 # ------------------------------------------------------------------------------
 # Feature: C++
@@ -193,6 +213,8 @@ sysroot_linux-aarch64 = "*"
 scripts = ["scripts/activate-cuda.sh"]
 
 [feature.cuda.tasks]
+# `cuda` needs the Rust CUDA kernels' PTX: in a checkout, build it once with
+# `cargo run -p kornia-oxide-kernels --example build_ptx` (docs/cuda-oxide.md).
 rust-build-cuda = { cmd = "cargo build --features cuda", description = "Build Rust with CUDA support" }
 rust-test-cuda = { cmd = "cargo test --features cuda", description = "Run Rust tests with CUDA support" }
 rust-clippy-cuda = { cmd = "cargo clippy --features cuda --all-targets -- -D warnings", description = "Run clippy with CUDA support" }

@@ -293,18 +293,19 @@ impl Vec3F64 {
     }
 }
 
-// Conversions between `Vec3F64` and nalgebra's `Vector3<f64>`, through `[f64; 3]`.
-impl From<nalgebra::Vector3<f64>> for Vec3F64 {
+impl From<Vec3F64> for nalgebra::Vector3<f64> {
+    /// Converts to a `nalgebra::Vector3<f64>` with the same components.
     #[inline]
-    fn from(v: nalgebra::Vector3<f64>) -> Self {
-        Self::from_array(v.into())
+    fn from(v: Vec3F64) -> Self {
+        Self::new(v.x, v.y, v.z)
     }
 }
 
-impl From<Vec3F64> for nalgebra::Vector3<f64> {
+impl From<nalgebra::Vector3<f64>> for Vec3F64 {
+    /// Converts from a `nalgebra::Vector3<f64>` with the same components.
     #[inline]
-    fn from(v: Vec3F64) -> Self {
-        v.to_array().into()
+    fn from(v: nalgebra::Vector3<f64>) -> Self {
+        Self::new(v.x, v.y, v.z)
     }
 }
 
@@ -314,6 +315,28 @@ pub type DVecF32 = nalgebra::DVector<f32>;
 
 /// Dynamic-sized vector with f64 elements.
 pub type DVecF64 = nalgebra::DVector<f64>;
+
+/// 6-vector with f64 elements, e.g. a pose tangent `[w, v]` or a 6-DoF Jacobian row.
+///
+/// A stack value (no allocation); pairs with [`crate::Mat6F64`].
+pub type Vec6F64 = nalgebra::Vector6<f64>;
+
+/// `N`-vector with f64 elements, for fixed sizes past glam's 4.
+///
+/// A stack value (no allocation); pairs with [`crate::SMatF64`].
+pub type SVecF64<const N: usize> = nalgebra::SVector<f64, N>;
+
+/// 9-vector with f64 elements, e.g. an IMU navigation-state error (rotation, velocity,
+/// position).
+///
+/// A stack value (no allocation); pairs with [`crate::Mat9F64`].
+pub type Vec9F64 = SVecF64<9>;
+
+/// 15-vector with f64 elements, e.g. an IMU navigation-state error plus gyroscope and
+/// accelerometer bias errors.
+///
+/// A stack value (no allocation); pairs with [`crate::Mat15F64`].
+pub type Vec15F64 = SVecF64<15>;
 
 #[cfg(test)]
 mod tests {
@@ -405,6 +428,14 @@ mod tests {
         let glam_v: glam::DVec3 = v.into();
         let back: Vec3F64 = glam_v.into();
         assert_eq!(v, back);
+    }
+
+    #[test]
+    fn test_vec3f64_nalgebra_roundtrip() {
+        let v = Vec3F64::new(1.0, 2.0, 3.0);
+        let n = nalgebra::Vector3::from(v);
+        assert_eq!(n, nalgebra::Vector3::new(1.0, 2.0, 3.0));
+        assert_eq!(Vec3F64::from(n), v);
     }
 
     // Vec3A tests
@@ -513,13 +544,5 @@ mod tests {
     fn test_vec2f64_from_vec2f32() {
         let w = Vec2F64::from(Vec2F32::new(0.1, -2.5));
         assert_eq!(w.to_array(), [f64::from(0.1f32), -2.5]);
-    }
-
-    #[test]
-    fn test_vec3f64_nalgebra_conversions() {
-        let v = Vec3F64::new(1.0, 2.0, 3.0);
-        let n = nalgebra::Vector3::<f64>::from(v);
-        assert_eq!(n, nalgebra::Vector3::new(1.0, 2.0, 3.0));
-        assert_eq!(Vec3F64::from(n), v);
     }
 }

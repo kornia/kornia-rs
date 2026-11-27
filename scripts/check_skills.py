@@ -13,16 +13,26 @@ from PUBLISH_ORDER in scripts/release_rust.sh as excluded from publishing;
 review eval cases (`<skill>/evals/<case>/`) are complete, runnable by
 `claude plugin eval`, and their patch applies; no eval key names a
 backtick term the skill under test also names.
+
+A case quotes code, so it goes stale when that code moves. A stale case fails
+only a change to the skills or their checkers (EVAL_OWNED); any other change
+gets a warning, and a maintainer re-syncs the case. SKILLS_STRICT_EVALS=1
+makes every stale case an error, =0 a warning.
 The publish check first runs on PUBLISH_PROBES; a change that stops it rejecting
 one fails here, not silently.
 
 This cannot check that guidance is complete or that it was applied.
 """
+import argparse
 import os
 import re
 import subprocess
 import sys
 from pathlib import Path
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import changelog  # noqa: E402  (its merge-base diff decides whose job a stale eval case is)
 
 ROOT = Path(__file__).resolve().parent.parent
 SKILLS = ROOT / ".claude" / "skills"
@@ -38,6 +48,28 @@ REQUIRED = [
     "release",
 ]
 PATH_REF = r"`((?:crates|scripts|kornia-py|kornia-cpp|docs|\.github)/[A-Za-z0-9_./-]+)`"
+
+
+# A change under these paths keeps the review eval cases in sync, so a stale case
+# fails it. Any other change, e.g. a rustdoc fix in code a control quotes, only
+# warns: a contributor fixing a comment must not have to edit review fixtures.
+EVAL_OWNED = (".claude/skills/", ".agents/skills/", "scripts/check_skills.py", "scripts/skill_evals.py")
+
+
+def evals_strict(base_ref: str) -> tuple:
+    """(whether a stale eval case is an error, why). Fails closed: a change set
+    that cannot be computed is treated as touching the skills."""
+    forced = os.environ.get("SKILLS_STRICT_EVALS", "")
+    if forced in ("0", "1"):
+        return forced == "1", f"SKILLS_STRICT_EVALS={forced}"
+    try:
+        paths = changelog.changed(base_ref)
+    except (subprocess.CalledProcessError, OSError):
+        return True, f"cannot diff against {base_ref}, so failing closed"
+    owned = sorted(p for p in paths if any(p.startswith(o) if o.endswith("/") else p == o for o in EVAL_OWNED))
+    if owned:
+        return True, f"this change touches {owned[0]}"
+    return False, f"this change touches nothing under {', '.join(EVAL_OWNED)} since {base_ref}"
 
 
 def frontmatter(text: str) -> dict:
@@ -121,7 +153,13 @@ PUBLISH_PROBES = [
 
 
 def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--base-ref", default="origin/main",
+                    help="what the change is compared with, to decide whether a stale eval case fails (default: origin/main)")
+    args = ap.parse_args()
+    strict, why = evals_strict(args.base_ref)
     errors = []
+    stale = []  # eval cases whose quoted code moved: errors when `strict`, else warnings
     published = publish_order()
     for probe, flagged in PUBLISH_PROBES:
         if bool(publish_claims(probe, published)) != flagged:
@@ -192,14 +230,16 @@ def main() -> int:
         if patch.is_file():
             r = subprocess.run(["git", "apply", "--check", str(patch)], cwd=ROOT, capture_output=True, text=True)
             if r.returncode != 0:
-                errors.append(f"eval {case.name}: patch.diff no longer applies: {r.stderr.strip()}")
+                stale.append(f"eval {case.name}: patch.diff no longer applies: {r.stderr.strip()}")
         merged = case / "merged.diff"
         if merged.is_file():
             r = subprocess.run(["git", "apply", "-R", "--check", str(merged)], cwd=ROOT, capture_output=True, text=True)
             if r.returncode != 0:
-                errors.append(f"eval {case.name}: merged.diff is no longer in the tree: {r.stderr.strip()}")
-    sys.dont_write_bytecode = True
-    sys.path.insert(0, str(ROOT / "scripts"))
+                stale.append(f"eval {case.name}: merged.diff is no longer in the tree: {r.stderr.strip()}")
+    if strict:
+        errors += [f"{s} ({why}; re-sync the case, see kornia-code-review/evals/README.md)" for s in stale]
+    # precision.md is generated from the case files alone, never from the tree, so
+    # it goes stale only through a change to the cases: always an error.
     from skill_evals import stale_precision
     for name in stale_precision():
         errors.append(f"eval {name}: graders/precision.md is stale; run `python3 scripts/skill_evals.py sync`")
@@ -226,10 +266,15 @@ def main() -> int:
         if ".claude/skills" not in (ROOT / doc).read_text(encoding="utf-8"):
             errors.append(f"{doc} does not reference .claude/skills")
 
+    if not strict:
+        for s in stale:
+            print(f"warning: {s} (not an error: {why}; a maintainer re-syncs the case)", file=sys.stderr)
+            if os.environ.get("GITHUB_ACTIONS") == "true":
+                print(f"::warning title=Stale review eval case::{s.splitlines()[0]}")
     for e in errors:
         print(f"error: {e}", file=sys.stderr)
     if not errors:
-        print("skills OK")
+        print("skills OK" + (f" ({len(stale)} stale eval case(s), warned)" if stale and not strict else ""))
     return 1 if errors else 0
 
 

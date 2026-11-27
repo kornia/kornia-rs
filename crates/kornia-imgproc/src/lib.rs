@@ -79,6 +79,8 @@ pub mod parallel;
 /// runtime CPU feature probe shared by SIMD-dispatching kernels.
 pub mod simd;
 
+mod scratch;
+
 /// image processing metrics module.
 pub mod metrics;
 

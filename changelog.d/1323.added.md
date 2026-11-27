@@ -1,0 +1,4 @@
+New capture APIs report the end of a stream and pipeline errors without guessing. `try_grab_rgb8`
+and `try_grab_gray8` (on `StreamCapture` and `VideoReader`) return `Grab::Frame(image)`,
+`Grab::Pending` or `Grab::Eos`; `is_eos` and `stream_error` expose the same terminal state
+without grabbing a frame.

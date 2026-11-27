@@ -3,6 +3,7 @@ use humanize_duration::{prelude::*, Truncate};
 use kornia::image::{Image, ImageSize};
 use kornia::imgproc::resize::resize_fast_rgb;
 use kornia::io::stream::video::{ImageFormat, SeekFlags, VideoReader};
+use kornia::io::stream::Grab;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -13,6 +14,10 @@ pub struct MyApp {
     slider_pos: u64,
     playback_speed: u32,
     fps: f64,
+    /// Set when `try_grab_rgb8` reports `Grab::Eos`, i.e. after every buffered frame was drawn.
+    finished: bool,
+    /// Carries a grab error into the Finished/Failed transition.
+    error: Option<String>,
     app_state: AppState,
 }
 
@@ -30,19 +35,23 @@ enum AppState {
     Playing(VideoReader, Instant, Option<TextureStore>),
     /// The video is paused
     Paused(VideoReader, Option<TextureStore>),
-    /// The video has been finished
-    Finished(VideoReader),
+    /// The video has been finished; the last texture is kept on screen until a restart.
+    Finished(VideoReader, Option<TextureStore>),
+    /// The stream failed; the error is kept and shown, and a retry reopens the file.
+    Failed(VideoReader, String, Option<TextureStore>),
     /// The video is not loaded
     #[default]
     Stopped,
 }
 
 impl AppState {
+    /// Returns the reader for the current state, if a video is loaded.
     fn inner(&mut self) -> Option<&mut VideoReader> {
         match self {
             AppState::Playing(reader, ..) => Some(reader),
             AppState::Paused(reader, ..) => Some(reader),
-            AppState::Finished(reader) => Some(reader),
+            AppState::Finished(reader, _) => Some(reader),
+            AppState::Failed(reader, ..) => Some(reader),
             AppState::Stopped => None,
         }
     }
@@ -56,18 +65,22 @@ impl PartialEq for AppState {
             (Playing(..), Playing(..))
                 | (Paused(..), Paused(..))
                 | (Finished(..), Finished(..))
+                | (Failed(..), Failed(..))
                 | (Stopped, Stopped)
         )
     }
 }
 
 impl Default for MyApp {
+    /// Creates the player with default playback settings.
     fn default() -> Self {
         Self {
             file_path: String::new(),
             slider_pos: 0,
             playback_speed: 1,
             fps: 8.,
+            finished: false,
+            error: None,
             app_state: AppState::default(),
         }
     }
@@ -89,6 +102,7 @@ impl eframe::App for MyApp {
     }
 }
 
+/// Draws the file path field and the load button.
 fn render_navbar(app: &mut MyApp, ui: &mut eframe::egui::Ui) {
     ui.horizontal(|ui| {
         // Clear Button
@@ -106,6 +120,8 @@ fn render_navbar(app: &mut MyApp, ui: &mut eframe::egui::Ui) {
                 let file_path = PathBuf::from(&app.file_path);
                 let mut video_reader = VideoReader::new(&file_path, ImageFormat::Rgb8).unwrap();
                 video_reader.start().unwrap();
+                app.finished = false;
+                app.error = None;
 
                 app.app_state = AppState::Playing(video_reader, Instant::now(), None);
             }
@@ -119,6 +135,7 @@ fn render_navbar(app: &mut MyApp, ui: &mut eframe::egui::Ui) {
 }
 
 // This function only runs if `VideoReader` is present
+/// Draws the playback controls and switches to `Finished`/`Failed` when playback ends.
 fn render_play_controls(app: &mut MyApp, ctx: &eframe::egui::Context) {
     let mut is_playing = false;
     let mut is_finished = false;
@@ -126,21 +143,21 @@ fn render_play_controls(app: &mut MyApp, ctx: &eframe::egui::Context) {
     if let AppState::Playing(video_reader, ..) = &app.app_state {
         is_playing = true;
 
-        if let Some(duration) = video_reader.get_duration() {
-            if let Some(current_pos) = video_reader.get_pos() {
-                app.slider_pos = current_pos.as_secs();
-
-                // Video is now finished
-                if current_pos == duration {
-                    is_finished = true;
-                }
-            }
+        if let Some(current_pos) = video_reader.get_pos() {
+            app.slider_pos = current_pos.as_secs();
         }
+
+        // The reader reports end-of-stream explicitly; the position never reaches the duration
+        // (the last frame's PTS is always before it). Wait until every buffered frame was drawn.
+        is_finished = app.finished;
     }
 
     if is_finished {
         let app_state = match std::mem::take(&mut app.app_state) {
-            AppState::Playing(video_player, ..) => AppState::Finished(video_player),
+            AppState::Playing(video_player, _, texture_store) => match app.error.take() {
+                Some(error) => AppState::Failed(video_player, error, texture_store),
+                None => AppState::Finished(video_player, texture_store),
+            },
             _ => panic!("Unexpected AppState"),
         };
         app.app_state = app_state;
@@ -149,12 +166,16 @@ fn render_play_controls(app: &mut MyApp, ctx: &eframe::egui::Context) {
     // egui Windows
     // Control Window
     egui::Window::new("Control").show(ctx, |ui| {
+        if let AppState::Failed(_, error, _) = &app.app_state {
+            ui.colored_label(egui::Color32::RED, format!("Playback failed: {error}"));
+        }
         ui.horizontal(|ui| {
             Grid::new("control_grid").show(ui, |ui| {
                 let button_text = match app.app_state {
                     AppState::Playing(..) => "Pause",
                     AppState::Paused(..) => "Resume",
                     AppState::Finished(..) => "Restart",
+                    AppState::Failed(..) => "Retry",
                     _ => "Play",
                 };
                 ui.label("State");
@@ -172,10 +193,56 @@ fn render_play_controls(app: &mut MyApp, ctx: &eframe::egui::Context) {
                             app.app_state =
                                 AppState::Playing(video_reader, Instant::now(), texture_store);
                         }
-                        AppState::Finished(mut video_reader) => {
+                        AppState::Finished(mut video_reader, _) => {
                             video_reader.reset().expect("Failed to reset video");
                             video_reader.start().expect("Failed to start the video");
+                            app.finished = false;
                             app.app_state = AppState::Playing(video_reader, Instant::now(), None);
+                        }
+                        AppState::Failed(video_reader, error, texture_store) => {
+                            // The failed pipeline may not recover, so retry reopens the file.
+                            // A failure to reopen keeps the failed state (and last frame) visible.
+                            let file_path = PathBuf::from(&app.file_path);
+                            let reopened = match VideoReader::new(&file_path, ImageFormat::Rgb8) {
+                                Ok(mut reader) => match reader.start() {
+                                    Ok(()) => Ok(reader),
+                                    // `start` can fail with a bare state-change error; the file's
+                                    // own reason is already on the reader's bus.
+                                    Err(start_error) => Err(reader
+                                        .stream_error()
+                                        .map(|error| error.to_string())
+                                        .unwrap_or_else(|| start_error.to_string())),
+                                },
+                                Err(error) => Err(error.to_string()),
+                            };
+                            match reopened {
+                                Ok(video_reader) => {
+                                    log::warn!("Retrying after playback error: {error}");
+                                    // The slider may still show the old speed; apply it to the new
+                                    // pipeline, or reset it if the seek is not possible yet.
+                                    if app.playback_speed != 1
+                                        && video_reader
+                                            .set_playback_speed(app.playback_speed as f64)
+                                            .is_err()
+                                    {
+                                        app.playback_speed = 1;
+                                    }
+                                    app.finished = false;
+                                    app.error = None;
+                                    app.slider_pos = 0;
+                                    // Keep the last frame visible until the new pipeline delivers
+                                    // the first one; a later failure keeps it too.
+                                    app.app_state = AppState::Playing(
+                                        video_reader,
+                                        Instant::now(),
+                                        texture_store,
+                                    );
+                                }
+                                Err(retry_error) => {
+                                    app.app_state =
+                                        AppState::Failed(video_reader, retry_error, texture_store);
+                                }
+                            }
                         }
                         _ => {
                             log::error!("Unrecognized AppState");
@@ -253,6 +320,7 @@ fn render_play_controls(app: &mut MyApp, ctx: &eframe::egui::Context) {
     });
 }
 
+/// Draws the current frame, grabbing a new one when it is time.
 fn render_image(app: &mut MyApp, ui: &mut eframe::egui::Ui) {
     match &mut app.app_state {
         AppState::Playing(video_reader, instant, texture_store) => {
@@ -267,9 +335,20 @@ fn render_image(app: &mut MyApp, ui: &mut eframe::egui::Ui) {
                 && texture_store.is_some()
             {
                 // Don't grab the new image, load the previous one instead
-            } else if let Some(image_frame) =
-                video_reader.grab_rgb8().expect("Failed to grab the image")
-            {
+            } else if let Some(image_frame) = match video_reader.try_grab_rgb8() {
+                Ok(Grab::Frame(image)) => Some(image),
+                // Finish only after every buffered frame has been drawn.
+                Ok(Grab::Eos) => {
+                    app.finished = true;
+                    None
+                }
+                Ok(Grab::Pending) => None,
+                Err(err) => {
+                    app.finished = true;
+                    app.error = Some(err.to_string());
+                    None
+                }
+            } {
                 *instant = Instant::now();
 
                 let mut resize_required = false;
@@ -375,7 +454,9 @@ fn render_image(app: &mut MyApp, ui: &mut eframe::egui::Ui) {
                 ui.image(sized_texture);
             }
         }
-        AppState::Paused(_, Some(texture_store)) => {
+        AppState::Paused(_, Some(texture_store))
+        | AppState::Finished(_, Some(texture_store))
+        | AppState::Failed(_, _, Some(texture_store)) => {
             let sized_texture = egui::load::SizedTexture::new(
                 texture_store.texture_handle.id(),
                 egui::Vec2::new(

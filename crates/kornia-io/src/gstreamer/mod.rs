@@ -1,3 +1,11 @@
+//! GStreamer video capture and file reading.
+//!
+//! [`StreamCapture::grab_rgb8`](crate::gstreamer::StreamCapture::grab_rgb8) reads RGB frames,
+//! while [`StreamCapture::grab_gray8`](crate::gstreamer::StreamCapture::grab_gray8) reads
+//! `GRAY8` frames. For video files, [`VideoReader::grab_rgb8`](crate::gstreamer::video::VideoReader::grab_rgb8)
+//! and [`VideoReader::grab_gray8`](crate::gstreamer::video::VideoReader::grab_gray8) provide the
+//! corresponding read paths; configure the latter with [`ImageFormat::Mono8`](crate::gstreamer::video::ImageFormat::Mono8).
+
 /// A module for capturing video streams from v4l2 cameras.
 pub mod camera;
 
@@ -17,7 +25,7 @@ pub mod v4l2;
 pub mod video;
 
 pub use crate::stream::camera::{CameraCapture, CameraCaptureConfig};
-pub use crate::stream::capture::StreamCapture;
+pub use crate::stream::capture::{Grab, StreamCapture};
 pub use crate::stream::error::StreamCaptureError;
 pub use crate::stream::rtsp::RTSPCameraConfig;
 pub use crate::stream::v4l2::V4L2CameraConfig;
@@ -136,7 +144,7 @@ impl MemoryResource for GstResource {
     }
 }
 
-/// Construct an RGB [`Image`] from a GStreamer buffer and the [`VideoInfo`] of its caps.
+/// Construct an [`Image`] from a GStreamer buffer and the [`VideoInfo`] of its caps.
 ///
 /// The frame is mapped with [`VideoFrame::from_buffer_readable`] (`gst_video_frame_map`), which
 /// applies the buffer's `VideoMeta` (its map function, plane offset and stride) when it has
@@ -144,7 +152,7 @@ impl MemoryResource for GstResource {
 /// starts on an aligned address: in the default layout an RGB row of `width * 3` bytes is
 /// rounded up to a multiple of 4, so an 854-pixel row takes 2564 bytes instead of 2562.
 ///
-/// When the rows are tightly packed (`stride == width * 3`) the image borrows the mapped frame
+/// When the rows are tightly packed (`stride == width * C`) the image borrows the mapped frame
 /// without copying, whatever the plane offset. Otherwise the pixels of each row are copied into
 /// a new packed image and the padding bytes are skipped.
 ///
@@ -154,7 +162,7 @@ impl MemoryResource for GstResource {
 ///   split across several memories), since GStreamer maps only that memory;
 /// - a buffer without a `VideoMeta` that is smaller than the default layout. If it still
 ///   holds every row's pixels at the default stride (only the padding after the last row is
-///   missing), it is read with that stride; otherwise, if it holds `width * height * 3`
+///   missing), it is read with that stride; otherwise, if it holds `width * height * C`
 ///   bytes, it is read as tightly packed rows, as pushed by `appsrc` producers that copy a
 ///   packed image. A buffer without a `VideoMeta` that is at least as large as the default
 ///   layout is always read with the default stride, even if its producer packed the rows.
@@ -166,23 +174,24 @@ impl MemoryResource for GstResource {
 ///
 /// * `buffer` - the frame buffer. In the zero-copy case it stays mapped for as long as the
 ///   returned image lives.
-/// * `info` - the video info parsed from the sample caps. Its format must be `RGB`.
+/// * `info` - the video info parsed from the sample caps. Its format must be `RGB` for `C = 3`
+///   or `GRAY8` for `C = 1`.
 ///
 /// # Returns
 ///
-/// An `Image<u8, 3>` of `info.width() x info.height()` pixels with tightly packed rows.
+/// An `Image<u8, C>` of `info.width() x info.height()` pixels with tightly packed rows.
 ///
 /// # Errors
 ///
 /// Returns [`StreamCaptureError::InvalidImageFormat`] if the caps describe an empty or invalid
 /// frame, or the frame has no planes, a negative row stride (bottom-up rows), a stride smaller
-/// than `width * 3`, or a `VideoMeta` that does not match the caps;
+/// than `width * C`, or a `VideoMeta` that does not match the caps;
 /// [`StreamCaptureError::BufferSizeMismatch`] if the buffer is too small for the frame layout;
 /// and [`StreamCaptureError::GetBufferError`] if it cannot be mapped.
-pub(crate) fn image_from_gst_buffer(
+pub(crate) fn image_from_gst_buffer<const C: usize>(
     buffer: gstreamer::Buffer,
     info: &gstreamer_video::VideoInfo,
-) -> Result<Image<u8, 3>, StreamCaptureError> {
+) -> Result<Image<u8, C>, StreamCaptureError> {
     use gstreamer_video::prelude::*;
 
     // `VideoFrame::from_buffer_readable` asserts that `info` is valid, and `VideoInfo::from_caps`
@@ -198,7 +207,7 @@ pub(crate) fn image_from_gst_buffer(
         width: info.width() as usize,
         height: info.height() as usize,
     };
-    let row_bytes = size.width.checked_mul(3).ok_or_else(|| {
+    let row_bytes = size.width.checked_mul(C).ok_or_else(|| {
         StreamCaptureError::InvalidImageFormat(format!(
             "frame dimensions overflow: {}x{}",
             size.width, size.height
@@ -231,7 +240,7 @@ pub(crate) fn image_from_gst_buffer(
     })?;
     if stride < row_bytes {
         return Err(StreamCaptureError::InvalidImageFormat(format!(
-            "row stride {stride} is smaller than width * 3 = {row_bytes}"
+            "row stride {stride} is smaller than width * {C} = {row_bytes}"
         )));
     }
     // `gst_video_frame_map` only checks this with `g_return_val_if_fail`, which builds without
@@ -264,7 +273,7 @@ pub(crate) fn image_from_gst_buffer(
 
     if stride != row_bytes {
         let packed = pack_rows(plane, stride, row_bytes, size.height);
-        return Image::<u8, 3>::new(size, packed).map_err(StreamCaptureError::ImageError);
+        return Image::<u8, C>::new(size, packed).map_err(StreamCaptureError::ImageError);
     }
 
     let data_ptr: *const u8 = plane.as_ptr();
@@ -274,11 +283,11 @@ pub(crate) fn image_from_gst_buffer(
     // - `data_ptr` is the start of plane 0 of a frame that `keepalive` keeps mapped for
     //   reading for the lifetime of the Image. Moving the `VideoFrame` into the `Arc` does not
     //   move the mapped memory.
-    // - The plane holds `stride * plane_height >= width * height * 3` bytes (stride equals
-    //   `width * 3` here and `plane_height >= height` was checked above), and we checked that
+    // - The plane holds `stride * plane_height >= width * height * C` bytes (stride equals
+    //   `width * C` here and `plane_height >= height` was checked above), and we checked that
     //   the mapping covers all of them, so reads stay in bounds.
     let image = unsafe {
-        Image::<u8, 3>::from_borrowed_host_readonly(size, data_ptr, keepalive)
+        Image::<u8, C>::from_borrowed_host_readonly(size, data_ptr, keepalive)
             .map_err(StreamCaptureError::ImageError)?
     };
 
@@ -305,19 +314,19 @@ fn mapped_plane_len(buffer: &gstreamer::BufferRef, offset: usize, has_meta: bool
 ///
 /// It is read with the default stride if it holds every row's pixels at that stride (only the
 /// padding after the last row is missing), and as tightly packed rows if it holds
-/// `width * height * 3` bytes. For two or more rows the first condition needs more bytes than
+/// `width * height * C` bytes. For two or more rows the first condition needs more bytes than
 /// the second whenever the default layout pads rows, so the two cannot be confused.
 ///
 /// # Errors
 ///
 /// Returns [`StreamCaptureError::BufferSizeMismatch`] if the buffer holds fewer than
-/// `width * height * 3` bytes, and the errors of [`image_from_strided_buffer`].
-fn image_from_undersized_buffer(
+/// `width * height * C` bytes, and the errors of [`image_from_strided_buffer`].
+fn image_from_undersized_buffer<const C: usize>(
     buffer: gstreamer::Buffer,
     info: &gstreamer_video::VideoInfo,
     size: kornia_image::ImageSize,
     row_bytes: usize,
-) -> Result<Image<u8, 3>, StreamCaptureError> {
+) -> Result<Image<u8, C>, StreamCaptureError> {
     let default_stride = info
         .stride()
         .first()
@@ -344,7 +353,7 @@ fn strided_len(height: usize, stride: usize, row_bytes: usize, offset: usize) ->
     }
 }
 
-/// Reads `size.height` RGB rows, `stride` bytes apart and starting at byte `offset`, from the
+/// Reads `size.height` rows, `stride` bytes apart and starting at byte `offset`, from the
 /// whole buffer mapped as one block. The rows are borrowed when they are contiguous and copied
 /// into a packed image otherwise.
 ///
@@ -353,13 +362,13 @@ fn strided_len(height: usize, stride: usize, row_bytes: usize, offset: usize) ->
 /// Returns [`StreamCaptureError::GetBufferError`] if the buffer cannot be mapped,
 /// [`StreamCaptureError::InvalidImageFormat`] if the layout overflows, and
 /// [`StreamCaptureError::BufferSizeMismatch`] if the buffer does not hold every row.
-fn image_from_strided_buffer(
+fn image_from_strided_buffer<const C: usize>(
     buffer: gstreamer::Buffer,
     size: kornia_image::ImageSize,
     row_bytes: usize,
     offset: usize,
     stride: usize,
-) -> Result<Image<u8, 3>, StreamCaptureError> {
+) -> Result<Image<u8, C>, StreamCaptureError> {
     let mapped_buffer = buffer
         .into_mapped_buffer_readable()
         .map_err(|_| StreamCaptureError::GetBufferError)?;
@@ -379,7 +388,7 @@ fn image_from_strided_buffer(
     let rows = &mapped_buffer.as_slice()[offset..];
     if stride != row_bytes && size.height > 1 {
         let packed = pack_rows(rows, stride, row_bytes, size.height);
-        return Image::<u8, 3>::new(size, packed).map_err(StreamCaptureError::ImageError);
+        return Image::<u8, C>::new(size, packed).map_err(StreamCaptureError::ImageError);
     }
 
     // Capture the pointer BEFORE moving mapped_buffer into GstResource.
@@ -391,10 +400,10 @@ fn image_from_strided_buffer(
     // SAFETY:
     // - `data_ptr` points `offset` bytes into the mapped buffer, which `keepalive`
     //   (GstResource) keeps mapped for the lifetime of the Image.
-    // - The rows are contiguous here (`stride == width * 3`, or a single row), and we checked
-    //   that the buffer holds `offset + width * height * 3` bytes, so reads stay in bounds.
+    // - The rows are contiguous here (`stride == width * C`, or a single row), and we checked
+    //   that the buffer holds `offset + width * height * C` bytes, so reads stay in bounds.
     let image = unsafe {
-        Image::<u8, 3>::from_borrowed_host_readonly(size, data_ptr, keepalive)
+        Image::<u8, C>::from_borrowed_host_readonly(size, data_ptr, keepalive)
             .map_err(StreamCaptureError::ImageError)?
     };
 
@@ -418,7 +427,7 @@ fn pack_rows(plane: &[u8], stride: usize, row_bytes: usize, height: usize) -> Ve
 
 #[cfg(test)]
 mod tests {
-    use crate::stream::{StreamCapture, StreamCaptureError};
+    use crate::stream::{Grab, StreamCapture, StreamCaptureError};
     use gstreamer_video::{VideoFormat, VideoFrameFlags, VideoInfo, VideoMeta};
     use kornia_image::Image;
 
@@ -481,8 +490,9 @@ mod tests {
 
     /// Verifies that capturing N frames with `videotestsrc` succeeds, that the pixel
     /// data is readable through the Image slice (proving the GstResource keepalive is
-    /// active), and that dropping each Image releases the buffer exactly once (no
-    /// crash / no double-unmap — validated by the clean exit without sanitizer errors).
+    /// active), that dropping each Image releases the buffer exactly once (no
+    /// crash / no double-unmap — validated by the clean exit without sanitizer errors), and
+    /// that the pipeline reports end-of-stream explicitly once the source is done.
     ///
     /// Uses `videotestsrc` (no camera or display required).
     #[test]
@@ -508,49 +518,187 @@ mod tests {
         capture.start()?;
 
         let mut frames_received = 0usize;
-        // Poll until we have all N frames (videotestsrc with num-buffers is bounded).
-        // We attempt up to 5×N polls to avoid an infinite loop.
-        let max_polls = N_FRAMES * 5;
-        for _ in 0..max_polls {
-            if let Some(image) = capture.grab_rgb8()? {
-                // 1. Verify dimensions.
-                assert_eq!(image.width(), WIDTH, "frame width mismatch");
-                assert_eq!(image.height(), HEIGHT, "frame height mismatch");
-                assert_eq!(image.num_channels(), 3, "frame channels mismatch");
+        let mut saw_eos = false;
+        // The deadline only guards the test against a hang; end-of-stream itself is asserted
+        // below, not inferred from a timeout.
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_secs(10) {
+            match capture.try_grab_rgb8()? {
+                Grab::Frame(image) => {
+                    // 1. Verify dimensions.
+                    assert_eq!(image.width(), WIDTH, "frame width mismatch");
+                    assert_eq!(image.height(), HEIGHT, "frame height mismatch");
+                    assert_eq!(image.num_channels(), 3, "frame channels mismatch");
 
-                // 2. Read pixel data — proves the GstResource keepalive is active and
-                //    the underlying mapped buffer is still valid.
-                let slice = image.as_slice();
-                assert_eq!(
-                    slice.len(),
-                    WIDTH * HEIGHT * 3,
-                    "frame pixel count mismatch"
-                );
-                // Access first and last byte to ensure the mapping is live.
-                let _ = slice[0];
-                let _ = slice[slice.len() - 1];
+                    // 2. Read pixel data — proves the GstResource keepalive is active and
+                    //    the underlying mapped buffer is still valid.
+                    let slice = image.as_slice();
+                    assert_eq!(
+                        slice.len(),
+                        WIDTH * HEIGHT * 3,
+                        "frame pixel count mismatch"
+                    );
+                    // Access first and last byte to ensure the mapping is live.
+                    let _ = slice[0];
+                    let _ = slice[slice.len() - 1];
 
-                frames_received += 1;
+                    frames_received += 1;
 
-                // 3. `image` drops here — GstResource::Drop unmaps and releases the
-                //    GStreamer buffer ref exactly once.  A double-free or use-after-free
-                //    would crash here (or be caught by valgrind/asan in CI).
+                    // 3. `image` drops here — GstResource::Drop unmaps and releases the
+                    //    GStreamer buffer ref exactly once.  A double-free or use-after-free
+                    //    would crash here (or be caught by valgrind/asan in CI).
+                }
+                Grab::Eos => {
+                    saw_eos = true;
+                    break;
+                }
+                Grab::Pending => {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
             }
-            if frames_received >= N_FRAMES {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
         }
 
-        // Close pipeline before asserting so Close errors don't shadow the count.
-        capture.close()?;
-
+        // Assert before close: close() sends its own EOS and would satisfy the assertion.
+        assert!(
+            saw_eos,
+            "videotestsrc num-buffers={N_FRAMES} did not report end-of-stream"
+        );
         assert_eq!(
             frames_received, N_FRAMES,
             "expected {N_FRAMES} frames but received {frames_received}"
         );
+        capture.close()?;
 
         Ok(())
+    }
+
+    /// Calling `start` again after end-of-stream must not forget it: GStreamer does not restart
+    /// an EOS pipeline without a seek, so reporting `Pending` would loop forever.
+    #[test]
+    fn start_after_eos_keeps_eos() -> Result<(), Box<dyn std::error::Error>> {
+        let mut capture = StreamCapture::new(
+            "videotestsrc num-buffers=1 ! video/x-raw,format=RGB,width=8,height=4 ! \
+             appsink name=sink sync=false",
+        )?;
+        capture.start()?;
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_secs(10) {
+            match capture.try_grab_rgb8()? {
+                Grab::Eos => break,
+                Grab::Frame(_) | Grab::Pending => {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            }
+        }
+        capture.start()?;
+        assert!(capture.is_eos(), "start() forgot the end-of-stream");
+        assert!(matches!(capture.try_grab_rgb8()?, Grab::Eos));
+        capture.close()?;
+        Ok(())
+    }
+
+    /// `is_eos` reports the end as soon as the bus posts it; frames buffered before it are still
+    /// returned afterwards, in order.
+    #[test]
+    fn eos_can_arrive_before_the_last_frames_are_grabbed() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use gstreamer::prelude::*;
+
+        if !gstreamer::INITIALIZED.load(std::sync::atomic::Ordering::Relaxed) {
+            gstreamer::init()?;
+        }
+
+        let mut capture = StreamCapture::new(
+            "appsrc name=src caps=video/x-raw,format=RGB,width=4,height=4 ! \
+             appsink name=sink sync=false",
+        )?;
+        capture.start()?;
+        let appsrc = capture
+            .pipeline
+            .by_name("src")
+            .ok_or("missing appsrc")?
+            .dynamic_cast::<gstreamer_app::AppSrc>()
+            .map_err(|_| "src is not an appsrc")?;
+        for value in 0..3u8 {
+            appsrc.push_buffer(gstreamer::Buffer::from_slice(vec![value; 4 * 4 * 3]))?;
+        }
+        appsrc.end_of_stream()?;
+
+        let start = std::time::Instant::now();
+        while !capture.is_eos() && start.elapsed() < std::time::Duration::from_secs(10) {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(capture.is_eos(), "end-of-stream was not posted");
+
+        let mut values = Vec::new();
+        loop {
+            match capture.try_grab_rgb8()? {
+                Grab::Frame(image) => values.push(image.as_slice()[0]),
+                Grab::Eos => break,
+                Grab::Pending => panic!("every frame must be buffered once EOS is posted"),
+            }
+        }
+        capture.close()?;
+        assert_eq!(values, [0, 1, 2]);
+        Ok(())
+    }
+
+    /// An extraction failure inside the appsink callback must surface as a stream error, not as
+    /// a normal end-of-stream. A buffer-list sample has no single buffer, so `extract_frame_buffer`
+    /// fails with `GetBufferError` — reachable through the public pipeline API.
+    #[test]
+    fn extraction_failure_reports_a_stream_error() -> Result<(), Box<dyn std::error::Error>> {
+        use gstreamer::prelude::*;
+        use std::time::Duration;
+
+        if !gstreamer::INITIALIZED.load(std::sync::atomic::Ordering::Relaxed) {
+            gstreamer::init()?;
+        }
+
+        let mut capture = StreamCapture::new(
+            "appsrc name=src caps=video/x-raw,format=RGB,width=4,height=4 ! \
+             appsink name=sink sync=false",
+        )?;
+        // Deliver buffer lists: the resulting sample has no single buffer.
+        capture
+            .pipeline
+            .by_name("sink")
+            .ok_or("missing sink")?
+            .dynamic_cast::<gstreamer_app::AppSink>()
+            .map_err(|_| "sink is not an appsink")?
+            .set_buffer_list_support(true);
+
+        capture.start()?;
+        let appsrc = capture
+            .pipeline
+            .by_name("src")
+            .ok_or("missing appsrc")?
+            .dynamic_cast::<gstreamer_app::AppSrc>()
+            .map_err(|_| "src is not an appsrc")?;
+        let mut list = gstreamer::BufferList::new();
+        list.get_mut()
+            .ok_or("buffer list is not writable")?
+            .add(gstreamer::Buffer::from_slice(vec![0u8; 4 * 4 * 3]));
+        appsrc.push_buffer_list(list)?;
+        appsrc.end_of_stream()?;
+
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(10) {
+            match capture.try_grab_rgb8() {
+                Err(StreamCaptureError::StreamError(err)) => {
+                    assert!(
+                        !err.to_string().is_empty(),
+                        "the stream error has no message"
+                    );
+                    capture.close()?;
+                    return Ok(());
+                }
+                Err(err) => return Err(err.into()),
+                Ok(Grab::Pending) => std::thread::sleep(Duration::from_millis(5)),
+                Ok(_) => panic!("an extraction failure must not deliver frames or end-of-stream"),
+            }
+        }
+        panic!("no stream error within 10 s");
     }
 
     /// `pack_rows` must drop the padding after every row and keep the pixel bytes in order.
@@ -993,6 +1141,7 @@ mod tests {
         for caps in [
             "video/x-raw,format=RGBx,width=64,height=48,framerate=30/1",
             "video/x-raw,format=BGR,width=64,height=48,framerate=30/1",
+            "video/x-raw,format=GRAY8,width=64,height=48,framerate=30/1",
             "video/x-raw,width=64,height=48,framerate=30/1 ! jpegenc",
         ] {
             let result = grab_first(&format!(
@@ -1014,6 +1163,60 @@ mod tests {
             "non-video caps: {:?}",
             result.map(|(frame, _)| frame.is_some())
         );
+    }
+
+    #[test]
+    fn gray8_buffer_layouts() -> Result<(), Box<dyn std::error::Error>> {
+        gstreamer::init()?;
+        let info = VideoInfo::builder(VideoFormat::Gray8, 3, 2).build()?;
+        let packed = vec![1, 2, 3, 4, 5, 6];
+        for (data, copied) in [
+            (packed.clone(), false),
+            (vec![1, 2, 3, 99, 4, 5, 6, 99], true),
+        ] {
+            let source_ptr = data.as_ptr();
+            let image =
+                super::image_from_gst_buffer::<1>(gstreamer::Buffer::from_slice(data), &info)?;
+            assert_eq!(image.as_slice(), packed.as_slice());
+            assert_eq!((image.width(), image.height()), (3, 2));
+            assert_eq!(image.as_slice().as_ptr() != source_ptr, copied);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn grab_gray8_checks_format_and_pixels() -> Result<(), Box<dyn std::error::Error>> {
+        use std::time::Duration;
+
+        for (format, expected_error) in [("GRAY8", false), ("RGB", true)] {
+            let pipeline = format!(
+                "videotestsrc num-buffers=1 pattern=white ! \
+                 video/x-raw,format={format},width=3,height=2 ! \
+                 appsink name=sink sync=false"
+            );
+            let mut capture = StreamCapture::new(&pipeline)?;
+            capture.start()?;
+            let mut result = Ok(None);
+            for _ in 0..200 {
+                result = capture.grab_gray8();
+                if !matches!(result, Ok(None)) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            capture.close()?;
+            if expected_error {
+                assert!(matches!(
+                    result,
+                    Err(StreamCaptureError::InvalidImageFormat(_))
+                ));
+            } else {
+                let image = result?.ok_or("no GRAY8 frame")?;
+                assert_eq!((image.width(), image.height()), (3, 2));
+                assert_eq!(image.as_slice(), &[235; 6]);
+            }
+        }
+        Ok(())
     }
 
     /// Caps without a framerate used to fail on the streaming thread, which ended the stream

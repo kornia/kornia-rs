@@ -1411,6 +1411,25 @@ fn test_median_parallax_known_angle() {
 }
 
 #[test]
+fn test_median_parallax_unprojects_through_distortion() {
+    use crate::camera::CameraModel;
+    let cam = crate::camera::PinholeCamera {
+        k1: -0.28,
+        k2: 0.07,
+        ..test_camera()
+    };
+    let result = stub_result(vec![0]);
+    let x1 = vec![Vec2F64::new(cam.cx, cam.cy)];
+    let x2 = vec![cam.project(&Vec3F64::new(0.5, 0.0, 1.0)).unwrap()];
+    let angle = result.median_parallax_deg(&x1, &x2, &cam);
+    let expected = 0.5f64.atan().to_degrees();
+    assert!(
+        (angle - expected).abs() < 1e-6,
+        "expected {expected}°, got {angle}"
+    );
+}
+
+#[test]
 fn test_median_parallax_multiple_inliers() {
     // 3 inliers: angles 0°, 45°, 45° → sorted [0, 45, 45], median = 45°.
     let cam = test_camera();

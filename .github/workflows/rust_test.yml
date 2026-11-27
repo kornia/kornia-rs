@@ -49,6 +49,11 @@ jobs:
           - name: Test Debug - aarch64
             runner: ubuntu-24.04-arm
             command: rust-test
+          # kornia-algebra picks its F32x8 backend by cfg(target_feature): only
+          # an +avx2 build compiles and tests the AVX2 one
+          - name: Test Release AVX2 - kornia-algebra x86_64
+            runner: ubuntu-24.04
+            command: rust-test-algebra-avx2
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -57,7 +62,7 @@ jobs:
 
       - uses: ./.github/actions/setup-rust-cache
 
-      - uses: prefix-dev/setup-pixi@a09b6247153796b190642a2b53fac4241043cf6f # v0.10.0
+      - uses: prefix-dev/setup-pixi@9936258fee697aff89b3fed6ca1f80a382ef694e # v0.11.3
         with:
           pixi-version: v0.73.0
           cache: true

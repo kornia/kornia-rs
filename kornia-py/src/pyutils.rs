@@ -123,7 +123,8 @@ pub(crate) fn require_writeable<T: Element, D: Dimension>(
 ) -> PyResult<()> {
     // SAFETY: `as_array_ptr` returns the live `PyArrayObject` behind `arr`
     // (kept alive by the `Bound`); reading its `flags` field is a plain load.
-    let flags = unsafe { (*arr.as_array_ptr()).flags };
+    // numpy 0.30 moved the fields behind `_PyArray_GET_ITEM_DATA` (abi3t layout).
+    let flags = unsafe { (*numpy::npyffi::_PyArray_GET_ITEM_DATA(arr.as_array_ptr())).flags };
     if flags & numpy::npyffi::NPY_ARRAY_WRITEABLE == 0 {
         return Err(PyValueError::new_err(format!(
             "{what} is read-only; pass a writeable array"

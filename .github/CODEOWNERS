@@ -1,3 +1,12 @@
 # With "Require review from Code Owners" enabled on main, only a human
 # owner can satisfy the review gate: GitHub Apps cannot be code owners.
 * @kornia/core-contributors
+
+# The agent skills, their review evals and the scripts that check them decide
+# how every PR is reviewed: a change to them needs the skills maintainer.
+# Later rules win, so these override the catch-all above for these paths.
+/.claude/skills/ @edgarriba
+/.agents/ @edgarriba
+/scripts/check_skills.py @edgarriba
+/scripts/test_check_skills.py @edgarriba
+/scripts/skill_evals.py @edgarriba

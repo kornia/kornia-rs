@@ -488,6 +488,35 @@ pub fn fast_detect_rows_u8_serial(
     fast_detect_rows_u8_impl(src, threshold, arc_length, border, rows, false)
 }
 
+/// [`fast_detect_rows_u8_serial`] into the caller's `out` (cleared first),
+/// so a reused `out` makes the call allocation-free once it has grown.
+pub(crate) fn fast_detect_rows_u8_serial_into(
+    src: &Image<u8, 1>,
+    threshold: f32,
+    arc_length: usize,
+    border: usize,
+    rows: std::ops::Range<usize>,
+    out: &mut Vec<([usize; 2], f32)>,
+) {
+    out.clear();
+    fast_detect_rows_u8_core(src, threshold, arc_length, border, rows, Some(out), true);
+}
+
+/// [`fast_detect_rows_u8_serial_into`] without the in-block 1-D local-max
+/// pre-filter wide images get: every corner, as `cv::FAST` before its
+/// non-max suppression.
+pub(crate) fn fast_detect_rows_u8_serial_all_into(
+    src: &Image<u8, 1>,
+    threshold: f32,
+    arc_length: usize,
+    border: usize,
+    rows: std::ops::Range<usize>,
+    out: &mut Vec<([usize; 2], f32)>,
+) {
+    out.clear();
+    fast_detect_rows_u8_core(src, threshold, arc_length, border, rows, Some(out), false);
+}
+
 fn fast_detect_rows_u8_impl(
     src: &Image<u8, 1>,
     threshold: f32,
@@ -495,6 +524,35 @@ fn fast_detect_rows_u8_impl(
     border: usize,
     rows: std::ops::Range<usize>,
     parallel: bool,
+) -> Vec<([usize; 2], f32)> {
+    if parallel {
+        return fast_detect_rows_u8_core(src, threshold, arc_length, border, rows, None, true);
+    }
+    let mut out = Vec::new();
+    fast_detect_rows_u8_core(
+        src,
+        threshold,
+        arc_length,
+        border,
+        rows,
+        Some(&mut out),
+        true,
+    );
+    out
+}
+
+/// Row loop shared by the FAST entry points: appends to `serial_out` row by
+/// row when given, else runs row chunks in parallel and returns their
+/// concatenation (same order). `allow_inblock_filter` lets wide images drop
+/// corners that are not a 1-D local max inside their SIMD block.
+fn fast_detect_rows_u8_core(
+    src: &Image<u8, 1>,
+    threshold: f32,
+    arc_length: usize,
+    border: usize,
+    rows: std::ops::Range<usize>,
+    serial_out: Option<&mut Vec<([usize; 2], f32)>>,
+    allow_inblock_filter: bool,
 ) -> Vec<([usize; 2], f32)> {
     let src_slice = src.as_slice();
     let width = src.width();
@@ -530,13 +588,14 @@ fn fast_detect_rows_u8_impl(
     // candidates are sparser and the filter's branch overhead outweighs
     // the savings, so we gate it on width.
     #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
-    let use_inblock_filter = width >= 800;
+    let use_inblock_filter = allow_inblock_filter && width >= 800;
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    let _ = allow_inblock_filter;
 
     let row_cap = (col_end.saturating_sub(margin) / 6).max(64);
 
-    let row_work = |y: usize| -> Vec<([usize; 2], f32)> {
+    let row_work = |y: usize, local: &mut Vec<([usize; 2], f32)>| {
         let row_base = y * width;
-        let mut local: Vec<([usize; 2], f32)> = Vec::with_capacity(row_cap);
         let mut x = margin;
 
         #[cfg(target_arch = "aarch64")]
@@ -624,10 +683,14 @@ fn fast_detect_rows_u8_impl(
             }
             x += 1;
         }
-        local
     };
 
-    if parallel {
+    if let Some(out) = serial_out {
+        for y in row_start..row_end_y {
+            row_work(y, out);
+        }
+        Vec::new()
+    } else {
         // Group rows into chunks so each rayon task does enough work to amortize
         // spawn/join overhead. At 1080p one row is ~1920 px ≈ 30 us NEON work;
         // 1080 single-row tasks bury the scheduler. Target ~2-3 ms tasks
@@ -641,19 +704,13 @@ fn fast_detect_rows_u8_impl(
             .flat_map_iter(|c| {
                 let y0 = row_start + c * chunk;
                 let y1 = (y0 + chunk).min(row_end_y);
-                let mut out: Vec<([usize; 2], f32)> = Vec::new();
+                let mut out: Vec<([usize; 2], f32)> = Vec::with_capacity(row_cap);
                 for y in y0..y1 {
-                    out.extend(row_work(y));
+                    row_work(y, &mut out);
                 }
                 out
             })
             .collect()
-    } else {
-        let mut out: Vec<([usize; 2], f32)> = Vec::new();
-        for y in row_start..row_end_y {
-            out.extend(row_work(y));
-        }
-        out
     }
 }
 
