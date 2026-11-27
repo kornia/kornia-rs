@@ -244,6 +244,8 @@ fn pca_normals_axis(points: &[Vec3F64]) -> Vec<Vec3F64> {
     }
     let arrays: Vec<[f64; 3]> = points.iter().map(|p| p.to_array()).collect();
     let kdtree: ImmutableKdTree<f64, u32, 3, 32> = ImmutableKdTree::new_from_slice(&arrays);
+    // Floor at 2: a lone point has no covariance, so it keeps an arbitrary
+    // (but finite) axis rather than dropping out of the map.
     let k = NonZeroUsize::new(NORMAL_K.min(points.len()).max(2)).unwrap();
 
     points
@@ -377,6 +379,17 @@ mod tests {
                 "normal should be unit length"
             );
         }
+    }
+
+    #[test]
+    fn write_ply_empty_map_has_zero_vertices() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("empty.ply");
+        write_ply(&path, &[]).unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("element vertex 0"), "header: {text}");
+        assert!(text.contains("end_header"));
     }
 
     #[test]

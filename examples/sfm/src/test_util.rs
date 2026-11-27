@@ -4,6 +4,7 @@
 
 #![cfg(test)]
 
+use kornia_3d::camera::project_point;
 use kornia_3d::pose::Pose3d;
 use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64};
 use kornia_calib::FeatureTrack;
@@ -32,10 +33,14 @@ pub fn rot(yaw: f64, pitch: f64) -> Mat3F64 {
     )
 }
 
-/// Project a world point through a world→cam pose using the pinhole model.
+/// Project a world point through a world→camera pose.
+///
+/// Thin wrapper over [`project_point`] for test fixtures that only need the
+/// pixel; it panics if the point is behind the camera.
 pub fn project(pw: Vec3F64, pose_w2c: &Pose3d, cam: &kornia_3d::camera::PinholeCamera) -> Vec2F64 {
-    let pc = pose_w2c.transform_point(&pw);
-    Vec2F64::new(cam.fx * pc.x / pc.z + cam.cx, cam.fy * pc.y / pc.z + cam.cy)
+    let (u, v, _z) =
+        project_point(cam, pose_w2c, &pw).expect("point must be in front of the camera");
+    Vec2F64::new(u, v)
 }
 
 /// Ground-truth world→camera poses used by [`synthetic_tracks`].
@@ -57,12 +62,11 @@ pub fn synthetic_tracks() -> Vec<FeatureTrack> {
     let gt = synthetic_poses();
     let (w, h) = (640.0, 480.0);
     let visible = |p: Vec3F64, c: usize| -> Option<Vec2F64> {
-        let pc = gt[c].transform_point(&p);
-        if pc.z <= 0.1 {
+        let (u, v, z) = project_point(&cams[c], &gt[c], &p)?;
+        if z <= 0.1 {
             return None;
         }
-        let uv = project(p, &gt[c], &cams[c]);
-        (uv.x >= 0.0 && uv.x < w && uv.y >= 0.0 && uv.y < h).then_some(uv)
+        (u >= 0.0 && u < w && v >= 0.0 && v < h).then_some(Vec2F64::new(u, v))
     };
 
     let mut tracks = Vec::new();

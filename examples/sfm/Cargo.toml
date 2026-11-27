@@ -23,4 +23,4 @@ tempfile = { workspace = true }
 # CUDA is opt-in so a plain `cargo build/clippy --workspace` does not enable
 # kornia-imgproc's `cuda` (and kornia-oxide-kernels' PTX) for every member.
 [features]
-cuda = ["kornia-imgproc/cuda", "kornia-image/cuda", "dep:cudarc"]
+cuda = ["kornia-imgproc/cuda", "dep:cudarc"]

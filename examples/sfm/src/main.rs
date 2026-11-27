@@ -78,7 +78,7 @@ struct Args {
     #[argh(option, default = "0")]
     threads: usize,
 
-    /// open the output PLY in the rerun viewer after writing
+    /// log the point cloud and camera poses to the rerun viewer after writing
     #[argh(switch)]
     view: bool,
 
@@ -483,7 +483,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // 7. Optional: visualize the result (point cloud + camera poses) in rerun.
     if args.view {
-        eprintln!("[7/7] opening point cloud + camera poses in rerun viewer...");
+        eprintln!("[6/6] logging point cloud + camera poses to the rerun viewer...");
         // If intrinsics were refined, use the effective focal length so the
         // frustum FOV matches the reconstruction.
         let (view_fx, view_fy) = match reconstruction.camera_correction {

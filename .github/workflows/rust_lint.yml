@@ -109,6 +109,7 @@ jobs:
           cargo clippy --all-targets -p kornia-imgproc --features cuda -- -D warnings
           cargo clippy --tests -p kornia-3d --features cuda -- -D warnings
           cargo clippy -p cuda-fusion -p cuda-camera-sift -p cuda-camera-preprocess --features cuda -- -D warnings
+          cargo clippy --all-targets -p sfm --features cuda -- -D warnings
 
   cross-platform-check-macos:
     name: Check - macOS

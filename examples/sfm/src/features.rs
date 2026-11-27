@@ -56,16 +56,6 @@ pub struct FrameFeatures {
     pub keypoints: Vec<[f32; 2]>,
     /// ORB descriptors: 256-bit packed binary, one per keypoint.
     pub descriptors_orb: Option<Vec<[u8; 32]>>,
-    /// ORB keypoint orientations (radians), one per keypoint.
-    ///
-    /// Retained for the planned mutual-NN + orientation-histogram matcher (see
-    /// the README's "Matching model and future upgrades"). The current ORB
-    /// matcher is mutual-nearest-neighbour only, so nothing reads this yet.
-    #[expect(
-        dead_code,
-        reason = "reserved for the planned mutual-NN + orientation matcher"
-    )]
-    pub orientations_orb: Option<Vec<f32>>,
     /// SIFT descriptors on the host: flat buffer, `keypoints.len() * 128`
     /// floats (row-major). Populated by the CPU extractor.
     pub descriptors_sift: Option<Vec<f32>>,
@@ -111,7 +101,6 @@ impl FeatureExtractor for OrbExtractor {
         Ok(FrameFeatures {
             keypoints: features.keypoints_xy,
             descriptors_orb: Some(features.descriptors),
-            orientations_orb: Some(features.orientations),
             descriptors_sift: None,
             #[cfg(feature = "cuda")]
             descriptors_sift_cuda: None,
@@ -181,7 +170,6 @@ impl FeatureExtractor for SiftExtractor {
         Ok(FrameFeatures {
             keypoints,
             descriptors_orb: None,
-            orientations_orb: None,
             descriptors_sift: Some(feats.descriptors),
             #[cfg(feature = "cuda")]
             descriptors_sift_cuda: None,
@@ -231,7 +219,7 @@ impl FeatureExtractor for SiftCudaExtractor {
         // SIFT's pipeline scales input by 1/255 internally, so feed the raw
         // 0..255 pixel values (not normalized to 0..1).
         let buf: Vec<f32> = gray.as_slice().iter().map(|&v| v as f32).collect();
-        let gray_f32 = Image::<f32, 1>::from_size_slice(gray.size(), &buf)?;
+        let gray_f32 = Image::<f32, 1>::new(gray.size(), buf)?;
         let dev = gray_f32.to_cuda(&stream)?;
 
         let cfg = SiftCudaConfig {
@@ -264,7 +252,6 @@ impl FeatureExtractor for SiftCudaExtractor {
         Ok(FrameFeatures {
             keypoints,
             descriptors_orb: None,
-            orientations_orb: None,
             descriptors_sift: None,
             descriptors_sift_cuda: Some(feats.descriptors),
         })
@@ -274,8 +261,8 @@ impl FeatureExtractor for SiftCudaExtractor {
 /// Device-side SIFT matcher: one reusable [`SiftMatcher`] plus the context.
 ///
 /// `SiftMatcher` owns device scratch, so reuse it across frame pairs rather
-/// than allocating per pair. Matching is sequential (CUDA extraction is too), so
-/// the `Mutex` is uncontended.
+/// than allocating per pair. Matching pairs run in parallel under `--cuda`, but
+/// the single shared matcher serializes them on the device `Mutex`.
 #[cfg(feature = "cuda")]
 pub struct CudaSiftMatcher {
     ctx: Arc<CudaContext>,

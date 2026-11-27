@@ -388,7 +388,6 @@ mod tests {
         FrameFeatures {
             keypoints,
             descriptors_orb: Some(descriptors),
-            orientations_orb: Some(vec![0.0; ids.len()]),
             descriptors_sift: None,
             #[cfg(feature = "cuda")]
             descriptors_sift_cuda: None,
@@ -404,7 +403,6 @@ mod tests {
         FrameFeatures {
             keypoints,
             descriptors_orb: None,
-            orientations_orb: None,
             descriptors_sift: Some(descriptors),
             #[cfg(feature = "cuda")]
             descriptors_sift_cuda: None,
@@ -468,7 +466,6 @@ mod tests {
         let empty = FrameFeatures {
             keypoints: Vec::new(),
             descriptors_orb: Some(Vec::new()),
-            orientations_orb: Some(Vec::new()),
             descriptors_sift: None,
             #[cfg(feature = "cuda")]
             descriptors_sift_cuda: None,

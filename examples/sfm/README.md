@@ -70,7 +70,9 @@ cargo run -p sfm -- sample.mp4 out.ply \
   cuda`; needs the CUDA runtime
   on `LD_LIBRARY_PATH`). NVRTC kernels are JIT-compiled on the first frame.
 - **Noisy matches / poor ORB reconstruction**: add `--geo-verify`.
-- **Long videos**: raise `--frame-step` (fewer cameras to register).
+- **Long videos**: raise `--frame-step` (fewer cameras to register). Kept RGB
+  frames stay resident until tracks are built (~2.8 MB per 1280x720 frame,
+  so a full 628-frame clip at `--frame-step 1` needs ~1.7 GB).
 
 ## Matching model and future upgrades
 
