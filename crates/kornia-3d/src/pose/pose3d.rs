@@ -55,6 +55,37 @@ impl Pose3d {
         }
     }
 
+    /// Camera centre in the world frame, `C = -Rᵀ t`.
+    ///
+    /// Equals `self.inverse().translation` bit for bit, so it carries the same
+    /// rigid-pose assumption as [`Pose3d::inverse`].
+    ///
+    /// # Arguments
+    ///
+    /// None; reads `self`, a world-to-camera pose.
+    ///
+    /// # Returns
+    ///
+    /// The position of the camera origin in world coordinates.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use kornia_3d::pose::Pose3d;
+    /// use kornia_algebra::{Mat3F64, Vec3F64};
+    ///
+    /// // A camera at world (1, 2, 3) looking along +z.
+    /// let pose = Pose3d::new(Mat3F64::IDENTITY, Vec3F64::new(-1.0, -2.0, -3.0));
+    /// assert_eq!(pose.camera_centre(), Vec3F64::new(1.0, 2.0, 3.0));
+    /// ```
+    pub fn camera_centre(&self) -> Vec3F64 {
+        self.inverse().translation
+    }
+
     /// Compose two world-to-camera transforms.
     ///
     /// Returns `self ∘ rhs`:
@@ -173,6 +204,14 @@ mod tests {
         let pose = Pose3d::IDENTITY;
         let point = Vec3F64::new(1.0, 2.0, 3.0);
         assert_eq!(pose.transform_point(&point), point);
+    }
+
+    #[test]
+    fn camera_centre_inverts_the_world_to_camera_translation() {
+        let rotation = SO3F64::exp(Vec3F64::new(0.3, -0.2, 0.9)).matrix();
+        let centre = Vec3F64::new(4.0, -1.5, 12.0);
+        let pose = Pose3d::new(rotation, -(rotation * centre));
+        assert!((pose.camera_centre() - centre).length() < 1e-12);
     }
 
     #[test]
