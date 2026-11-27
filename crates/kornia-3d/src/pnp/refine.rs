@@ -38,8 +38,11 @@ pub struct LMRefineParams {
     /// backward-compatible).
     pub robust: RobustKernelKind,
     /// Squared scale for `robust`; its square root is the linear delta fed
-    /// to `HuberLoss::new`/`CauchyLoss::new`. Default `f32::INFINITY`
-    /// collapses to L2 regardless of `robust`.
+    /// to `HuberLoss::new`/`CauchyLoss::new`. Any non-finite (e.g., default
+    /// `f32::INFINITY`), non-positive (`<= 0.0`), or subnormal (`< f32::MIN_POSITIVE`)
+    /// value silently collapses to plain L2 for supported kernels (matching
+    /// `BaParams::robust_scale_sq`); unsupported kernels (`Tukey`) always return
+    /// an error.
     pub robust_scale_sq: f32,
 }
 
@@ -327,24 +330,28 @@ impl Factor for ReprojectionFactor {
 /// Translate `LMRefineParams::robust`/`robust_scale_sq` into a concrete
 /// `RobustLoss` shared across all reprojection factors, or `None` for plain L2.
 fn build_robust_loss(params: &LMRefineParams) -> Result<Option<Arc<dyn RobustLoss>>, PnPError> {
-    if params.robust == RobustKernelKind::Identity || !params.robust_scale_sq.is_finite() {
+    if params.robust == RobustKernelKind::Tukey {
+        return Err(PnPError::SvdFailed(
+            "Tukey robust kernel is not supported for LM pose refinement".to_string(),
+        ));
+    }
+
+    if params.robust == RobustKernelKind::Identity
+        || !params.robust_scale_sq.is_finite()
+        || params.robust_scale_sq < f32::MIN_POSITIVE
+    {
         return Ok(None);
     }
 
     let delta = params.robust_scale_sq.sqrt();
     let loss: Arc<dyn RobustLoss> = match params.robust {
-        RobustKernelKind::Identity => unreachable!("handled above"),
+        RobustKernelKind::Identity | RobustKernelKind::Tukey => unreachable!("handled above"),
         RobustKernelKind::Huber => Arc::new(HuberLoss::new(delta).map_err(|e| {
             PnPError::SvdFailed(format!("Invalid Huber robust loss parameters: {e}"))
         })?),
         RobustKernelKind::Cauchy => Arc::new(CauchyLoss::new(delta).map_err(|e| {
             PnPError::SvdFailed(format!("Invalid Cauchy robust loss parameters: {e}"))
         })?),
-        RobustKernelKind::Tukey => {
-            return Err(PnPError::SvdFailed(
-                "Tukey robust kernel is not supported for LM pose refinement".to_string(),
-            ));
-        }
     };
 
     Ok(Some(loss))
@@ -1277,6 +1284,100 @@ mod tests {
             assert!(
                 matches!(&result, Err(PnPError::InvalidInput(r)) if r == reason),
                 "{reason}: {result:?}"
+            );
+        }
+    }
+
+    // Verify non-positive and subnormal scales fall back to L2 (converging to R = I, t = 0) for Huber/Cauchy while still erroring for Tukey.
+    #[test]
+    fn test_negative_and_zero_robust_scale_sq() {
+        let points_world = vec![
+            Vec3AF32::new(-1.0, -1.0, 5.0),
+            Vec3AF32::new(1.0, -1.0, 5.0),
+            Vec3AF32::new(1.0, 1.0, 5.0),
+            Vec3AF32::new(-1.0, 1.0, 5.0),
+        ];
+        let points_image = vec![
+            Vec2F32::new(-0.2, -0.2),
+            Vec2F32::new(0.2, -0.2),
+            Vec2F32::new(0.2, 0.2),
+            Vec2F32::new(-0.2, 0.2),
+        ];
+        let k = Mat3AF32::from_diagonal(Vec3AF32::new(1.0, 1.0, 1.0));
+        let initial_rotation = Mat3AF32::from_diagonal(Vec3AF32::new(1.0, 1.0, 1.0));
+        let initial_translation = Vec3AF32::new(0.0, 0.0, 0.0);
+
+        let tol = 1e-4;
+        let identity_cols = initial_rotation.to_cols_array();
+
+        for kernel in [RobustKernelKind::Huber, RobustKernelKind::Cauchy] {
+            for scale in [-25.0, 0.0, f32::from_bits(1)] {
+                let params = LMRefineParams {
+                    robust: kernel,
+                    robust_scale_sq: scale,
+                    ..LMRefineParams::default()
+                };
+
+                let result = refine_pose_lm(
+                    &points_world,
+                    &points_image,
+                    &k,
+                    &initial_rotation,
+                    &initial_translation,
+                    None,
+                    &params,
+                )
+                .unwrap();
+
+                assert!(
+                    result.translation.x.is_finite()
+                        && result.translation.y.is_finite()
+                        && result.translation.z.is_finite(),
+                    "Translation should be finite for {kernel:?} with scale {scale}, got {:?}",
+                    result.translation
+                );
+                assert!(
+                    result.translation.x.abs() < tol
+                        && result.translation.y.abs() < tol
+                        && result.translation.z.abs() < tol,
+                    "Expected translation near zero for {kernel:?} with scale {scale}, got {:?}",
+                    result.translation
+                );
+
+                for (got, expected) in result
+                    .rotation
+                    .to_cols_array()
+                    .iter()
+                    .zip(identity_cols.iter())
+                {
+                    assert!(
+                        got.is_finite() && (got - expected).abs() < tol,
+                        "Expected rotation near identity for {kernel:?} with scale {scale}, got {:?}",
+                        result.rotation
+                    );
+                }
+            }
+        }
+
+        for scale in [-25.0, 0.0] {
+            let params = LMRefineParams {
+                robust: RobustKernelKind::Tukey,
+                robust_scale_sq: scale,
+                ..LMRefineParams::default()
+            };
+
+            let result = refine_pose_lm(
+                &points_world,
+                &points_image,
+                &k,
+                &initial_rotation,
+                &initial_translation,
+                None,
+                &params,
+            );
+            assert!(
+                result.is_err(),
+                "Expected Tukey with scale {scale} to return an error"
             );
         }
     }
