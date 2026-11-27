@@ -65,6 +65,12 @@ jobs:
       - name: Run ${{ matrix.name }}
         run: pixi run ${{ matrix.command }}
 
+      - name: Clippy sfm with the cuda feature
+        # The example enables kornia-io/gstreamer, so it needs the pixi
+        # environment's glib/gstreamer headers (the bare CUDA job has none).
+        if: matrix.name == 'Clippy'
+        run: pixi run cargo clippy --all-targets -p sfm --features cuda -- -D warnings
+
       - name: Show sccache stats
         if: always() && matrix.needs-sccache
         run: |
@@ -109,7 +115,6 @@ jobs:
           cargo clippy --all-targets -p kornia-imgproc --features cuda -- -D warnings
           cargo clippy --tests -p kornia-3d --features cuda -- -D warnings
           cargo clippy -p cuda-fusion -p cuda-camera-sift -p cuda-camera-preprocess --features cuda -- -D warnings
-          cargo clippy --all-targets -p sfm --features cuda -- -D warnings
 
   cross-platform-check-macos:
     name: Check - macOS
