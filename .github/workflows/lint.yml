@@ -25,7 +25,6 @@ jobs:
       # Match the rustfmt used by the Pixi Rustfmt check.
       - uses: dtolnay/rust-toolchain@ebb3d1676050bfd0971c36c1e215b5751473994d # 1.96.0
         with:
-          toolchain: 1.96.0
           components: rustfmt
 
       - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
