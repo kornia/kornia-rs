@@ -1,6 +1,6 @@
 """Type stubs for the ``kornia_rs.bow`` submodule (Bag of Words / Visual SLAM Place Recognition)."""
 
-from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, Iterator, List, Literal, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import numpy.typing as npt
@@ -48,18 +48,28 @@ class BoW:
     def __getitem__(self, word_id: int) -> float:
         """Gets the weight of a specific word ID, returning 0.0 if not present."""
         ...
-    def score(self, other: "BoW", metric: str = "l1") -> float:
+    def score(
+        self,
+        other: "BoW",
+        metric: Literal["l1", "l2", "dot", "chi_square", "bhattacharyya"] = "l1",
+    ) -> float:
         """Computes similarity score with another BoW vector using the specified metric.
 
-        For ``metric="l1"``, returns a score in range [0.0, 1.0] for non-negative, L1-normalized vectors.
-        Vectors produced by ``normalized_l2()`` may yield scores outside this range.
+        Metric choices:
+        - ``"l1"``: L1 similarity in range [0.0, 1.0] for L1-normalized vectors.
+        - ``"l2"``: L2 similarity in range [0.0, 1.0] (automatically normalizes inputs with L2 norm).
+        - ``"dot"``: Dot product similarity.
+        - ``"chi_square"``: Chi-square similarity.
+        - ``"bhattacharyya"``: Bhattacharyya coefficient similarity.
+
+        Note: To compute Kullback-Leibler divergence distance, use :meth:`kl_divergence`.
         """
         ...
     def l1_similarity(self, other: "BoW") -> float:
         """Computes L1 similarity score (in range [0.0, 1.0] for non-negative, L1-normalized vectors)."""
         ...
     def l2_similarity(self, other: "BoW") -> float:
-        """Computes L2 similarity score."""
+        """Computes L2 similarity score in range [0.0, 1.0] (automatically L2-normalizes vectors)."""
         ...
     def dot_product(self, other: "BoW") -> float:
         """Computes dot product similarity."""
@@ -68,7 +78,11 @@ class BoW:
         """Computes Chi-square similarity score."""
         ...
     def kl_divergence(self, other: "BoW") -> float:
-        """Computes Kullback-Leibler divergence score."""
+        """Computes Kullback-Leibler (KL) divergence distance (non-symmetric).
+
+        Note: This is a divergence/distance metric where 0.0 indicates identical
+        distributions and larger values indicate greater dissimilarity.
+        """
         ...
     def bhattacharyya(self, other: "BoW") -> float:
         """Computes Bhattacharyya coefficient similarity score."""
@@ -163,9 +177,15 @@ class OrbVocabulary:
         """Transforms ``(N, 32)`` ORB descriptors into a sparse BoW vector."""
         ...
     def transform_with_direct_index(
-        self, descriptors: npt.NDArray[np.uint8], level: int = 4
+        self, descriptors: npt.NDArray[np.uint8], level: int = 2
     ) -> Tuple[BoW, DirectIndex]:
-        """Transforms descriptors into a sparse BoW vector and a Direct Index at tree ``level``."""
+        """Transforms descriptors into a sparse BoW vector and a Direct Index at tree ``level``.
+
+        Args:
+            descriptors: (N, 32) uint8 ORB descriptors.
+            level: Vocabulary tree depth level for direct indexing (default 2,
+                matching ORB-SLAM3's ``levelsup=4`` on depth-6 trees). Level 0 is the root block.
+        """
         ...
     def transform_one(
         self, descriptor: npt.NDArray[np.uint8]

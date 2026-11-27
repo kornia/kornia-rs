@@ -123,6 +123,10 @@ pub fn load_orb_slam3_vocabulary<P: AsRef<Path>>(path: P) -> BowResult<OrbVocabu
             .and_then(|s| s.parse().ok())
             .ok_or(BowError::CorruptedVocabulary)?;
 
+        if !weight.is_finite() || weight < 0.0 {
+            return Err(BowError::CorruptedVocabulary);
+        }
+
         if parent >= nodes.len() {
             return Err(BowError::CorruptedVocabulary);
         }
@@ -297,5 +301,28 @@ mod tests {
         // A near-0xFF descriptor should land on the last leaf (weight 3.0).
         let (_w, weight) = vocab.transform_one(&pack_orb_descriptor(&[0xFE; 32]));
         assert!((weight - 3.0).abs() < 1e-6, "got weight {weight}");
+    }
+
+    #[test]
+    fn test_load_orb_slam3_rejects_invalid_weights() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+
+        let header = "10 2\n0\n0\n";
+        let desc = "0 ".repeat(32);
+
+        // Negative weight
+        let neg_file = dir.path().join("neg.txt");
+        let mut f = std::fs::File::create(&neg_file).unwrap();
+        writeln!(f, "{header}0 1 {desc}-0.5").unwrap();
+        let res = load_orb_slam3_vocabulary(neg_file.to_str().unwrap());
+        assert!(matches!(res, Err(BowError::CorruptedVocabulary)));
+
+        // NaN weight
+        let nan_file = dir.path().join("nan.txt");
+        let mut f = std::fs::File::create(&nan_file).unwrap();
+        writeln!(f, "{header}0 1 {desc}NaN").unwrap();
+        let res = load_orb_slam3_vocabulary(nan_file.to_str().unwrap());
+        assert!(matches!(res, Err(BowError::CorruptedVocabulary)));
     }
 }

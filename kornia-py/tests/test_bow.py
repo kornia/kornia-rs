@@ -166,9 +166,36 @@ def test_bow_similarity_disjoint_and_identical_boundaries():
     assert np.isclose(bow_a.l1_similarity(bow_a), 1.0, atol=1e-6)
     assert np.isclose(bow_a.score(bow_a, "l1"), 1.0, atol=1e-6)
     assert np.isclose(bow_a.score(bow_a, "l2"), 1.0, atol=1e-5)
+    assert np.isclose(bow_a.l2_similarity(bow_a), 1.0, atol=1e-5)
 
     with pytest.raises(ValueError, match="unsupported metric"):
         bow_a.score(bow_b, "unsupported_metric")
+
+
+def test_l2_score_identical_transform_output():
+    """Verify that transform output (L1 normalized) scores 1.0 against itself under L2."""
+    data = _generate_synthetic_descriptors(50)
+    vocab = K.bow.OrbVocabulary.train(data, max_depth=3)
+    bow = vocab.transform(data[:10])
+    assert len(bow) >= 2  # multiple words
+    assert bow.score(bow, "l2") == pytest.approx(1.0, abs=1e-5)
+    assert bow.l2_similarity(bow) == pytest.approx(1.0, abs=1e-5)
+
+
+def test_kl_divergence_and_score_rejection():
+    """Verify that kl_divergence is exposed as a distance and rejected in score()."""
+    bow_a = K.bow.BoW()
+    bow_b = K.bow.BoW()
+    bow_a.__setstate__([(1, 0.4), (2, 0.6)])
+    bow_b.__setstate__([(1, 0.5), (3, 0.5)])
+
+    # kl_divergence is exposed as a distance method (0.0 for identical distributions)
+    assert bow_a.kl_divergence(bow_a) == pytest.approx(0.0, abs=1e-6)
+    assert bow_a.kl_divergence(bow_b) > 0.0
+
+    # score("kl") must raise ValueError
+    with pytest.raises(ValueError, match="unsupported metric 'kl'"):
+        bow_a.score(bow_b, "kl")
 
 
 def test_bow_normalizations():
@@ -195,9 +222,14 @@ def test_transform_with_direct_index():
     vocab = K.bow.OrbVocabulary.train(data, max_depth=3)
 
     query = data[:12]
-    # Default level (4)
+    # Default level (2, matching ORB-SLAM3 levelsup=4 on depth-6 trees)
     bow_def, di_def = vocab.transform_with_direct_index(query)
     assert len(bow_def) > 0
+
+    # Explicit level=2 must match default level exactly
+    bow2, di2 = vocab.transform_with_direct_index(query, level=2)
+    assert di_def == di2
+    assert bow_def == bow2
 
     # Intermediate level 1
     bow1, di1 = vocab.transform_with_direct_index(query, level=1)
@@ -460,6 +492,23 @@ def test_save_empty_vocabulary(tmp_path):
         empty_vocab.save(str(tmp_path / "empty.bow"))
 
 
+def test_empty_vocabulary_transform_errors():
+    empty_vocab = K.bow.OrbVocabulary()
+    desc = np.zeros((1, 32), dtype=np.uint8)
+
+    with pytest.raises(ValueError, match="cannot transform descriptors with an empty vocabulary"):
+        empty_vocab.transform(desc)
+
+    with pytest.raises(ValueError, match="cannot transform descriptors with an empty vocabulary"):
+        empty_vocab.transform_with_direct_index(desc, level=2)
+
+    with pytest.raises(ValueError, match="cannot transform descriptor with an empty vocabulary"):
+        empty_vocab.transform_one(desc[0])
+
+    with pytest.raises(ValueError, match="cannot serialize an empty vocabulary"):
+        pickle.dumps(empty_vocab)
+
+
 def test_unpickle_validation():
     # BoW: unsorted word IDs
     bow = K.bow.BoW()
@@ -494,5 +543,5 @@ def test_unpickle_validation():
 
     # OrbVocabulary: oversized block count payload (bincode varint declaring >16M blocks)
     oversized_payload = b"\x0a\x00\xfc\xff\xff\xff\x00"
-    with pytest.raises(ValueError, match="declared block count"):
+    with pytest.raises(ValueError, match="declares.*blocks"):
         vocab.__setstate__(oversized_payload)

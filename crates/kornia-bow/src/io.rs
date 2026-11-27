@@ -76,6 +76,98 @@ impl<const B: usize, M: DistanceMetric> Vocabulary<B, M> {
         self.save_to_writer(writer)
     }
 
+    /// Loads the vocabulary from any [`std::io::Read`] source and verifies compatibility.
+    ///
+    /// # Arguments
+    ///
+    /// * `reader` - Input source implementing [`std::io::Read`].
+    /// * `stream_len` - Declared total stream/byte length for bounded pre-allocation.
+    ///
+    /// # Returns
+    ///
+    /// The decoded vocabulary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BowError::Bincode`] on decode failure, [`BowError::VocabularyMismatch`] or
+    /// [`BowError::MetricMismatch`] on format mismatch, [`BowError::VocabularyTooLarge`] if
+    /// declared blocks exceed `stream_len`, and [`BowError::CorruptedVocabulary`] if graph
+    /// indices are out of bounds or empty.
+    pub fn load_from_reader<R: std::io::Read>(mut reader: R, stream_len: u64) -> BowResult<Self> {
+        let config = bincode::config::standard().with_limit::<MAX_DECODE_BYTES>();
+
+        let loaded_b: u64 = bincode::decode_from_std_read(&mut reader, config)
+            .map_err(|e| BowError::Bincode(e.to_string()))?;
+        let loaded_metric: MetricType = bincode::decode_from_std_read(&mut reader, config)
+            .map_err(|e| BowError::Bincode(e.to_string()))?;
+
+        if loaded_b != B as u64 {
+            return Err(BowError::VocabularyMismatch {
+                expected_b: B,
+                found_b: loaded_b as usize,
+            });
+        }
+
+        if loaded_metric != M::metric_type() {
+            return Err(BowError::MetricMismatch {
+                expected: M::metric_type(),
+                found: loaded_metric,
+            });
+        }
+
+        // Decode `Vocabulary` field by field (same wire format as its `Encode` impl:
+        // `Vec` length, blocks, root index) so the attacker-controlled block count is
+        // validated against the stream size before anything is allocated for it.
+        let n_blocks: u64 = bincode::decode_from_std_read(&mut reader, config)
+            .map_err(|e| BowError::Bincode(e.to_string()))?;
+        // Every encoded block takes at least one byte (its `BlockContent` tag).
+        if n_blocks > stream_len {
+            return Err(BowError::VocabularyTooLarge {
+                declared: n_blocks,
+                file_len: stream_len,
+            });
+        }
+        let n_blocks = n_blocks as usize;
+        let mut blocks = Vec::with_capacity(n_blocks.min(PREALLOC_BLOCKS));
+        for _ in 0..n_blocks {
+            let block: BlockCluster<B, M> = bincode::decode_from_std_read(&mut reader, config)
+                .map_err(|e| BowError::Bincode(e.to_string()))?;
+            blocks.push(block);
+        }
+        let root_idx: u32 = bincode::decode_from_std_read(&mut reader, config)
+            .map_err(|e| BowError::Bincode(e.to_string()))?;
+        let vocab = Vocabulary { blocks, root_idx };
+
+        // The root must name an existing block (this also rejects empty vocabularies).
+        if vocab.root_idx as usize >= vocab.blocks.len() {
+            return Err(BowError::CorruptedVocabulary);
+        }
+
+        // Validate child indices and leaf weights so traversal stays in bounds
+        // and invalid (negative or non-finite) weights are rejected.
+        for block in &vocab.blocks {
+            match &block.content {
+                BlockContent::Internal(meta) => {
+                    // Ensure children_base_idx + B is within bounds
+                    // We use u64 for calculation to avoid overflow before comparison
+                    let end_idx = meta.children_base_idx as u64 + B as u64;
+                    if end_idx > vocab.blocks.len() as u64 {
+                        return Err(BowError::CorruptedVocabulary);
+                    }
+                }
+                BlockContent::Leaf(leaf) => {
+                    for &w in &leaf.weights {
+                        if !w.is_finite() || w < 0.0 {
+                            return Err(BowError::CorruptedVocabulary);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(vocab)
+    }
+
     /// Loads the vocabulary from a file and verifies compatibility.
     ///
     /// The file is treated as untrusted: declared lengths are checked against the
@@ -101,72 +193,8 @@ impl<const B: usize, M: DistanceMetric> Vocabulary<B, M> {
     pub fn load(path: &str) -> BowResult<Self> {
         let file = File::open(path)?;
         let file_len = file.metadata()?.len();
-        let mut reader = BufReader::new(file);
-        // Every value below is decoded with its own call, so this caps the bytes a
-        // single header field or block may claim (bincode checks container lengths
-        // against it before allocating).
-        let config = bincode::config::standard().with_limit::<MAX_DECODE_BYTES>();
-
-        let loaded_b: u64 = bincode::decode_from_std_read(&mut reader, config)
-            .map_err(|e| BowError::Bincode(e.to_string()))?;
-        let loaded_metric: MetricType = bincode::decode_from_std_read(&mut reader, config)
-            .map_err(|e| BowError::Bincode(e.to_string()))?;
-
-        if loaded_b != B as u64 {
-            return Err(BowError::VocabularyMismatch {
-                expected_b: B,
-                found_b: loaded_b as usize,
-            });
-        }
-
-        if loaded_metric != M::metric_type() {
-            return Err(BowError::MetricMismatch {
-                expected: M::metric_type(),
-                found: loaded_metric,
-            });
-        }
-
-        // Decode `Vocabulary` field by field (same wire format as its `Encode` impl:
-        // `Vec` length, blocks, root index) so the attacker-controlled block count is
-        // validated against the file size before anything is allocated for it.
-        let n_blocks: u64 = bincode::decode_from_std_read(&mut reader, config)
-            .map_err(|e| BowError::Bincode(e.to_string()))?;
-        // Every encoded block takes at least one byte (its `BlockContent` tag).
-        if n_blocks > file_len {
-            return Err(BowError::VocabularyTooLarge {
-                declared: n_blocks,
-                file_len,
-            });
-        }
-        let n_blocks = n_blocks as usize;
-        let mut blocks = Vec::with_capacity(n_blocks.min(PREALLOC_BLOCKS));
-        for _ in 0..n_blocks {
-            let block: BlockCluster<B, M> = bincode::decode_from_std_read(&mut reader, config)
-                .map_err(|e| BowError::Bincode(e.to_string()))?;
-            blocks.push(block);
-        }
-        let root_idx: u32 = bincode::decode_from_std_read(&mut reader, config)
-            .map_err(|e| BowError::Bincode(e.to_string()))?;
-        let vocab = Vocabulary { blocks, root_idx };
-
-        // The root must name an existing block (this also rejects empty vocabularies).
-        if vocab.root_idx as usize >= vocab.blocks.len() {
-            return Err(BowError::CorruptedVocabulary);
-        }
-
-        // Validate child indices so traversal stays in bounds.
-        for block in &vocab.blocks {
-            if let BlockContent::Internal(meta) = block.content {
-                // Ensure children_base_idx + B is within bounds
-                // We use u64 for calculation to avoid overflow before comparison
-                let end_idx = meta.children_base_idx as u64 + B as u64;
-                if end_idx > vocab.blocks.len() as u64 {
-                    return Err(BowError::CorruptedVocabulary);
-                }
-            }
-        }
-
-        Ok(vocab)
+        let reader = BufReader::new(file);
+        Self::load_from_reader(reader, file_len)
     }
 }
 
@@ -174,7 +202,7 @@ impl<const B: usize, M: DistanceMetric> Vocabulary<B, M> {
 mod tests {
     use super::*;
     use crate::metric::{Feature, Hamming, L2};
-    use crate::{BlockCluster, InternalMeta};
+    use crate::{BlockCluster, InternalMeta, LeafData};
     use rand::{rngs::StdRng, RngExt, SeedableRng};
 
     const B: usize = 10;
@@ -230,6 +258,49 @@ mod tests {
         let path = write_raw_vocab(&dir, u64::MAX / 1024, &[], 0);
         let result = Vocabulary::<B, Hamming<D>>::load(&path);
         assert!(matches!(result, Err(BowError::VocabularyTooLarge { .. })));
+    }
+
+    #[test]
+    fn test_load_rejects_negative_or_nan_leaf_weights() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // 1. Negative weight
+        let mut weights = [1.0f32; B];
+        weights[0] = -0.5;
+        let vocab: Vocabulary<B, Hamming<D>> = Vocabulary {
+            blocks: vec![BlockCluster {
+                content: BlockContent::Leaf(LeafData { weights }),
+                ..Default::default()
+            }],
+            root_idx: 0,
+        };
+        let path = dir.path().join("neg_weight.bow");
+        let path = path.to_string_lossy().into_owned();
+        vocab.save(&path).unwrap();
+        assert!(matches!(
+            Vocabulary::<B, Hamming<D>>::load(&path),
+            Err(BowError::CorruptedVocabulary)
+        ));
+
+        // 2. NaN weight
+        let mut nan_weights = [1.0f32; B];
+        nan_weights[1] = f32::NAN;
+        let vocab_nan: Vocabulary<B, Hamming<D>> = Vocabulary {
+            blocks: vec![BlockCluster {
+                content: BlockContent::Leaf(LeafData {
+                    weights: nan_weights,
+                }),
+                ..Default::default()
+            }],
+            root_idx: 0,
+        };
+        let path_nan = dir.path().join("nan_weight.bow");
+        let path_nan = path_nan.to_string_lossy().into_owned();
+        vocab_nan.save(&path_nan).unwrap();
+        assert!(matches!(
+            Vocabulary::<B, Hamming<D>>::load(&path_nan),
+            Err(BowError::CorruptedVocabulary)
+        ));
     }
 
     #[test]
