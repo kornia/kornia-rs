@@ -21,6 +21,7 @@
 *   **Calibration:** Camera calibration and image undistortion.
 *   **Normalization:** Min/max scaling, mean/std normalization.
 *   **Histograms:** Compute and manipulate image histograms.
+*   **Thresholding:** Fixed thresholds and adaptive mean binary thresholding (`threshold::AdaptiveThresholdMean`) for grayscale `u8` images, with replicated borders, an integer offset and internally owned reusable scratch.
 *   **Feature Detection:** (Experimental) Corner detection and feature extraction.
     With the `cuda` feature, `cuda::harris::launch_harris_f32` computes f32 Harris responses on device buffers.
 *   **Contours:** Find image contours and compute their properties.
