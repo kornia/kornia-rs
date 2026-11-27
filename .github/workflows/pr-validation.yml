@@ -92,7 +92,7 @@ jobs:
             const blocking = findings.filter(l => /(^|\s)[—–-]+\s*blocking\s*[—–-]/i.test(l));
             const SKILL = '`.claude/skills/kornia-code-review/SKILL.md`';
             if (!verdict || !/Skill gaps:/i.test(srText)) {
-              failures.push(`❌ **Self-review missing**: run the \`kornia-code-review\` skill on your diff and paste its output (with \`Verdict:\` and \`Skill gaps:\`) in the Self-review section. See ${SKILL}.`);
+              failures.push(`❌ **Self-review missing**: run the \`kornia-code-review\` skill on your diff in a fresh session and paste its output (with \`Verdict:\` and \`Skill gaps:\`) in the Self-review section. See ${SKILL}.`);
             } else if (findings.length === 0) {
               failures.push(`❌ **Self-review is a placeholder**: paste the skill's full output, one line per finding or checked section, each tagged \`[measured]\` or \`[inferred]\`. See ${SKILL}.`);
             } else if (blocking.length > 0) {

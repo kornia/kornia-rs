@@ -47,6 +47,43 @@ class TestEvalSelfReview(unittest.TestCase):
         self.assertEqual(check_skills.self_review_error(body, library=True), "missing [measured] or [inferred] line")
 
 
+class TestSelfReviewFreshness(unittest.TestCase):
+    def test_docs_naming_the_step_require_a_fresh_session(self):
+        for rel in check_skills.SELF_REVIEW_DOCS:
+            text = (check_skills.ROOT / rel).read_text(encoding="utf-8")
+            self.assertFalse(check_skills.missing_fresh_session(text), rel)
+        rule = (check_skills.ROOT / check_skills.SELF_REVIEW_SKILL).read_text(encoding="utf-8")
+        self.assertFalse(check_skills.self_review_rule_stale(rule))
+
+    def test_flags_the_old_wording(self):
+        old = "Then run the `kornia-code-review` skill on your diff"
+        self.assertTrue(check_skills.missing_fresh_session(old))
+        self.assertFalse(check_skills.missing_fresh_session(old + " in a fresh session"))
+        rule = (check_skills.ROOT / check_skills.SELF_REVIEW_SKILL).read_text(encoding="utf-8")
+        reverted = rule.replace(
+            "Run this skill in a fresh\n  session or subagent",
+            "The author, or the\n  author's agent, runs this skill",
+        )
+        self.assertNotEqual(reverted, rule)
+        self.assertTrue(check_skills.self_review_rule_stale(reverted))
+
+    def test_errors_are_wired_to_the_docs_and_the_rule(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for rel in check_skills.SELF_REVIEW_DOCS:
+                (root / rel).parent.mkdir(parents=True, exist_ok=True)
+                (root / rel).write_text("`kornia-code-review` in a fresh session", encoding="utf-8")
+            rule = root / check_skills.SELF_REVIEW_SKILL
+            rule.parent.mkdir(parents=True, exist_ok=True)
+            rule.write_text("- **Self-review (mandatory before opening a PR).** Run fresh session", encoding="utf-8")
+            with mock.patch.object(check_skills, "ROOT", root):
+                self.assertEqual(check_skills.self_review_doc_errors(), [])
+                (root / "AGENTS.md").write_text("`kornia-code-review` self-review", encoding="utf-8")
+                self.assertTrue(any("AGENTS.md" in e for e in check_skills.self_review_doc_errors()))
+                rule.write_text("- **Self-review (mandatory before opening a PR).** The author runs this", encoding="utf-8")
+                self.assertTrue(any("rule does not require" in e for e in check_skills.self_review_doc_errors()))
+
+
 class TestLibraryDiff(unittest.TestCase):
     def test_rename_and_copy_check_both_paths(self):
         with tempfile.TemporaryDirectory() as tmp:

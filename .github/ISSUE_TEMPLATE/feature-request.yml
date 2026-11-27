@@ -22,7 +22,7 @@ body:
         If you plan to implement this feature yourself:
 
         1. **Say you are working on it**: comment here so others do not duplicate the work
-        2. **Link this issue** from your PR (`Fixes #<number>`) and paste the `kornia-code-review` self-review
+        2. **Link this issue** from your PR (`Fixes #<number>`) and paste the `kornia-code-review` self-review (run in a fresh session)
 
         This avoids duplicate work. See the [Contributing Guide](https://github.com/kornia/kornia-rs/blob/main/CONTRIBUTING.md#pull-request) for more details.
 

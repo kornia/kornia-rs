@@ -51,6 +51,58 @@ REQUIRED = [
 ]
 PATH_REF = r"`((?:crates|scripts|kornia-py|kornia-cpp|docs|\.github)/[A-Za-z0-9_./-]+)`"
 
+# Every doc that names the self-review step must say it runs in a fresh session.
+# The rule lives in kornia-code-review; the others are one-clause summaries that
+# would otherwise drift back to the same-session pattern.
+SELF_REVIEW_SKILL = ".claude/skills/kornia-code-review/SKILL.md"
+SELF_REVIEW_DOCS = (
+    "AGENTS.md",
+    "CLAUDE.md",
+    "CONTRIBUTING.md",
+    "README.md",
+    ".github/copilot-instructions.md",
+    ".github/pull_request_template.md",
+    ".github/workflows/pr-validation.yml",
+    ".github/workflows/issue-triage.yml",
+    ".github/ISSUE_TEMPLATE/bug-report.yml",
+    ".github/ISSUE_TEMPLATE/feature-request.yml",
+    ".claude/skills/kornia-workflow/SKILL.md",
+)
+
+
+# shortcut: file-scoped — one "fresh session" satisfies a copy; upgrade to
+# per-mention if a doc ever carries a second copy of the step.
+def missing_fresh_session(text: str) -> bool:
+    """Return True when `text` names the self-review step without a fresh session."""
+    flat = " ".join(text.split())
+    return "kornia-code-review" in flat and "fresh session" not in flat
+
+
+def self_review_rule_stale(text: str) -> bool:
+    """Return True when the owning skill's self-review bullet lacks a fresh session."""
+    for block in re.split(r"\n(?=[-*] )|\n\s*\n", text):
+        flat = " ".join(block.split())
+        if "Self-review (mandatory before opening a PR)" in flat:
+            return "fresh session" not in flat
+    return True  # the rule bullet is gone: the check must not pass silently
+
+
+def self_review_doc_errors() -> list[str]:
+    """Check that the owning rule and every doc that copies it require a fresh session."""
+    errors = []
+    for rel in SELF_REVIEW_DOCS:
+        doc = ROOT / rel
+        if not doc.is_file():
+            errors.append(f"{rel}: missing doc that names the self-review step")
+        elif missing_fresh_session(doc.read_text(encoding="utf-8")):
+            errors.append(f"{rel}: names the kornia-code-review self-review without 'fresh session'")
+    rule = ROOT / SELF_REVIEW_SKILL
+    if not rule.is_file():
+        errors.append(f"{SELF_REVIEW_SKILL}: missing self-review skill")
+    elif self_review_rule_stale(rule.read_text(encoding="utf-8")):
+        errors.append(f"{SELF_REVIEW_SKILL}: the self-review rule does not require a fresh session")
+    return errors
+
 
 # A change under these paths keeps the review eval cases in sync, so a stale case
 # fails it. Any other change, e.g. a rustdoc fix in code a control quotes, only
@@ -292,6 +344,8 @@ def main() -> int:
     from skill_evals import stale_precision
     for name in stale_precision():
         errors.append(f"eval {name}: graders/precision.md is stale; run `python3 scripts/skill_evals.py sync`")
+
+    errors += self_review_doc_errors()
 
     # An eval key must not leak into the skill it grades: a name backticked in an
     # expected.md that the skill also uses (backticked, or bare for identifiers

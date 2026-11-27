@@ -7,9 +7,14 @@ description: Use when reviewing a kornia-rs PR or diff, and as the mandatory sel
 
 Two uses, same procedure:
 
-- **Self-review (mandatory before opening a PR).** The author, or the
-  author's agent, runs this skill on `git diff main...HEAD`, fixes what it
-  finds, and pastes the final output in the PR's **Self-review** section.
+- **Self-review (mandatory before opening a PR).** Run this skill in a fresh
+  session or subagent that works from `git diff main...HEAD`, the linked issue
+  (its text may be pasted, but §0.1 still blocks an issue the reviewer cannot
+  read itself) and this skill — never in the authoring session, which grades
+  reasoning it has already committed to (the eval harness runs reviewers fresh
+  and never lets a judge share the reviewer's model, for the same reason; see
+  `evals/README.md`). Fix what it finds, and paste the final output in the
+  PR's **Self-review** section.
 - **Review.** A maintainer starts from the author's self-review: checks its
   findings against the diff, then runs this skill where the self-review looks
   thin, and records what it missed (section 7).
@@ -261,6 +266,11 @@ were already policy.
   section (0–6, or 0 and 4b for tooling), or, for library code, no
   `Reuse searches` block. `Verdict: approve` + `Skill gaps: none` alone is a
   placeholder.
+- A Self-review that only restates the PR body's reasoning and shows no
+  search, probe or command of its own is a placeholder: treat it as not run
+  fresh (§0b searches for library code, §4b probes for tooling; a diff with
+  nothing to probe quotes the commands it did run). Ask for it to be re-run
+  in a fresh session before reviewing the code.
 - Reviewers ask the author at least one concrete question about a non-obvious hunk
   (why this bound, what happens on empty input, why this copy). No answer,
   or an answer that contradicts the code ⇒ blocking until resolved or the
