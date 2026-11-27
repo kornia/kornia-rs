@@ -545,4 +545,31 @@ pub(crate) mod tests {
         };
         assert!(RemapTable::from_maps(&map, &map, one_row, RemapQuantisation::Q10Trunc).is_err());
     }
+
+    /// OpenCV `convertMaps(CV_16SC2)` + `remap(INTER_LINEAR, BORDER_CONSTANT 0)`
+    /// (`benches/opencv_kernels_fixtures.py`) of `mh01_frame1.png`: within 1 LSB
+    /// wherever all four taps are inside the image.
+    #[test]
+    fn q5_matches_opencv_remap() {
+        use crate::test_fixtures as cv;
+        let src = cv::frame("mh01_frame1.png");
+        let (mx, my) = cv::remap_maps();
+        let opencv = cv::remap_q5();
+        let got = ours(&src, &mx, &my, RemapQuantisation::OpenCvQ5);
+        let inside = |v: f32, len: usize| {
+            let i = ((v * 32.0).round_ties_even() as i32) >> 5;
+            i >= 0 && (i as usize) + 1 < len
+        };
+        let n = got.len();
+        let (mut compared, mut worst) = (0usize, 0i32);
+        for i in 0..n {
+            let (x, y) = (mx.as_slice()[i], my.as_slice()[i]);
+            if inside(x, src.width()) && inside(y, src.height()) {
+                compared += 1;
+                worst = worst.max((i32::from(got[i]) - i32::from(opencv[i])).abs());
+            }
+        }
+        assert!(compared > n / 2, "{compared} of {n} pixels compared");
+        assert!(worst <= 1, "max |diff| {worst}");
+    }
 }
