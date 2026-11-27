@@ -157,6 +157,14 @@ required-features = ["opencv_bench"]
 harness = false
 name = "bench_remap_table"
 
+[[bench]]
+harness = false
+name = "bench_good_features"
+
+[[bench]]
+harness = false
+name = "bench_corner_subpix"
+
 [dependencies]
 cudarc = { workspace = true, features = ["f16"], optional = true }
 half = { workspace = true, optional = true }
