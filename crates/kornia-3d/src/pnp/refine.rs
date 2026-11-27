@@ -1318,6 +1318,11 @@ mod tests {
                     ..LMRefineParams::default()
                 };
 
+                assert!(
+                    build_robust_loss(&params).unwrap().is_none(),
+                    "Expected L2 fallback (None) for {kernel:?} with scale {scale}"
+                );
+
                 let result = refine_pose_lm(
                     &points_world,
                     &points_image,
@@ -1359,12 +1364,17 @@ mod tests {
             }
         }
 
-        for scale in [-25.0, 0.0] {
+        for scale in [-25.0, 0.0, f32::from_bits(1)] {
             let params = LMRefineParams {
                 robust: RobustKernelKind::Tukey,
                 robust_scale_sq: scale,
                 ..LMRefineParams::default()
             };
+
+            assert!(
+                build_robust_loss(&params).is_err(),
+                "Expected build_robust_loss to error for Tukey with scale {scale}"
+            );
 
             let result = refine_pose_lm(
                 &points_world,
