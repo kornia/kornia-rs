@@ -1,0 +1,1 @@
+`kornia_3d::pose::Pose3d::orthonormalized` now uses `Mat3F64::nearest_rotation`. It returns the nearest rotation to rounding error, where `svd3_f64` was off by up to 3e-4 on a general 3x3 matrix (5e-7 near a rotation). A rotation scaled by 1e100 or more no longer trips a debug assertion in `svd3_f64`.

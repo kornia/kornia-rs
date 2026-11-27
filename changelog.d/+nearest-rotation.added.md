@@ -1,0 +1,1 @@
+`kornia-algebra`: `Mat3F64::nearest_rotation` and `SO3F64::from_matrix_nearest` give the rotation nearest to a 3x3 matrix in the Frobenius norm. Also lossless `From` conversions from `Mat3AF32`, `Vec3AF32` and `Vec2F32` to their `f64` types, and the rounding `Mat3F64::as_mat3af32` and `Vec3F64::as_vec3af32` back to `f32`.
