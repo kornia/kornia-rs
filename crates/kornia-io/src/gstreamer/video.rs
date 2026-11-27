@@ -1497,6 +1497,24 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn capture_close_returns_an_error_posted_while_stopping(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        fail_on_stop::register()?;
+        let capture = super::StreamCapture::new(
+            "videotestsrc is-live=true ! korniatestfailonstop ! appsink name=sink sync=false",
+        )?;
+        capture.start()?;
+        match capture.close() {
+            Err(StreamCaptureError::GStreamerError(error)) => {
+                assert!(error.to_string().contains("Error closing file"), "{error}");
+            }
+            other => panic!("close must return the error posted while stopping: {other:?}"),
+        }
+        assert_eq!(capture.pipeline.current_state(), gstreamer::State::Null);
+        Ok(())
+    }
+
     /// `new` must reject sizes the MP4/H.264 pipeline can never encode, instead of failing
     /// later with a generic error and an empty file.
     #[test]

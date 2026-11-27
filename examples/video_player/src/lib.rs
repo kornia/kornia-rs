@@ -5,15 +5,14 @@ use kornia::imgproc::resize::resize_fast_rgb;
 use kornia::io::stream::video::{ImageFormat, SeekFlags, VideoReader};
 use kornia::io::stream::Grab;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
 
 const SLIDER_HEIGHT: f32 = 20.;
 
 pub struct MyApp {
     file_path: String,
     slider_pos: u64,
+    seeking: bool,
     playback_speed: u32,
-    fps: f64,
     /// Set when `try_grab_rgb8` reports `Grab::Eos`, i.e. after every buffered frame was drawn.
     finished: bool,
     /// Carries a grab error into the Finished/Failed transition.
@@ -30,9 +29,8 @@ struct TextureStore {
 enum AppState {
     /// The video is currently playing. The tuple contains:
     /// - `VideoReader`
-    /// - `Instant` of last loaded frame
     /// - `TextureStore`
-    Playing(VideoReader, Instant, Option<TextureStore>),
+    Playing(VideoReader, Option<TextureStore>),
     /// The video is paused
     Paused(VideoReader, Option<TextureStore>),
     /// The video has been finished; the last texture is kept on screen until a restart.
@@ -77,8 +75,8 @@ impl Default for MyApp {
         Self {
             file_path: String::new(),
             slider_pos: 0,
+            seeking: false,
             playback_speed: 1,
-            fps: 8.,
             finished: false,
             error: None,
             app_state: AppState::default(),
@@ -110,6 +108,7 @@ fn render_navbar(app: &mut MyApp, ui: &mut eframe::egui::Ui) {
             if ui.button("clear").clicked() {
                 app.app_state = AppState::Stopped;
                 app.playback_speed = 1;
+                app.seeking = false;
             }
         });
 
@@ -124,7 +123,7 @@ fn render_navbar(app: &mut MyApp, ui: &mut eframe::egui::Ui) {
                 app.finished = false;
                 app.error = None;
 
-                app.app_state = AppState::Playing(video_reader, Instant::now(), None);
+                app.app_state = AppState::Playing(video_reader, None);
             }
 
             ui.add_sized(
@@ -138,13 +137,10 @@ fn render_navbar(app: &mut MyApp, ui: &mut eframe::egui::Ui) {
 // This function only runs if `VideoReader` is present
 /// Draws the playback controls and switches to `Finished`/`Failed` when playback ends.
 fn render_play_controls(app: &mut MyApp, ctx: &eframe::egui::Context) {
-    let mut is_playing = false;
     let mut is_finished = false;
 
     if let AppState::Playing(video_reader, ..) = &app.app_state {
-        is_playing = true;
-
-        if let Some(current_pos) = video_reader.get_pos() {
+        if let Some(current_pos) = video_reader.get_pos().filter(|_| !app.seeking) {
             app.slider_pos = current_pos.as_secs();
         }
 
@@ -153,9 +149,10 @@ fn render_play_controls(app: &mut MyApp, ctx: &eframe::egui::Context) {
         is_finished = app.finished;
     }
 
-    if is_finished {
+    if is_finished && (!app.seeking || app.error.is_some()) {
+        app.seeking = false;
         let app_state = match std::mem::take(&mut app.app_state) {
-            AppState::Playing(video_player, _, texture_store) => match app.error.take() {
+            AppState::Playing(video_player, texture_store) => match app.error.take() {
                 Some(error) => AppState::Failed(video_player, error, texture_store),
                 None => AppState::Finished(video_player, texture_store),
             },
@@ -183,7 +180,7 @@ fn render_play_controls(app: &mut MyApp, ctx: &eframe::egui::Context) {
                 if ui.button(button_text).clicked() {
                     let app_state = std::mem::take(&mut app.app_state);
                     match app_state {
-                        AppState::Playing(mut video_reader, _, texture_store) => {
+                        AppState::Playing(mut video_reader, texture_store) => {
                             video_reader.pause().expect("Failed to pause video");
                             app.app_state = AppState::Paused(video_reader, texture_store);
                         }
@@ -191,14 +188,13 @@ fn render_play_controls(app: &mut MyApp, ctx: &eframe::egui::Context) {
                             video_reader
                                 .start()
                                 .expect("Failed to start/resume the video");
-                            app.app_state =
-                                AppState::Playing(video_reader, Instant::now(), texture_store);
+                            app.app_state = AppState::Playing(video_reader, texture_store);
                         }
                         AppState::Finished(mut video_reader, _) => {
                             video_reader.reset().expect("Failed to reset video");
                             video_reader.start().expect("Failed to start the video");
                             app.finished = false;
-                            app.app_state = AppState::Playing(video_reader, Instant::now(), None);
+                            app.app_state = AppState::Playing(video_reader, None);
                         }
                         AppState::Failed(video_reader, error, texture_store) => {
                             // The failed pipeline may not recover, so retry reopens the file.
@@ -236,11 +232,7 @@ fn render_play_controls(app: &mut MyApp, ctx: &eframe::egui::Context) {
                                     app.slider_pos = 0;
                                     // Keep the last frame visible until the new pipeline delivers
                                     // the first one; a later failure keeps it too.
-                                    app.app_state = AppState::Playing(
-                                        video_reader,
-                                        Instant::now(),
-                                        texture_store,
-                                    );
+                                    app.app_state = AppState::Playing(video_reader, texture_store);
                                 }
                                 Err(retry_error) => {
                                     app.app_state =
@@ -258,23 +250,25 @@ fn render_play_controls(app: &mut MyApp, ctx: &eframe::egui::Context) {
 
                 // Slider
                 // SAFTEY: This function only runs when video_reader is present
+                let is_playing = matches!(app.app_state, AppState::Playing(..));
                 let video_reader = unsafe { app.app_state.inner().unwrap_unchecked() };
                 ui.label("Seek");
 
                 if let Some(duration) = video_reader.get_duration() {
                     ui.add_enabled_ui(is_playing, |ui| {
-                        if ui
-                            .add_sized(
-                                egui::Vec2::new(ui.available_width(), SLIDER_HEIGHT),
-                                egui::Slider::new(&mut app.slider_pos, 0..=duration.as_secs()),
-                            )
-                            .interact(egui::Sense::DRAG)
-                            .drag_stopped()
-                        {
+                        let response = ui.add_sized(
+                            egui::Vec2::new(ui.available_width(), SLIDER_HEIGHT),
+                            egui::Slider::new(&mut app.slider_pos, 0..=duration.as_secs()),
+                        );
+                        app.seeking = is_playing && response.dragged();
+                        if response.drag_stopped() || (response.changed() && !app.seeking) {
                             let seek_time = std::time::Duration::from_secs(app.slider_pos);
-
-                            #[allow(unused_must_use)]
-                            video_reader.seek(SeekFlags::TRICKMODE | SeekFlags::FLUSH, seek_time);
+                            match video_reader
+                                .seek(SeekFlags::ACCURATE | SeekFlags::FLUSH, seek_time)
+                            {
+                                Ok(()) => app.finished = false,
+                                Err(error) => log::error!("Failed to seek: {error}"),
+                            }
                         }
                     });
                 }
@@ -324,22 +318,12 @@ fn render_play_controls(app: &mut MyApp, ctx: &eframe::egui::Context) {
     });
 }
 
-/// Draws the current frame, grabbing a new one when it is time.
+/// Draws the current frame as clock-paced samples arrive.
 fn render_image(app: &mut MyApp, ui: &mut eframe::egui::Ui) {
     match &mut app.app_state {
-        AppState::Playing(video_reader, instant, texture_store) => {
-            if let Some(fps) = video_reader.get_fps() {
-                app.fps = fps;
-            }
-
-            if instant.elapsed()
-                < Duration::from_millis(
-                    ((1000. / (app.fps * app.playback_speed as f64)) * 1.1) as u64,
-                )
-                && texture_store.is_some()
-            {
-                // Don't grab the new image, load the previous one instead
-            } else if let Some(image_frame) = match video_reader.try_grab_rgb8() {
+        AppState::Playing(video_reader, texture_store) => {
+            // Real-time appsink delivery already paces frames, including variable-rate video.
+            if let Some(image_frame) = match video_reader.try_grab_rgb8() {
                 Ok(Grab::Frame { image, .. }) => Some(image),
                 // Finish only after every buffered frame has been drawn.
                 Ok(Grab::Eos) => {
@@ -353,8 +337,6 @@ fn render_image(app: &mut MyApp, ui: &mut eframe::egui::Ui) {
                     None
                 }
             } {
-                *instant = Instant::now();
-
                 let mut resize_required = false;
                 let new_image_size = if image_frame.width() as f32 <= ui.available_width()
                     && image_frame.height() as f32 - SLIDER_HEIGHT <= ui.available_height()
