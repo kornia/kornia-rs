@@ -168,7 +168,8 @@ mod tests {
             .iter()
             .map(|p| p.inverse().translation)
             .collect();
-        let (r, t, s) = umeyama_f64(&recovered, &gt, None, true).expect("similarity alignment");
+        let alignment = umeyama_f64(&recovered, &gt, None, true).expect("similarity alignment");
+        let (r, t, s) = (alignment.r, alignment.t, alignment.s);
         let max_err = recovered
             .iter()
             .zip(&gt)
