@@ -163,6 +163,9 @@ incomplete: run it before writing the finding. Reading the code is enough to
 - No blocking I/O, locks or logging in per-pixel/per-frame loops.
 - CUDA: no extra host syncs or device↔host copies per call; host reads only
   after the stream sync.
+- cuda-oxide kernels: `ptxas -v` shows 0 B stack per entry, `.maxntid`
+  where shared arrays assume a block size, no tid-0 serial loops behind
+  `sync_threads()`.
 - New threads, busy loops or polling in library code need justification.
 
 ## 3. Benchmark obligations

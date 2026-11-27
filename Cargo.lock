@@ -2028,7 +2028,7 @@ dependencies = [
  "candle-kernels",
  "candle-metal-kernels",
  "candle-ug",
- "cudarc 0.19.9",
+ "cudarc 0.19.10",
  "float8",
  "gemm 0.19.0",
  "half",
@@ -2519,7 +2519,7 @@ checksum = "3d7b894f5411737b7867f4827955924d7c254fc9f4d91a6aad6b097804b1018b"
 name = "color_spaces"
 version = "0.2.0"
 dependencies = [
- "cudarc 0.19.9",
+ "cudarc 0.19.10",
  "kornia-image",
  "kornia-imgproc",
  "kornia-io",
@@ -3384,7 +3384,7 @@ name = "cuda-camera-preprocess"
 version = "0.1.0"
 dependencies = [
  "argh",
- "cudarc 0.19.9",
+ "cudarc 0.19.10",
  "kornia-image",
  "kornia-imgproc",
  "kornia-io",
@@ -3396,7 +3396,7 @@ name = "cuda-camera-sift"
 version = "0.1.0"
 dependencies = [
  "argh",
- "cudarc 0.19.9",
+ "cudarc 0.19.10",
  "kornia-image",
  "kornia-imgproc",
  "kornia-io",
@@ -3407,7 +3407,7 @@ dependencies = [
 name = "cuda-fusion"
 version = "0.1.0"
 dependencies = [
- "cudarc 0.19.9",
+ "cudarc 0.19.10",
  "kornia-imgproc",
 ]
 
@@ -3415,7 +3415,7 @@ dependencies = [
 name = "cuda-imgproc"
 version = "0.1.0"
 dependencies = [
- "cudarc 0.19.9",
+ "cudarc 0.19.10",
  "kornia-image",
  "kornia-io",
  "kornia-tensor",
@@ -3452,9 +3452,9 @@ dependencies = [
 
 [[package]]
 name = "cudarc"
-version = "0.19.9"
+version = "0.19.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "804764d10e844da09765a7b2ca9641a0851523d1702efb0d7299d73e31b86e80"
+checksum = "7359bf1de037ddada72729c3acec9b040f3468400c6e9e740b01ba0cd2e89562"
 dependencies = [
  "float8",
  "half",
@@ -7995,14 +7995,16 @@ dependencies = [
  "approx",
  "bincode 2.0.1",
  "criterion 0.8.2",
- "cudarc 0.19.9",
+ "cudarc 0.19.10",
  "faer 0.24.4",
  "kiddo",
  "kornia-algebra",
  "kornia-image",
  "kornia-imgproc",
  "kornia-io",
+ "kornia-oxide-kernels",
  "kornia-tensor",
+ "libm",
  "log",
  "nalgebra 0.35.0",
  "rand 0.10.3",
@@ -8087,7 +8089,7 @@ version = "0.2.0"
 dependencies = [
  "arrow 60.0.0",
  "criterion 0.8.2",
- "cudarc 0.19.9",
+ "cudarc 0.19.10",
  "dlpack-rs",
  "half",
  "kornia-tensor",
@@ -8102,7 +8104,7 @@ version = "0.2.0"
 dependencies = [
  "argh",
  "criterion 0.8.2",
- "cudarc 0.19.9",
+ "cudarc 0.19.10",
  "half",
  "iai-callgrind",
  "image",
@@ -8153,7 +8155,7 @@ dependencies = [
 name = "kornia-oxide-kernels"
 version = "0.2.0"
 dependencies = [
- "cudarc 0.19.9",
+ "cudarc 0.19.10",
  "kornia-tensor",
  "thiserror 2.0.21",
 ]
@@ -8162,7 +8164,7 @@ dependencies = [
 name = "kornia-py"
 version = "0.2.0"
 dependencies = [
- "cudarc 0.19.9",
+ "cudarc 0.19.10",
  "dlpack-rs",
  "half",
  "kornia-3d",
@@ -8184,7 +8186,7 @@ version = "0.2.0"
 dependencies = [
  "bincode 2.0.1",
  "criterion 0.8.2",
- "cudarc 0.19.9",
+ "cudarc 0.19.10",
  "dlpack-rs",
  "num-traits",
  "rayon",
@@ -8214,7 +8216,7 @@ dependencies = [
  "candle-nn",
  "candle-transformers",
  "circular-buffer",
- "cudarc 0.19.9",
+ "cudarc 0.19.10",
  "env_logger",
  "hf-hub 0.5.0",
  "kornia-image",

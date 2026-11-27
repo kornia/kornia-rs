@@ -1,0 +1,13 @@
+#!/bin/bash
+# InfiniTAM v3 (origin/infinitam_v3) CUDA build, headless (InfiniTAM_cli only). Re-runnable.
+set -eo pipefail
+export PATH=/mnt/data/venvs/cmake-tools/bin:/usr/local/cuda-12.6/bin:$PATH
+export PYTHONPATH=/mnt/data/venvs/cmake-tools
+B=/mnt/data/infinitam-build
+cmake -S /mnt/data/src/InfiniTAM/InfiniTAM -B $B -DCMAKE_BUILD_TYPE=Release \
+  -DWITH_CUDA=ON -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda-12.6 -DCUDA_COMPUTE_CAPABILITY=87 \
+  -DWITH_OPENMP=OFF -DWITH_PNG=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -Wno-dev \
+  -DGLUT_LIBRARY=/usr/lib/aarch64-linux-gnu/libm.so -DGLUT_INCLUDE_DIR=/usr/include \
+  -DCUDA_NVCC_FLAGS="--threads;1"
+cmake --build $B -j1 --target InfiniTAM_cli
+ls -l $B/Apps/InfiniTAM_cli/InfiniTAM_cli

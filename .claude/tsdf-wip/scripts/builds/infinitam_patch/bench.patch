@@ -1,0 +1,144 @@
+diff --git a/InfiniTAM/Apps/InfiniTAM_cli/CLIEngine.cpp b/InfiniTAM/Apps/InfiniTAM_cli/CLIEngine.cpp
+index 2b9b6471..b5b6d3a0 100644
+--- a/InfiniTAM/Apps/InfiniTAM_cli/CLIEngine.cpp
++++ b/InfiniTAM/Apps/InfiniTAM_cli/CLIEngine.cpp
+@@ -3,6 +3,7 @@
+ #include "CLIEngine.h"
+ 
+ #include <string.h>
++#include <nvtx3/nvToolsExt.h>
+ 
+ #include "../../ORUtils/FileUtils.h"
+ 
+@@ -51,6 +52,7 @@ bool CLIEngine::ProcessFrame()
+ 	}
+ 
+ 	sdkResetTimer(&timer_instant);
++	nvtxRangePushA("frame");
+ 	sdkStartTimer(&timer_instant); sdkStartTimer(&timer_average);
+ 
+ 	//actual processing on the mailEngine
+@@ -61,11 +63,12 @@ bool CLIEngine::ProcessFrame()
+ 	ORcudaSafeCall(cudaThreadSynchronize());
+ #endif
+ 	sdkStopTimer(&timer_instant); sdkStopTimer(&timer_average);
++	nvtxRangePop();
+ 
+ 	float processedTime_inst = sdkGetTimerValue(&timer_instant);
+ 	float processedTime_avg = sdkGetAverageTimerValue(&timer_average);
+ 
+-	printf("frame %i: time %.2f, avg %.2f\n", currentFrameNo, processedTime_inst, processedTime_avg);
++	printf("frame %i: time %.3f, avg %.3f\n", currentFrameNo, processedTime_inst, processedTime_avg);
+ 
+ 	currentFrameNo++;
+ 
+diff --git a/InfiniTAM/Apps/InfiniTAM_cli/InfiniTAM_cli.cpp b/InfiniTAM/Apps/InfiniTAM_cli/InfiniTAM_cli.cpp
+index aa5068c8..6126a77c 100644
+--- a/InfiniTAM/Apps/InfiniTAM_cli/InfiniTAM_cli.cpp
++++ b/InfiniTAM/Apps/InfiniTAM_cli/InfiniTAM_cli.cpp
+@@ -10,6 +10,16 @@
+ 
+ #include "../../ITMLib/ITMLibDefines.h"
+ #include "../../ITMLib/Core/ITMBasicEngine.h"
++#include "../../ITMLib/Engines/Meshing/ITMMeshingEngineFactory.h"
++#include <algorithm>
++#include <chrono>
++#include <vector>
++#include <cuda_runtime.h>
++#include <nvtx3/nvToolsExt.h>
++
++// kr-tsdf bench patch: env overrides, settings echo, block count, timed mesh, PLY out.
++static double now_ms() { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
++static void memlog(const char *tag) { size_t f = 0, t = 0; cudaDeviceSynchronize(); cudaMemGetInfo(&f, &t); printf("BENCH mem %s free_mb %.1f total_mb %.1f\n", tag, f / 1048576.0, t / 1048576.0); }
+ 
+ using namespace InfiniTAM::Engine;
+ using namespace InputSource;
+@@ -47,6 +57,22 @@ try
+ 
+ 	printf("initialising ...\n");
+ 	ITMLibSettings *internalSettings = new ITMLibSettings();
++	cudaFree(0); memlog("ctx");
++	{
++		ITMSceneParams &sp = internalSettings->sceneParams; const char *e;
++		if ((e = getenv("INFINITAM_VOXEL"))) sp.voxelSize = (float)atof(e);
++		if ((e = getenv("INFINITAM_MU_VOX"))) sp.mu = (float)atof(e) * sp.voxelSize;
++		if ((e = getenv("INFINITAM_MAXW"))) sp.maxW = atoi(e);
++		if ((e = getenv("INFINITAM_ZMIN"))) sp.viewFrustum_min = (float)atof(e);
++		if ((e = getenv("INFINITAM_ZMAX"))) sp.viewFrustum_max = (float)atof(e);
++		if ((e = getenv("INFINITAM_TRACKER"))) internalSettings->trackerConfig = e;
++		printf("BENCH settings voxel %g mu %g mu_vox %g maxW %d zmin %g zmax %g stopAtMaxW %d swapping %d bilateral %d device %d libmode %d "
++		       "voxel_bytes %d has_color %d block %d local_blocks %d failmode %d tracker %s\n",
++			sp.voxelSize, sp.mu, sp.mu / sp.voxelSize, sp.maxW, sp.viewFrustum_min, sp.viewFrustum_max, (int)sp.stopIntegratingAtMaxW,
++			(int)internalSettings->swappingMode, (int)internalSettings->useBilateralFilter, (int)internalSettings->deviceType,
++			(int)internalSettings->libMode, (int)sizeof(ITMVoxel), (int)ITMVoxel::hasColorInformation, SDF_BLOCK_SIZE, SDF_LOCAL_BLOCK_NUM,
++			(int)internalSettings->behaviourOnFailure, internalSettings->trackerConfig);
++	}
+ 
+ 	ImageSourceEngine *imageSource;
+ 	IMUSourceEngine *imuSource = NULL;
+@@ -77,12 +103,65 @@ try
+ 		}
+ 	}
+ 
++	nvtxRangePushA("construct"); double tc0 = now_ms();
+ 	ITMMainEngine *mainEngine = new ITMBasicEngine<ITMVoxel,ITMVoxelIndex>(
+ 		internalSettings, imageSource->getCalib(), imageSource->getRGBImageSize(), imageSource->getDepthImageSize()
+ 	);
++	cudaDeviceSynchronize(); printf("BENCH construct_ms %.3f\n", now_ms() - tc0); nvtxRangePop();
++	memlog("after_construct");
+ 
+ 	CLIEngine::Instance()->Initialise(imageSource, imuSource, mainEngine, internalSettings->deviceType);
+ 	CLIEngine::Instance()->Run();
++	memlog("after_integrate");
++	{
++		ITMBasicEngine<ITMVoxel,ITMVoxelIndex> *be = dynamic_cast<ITMBasicEngine<ITMVoxel,ITMVoxelIndex>*>(mainEngine);
++		ITMScene<ITMVoxel,ITMVoxelIndex> *scene = be->GetScene();
++		const int nb = SDF_LOCAL_BLOCK_NUM;
++		printf("BENCH blocks allocated %d capacity %d lastFreeBlockId %d\n", (nb - 1) - scene->localVBA.lastFreeBlockId, nb, scene->localVBA.lastFreeBlockId);
++		const char *meshOut = getenv("INFINITAM_MESH_OUT");
++		if (meshOut) {
++			ITMMeshingEngine<ITMVoxel,ITMVoxelIndex> *me = ITMMeshingEngineFactory::MakeMeshingEngine<ITMVoxel,ITMVoxelIndex>(internalSettings->deviceType);
++			const char *e = getenv("INFINITAM_MESH_MAXTRI");
++			nvtxRangePushA("mesh_alloc"); double a = now_ms();
++			ITMMesh *mesh = e ? new ITMMesh(internalSettings->GetMemoryType(), (uint)atol(e)) : new ITMMesh(internalSettings->GetMemoryType());
++			cudaDeviceSynchronize(); double b = now_ms(); nvtxRangePop();
++			printf("BENCH mesh_alloc_ms %.3f max_triangles %u buffer_mb %.1f\n", b - a, mesh->noMaxTriangles, mesh->noMaxTriangles * sizeof(ITMMesh::Triangle) / 1048576.0);
++			memlog("after_mesh_alloc");
++			int warm = getenv("INFINITAM_MESH_WARM") ? atoi(getenv("INFINITAM_MESH_WARM")) : 3;
++			for (int i = 0; i <= warm; i++) {
++				nvtxRangePushA("mesh"); cudaDeviceSynchronize(); a = now_ms();
++				me->MeshScene(mesh, scene);
++				cudaDeviceSynchronize(); b = now_ms(); nvtxRangePop();
++				printf("BENCH mesh_full %s %d ms %.3f triangles %u\n", i == 0 ? "cold" : "warm", i, b - a, mesh->noTotalTriangles);
++			}
++			memlog("after_mesh");
++			const size_t n = mesh->noTotalTriangles;
++			std::vector<ITMMesh::Triangle> tri(n);
++			nvtxRangePushA("mesh_d2h"); a = now_ms();
++			cudaMemcpy(tri.data(), mesh->triangles->GetData(MEMORYDEVICE_CUDA), n * sizeof(ITMMesh::Triangle), cudaMemcpyDeviceToHost);
++			b = now_ms(); nvtxRangePop();
++			printf("BENCH mesh_d2h_ms %.3f bytes %zu\n", b - a, n * sizeof(ITMMesh::Triangle));
++			// binary PLY triangle soup (3 unwelded vertices per triangle), outside every timer
++			FILE *f = fopen(meshOut, "wb");
++			fprintf(f, "ply\nformat binary_little_endian 1.0\nelement vertex %zu\nproperty float x\nproperty float y\nproperty float z\n"
++			           "element face %zu\nproperty list uchar int vertex_indices\nend_header\n", 3 * n, n);
++			fwrite(tri.data(), sizeof(ITMMesh::Triangle), n, f);
++			for (size_t i = 0; i < n; i++) { unsigned char c = 3; int idx[3] = { (int)(3 * i), (int)(3 * i + 1), (int)(3 * i + 2) }; fwrite(&c, 1, 1, f); fwrite(idx, sizeof(int), 3, f); }
++			fclose(f);
++			printf("saved mesh: %s triangles %zu\n", meshOut, n);
++			delete mesh; delete me;
++		}
++		// observed voxels (w_depth > 0) over the whole preallocated VBA, chunked D2H, untimed
++		const size_t per = (size_t)SDF_BLOCK_SIZE3, chunk = 4096;
++		std::vector<ITMVoxel> buf(chunk * per); long long obs = 0;
++		const ITMVoxel *vba = scene->localVBA.GetVoxelBlocks();
++		for (size_t blk = 0; blk < (size_t)nb; blk += chunk) {
++			size_t m = std::min(chunk, (size_t)nb - blk);
++			cudaMemcpy(buf.data(), vba + blk * per, m * per * sizeof(ITMVoxel), cudaMemcpyDeviceToHost);
++			for (size_t j = 0; j < m * per; j++) obs += buf[j].w_depth > 0;
++		}
++		printf("BENCH voxels_observed_w_gt0 %lld\n", obs);
++	}
+ 	CLIEngine::Instance()->Shutdown();
+ 
+ 	delete mainEngine;

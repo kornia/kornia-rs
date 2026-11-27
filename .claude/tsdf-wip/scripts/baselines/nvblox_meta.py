@@ -1,0 +1,35 @@
+"""Write nvblox/meta.json (global evidence shared by all rows) and stamp meta_file into results.json rows."""
+import json
+B = "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox"
+J = lambda p: json.load(open(p))
+c = J(f"{B}/runs/room0_v0.02_M_nomesh_cuda_n2000/summary.json")
+k = {x["name"]: x for x in c["cuda_kernels"]["top"]}
+integ = [n for n in ("integrateBlocksKernel", "sphereTracingKernel", "checkBlocksInTruncationBand", "combinedBlockIndicesInImageKernel")]
+meta = dict(
+  library="nvblox v0.0.10 (git c457c3fc), fuse_replica from /mnt/data/nvblox-build (Release, sm_87)",
+  box="Jetson Orin 7.4 GB, MAXN_SUPER, jetson_clocks: GPU 1020 MHz locked (cur=min=max) and CPU 6x1728 MHz in all 54 clock records (start+end of every 2000-frame run); no other heavy job (cargo/cc1plus/nvcc/ninja/nsys/score/o3d) seen at any run start; background daemons present throughout: flux-web (~14% CPU), tailscaled, brain-daemon, jtop, two other claude sessions; loadavg ~1.5-2.3",
+  camera_convention_gate=dict(file=f"{B}/gate/smoke_r02_score.json", note="nvblox loads traj.txt as-is (Isometry3f c2w, OpenCV axes); the smoke 20-frame room0 2 cm mesh scores accuracy_surf 0.08 cm / completeness_surf 0.11 cm with --frames 0:20 -> frame + depth scale 1/6553.5 correct"),
+  depth_range=dict(file=f"{B}/gate/depth_range_count.json", note="nvblox has no min-depth parameter; Row M [0.1, 7.0) m is still met exactly: 0 valid depth pixels < 0.1 m or >= 7 m in all 2000 frames of either scene (room0 0.52-6.12 m, office0 0.68-4.41 m)"),
+  nsys_overhead=dict(file=f"{B}/gate/nsys_overhead_check.json", note="office0 5 cm Row M incremental, built-in means excl. cold max: nsys nvtx-only +1.9..2.9% on integrate, +0.4% on mesh vs plain; cuda trace +7..14% (cuda runs are used only for memory / kernel / H2D, never for headline ms)"),
+  device_memory_attribution=dict(file=f"{B}/gate/devmem_attrib_office0_v0.05_M.txt", note="~648 MB is live before the first frame: block memory pools pre-expanded to 4096 blocks per layer, incl. 516 MB of FeatureVoxel blocks (132 KB each) that a TSDF+colour run never uses, plus 2x68.7 MB flat-mesh buffers (2M triangles) of the fuser's always-on visualizer mesh; no fuser flag changes the preallocation. Full/incremental colour meshing adds ~70 KB/block marching-cubes scratch (office0 2 cm full mesh: peak 2094 MB)"),
+  oom=dict(gdb=f"{B}/gate/oom_gdb/gdb.log", alloc_ceiling_async=f"{B}/gate/alloc_ceiling_async.json", alloc_ceiling_sync=f"{B}/gate/alloc_ceiling_sync.json",
+           note="nvblox meshing OOMs at 2 cm: room0 incremental at frame 4 (both rows), room0 full post-loop mesh, office0 incremental at frame 1256 (both rows). The failing call is cudaMallocAsync of the marching-cubes scratch (485 MB at room0 frame 4, ~1.43 GB already live). A ctypes probe on the idle box (cuda_alloc_ceiling.py, 256 MB chunks): cudaMallocAsync on the default pool fails at 2560 MB held while cudaMemGetInfo still reports ~2.9 GB free, whereas plain cudaMalloc reaches the 4096 MB probe limit. The failure is therefore consistent with a per-process limit of the default stream-ordered pool on this driver, not RAM; nvblox fails earlier (~1.43 GB live + 485 MB request = ~1.9 GB), so pool reservation/fragmentation plausibly accounts for the rest -- not fully attributed. Any library that allocates from the default cudaMallocAsync pool would hit the same ceiling on this box. Evicting page cache did not help."),
+  required_nsys_run_room0_2cm=dict(run=f"{B}/runs/room0_v0.02_M_nomesh_cuda_n2000", kernel_launches=c["cuda_kernels"]["launches"],
+       integrate_kernels_ms_per_frame={n: round(k[n]["total_ms"] / 2000, 3) for n in integ if n in k},
+       integrate_kernels_total_ms_per_frame=round(sum(k[n]["total_ms"] for n in integ if n in k) / 2000, 3),
+       flat_mesh_kernel_ms_per_frame=round(k["flatMarchingCubesKernel"]["total_ms"] / 2000, 3),
+       h2d=[m for m in c["cuda_memcpy"] if m["kind"].endswith("HTOD")][0], memset=c["cuda_memset"],
+       note="no-mesh mode (the meshing modes OOM at room0 2 cm); integrate wall 29-31 ms/frame vs ~5.4 ms/frame of integrate kernels -> nvblox colour integration is host/sync bound here; H2D 12.9 GB over 2000 frames = 6.5 MB/frame (float depth + RGBA colour) in 0.53 ms/frame of copy-engine time"),
+  self_checks=dict(row_m_flags_applied="room0_v0.02_M_full_nvtx_n2000/run.log: 'Command line parameter found:' weighting_mode 0, max_weight = 64, truncation_distance_vox = 4, max_integration_distance_m= 7, mesh_integrator_min_weight = 1; Row R logs have none (defaults). M and R give identical block counts (allocation depends only on trunc + max distance, which match) and near-identical accuracy",
+       determinism="same config, different runs: office0 2 cm M full_plain vs full_nvtx: 459423 triangles both, accuracy 1.1869 vs 1.1880 cm, completeness 1.0544 vs 1.0549 cm; office0 5 cm M inc_plain vs inc_nvtx: 79088 triangles both, 1.677 vs 1.685 cm",
+       rerun="office0_v0.02_M_full_nvtx_n2000 was re-run on the idle box at 10:46 because the first run overlapped light CPU analysis of mine (aggregator + sqlite parsing); rerun e2e mean 21.26 ms vs 21.54 ms before (-1.3%); only the rerun is used"),
+  timing_method="per-frame ms = durations of nvblox's own TimerNvtx ranges (std::chrono + NVTX; each timed call ends in cudaStreamSynchronize) exported from nsys -t nvtx (sqlite); frames 0-4 discarded; mean/median/p95/min/max over frames 5..1999. Outer wall clock = glog 'Integrating N frames' -> 'Ran out of data' / N (whole fuser loop incl. decode). Built-in timing.txt tables (mean/std/min/max over all frames) kept per run.",
+  memory_method="host: peak VmHWM of fuse_replica from a 50 ms /proc sidecar (plain runs) + getrusage maxrss; device: nsys --cuda-memory-usage running sum of allocations - frees (all CUDA memory kinds) in the cuda-trace run. system MemAvailable delta is kept only as a secondary field: on this Orin it under-reads (nvmap page pool keeps ~800 MB across runs).",
+  mode_note="5 cm timing rows come from incremental-mesh runs (mesh every frame, nvblox default); 2 cm timing rows come from full mode (no per-frame mesh) because incremental meshing OOMs at 2 cm. In office0 2 cm Row M the two modes give near-identical integrate e2e means: incremental run 21.7 ms (frames 5-1255, before its OOM) vs full mode 21.3 ms (frames 5-1999). Single-frame stalls are kept in max: room0 2 cm Row R frame 823 colour integrate 2476 ms (Row M same frame normal), office0 2 cm Row M frame 1783 colour 392 ms and frame 1346 depth 345 ms; p95 is unaffected.",
+  scripts="/mnt/data/kr-tsdf-spikes/results/baselines/scripts/nvblox_*.py|sh, mem_sampler.py, timev.py (stand-in for /usr/bin/time -v, which is not installed), clock_state.sh, cuda_alloc_ceiling.py, evict_page_cache.py",
+)
+json.dump(meta, open(f"{B}/meta.json", "w"), indent=1)
+rows = J(f"{B}/results.json")
+for r in rows: r["meta_file"] = f"{B}/meta.json"
+json.dump(rows, open(f"{B}/results.json", "w"), indent=1)
+print(json.dumps(meta["required_nsys_run_room0_2cm"], indent=0)[:900])

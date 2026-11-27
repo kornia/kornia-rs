@@ -1,0 +1,47 @@
+{
+ "items": [
+  {
+   "name": "WF-0 spikes + contract v1.2",
+   "state": "done"
+  },
+  {
+   "name": "WF-1 scalar / NEON / CUDA bit-exact gate",
+   "state": "done",
+   "note": "PR head 63b72b00"
+  },
+  {
+   "name": "touch-par merge into feat/tsdf-submaps",
+   "state": "done",
+   "note": "3b88b65f, 6t 2cm 11.6 ms"
+  },
+  {
+   "name": "oxide fix queue items 1-6 + doc edits",
+   "state": "done",
+   "note": "e7876efb + 6d4a793d; raycast/mc_emit reg trade -> WF-2 A/B"
+  },
+  {
+   "name": "VDBFusion build (OpenVDB static, -j1)",
+   "state": "done",
+   "note": "built + smoke OK (3 frames, 60552 tris)"
+  },
+  {
+   "name": "InfiniTAM v3 build",
+   "state": "done",
+   "note": "smoke OK 50 frames; must feed GT poses for bench"
+  },
+  {
+   "name": "WF-0b baseline measurements",
+   "state": "running",
+   "note": "wf w7zg74lwh: scorer -> nvblox -> o3d -> vdbfusion -> infinitam -> merge -> skeptic"
+  },
+  {
+   "name": "WF-2 bench loop",
+   "state": "waiting"
+  },
+  {
+   "name": "WF-3 Python / example / docs / draft PR",
+   "state": "waiting"
+  }
+ ],
+ "pings": []
+}

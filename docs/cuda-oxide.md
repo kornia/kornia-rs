@@ -22,7 +22,7 @@ kornia-tensor, kornia-tensor itself cannot use oxide kernels (that would be a
 cycle); tensor kernels that migrate go to a crate above it. The PTX is real
 only when a crate in the build turns on `kornia-oxide-kernels/ptx`. Rule: a
 crate's `cuda` feature turns on `kornia-oxide-kernels/cuda` and `ptx` exactly
-when that crate ships oxide kernels (kornia-imgproc today). Users only ever
+when that crate ships oxide kernels (kornia-imgproc and kornia-3d today). Users only ever
 set `cuda`; crates using kornia-tensor for device memory alone stay on stable
 without the toolchain.
 
@@ -37,7 +37,8 @@ without the toolchain.
 | `crates/kornia-imgproc/benches/bench_cuda_oxide.rs` | Every oxide kernel vs its CPU path; one `CASES` row per op and size. |
 | `scripts/cuda-oxide/install-toolchain.sh` | Installs the toolchain below (local and CI share it). |
 | `.github/actions/cuda-oxide-ptx` | CI: cached toolchain + `build_ptx`; used by the lint, wheel and Rust release workflows. |
-| `scripts/cuda-oxide/orin-test-bench.sh` | Jetson: parity tests (names derived from the PTX) + bench; `--base <ref>` A/B. |
+| `scripts/cuda-oxide/orin-test-bench.sh` | Jetson: parity tests (names derived from the PTX; kornia-imgproc and kornia-3d) + bench; `--base <ref>` A/B. |
+| `crates/kornia-oxide-kernels/device/src/tsdf.rs`, `tsdf_ops.rs` | TSDF kernels (allocation, integration, raycast, marching cubes) over the shared `tsdf_core.rs` with `PtxOps` (inline `fma.rn`/`sqrt.rn`); launchers in `crates/kornia-3d/src/tsdf/cuda.rs`. |
 
 ## How it builds
 
@@ -82,9 +83,17 @@ without the toolchain.
   `.extern .shared`; the `.entry` set equals the scanned `#[kernel]` set;
 - per `.entry` and per non-inlined `.func`: every `ld`/`st` names a state
   space (a generic access means address-space inference was lost); no
-  `fma`/float `mad` unless it is an entry in `FMA_ALLOWED` (empty); no
-  libdevice (`__nv_*`) calls. A helper that trips this should be
-  `#[inline(always)]`.
+  `fma`/float `mad` unless it is an entry in `FMA_ALLOWED` (the TSDF
+  kernels whose CPU twin calls `F32Ops::fma`); no libdevice (`__nv_*`)
+  calls. A helper that trips this should be `#[inline(always)]`;
+- float rules (kornia-3d TSDF contract, section 18): every float
+  `add`/`sub`/`mul` carries a rounding modifier (G1: a bare one may be
+  fused by ptxas or the JIT); no `.ftz`, `.approx`, `div.full`,
+  `rsqrt`/`sin`/`cos`/`ex2`/`lg2`/`tanh`, float `min`/`max` or `.sat` (G2;
+  `rcp.rn` is allowed, it is how LLVM lowers `1.0 / x`); no float
+  `atom`/`red` (G3); every `fma` of an allowed entry sits between the
+  `// begin inline asm` markers, i.e. is an explicit `fma.rn` from
+  `PtxOps`, never a contraction (G4).
 
 Errors read `gate: <function>: <reason>`. `kornia-oxide-kernels/tests/ptx_gate.rs`
 covers it in the plain (non-CUDA) test suite.
@@ -116,7 +125,9 @@ bench.
 **`CUDA_OXIDE_NO_FMA=1`.** This cuda-oxide contracts `fmul`+`fadd` into `fma`
 by default (like `nvcc --fmad=true`); the CPU twins round each op, so
 `build_ptx` always sets it on the nested build (an outer value cannot change
-it) and the gate still rejects any `fma`.
+it) and the gate still rejects any `fma`. `f32::mul_add`/`sqrt` lower to
+libdevice (`__nv_fmaf`), which the gate forbids: keep `PtxOps`' inline
+`fma.rn`/`sqrt.rn` (`options(register_only)`).
 
 ### Compile-checking `cuda` without the toolchain
 
@@ -138,6 +149,27 @@ stamp=$(KORNIA_OXIDE_PTX=$ph cargo check -q -p kornia-oxide-kernels --features p
 export KORNIA_OXIDE_PTX=$ph
 ```
 
+### Guards on the shared TSDF core
+
+`device/src/tsdf_core.rs` is compiled twice, by the device crate and, through
+`#[path]`, by this crate's host library (kornia-3d's CPU path), so it must stay
+`no_std`, free of `alloc` and of any float op whose bits differ between the two.
+Three guards, none needing the toolchain or a GPU:
+
+- `no_std`: `rustup target add aarch64-unknown-none` once, then
+  `cargo build -p kornia-oxide-kernels --target aarch64-unknown-none`. A host
+  build accepts `extern crate std;`, a bare-metal one does not (CI: the "CUDA
+  features" job of `rust_lint.yml`).
+- clippy `disallowed-methods` in `crates/kornia-oxide-kernels/clippy.toml`:
+  `f32::{min, max, clamp, mul_add, sqrt, floor}`. `cargo clippy -p
+  kornia-oxide-kernels -- -D warnings` covers min/max/clamp, and the
+  `--features cuda` run (CI) the std-only `mul_add`/`sqrt`/`floor`. The fused
+  multiply-add and square root come from `F32Ops`, the floor from `floor_i32`.
+- `tests/tsdf_core_rules.rs` scans the source for the same names plus the SIMD
+  helpers and `std`; kornia-3d's `tests/tsdf_source_rules.rs` does so for
+  `src/tsdf` (`F32x4`/`F32x8`, unfused or approximate NEON intrinsics, a
+  `mul_add` outside `StdOps`).
+
 ## Adding a kernel / migrating an NVRTC family
 
 A second kernel PR (e.g. bicubic resize) does exactly this; nothing else:
@@ -148,14 +180,32 @@ A second kernel PR (e.g. bicubic resize) does exactly this; nothing else:
    parameters in the same order, so the existing launch code drives it.
    Rebuild the PTX with `cargo run -p kornia-oxide-kernels --example
    build_ptx`; until then any `ptx` build fails with a stale-stamp error.
-   - raw pointers, not slices (slices lose the address space and add a bounds
-     branch: 12-13% on resize upscale);
-   - **all loads before the first store**: cuda-oxide emits `noalias` only for
-     slice parameters, so raw-pointer loads/stores still serialize when
-     interleaved (2x on resize upscale);
+   - raw pointers, not slices (slices add a bounds branch: 12-13% on resize
+     upscale); `noalias` comes only from reference params (`&T`, `&[T]`) and
+     `readonly` is never emitted, so raw-pointer inputs never get
+     `ld.global.nc` (a no-op on sm_87 anyway);
+   - **all loads before the first store**: raw-pointer loads/stores still
+     serialize when interleaved (2x on resize upscale);
+   - constants by value: a `#[repr(C)]` struct parameter is one byval
+     `.param`, read in place (no upload, no dependent global load; the TSDF
+     touch/integrate kernels dropped from ~62 to ~40 registers);
+   - **zero stack frame**: no runtime-indexed local array (a `SharedArray`
+     copied into `[T; N]`, `a[axis] = ..`, `f[i] = ..` in a loop) — use
+     selects or array literals. Check with `ptxas -v -arch=sm_87` on
+     `kernels.ptx` (the build never runs ptxas) and `CUDA_OXIDE_VERBOSE=1`
+     on `build_ptx` (names the local);
+   - `#[launch_bounds(256)]`, above `#[kernel]`, on any kernel sized for 256
+     threads (`SharedArray<_, 256>`, 8-warp loops); the gate requires it on
+     `tsdf_*` entries (`MAXNTID`);
+   - shared memory: index `S[i]` or use `SharedArray::as_raw_mut_ptr(&raw mut
+     S)`; never hold `&T`/`&[T]` into a slot across `sync_threads()` (reads
+     merge). Block-wide ordered scans: ballot + popc(lanemask_lt) + per-warp
+     totals, not a tid-0 loop;
    - mirror each constant with a comment naming the CPU constant it copies;
-   - backend gaps: `Ord::min` and `f32::min`/`max` work; `to_int_unchecked`
-     does not compile (use `as`); no `__ldg` (a no-op on sm_87 anyway).
+   - backend gaps at 6d47ae4: `Ord::min` works; `f32::min`/`max` compile but
+     the gate (G2) rejects them; `to_int_unchecked` does not compile (use
+     `as`); no `__ldg`; `redux.sync` needs sm_80 (not in the sm_75 PTX);
+     SharedArray indexing is unchecked (later revs trap).
 2. **Launcher.** In the family's public launcher replace the NVRTC kernel fetch
    with `oxide::__private::kernel(stream, oxide::entry::<NAME>)` (`use
    kornia_oxide_kernels as oxide`; a crate other than kornia-imgproc also enables
@@ -178,7 +228,8 @@ A second kernel PR (e.g. bicubic resize) does exactly this; nothing else:
    the branch). Merge bar: at 4K on an Orin with clocks locked, no regression
    beyond ~2%.
 6. **FMA.** Add the entry to `FMA_ALLOWED` only if its CPU twin uses an
-   explicit `mul_add`/`fmaf`.
+   explicit `mul_add`/`fmaf`; on the device that fma must be inline
+   `fma.rn` (the TSDF core's `PtxOps`), which the gate checks.
 7. **Never commit PTX** (`*.ptx`/`*.cubin`); CI fails if one is tracked.
 
 The old spike layout (root-level `oxide-kernels/`, committed `.ptx`, a

@@ -1,0 +1,41 @@
+{
+ "library": "open3d",
+ "box": "Jetson Orin, 7.4 GB RAM, MAXN_SUPER (nvpmodel 2), jetson_clocks: GPU 1020 MHz locked (cur=min=max), CPU 1728 MHz all 6 cores; verified in all 68 clock_start/clock_end snapshots",
+ "camera_convention": "traj.txt c2w AS-IS (OpenCV), extrinsic = inv(c2w); pilot 50-frame room0 5 cm accuracy_surf 0.33 cm confirms",
+ "depth_range": {
+  "file": "/mnt/data/kr-tsdf-spikes/results/baselines/nvblox/gate/depth_range_count.json",
+  "note": "VBG integrate has no depth_min (only depth<=0 || depth>depth_max); Row M [0.1,7.0) still met exactly: 0 valid pixels <0.1 m or >=7 m in either scene"
+ },
+ "weight_cap": "Row M weight cap 64 NOT matched: VBG integrate does weight+1 uncapped (VoxelBlockGridImpl.h:302). Not patchable without a rebuild (not allowed).",
+ "mesh_threshold_semantics": "extract_triangle_mesh skips a voxel when weight <= weight_threshold (VoxelBlockGridImpl.h:1215/1226), so thr 1 needs weight >= 2, thr 3 needs >= 4",
+ "rowR_zero_vertex": {
+  "files": [
+   "/mnt/data/kr-tsdf-spikes/results/baselines/open3d/side_checks_cpu_wheel.json",
+   "/mnt/data/kr-tsdf-spikes/results/baselines/open3d/side_checks_cuda_build.json"
+  ],
+  "note": "Row R (thr 3): 0 vertices after 1-3 frames, 4272 after 4 (room0 5 cm); Row M thr 1: 0 after 1 frame. Irrelevant for 2000-frame rows (all non-empty)."
+ },
+ "block_count_sizing": "untimed CUDA sizing pass per (scene,voxel,row) with block_count 1000 and auto-grow; required = max_i(size_before_i + n_frustum_i) because HashMap::Activate reserves when size+len(keys) > capacity; timed block_count = ceil(1.1*required/500)*500; capacity verified unchanged in every timed run",
+ "timing_method": "integrate_e2e = time.perf_counter() between two device syncs (o3d.core.cuda.synchronize(); no-op on CPU) around: depth.to(dev) + color.to(dev) [the H2D copy of the decoded uint16 depth and uint8 RGB images on CUDA, pageable host memory; a no-op on CPU:0] + vbg.compute_unique_block_coordinates (frustum block keys, unique) + vbg.integrate (hashmap Activate = block allocation into the preallocated pool, Find, TSDF+colour kernel). One sync at the end only. EXCLUDES: PNG/JPG decode (o3d.t.io.read_image, reported as decode_ms_excluded), pose parse + inv(c2w), VBG construction (pool preallocation of block_count blocks, reported as construct_ms), python per-frame bookkeeping after the second sync. Frames 0-4 discarded (warm-up incl. CUDA lazy module load), stats over frames 5..1999.",
+ "mesh_method": "mesh_full = sync, vbg.extract_triangle_mesh(weight_threshold), sync; result device-resident (D2H reported separately as mesh_d2h_ms, PLY write excluded). cold = first call in the process (on CUDA includes lazy kernel-module load + first allocations); warm = 3 further calls (median etc.). Over ALL active blocks (VBG has no incremental/dirty-block mesh).",
+ "raycast_method": "ray_cast(frustum blocks of frame 1999, K, inv(c2w_1999), 1200, 680, ['depth','normal','color'], 6553.5, depth_min 0.1, depth_max row, weight_threshold 1 (t_reconstruction_system/ray_casting.py), trunc row, range_map_down_factor 8); 5 warm-up calls discarded, 50 timed, sync before/after each",
+ "device_memory_headline": "device_memory_headline_mb = max(nsys live peak during integrate loop, during mesh); ray_cast peak separate (nvblox has no ray_cast phase); never add host RSS to it",
+ "memory_method": "host: getrusage maxrss (timev.py) + /proc VmHWM sidecar; device (CUDA rows): nsys --cuda-memory-usage live allocation sum in the separate nsys run of the same config (primary), cudaMemGetInfo drop and MemAvailable delta secondary",
+ "gpu_proof": "every CUDA config has an nsys -t cuda,nvtx run: 12 kernel launches per integrated frame (24006 in 2000 'frame' NVTX ranges), ElementWiseKernel_ (integrate + unique), STDGPUInsertKernel, STDGPUFindKernel, CUB static_kernel; H2D 8.16 GB over 14223 memcpys for room0 2 cm (= 2000 x (1.63 MB depth + 2.45 MB colour) + small)",
+ "cpu_vs_cuda_check": "CPU and CUDA rows give identical block counts and triangle counts (room0 2 cm R: 667907 vs 667908) and accuracy within 0.02 cm -> GPU output checked against CPU",
+ "decode_note": "decode is excluded for both devices; decode is slower in the CUDA-build process (system python3.10 + numpy 1.21, ~75 ms/frame) than in the wheel venv (~32 ms); it is outside the timer",
+ "hygiene": "no compile / no other benchmark during any timed run (comm-based check heavy_procs.sh before each run; waited.txt only for one sizing run, caused by my own wait loop matching the old pgrep -f pattern; fixed). The clock_state.sh 'heavy_procs' field lists only shell wrappers/sleep loops (pgrep -f text matches), no compiler or benchmark process. Scoring and nsys parsing ran only after all timed runs.",
+ "scripts": [
+  "/mnt/data/kr-tsdf-spikes/results/baselines/scripts/o3d_aggregate.py",
+  "/mnt/data/kr-tsdf-spikes/results/baselines/scripts/o3d_batch_size.sh",
+  "/mnt/data/kr-tsdf-spikes/results/baselines/scripts/o3d_batch_time.sh",
+  "/mnt/data/kr-tsdf-spikes/results/baselines/scripts/o3d_nsys_parse.py",
+  "/mnt/data/kr-tsdf-spikes/results/baselines/scripts/o3d_probe.py",
+  "/mnt/data/kr-tsdf-spikes/results/baselines/scripts/o3d_run.sh",
+  "/mnt/data/kr-tsdf-spikes/results/baselines/scripts/o3d_score_all.sh",
+  "/mnt/data/kr-tsdf-spikes/results/baselines/scripts/o3d_side_checks.py",
+  "/mnt/data/kr-tsdf-spikes/results/baselines/scripts/o3d_sigs.py",
+  "/mnt/data/kr-tsdf-spikes/results/baselines/scripts/o3d_vbg_bench.py",
+  "/mnt/data/kr-tsdf-spikes/results/baselines/scripts/heavy_procs.sh"
+ ]
+}
