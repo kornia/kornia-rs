@@ -689,9 +689,11 @@ mod impl_f64 {
                 sin_theta: 0.0,
             };
         }
+        // Divide by `rho` first: the terms stay in [1, 2] and [-1, 1], so the
+        // `recip` below cannot overflow for subnormal inputs.
         let mut g = GivensF64 {
-            cos_theta: a1.abs() + rho,
-            sin_theta: a2,
+            cos_theta: a1.abs() / rho + 1.0,
+            sin_theta: a2 / rho,
         };
 
         if a1 < 0.0 {
@@ -828,6 +830,17 @@ mod impl_f64 {
     }
 
     /// SVD of a 3x3 matrix: `mat = U * S * V^T`.
+    ///
+    /// # Arguments
+    ///
+    /// * `mat` - The matrix to decompose.
+    ///
+    /// # Returns
+    ///
+    /// An [`SVD3Set`] with orthonormal `U`, a rotation `V` (determinant +1) and
+    /// `S` holding the singular values on its diagonal, non-negative and in
+    /// descending order. `S` is the R factor of a QR step, so its off-diagonal
+    /// entries are rounding-level rather than exactly zero.
     pub fn svd3(mat: &Mat3F64) -> SVD3Set {
         // `from_mat3x3` already forms the Gram matrix AᵀA from the columns of A.
         let mut s_mat = Symmetric3x3::from_mat3x3(mat);
@@ -1172,6 +1185,32 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_svd3_f64_subnormal_entries_stay_finite() {
+        // AᵀA underflows to 0 here, so V = I and the QR step sees the
+        // subnormal entries directly. Its Givens rotations must stay finite.
+        let diag = Mat3F64::from_diagonal(Vec3F64::new(1e-310, 0.0, 0.0));
+        let dense = Mat3F64::from_cols(
+            Vec3F64::new(1e-310, -2e-310, 3e-311),
+            Vec3F64::new(0.0, 4e-310, -1e-310),
+            Vec3F64::new(5e-311, 0.0, 2e-310),
+        );
+        for m in [diag, dense] {
+            let svd = svd3_f64(&m);
+            for mat in [svd.u(), svd.s(), svd.v()] {
+                for col in [mat.x_axis(), mat.y_axis(), mat.z_axis()] {
+                    assert!(
+                        col.x.is_finite() && col.y.is_finite() && col.z.is_finite(),
+                        "non-finite SVD of {m:?}"
+                    );
+                }
+            }
+        }
+        let svd = svd3_f64(&diag);
+        assert_eq!(svd.s().x_axis().x, 1e-310);
+        assert_eq!(*svd.u() * *svd.s() * svd.v().transpose(), diag);
     }
 
     #[test]

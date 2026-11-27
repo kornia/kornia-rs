@@ -681,9 +681,9 @@ mod tests {
             let err = rot_err_deg_at(&obj, &camera, &r_gt, depth, 50);
             // `rotation_error_rad` is `acos` of a trace, so a rotation off by 1e-16 reports
             // acos(1 - 2^-52) = 1.2e-6 deg, the smallest non-zero value it can return. The
-            // ordering bug this guards against is degrees, so 1e-4 still separates them.
+            // ordering bug this guards against is degrees; 1e-5 sits just above that floor.
             assert!(
-                err < 1e-4,
+                err < 1e-5,
                 "{name}: {err} deg at n_iters = 50 — the homography seed is not \
                  order/shape/scale independent"
             );
