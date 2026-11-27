@@ -57,7 +57,7 @@ cargo run -p sfm -- sample.mp4 out.ply \
 | `--geo-verify` | off | Verify matches with epipolar RANSAC after matching (rejects false matches). |
 | `--geo-threshold` | `3.0` | Epipolar RANSAC inlier threshold (pixels). |
 | `--geo-min-inliers` | `15` | Min inliers for a pair's fundamental matrix to be trusted. Values below 15 warn — at 7 the seven-point algorithm's minimal sample validates itself. |
-| `--cuda` | off | Use CUDA for SIFT extraction (requires an NVIDIA GPU). |
+| `--cuda` | off | Use CUDA for SIFT extraction (requires an NVIDIA GPU and a `--features cuda` build). |
 | `--sprt` | off | Enable Wald's SPRT for PnP registration (rejects bad candidate poses early). |
 | `--sprt-epsilon` | `0.5` | SPRT expected inlier ratio (capped at 0.3 until a consensus exists). |
 | `--sprt-delta` | `0.05` | SPRT Type-I error: probability of rejecting a good pose. |
@@ -66,7 +66,8 @@ cargo run -p sfm -- sample.mp4 out.ply \
 
 ### Recommended flags by capture type
 
-- **SIFT speed**: add `--cuda` to run SIFT on the GPU (needs the CUDA runtime
+- **SIFT speed**: add `--cuda` to run SIFT on the GPU (build with `--features
+  cuda`; needs the CUDA runtime
   on `LD_LIBRARY_PATH`). NVRTC kernels are JIT-compiled on the first frame.
 - **Noisy matches / poor ORB reconstruction**: add `--geo-verify`.
 - **Long videos**: raise `--frame-step` (fewer cameras to register).
@@ -107,7 +108,7 @@ Planned upgrades (each belongs in a core crate, not this example):
 
 `swiss_knife.mp4` — 628 frames, 1280x720 HEVC orbit. Intrinsics
 `--fx 895 --fy 895 --cx 640 --cy 360`, `--n-features 500`, `--frame-step 10`
-(63 frames) unless noted. CUDA rows use `--cuda` (device SIFT extraction *and*
+(63 frames) unless noted. CUDA rows use `--cuda` (build with `--features cuda`; device SIFT extraction *and*
 matching). Decode is clock-paced at ~24 s and is included in `Total`.
 
 | Config | Detector | Extract (s) | Match (s) | Geo (s) | Matches (raw→verified) | Tracks | Recon (s) | Points | Views | RMSE (px) | Total (s) |
@@ -147,7 +148,7 @@ library path):
 
 ```sh
 export LD_LIBRARY_PATH=<dir containing libnvrtc.so>
-cargo run -p sfm -- swiss_knife.mp4 out.ply \
+cargo run -p sfm --features cuda -- swiss_knife.mp4 out.ply \
     --fx 895 --fy 895 --cx 640 --cy 360 --n-features 500 --frame-step 10 \
     --detector sift --geo-verify --sprt --cuda
 ```

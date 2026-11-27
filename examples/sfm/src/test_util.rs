@@ -10,10 +10,13 @@ use kornia_calib::FeatureTrack;
 
 use crate::reconstruction::make_camera;
 
-/// Intrinsics used by the synthetic scene.
+/// Focal length along x used by the synthetic scene.
 pub const FX: f64 = 500.0;
+/// Focal length along y used by the synthetic scene.
 pub const FY: f64 = 500.0;
+/// Principal point x used by the synthetic scene.
 pub const CX: f64 = 320.0;
+/// Principal point y used by the synthetic scene.
 pub const CY: f64 = 240.0;
 /// Number of cameras in the synthetic scene.
 pub const N_FRAMES: usize = 3;

@@ -23,7 +23,7 @@ const CAMERA_TRANSFORM_RELATION: rerun::TransformRelation =
 /// `kornia_calib::reconstruct`) into `(translation, quaternion_wxyz)` for
 /// rerun's `Transform3D::from_translation_rotation`. The translation is the
 /// camera centre, passed through verbatim (the pose is already C2W).
-fn pose_to_rerun(pose: &Pose3d) -> ([f32; 3], [f32; 4]) {
+fn rerun_from_pose(pose: &Pose3d) -> ([f32; 3], [f32; 4]) {
     let t = [
         pose.translation.x as f32,
         pose.translation.y as f32,
@@ -121,7 +121,7 @@ pub fn view_world(
     let mut n_cameras = 0;
     for (i, view) in views.iter().enumerate() {
         let Some(pose) = view else { continue };
-        let (t, q) = pose_to_rerun(pose);
+        let (t, q) = rerun_from_pose(pose);
         let t = [
             t[0] * scale as f32,
             t[1] * scale as f32,
@@ -172,8 +172,8 @@ mod tests {
     use kornia_algebra::{Mat3F64, Vec3F64};
 
     #[test]
-    fn pose_to_rerun_identity_is_origin_and_identity_quat() {
-        let (t, q) = pose_to_rerun(&Pose3d::IDENTITY);
+    fn rerun_from_pose_identity_is_origin_and_identity_quat() {
+        let (t, q) = rerun_from_pose(&Pose3d::IDENTITY);
         assert_eq!(t, [0.0, 0.0, 0.0]);
         // wxyz identity = (1, 0, 0, 0)
         assert!((q[0] - 1.0).abs() < 1e-6);
@@ -181,7 +181,7 @@ mod tests {
     }
 
     #[test]
-    fn pose_to_rerun_passes_camera_to_world_through() {
+    fn rerun_from_pose_passes_camera_to_world_through() {
         // C2W pose with a 90° yaw and translation (-5,0,0) (the camera centre).
         // ParentFromChild expects camera→world, so translation/rotation pass
         // through verbatim.
@@ -191,7 +191,7 @@ mod tests {
             Vec3F64::new(1.0, 0.0, 0.0),
         );
         let pose = Pose3d::new(rot, Vec3F64::new(-5.0, 0.0, 0.0));
-        let (t, q) = pose_to_rerun(&pose);
+        let (t, q) = rerun_from_pose(&pose);
         assert!((t[0] + 5.0).abs() < 1e-4, "t0={}", t[0]);
         assert!(t[1].abs() < 1e-4 && t[2].abs() < 1e-4, "t={t:?}");
         let norm = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();

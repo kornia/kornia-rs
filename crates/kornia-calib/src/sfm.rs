@@ -2705,6 +2705,11 @@ mod tests {
     }
 
     /// `sprt: Some(..)` must be accepted and must not change which views register.
+    ///
+    /// Limitation: this cannot tell whether `config.sprt` is actually forwarded
+    /// to PnP. A regression that deleted the `sprt: config.sprt` wiring would
+    /// still pass. Proving forwarding needs an observable SPRT effect (a PnP
+    /// iteration/hypothesis counter in kornia-3d), tracked as a follow-up.
     #[test]
     fn sprt_config_is_accepted_and_keeps_registration() {
         let (cams, _, tracks) = converging_rig(500.0, 1.0);

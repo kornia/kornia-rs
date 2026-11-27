@@ -39,7 +39,7 @@ pub struct ReconstructionOverrides {
 }
 
 /// Build a pinhole camera from intrinsics, with zero distortion.
-pub fn make_camera(fx: f64, fy: f64, cx: f64, cy: f64) -> PinholeCamera {
+pub(crate) fn make_camera(fx: f64, fy: f64, cx: f64, cy: f64) -> PinholeCamera {
     PinholeCamera {
         fx,
         fy,

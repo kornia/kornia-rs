@@ -45,7 +45,7 @@ pub struct Vertex {
 ///   [`sample_observation_colors`]. Sampled before reconstruction so the source
 ///   frames can be dropped; each point then picks the colour of a *surviving*
 ///   observation (not necessarily the first raw one).
-pub fn build_vertices(
+pub(crate) fn build_vertices(
     reconstruction: &Reconstruction,
     observation_colors: &[Vec<(usize, [u8; 3])>],
 ) -> Vec<Vertex> {
@@ -160,7 +160,7 @@ fn sample_color(rgb_frames: &[Image<u8, 3>], cam_idx: usize, pixel: Vec2F64) -> 
 /// Sample every raw observation's colour from the source RGB frames, indexed by
 /// track. Computed before reconstruction so the RGB frames can be dropped; a
 /// point then looks up the colour for whichever of its observations survived.
-pub fn sample_observation_colors(
+pub(crate) fn sample_observation_colors(
     tracks: &[FeatureTrack],
     rgb_frames: &[Image<u8, 3>],
 ) -> Vec<Vec<(usize, [u8; 3])>> {

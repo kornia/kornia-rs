@@ -115,7 +115,8 @@ struct Args {
     #[argh(option, default = "15")]
     geo_min_inliers: usize,
 
-    /// use CUDA for SIFT extraction (requires an NVIDIA GPU)
+    /// use CUDA for SIFT extraction (requires an NVIDIA GPU and a build with
+    /// `--features cuda`)
     #[argh(switch)]
     cuda: bool,
 
@@ -181,6 +182,30 @@ fn validate_intrinsics(fx: f64, fy: f64, cx: f64, cy: f64) -> Result<(), String>
     Ok(())
 }
 
+/// Reject matcher parameters that argh accepts but that yield empty or broken
+/// matches: a non-positive or non-finite ratio, a non-positive or non-finite
+/// epipolar threshold, and a zero ORB feature budget (`0` means "unlimited"
+/// only for SIFT).
+fn validate_matcher_args(
+    ratio: f32,
+    geo_threshold: f64,
+    n_features: usize,
+    detector: features::DetectorKind,
+) -> Result<(), String> {
+    if !ratio.is_finite() || ratio <= 0.0 {
+        return Err(format!("--ratio must be finite and > 0, got {ratio}"));
+    }
+    if !geo_threshold.is_finite() || geo_threshold <= 0.0 {
+        return Err(format!(
+            "--geo-threshold must be finite and > 0, got {geo_threshold}"
+        ));
+    }
+    if n_features == 0 && detector == features::DetectorKind::Orb {
+        return Err("--n-features must be > 0 for ORB (0 means unlimited only for SIFT)".into());
+    }
+    Ok(())
+}
+
 /// Build and validate the SPRT config from CLI flags.
 ///
 /// Returns `None` when SPRT is disabled. An invalid config (epsilon/delta
@@ -218,6 +243,20 @@ fn main() -> Result<(), Box<dyn Error>> {
         .map_err(|e| -> Box<dyn Error> { e.into() })?;
     validate_intrinsics(args.fx, args.fy, args.cx, args.cy)
         .map_err(|e| -> Box<dyn Error> { e.into() })?;
+    validate_matcher_args(
+        args.ratio,
+        args.geo_threshold,
+        args.n_features,
+        args.detector,
+    )
+    .map_err(|e| -> Box<dyn Error> { e.into() })?;
+
+    #[cfg(not(feature = "cuda"))]
+    if args.cuda {
+        return Err(
+            "--cuda requires the `cuda` feature: run `cargo run -p sfm --features cuda`".into(),
+        );
+    }
 
     // Validate SPRT before the pipeline runs; an invalid config would otherwise
     // silently disable it.
@@ -282,9 +321,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
     // Gray frames are only needed for extraction; release them before matching.
     drop(gray_frames);
+    // The extractor, and with --cuda its device plan and scratch, is likewise
+    // only needed for extraction; free it before matching and bundle adjustment.
+    drop(extractor);
 
     // Device SIFT matcher (only when descriptors are CUDA-resident), sized to
     // the largest descriptor set so no pair can exceed its capacity.
+    #[cfg(feature = "cuda")]
     let cuda_matcher = if use_cuda {
         Some(features::CudaSiftMatcher::new(
             features::max_sift_descriptors(&all_features),
@@ -292,6 +335,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     } else {
         None
     };
+    #[cfg(not(feature = "cuda"))]
+    let cuda_matcher: Option<()> = None;
 
     // 3. Match frames in a sliding window (parallel via rayon).
     eprintln!("[3/6] matching frames (window={})", args.match_window);
@@ -369,6 +414,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // them before reconstruction so a long clip does not keep them resident
     // through bundle adjustment.
     drop(all_features);
+    #[cfg(feature = "cuda")]
     drop(cuda_matcher);
 
     // Sample every raw observation's colour now, then release the RGB frames
@@ -498,6 +544,36 @@ mod tests {
         assert!(
             validate_intrinsics(895.0, 895.0, 640.0, f64::NEG_INFINITY).is_err(),
             "--cy -inf"
+        );
+    }
+
+    #[test]
+    fn validate_matcher_args_rejects_invalid() {
+        use features::DetectorKind::{Orb, Sift};
+        assert!(validate_matcher_args(0.8, 3.0, 500, Orb).is_ok());
+        assert!(
+            validate_matcher_args(0.8, 3.0, 0, Sift).is_ok(),
+            "0 means unlimited for SIFT"
+        );
+        assert!(
+            validate_matcher_args(0.0, 3.0, 500, Orb).is_err(),
+            "--ratio 0"
+        );
+        assert!(
+            validate_matcher_args(f32::NAN, 3.0, 500, Orb).is_err(),
+            "--ratio NaN"
+        );
+        assert!(
+            validate_matcher_args(0.8, 0.0, 500, Orb).is_err(),
+            "--geo-threshold 0"
+        );
+        assert!(
+            validate_matcher_args(0.8, f64::NAN, 500, Orb).is_err(),
+            "--geo-threshold NaN"
+        );
+        assert!(
+            validate_matcher_args(0.8, 3.0, 0, Orb).is_err(),
+            "ORB with a zero budget"
         );
     }
 

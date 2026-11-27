@@ -13,7 +13,7 @@ use kornia_calib::TrackEdge;
 use kornia_imgproc::features::{match_descriptors, sift_match_descriptors};
 use rayon::prelude::*;
 
-use crate::features::{CudaSiftMatcher, FrameFeatures};
+use crate::features::{CudaMatcher, FrameFeatures};
 
 /// Safe floor for the epipolar-RANSAC inlier count used by
 /// [`verify_matches_geometrically`].
@@ -86,7 +86,7 @@ pub fn match_sequential_pairs(
 
     let mut edges = Vec::new();
     for i in 0..features.len() {
-        let end = (i + 1 + window).min(features.len());
+        let end = (i + 1).saturating_add(window).min(features.len());
         for j in (i + 1)..end {
             // CPU-only (no device matcher), so this cannot fail.
             let matches = match_pair(&features[i], &features[j], ratio, None)
@@ -99,7 +99,7 @@ pub fn match_sequential_pairs(
     edges
 }
 
-fn keypoint_to_uv(kp: [f32; 2]) -> Vec2F64 {
+fn uv_from_keypoint(kp: [f32; 2]) -> Vec2F64 {
     // keypoints are stored as [col, row]; TrackEdge expects (x, y) = (col, row).
     Vec2F64::new(kp[0] as f64, kp[1] as f64)
 }
@@ -115,19 +115,19 @@ fn track_edge(
     TrackEdge {
         cam_a: i,
         kpt_a: kpt_a as u32,
-        uv_a: keypoint_to_uv(features[i].keypoints[kpt_a]),
+        uv_a: uv_from_keypoint(features[i].keypoints[kpt_a]),
         cam_b: j,
         kpt_b: kpt_b as u32,
-        uv_b: keypoint_to_uv(features[j].keypoints[kpt_b]),
+        uv_b: uv_from_keypoint(features[j].keypoints[kpt_b]),
     }
 }
 
 /// Match every frame `i` against frames `i+1 ..= i+window` concurrently with
 /// rayon.
 ///
-/// The set of `(i, j)` pairs is identical to the sequential reference, so the
-/// resulting edges are the same set (in a different order). Edges are grouped
-/// per pair, so `build_tracks` still chains them identically.
+/// Rayon's indexed `collect` keeps the input order, so the resulting edges are
+/// identical to [`match_sequential_pairs`] in the same order (the README's
+/// byte-identical-PLY claim relies on it).
 ///
 /// # Arguments
 ///
@@ -138,8 +138,8 @@ fn track_edge(
 ///
 /// # Returns
 ///
-/// Every matched [`TrackEdge`] from all pairs; the set is identical to
-/// [`match_sequential_pairs`], in a different order.
+/// Every matched [`TrackEdge`] from all pairs, in the same order as
+/// [`match_sequential_pairs`].
 ///
 /// # Errors
 ///
@@ -149,7 +149,7 @@ pub fn match_pairs_parallel(
     features: &[FrameFeatures],
     window: usize,
     ratio: f32,
-    cuda: Option<&CudaSiftMatcher>,
+    cuda: CudaMatcher<'_>,
 ) -> Result<Vec<TrackEdge>, String> {
     if features.len() < 2 {
         return Ok(Vec::new());
@@ -158,7 +158,7 @@ pub fn match_pairs_parallel(
     // Enumerate the same (i, j) pairs the sequential version visits.
     let pairs: Vec<(usize, usize)> = (0..features.len())
         .flat_map(|i| {
-            let end = (i + 1 + window).min(features.len());
+            let end = (i + 1).saturating_add(window).min(features.len());
             (i + 1..end).map(move |j| (i, j))
         })
         .collect();
@@ -170,11 +170,11 @@ pub fn match_pairs_parallel(
     let per_pair: Result<Vec<Vec<TrackEdge>>, String> = pairs
         .par_iter()
         .map(|&(i, j)| {
+            let matches = match_pair(&features[i], &features[j], ratio, cuda)?;
             let n = done.fetch_add(1, Ordering::Relaxed) + 1;
             if n.is_multiple_of(100) || n == total_pairs {
                 eprintln!("  matching: {n}/{total_pairs} pairs");
             }
-            let matches = match_pair(&features[i], &features[j], ratio, cuda)?;
             Ok(matches
                 .into_iter()
                 .map(|(kpt_a, kpt_b)| track_edge(features, i, j, kpt_a, kpt_b))
@@ -288,10 +288,10 @@ pub fn append_wide_baseline_edges(
     window: usize,
     stride: usize,
     ratio: f32,
-    cuda: Option<&CudaSiftMatcher>,
+    cuda: CudaMatcher<'_>,
     edges: &mut Vec<TrackEdge>,
 ) -> Result<usize, String> {
-    if stride == 0 || features.len() <= window + 1 {
+    if stride == 0 || features.len() <= window.saturating_add(1) {
         return Ok(0);
     }
 
@@ -299,7 +299,7 @@ pub fn append_wide_baseline_edges(
     let mut pairs = Vec::new();
     for i in 0..features.len() {
         // First j > i + window with (j - i) % stride == 0.
-        let start = i + window + 1;
+        let start = i.saturating_add(window).saturating_add(1);
         let first = start + ((stride - (start - i) % stride) % stride);
         for j in (first..features.len()).step_by(stride) {
             pairs.push((i, j));
@@ -339,7 +339,7 @@ fn match_pair(
     a: &FrameFeatures,
     b: &FrameFeatures,
     ratio: f32,
-    cuda: Option<&CudaSiftMatcher>,
+    cuda: CudaMatcher<'_>,
 ) -> Result<Vec<(usize, usize)>, String> {
     // ORB path: binary descriptors, Hamming distance, mutual NN + Lowe's ratio.
     if let (Some(d1), Some(d2)) = (&a.descriptors_orb, &b.descriptors_orb) {
@@ -350,11 +350,14 @@ fn match_pair(
     // spare rows (capacity/padding), and the matcher could then return an index
     // >= keypoints.len(), which panics when we look up features[i].keypoints.
     // The host path uses the same count.
+    #[cfg(feature = "cuda")]
     if let (Some(c1), Some(c2), Some(m)) =
         (&a.descriptors_sift_cuda, &b.descriptors_sift_cuda, cuda)
     {
         return m.match_pair(c1, a.n_keypoints(), c2, b.n_keypoints(), ratio);
     }
+    #[cfg(not(feature = "cuda"))]
+    let _ = cuda;
     // SIFT on host: L2 matching with ratio test + mutual NN.
     if let (Some(d1), Some(d2)) = (&a.descriptors_sift, &b.descriptors_sift) {
         return Ok(
@@ -387,6 +390,7 @@ mod tests {
             descriptors_orb: Some(descriptors),
             orientations_orb: Some(vec![0.0; ids.len()]),
             descriptors_sift: None,
+            #[cfg(feature = "cuda")]
             descriptors_sift_cuda: None,
         }
     }
@@ -402,6 +406,7 @@ mod tests {
             descriptors_orb: None,
             orientations_orb: None,
             descriptors_sift: Some(descriptors),
+            #[cfg(feature = "cuda")]
             descriptors_sift_cuda: None,
         }
     }
@@ -465,6 +470,7 @@ mod tests {
             descriptors_orb: Some(Vec::new()),
             orientations_orb: Some(Vec::new()),
             descriptors_sift: None,
+            #[cfg(feature = "cuda")]
             descriptors_sift_cuda: None,
         };
         let edges = match_sequential_pairs(&[empty.clone(), empty], 1, 0.8);
@@ -562,6 +568,26 @@ mod tests {
             });
         }
         assert!(verify_matches_geometrically(&edges, 3.0, 8).is_empty());
+    }
+
+    #[test]
+    fn parallel_matching_preserves_sequential_order() {
+        // 4 frames sharing 2 descriptors, so every window pair matches.
+        let f = || orb_features(keypoints(2), &[1, 2]);
+        let frames: Vec<FrameFeatures> = (0..4).map(|_| f()).collect();
+        let ids = |edges: &[TrackEdge]| {
+            edges
+                .iter()
+                .map(|e| (e.cam_a, e.kpt_a, e.cam_b, e.kpt_b))
+                .collect::<Vec<_>>()
+        };
+        let sequential = match_sequential_pairs(&frames, 2, 0.8);
+        let parallel = match_pairs_parallel(&frames, 2, 0.8, None).unwrap();
+        assert_eq!(
+            ids(&parallel),
+            ids(&sequential),
+            "parallel matching must keep the sequential order"
+        );
     }
 
     #[test]

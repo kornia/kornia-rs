@@ -8,10 +8,14 @@
 use std::error::Error;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+#[cfg(feature = "cuda")]
+use std::sync::Arc;
+use std::sync::Mutex;
 
+#[cfg(feature = "cuda")]
 use cudarc::driver::{CudaContext, CudaSlice};
 use kornia_image::Image;
+#[cfg(feature = "cuda")]
 use kornia_imgproc::cuda::sift::{SiftCuda, SiftCudaConfig, SiftMatcher};
 use kornia_imgproc::features::{
     sift_detect_and_compute, FirstOctave, OrbDetector, SiftConfig, SiftWorkspace,
@@ -68,12 +72,13 @@ pub struct FrameFeatures {
     /// SIFT descriptors resident on the CUDA device (row-major). Populated by
     /// the CUDA extractor so matching can run on device without a host
     /// round-trip; `None` for the CPU path.
+    #[cfg(feature = "cuda")]
     pub descriptors_sift_cuda: Option<CudaSlice<f32>>,
 }
 
 impl FrameFeatures {
     /// Number of keypoints detected in the frame.
-    pub fn n_keypoints(&self) -> usize {
+    pub(crate) fn n_keypoints(&self) -> usize {
         self.keypoints.len()
     }
 }
@@ -108,6 +113,7 @@ impl FeatureExtractor for OrbExtractor {
             descriptors_orb: Some(features.descriptors),
             orientations_orb: Some(features.orientations),
             descriptors_sift: None,
+            #[cfg(feature = "cuda")]
             descriptors_sift_cuda: None,
         })
     }
@@ -177,6 +183,7 @@ impl FeatureExtractor for SiftExtractor {
             descriptors_orb: None,
             orientations_orb: None,
             descriptors_sift: Some(feats.descriptors),
+            #[cfg(feature = "cuda")]
             descriptors_sift_cuda: None,
         })
     }
@@ -188,6 +195,7 @@ impl FeatureExtractor for SiftExtractor {
 /// changes (extraction is sequential, so a `Mutex` keeps it `Send + Sync`
 /// without contention). NVRTC kernels are JIT-compiled on the first call and
 /// cached by cudarc, so warm frames are fast.
+#[cfg(feature = "cuda")]
 pub struct SiftCudaExtractor {
     /// Maximum number of keypoints to retain per frame (`0` = unlimited).
     pub n_features: usize,
@@ -196,6 +204,7 @@ pub struct SiftCudaExtractor {
     plan: Mutex<Option<(usize, usize, SiftCuda)>>,
 }
 
+#[cfg(feature = "cuda")]
 impl SiftCudaExtractor {
     /// Create the extractor and a CUDA context on device 0.
     ///
@@ -213,6 +222,7 @@ impl SiftCudaExtractor {
     }
 }
 
+#[cfg(feature = "cuda")]
 impl FeatureExtractor for SiftCudaExtractor {
     fn extract(&self, gray: &Image<u8, 1>) -> Result<FrameFeatures, Box<dyn Error>> {
         let (w, h) = (gray.width(), gray.height());
@@ -266,11 +276,13 @@ impl FeatureExtractor for SiftCudaExtractor {
 /// `SiftMatcher` owns device scratch, so reuse it across frame pairs rather
 /// than allocating per pair. Matching is sequential (CUDA extraction is too), so
 /// the `Mutex` is uncontended.
+#[cfg(feature = "cuda")]
 pub struct CudaSiftMatcher {
     ctx: Arc<CudaContext>,
     matcher: Mutex<SiftMatcher>,
 }
 
+#[cfg(feature = "cuda")]
 impl CudaSiftMatcher {
     /// Build a matcher sized for up to `cap` descriptors per side, on device 0.
     ///
@@ -327,15 +339,29 @@ impl CudaSiftMatcher {
     }
 }
 
+/// The device SIFT matcher argument shared by the matching helpers.
+///
+/// With the `cuda` feature this is `Option<&CudaSiftMatcher>`; without it the
+/// helpers keep the same signature with an `Option<&()>` that is always `None`.
+#[cfg(feature = "cuda")]
+pub(crate) type CudaMatcher<'a> = Option<&'a CudaSiftMatcher>;
+#[cfg(not(feature = "cuda"))]
+pub(crate) type CudaMatcher<'a> = Option<&'a ()>;
+
 /// Largest number of SIFT descriptors on any frame (for sizing a matcher).
-pub fn max_sift_descriptors(features: &[FrameFeatures]) -> usize {
+#[cfg(feature = "cuda")]
+pub(crate) fn max_sift_descriptors(features: &[FrameFeatures]) -> usize {
     features
         .iter()
         .map(|f| {
-            f.descriptors_sift_cuda
+            #[cfg(feature = "cuda")]
+            let device = f
+                .descriptors_sift_cuda
                 .as_ref()
-                .map_or(0, |d| d.len() / 128)
-                .max(f.descriptors_sift.as_ref().map_or(0, |d| d.len() / 128))
+                .map_or(0, |d| d.len() / 128);
+            #[cfg(not(feature = "cuda"))]
+            let device = 0;
+            device.max(f.descriptors_sift.as_ref().map_or(0, |d| d.len() / 128))
         })
         .max()
         .unwrap_or(0)
@@ -348,7 +374,7 @@ pub fn max_sift_descriptors(features: &[FrameFeatures]) -> usize {
 /// # Errors
 ///
 /// Returns an error if `use_cuda` is set but a CUDA context cannot be created.
-pub fn make_extractor(
+pub(crate) fn make_extractor(
     kind: DetectorKind,
     n_features: usize,
     use_cuda: bool,
@@ -356,11 +382,13 @@ pub fn make_extractor(
     match kind {
         DetectorKind::Orb => Ok(Box::new(OrbExtractor { n_features })),
         DetectorKind::Sift => {
+            #[cfg(feature = "cuda")]
             if use_cuda {
-                Ok(Box::new(SiftCudaExtractor::new(n_features)?))
-            } else {
-                Ok(Box::new(SiftExtractor::new(n_features)))
+                return Ok(Box::new(SiftCudaExtractor::new(n_features)?));
             }
+            #[cfg(not(feature = "cuda"))]
+            let _ = use_cuda;
+            Ok(Box::new(SiftExtractor::new(n_features)))
         }
     }
 }
@@ -415,9 +443,10 @@ pub fn extract_features_parallel(
     let result: Result<Vec<_>, String> = frames
         .par_iter()
         .map(|frame| {
+            let extracted = extractor.extract(frame).map_err(|e| e.to_string());
             let n = done.fetch_add(1, Ordering::Relaxed) + 1;
             report(n);
-            extractor.extract(frame).map_err(|e| e.to_string())
+            extracted
         })
         .collect();
     result
