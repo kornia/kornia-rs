@@ -169,6 +169,72 @@ impl SO3F32 {
         }
     }
 
+    /// Return the rotation angle in radians.
+    ///
+    /// Computes the shortest rotation angle corresponding to this rotation element.
+    /// The returned angle is in radians and belongs to `[0, π]` for finite, non-zero quaternions.
+    /// Zero or non-finite quaternions return `NaN`.
+    ///
+    /// For any finite, non-zero quaternion, the calculated angle is invariant under common non-zero
+    /// rescaling, provided the scaled quaternion remains finite and non-zero. Components are
+    /// scaled by their maximum magnitude and the vector norm is computed via `hypot`, avoiding
+    /// intermediate overflow or underflow even at extreme or mixed magnitudes.
+    ///
+    /// Uses the numerically stable quaternion-based formula:
+    /// `2.0 * atan2(|v|, |w|)`, where `v` is the quaternion's vector part and `w` is its scalar part.
+    /// This formulation naturally accounts for quaternion double-cover (`q` and `-q`).
+    /// When comparing against the identity rotation, this directly matches the geodesic
+    /// distance formula implemented in Eigen's [`QuaternionBase::angularDistance()`](https://gitlab.com/libeigen/eigen/-/blob/master/Eigen/src/Geometry/Quaternion.h)
+    /// (`2 * atan2(d.vec().norm(), abs(d.w()))`).
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The rotation represented by a finite, non-zero quaternion.
+    ///
+    /// # Returns
+    ///
+    /// The shortest rotation angle in radians, in the range `[0, π]`, or `NaN` if the quaternion is zero or non-finite.
+    ///
+    /// # Errors
+    ///
+    /// This method does not return an error.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use kornia_algebra::{SO3F32, Vec3AF32};
+    ///
+    /// let rot = SO3F32::IDENTITY;
+    /// assert_eq!(rot.angle(), 0.0);
+    ///
+    /// let rot_90 = SO3F32::exp(Vec3AF32::new(std::f32::consts::FRAC_PI_2, 0.0, 0.0));
+    /// assert!((rot_90.angle() - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+    /// ```
+    #[inline]
+    pub fn angle(&self) -> f32 {
+        if !self.q.is_finite() {
+            return f32::NAN;
+        }
+
+        let ax = self.q.x.abs();
+        let ay = self.q.y.abs();
+        let az = self.q.z.abs();
+        let aw = self.q.w.abs();
+        let m = ax.max(ay).max(az).max(aw);
+
+        if m == 0.0 {
+            return f32::NAN;
+        }
+
+        let xs = self.q.x / m;
+        let ys = self.q.y / m;
+        let zs = self.q.z / m;
+        let ws = self.q.w / m;
+
+        let v_norm = xs.hypot(ys).hypot(zs);
+        2.0 * v_norm.atan2(ws.abs())
+    }
+
     pub fn exp(v: Vec3AF32) -> Self {
         let theta_sq = v.dot(v);
         let theta = theta_sq.sqrt();
@@ -483,6 +549,72 @@ impl SO3F64 {
         Self {
             q: self.q.inverse(),
         }
+    }
+
+    /// Return the rotation angle in radians.
+    ///
+    /// Computes the shortest rotation angle corresponding to this rotation element.
+    /// The returned angle is in radians and belongs to `[0, π]` for finite, non-zero quaternions.
+    /// Zero or non-finite quaternions return `NaN`.
+    ///
+    /// For any finite, non-zero quaternion, the calculated angle is invariant under common non-zero
+    /// rescaling, provided the scaled quaternion remains finite and non-zero. Components are
+    /// scaled by their maximum magnitude and the vector norm is computed via `hypot`, avoiding
+    /// intermediate overflow or underflow even at extreme or mixed magnitudes.
+    ///
+    /// Uses the numerically stable quaternion-based formula:
+    /// `2.0 * atan2(|v|, |w|)`, where `v` is the quaternion's vector part and `w` is its scalar part.
+    /// This formulation naturally accounts for quaternion double-cover (`q` and `-q`).
+    /// When comparing against the identity rotation, this directly matches the geodesic
+    /// distance formula implemented in Eigen's [`QuaternionBase::angularDistance()`](https://gitlab.com/libeigen/eigen/-/blob/master/Eigen/src/Geometry/Quaternion.h)
+    /// (`2 * atan2(d.vec().norm(), abs(d.w()))`).
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The rotation represented by a finite, non-zero quaternion.
+    ///
+    /// # Returns
+    ///
+    /// The shortest rotation angle in radians, in the range `[0, π]`, or `NaN` if the quaternion is zero or non-finite.
+    ///
+    /// # Errors
+    ///
+    /// This method does not return an error.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use kornia_algebra::{SO3F64, Vec3F64};
+    ///
+    /// let rot = SO3F64::IDENTITY;
+    /// assert_eq!(rot.angle(), 0.0);
+    ///
+    /// let rot_90 = SO3F64::exp(Vec3F64::new(std::f64::consts::FRAC_PI_2, 0.0, 0.0));
+    /// assert!((rot_90.angle() - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+    /// ```
+    #[inline]
+    pub fn angle(&self) -> f64 {
+        if !self.q.is_finite() {
+            return f64::NAN;
+        }
+
+        let ax = self.q.x.abs();
+        let ay = self.q.y.abs();
+        let az = self.q.z.abs();
+        let aw = self.q.w.abs();
+        let m = ax.max(ay).max(az).max(aw);
+
+        if m == 0.0 {
+            return f64::NAN;
+        }
+
+        let xs = self.q.x / m;
+        let ys = self.q.y / m;
+        let zs = self.q.z / m;
+        let ws = self.q.w / m;
+
+        let v_norm = xs.hypot(ys).hypot(zs);
+        2.0 * v_norm.atan2(ws.abs())
     }
 
     /// Exponential map so(3) → SO(3): axis-angle vector → rotation.
@@ -1177,6 +1309,136 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn angle_identity_returns_zero() {
+        let rot = SO3F32::IDENTITY;
+        assert_eq!(rot.angle(), 0.0);
+    }
+
+    #[test]
+    fn angle_general_rotation() {
+        let angle_expected: f32 = 1.2345;
+        let axis = Vec3AF32::new(1.0, -2.0, 3.0).normalize();
+        let rot = SO3F32::exp(axis * angle_expected);
+        assert!((rot.angle() - angle_expected).abs() < 1e-6);
+    }
+
+    #[test]
+    fn angle_near_zero_rotation() {
+        let angle_expected: f32 = 1e-6;
+        let axis = Vec3AF32::new(0.0, 1.0, 0.0);
+        let rot = SO3F32::exp(axis * angle_expected);
+        assert!((rot.angle() - angle_expected).abs() < 1e-7);
+    }
+
+    #[test]
+    fn angle_near_pi_rotation() {
+        let angle_expected: f32 = std::f32::consts::PI - 1e-4;
+        let axis = Vec3AF32::new(0.0, 0.0, 1.0);
+        let rot = SO3F32::exp(axis * angle_expected);
+        assert!((rot.angle() - angle_expected).abs() < 1e-5);
+    }
+
+    #[test]
+    fn angle_quaternion_sign_invariance() {
+        let axis = Vec3AF32::new(1.0, 2.0, -1.0).normalize();
+        let rot = SO3F32::exp(axis * 0.75);
+        let rot_neg = SO3F32 {
+            q: QuatF32::from_xyzw(-rot.q.x, -rot.q.y, -rot.q.z, -rot.q.w),
+        };
+        assert!((rot.angle() - 0.75).abs() < 1e-6);
+        assert_eq!(rot.angle(), rot_neg.angle());
+    }
+
+    #[test]
+    fn angle_scale_invariance() {
+        let axis = Vec3AF32::new(1.0, 2.0, -1.0).normalize();
+        let rot_unit = SO3F32::exp(axis * 0.75);
+        for scale in [0.1, 3.5, 1e15, 1e-25, -1.0, -2.5, -1e15, -1e-25] {
+            let rot_scaled = SO3F32 {
+                q: QuatF32::from_xyzw(
+                    rot_unit.q.x * scale,
+                    rot_unit.q.y * scale,
+                    rot_unit.q.z * scale,
+                    rot_unit.q.w * scale,
+                ),
+            };
+            assert!(
+                (rot_scaled.angle() - rot_unit.angle()).abs() < 1e-6,
+                "failed for scale {scale}"
+            );
+            assert!(
+                (rot_scaled.angle() - 0.75).abs() < 1e-6,
+                "failed for scale {scale}"
+            );
+        }
+    }
+
+    #[test]
+    fn angle_extreme_magnitudes() {
+        // Very large quaternion components (would overflow naive norm calculation in f32)
+        let rot_large = SO3F32 {
+            q: QuatF32::from_xyzw(1e20, 0.0, 0.0, 1e20),
+        };
+        assert!((rot_large.angle() - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+
+        // Very small non-zero quaternion components (would underflow naive norm calculation in f32)
+        let rot_small = SO3F32 {
+            q: QuatF32::from_xyzw(1e-30, 0.0, 0.0, 1e-30),
+        };
+        assert!((rot_small.angle() - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+
+        // Subnormal components
+        let rot_subnormal = SO3F32 {
+            q: QuatF32::from_xyzw(1e-40, 0.0, 0.0, 1e-40),
+        };
+        assert!((rot_subnormal.angle() - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn angle_mixed_magnitudes() {
+        // When vector components are tiny compared to the scalar component, squaring them
+        // naively in f32 would underflow to zero (< 1e-38). Using hypot preserves the norm.
+        let rot_tiny_x = SO3F32 {
+            q: QuatF32::from_xyzw(1e-30, 0.0, 0.0, 1.0),
+        };
+        let expected_tiny_x: f32 = 2e-30;
+        assert!(
+            ((rot_tiny_x.angle() - expected_tiny_x) / expected_tiny_x).abs() < 1e-6,
+            "failed for single tiny component"
+        );
+
+        let rot_tiny_xyz = SO3F32 {
+            q: QuatF32::from_xyzw(1e-30, 2e-30, -2e-30, 1.0),
+        };
+        let expected_tiny_xyz: f32 = 6e-30;
+        assert!(
+            ((rot_tiny_xyz.angle() - expected_tiny_xyz) / expected_tiny_xyz).abs() < 1e-6,
+            "failed for multiple tiny components"
+        );
+    }
+
+    #[test]
+    fn angle_non_finite_quaternion_returns_nan() {
+        let rot_inf = SO3F32 {
+            q: QuatF32::from_xyzw(f32::INFINITY, 0.0, 0.0, 1.0),
+        };
+        assert!(rot_inf.angle().is_nan());
+
+        let rot_nan = SO3F32 {
+            q: QuatF32::from_xyzw(f32::NAN, 0.0, 0.0, 1.0),
+        };
+        assert!(rot_nan.angle().is_nan());
+    }
+
+    #[test]
+    fn angle_zero_quaternion_returns_nan() {
+        let rot_zero = SO3F32 {
+            q: QuatF32::from_xyzw(0.0, 0.0, 0.0, 0.0),
+        };
+        assert!(rot_zero.angle().is_nan());
+    }
 }
 
 #[cfg(test)]
@@ -1300,5 +1562,152 @@ mod tests_f64 {
         let r = SO3F64::exp(Vec3F64::new(0.4, -0.1, 0.8));
         let r2 = SO3F64::from_matrix(&r.matrix());
         assert_mat_eq(&r.matrix(), &r2.matrix(), 1e-12);
+    }
+
+    #[test]
+    fn angle_identity_returns_zero() {
+        let rot = SO3F64::IDENTITY;
+        assert_eq!(rot.angle(), 0.0);
+    }
+
+    #[test]
+    fn angle_general_rotation() {
+        let angle_expected = 1.2345;
+        let axis = Vec3F64::new(1.0, -2.0, 3.0).normalize();
+        let rot = SO3F64::exp(axis * angle_expected);
+        assert!((rot.angle() - angle_expected).abs() < 1e-12);
+    }
+
+    #[test]
+    fn angle_near_zero_rotation() {
+        let angle_expected = 1e-9;
+        let axis = Vec3F64::new(0.0, 1.0, 0.0);
+        let rot = SO3F64::exp(axis * angle_expected);
+        assert!((rot.angle() - angle_expected).abs() < 1e-15);
+    }
+
+    #[test]
+    fn angle_near_pi_rotation() {
+        let angle_expected = std::f64::consts::PI - 1e-9;
+        let axis = Vec3F64::new(0.0, 0.0, 1.0);
+        let rot = SO3F64::exp(axis * angle_expected);
+        assert!((rot.angle() - angle_expected).abs() < 1e-12);
+    }
+
+    #[test]
+    fn angle_quaternion_sign_invariance() {
+        let axis = Vec3F64::new(1.0, 2.0, -1.0).normalize();
+        let rot = SO3F64::exp(axis * 0.75);
+        let rot_neg = SO3F64 {
+            q: QuatF64::from_xyzw(-rot.q.x, -rot.q.y, -rot.q.z, -rot.q.w),
+        };
+        assert!((rot.angle() - 0.75).abs() < 1e-12);
+        assert_eq!(rot.angle(), rot_neg.angle());
+    }
+
+    #[test]
+    fn angle_known_quaternion_returns_pi_over_two() {
+        // Independent reference test: pins a 90-degree (pi/2) rotation around the Z axis.
+        // A unit quaternion for angle theta about axis u has (u * sin(theta/2), cos(theta/2)).
+        // For theta = pi/2 around Z (0, 0, 1), q = (0, 0, sin(pi/4), cos(pi/4)) = (0, 0, 1/sqrt(2), 1/sqrt(2)).
+        // Directly constructed via QuatF64::from_xyzw rather than generated via SO3F64::exp.
+        let half_sqrt_two = std::f64::consts::FRAC_1_SQRT_2;
+
+        let rot = SO3F64 {
+            q: QuatF64::from_xyzw(0.0, 0.0, half_sqrt_two, half_sqrt_two),
+        };
+
+        // For the identity comparison, Eigen's formula gives:
+        // 2 * atan2(|d.vec()|, |d.w|) = 2 * atan2(1/sqrt(2), 1/sqrt(2)) = pi/2.
+        assert!((rot.angle() - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+    }
+
+    #[test]
+    fn angle_scale_invariance() {
+        let axis = Vec3F64::new(1.0, 2.0, -1.0).normalize();
+        let rot_unit = SO3F64::exp(axis * 0.75);
+        for scale in [0.1, 3.5, 1e150, 1e-150, -1.0, -3.5, -1e150, -1e-150] {
+            let rot_scaled = SO3F64 {
+                q: QuatF64::from_xyzw(
+                    rot_unit.q.x * scale,
+                    rot_unit.q.y * scale,
+                    rot_unit.q.z * scale,
+                    rot_unit.q.w * scale,
+                ),
+            };
+            assert!(
+                (rot_scaled.angle() - rot_unit.angle()).abs() < 1e-12,
+                "failed for scale {scale}"
+            );
+            assert!(
+                (rot_scaled.angle() - 0.75).abs() < 1e-12,
+                "failed for scale {scale}"
+            );
+        }
+    }
+
+    #[test]
+    fn angle_extreme_magnitudes() {
+        // Very large quaternion components (would overflow naive norm calculation)
+        let rot_large = SO3F64 {
+            q: QuatF64::from_xyzw(1e200, 0.0, 0.0, 1e200),
+        };
+        assert!((rot_large.angle() - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+
+        // Very small non-zero quaternion components (would underflow naive norm calculation)
+        let rot_small = SO3F64 {
+            q: QuatF64::from_xyzw(1e-200, 0.0, 0.0, 1e-200),
+        };
+        assert!((rot_small.angle() - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+
+        // Subnormal components
+        let rot_subnormal = SO3F64 {
+            q: QuatF64::from_xyzw(1e-315, 0.0, 0.0, 1e-315),
+        };
+        assert!((rot_subnormal.angle() - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+    }
+
+    #[test]
+    fn angle_mixed_magnitudes() {
+        // When vector components are tiny compared to the scalar component, squaring them
+        // naively in f64 would underflow to zero (< 1e-308). Using hypot preserves the norm.
+        let rot_tiny_x = SO3F64 {
+            q: QuatF64::from_xyzw(1e-200, 0.0, 0.0, 1.0),
+        };
+        let expected_tiny_x = 2e-200;
+        assert!(
+            ((rot_tiny_x.angle() - expected_tiny_x) / expected_tiny_x).abs() < 1e-12,
+            "failed for single tiny component"
+        );
+
+        let rot_tiny_xyz = SO3F64 {
+            q: QuatF64::from_xyzw(1e-200, 2e-200, -2e-200, 1.0),
+        };
+        let expected_tiny_xyz = 6e-200;
+        assert!(
+            ((rot_tiny_xyz.angle() - expected_tiny_xyz) / expected_tiny_xyz).abs() < 1e-12,
+            "failed for multiple tiny components"
+        );
+    }
+
+    #[test]
+    fn angle_non_finite_quaternion_returns_nan() {
+        let rot_inf = SO3F64 {
+            q: QuatF64::from_xyzw(f64::INFINITY, 0.0, 0.0, 1.0),
+        };
+        assert!(rot_inf.angle().is_nan());
+
+        let rot_nan = SO3F64 {
+            q: QuatF64::from_xyzw(f64::NAN, 0.0, 0.0, 1.0),
+        };
+        assert!(rot_nan.angle().is_nan());
+    }
+
+    #[test]
+    fn angle_zero_quaternion_returns_nan() {
+        let rot_zero = SO3F64 {
+            q: QuatF64::from_xyzw(0.0, 0.0, 0.0, 0.0),
+        };
+        assert!(rot_zero.angle().is_nan());
     }
 }
