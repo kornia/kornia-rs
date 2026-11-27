@@ -252,24 +252,14 @@ mod tests {
 
     /// Encodes one solid-colour frame per `colours` entry into an H.264 MP4.
     ///
-    /// Returns `Ok(None)` when `x264enc` is not installed (the caller skips the
-    /// round-trip test), `Ok(Some(()))` once the file is closed, and `Err` for
-    /// any other writer failure, so encoding problems cannot silently skip the
-    /// test.
+    /// Requires `x264enc` (gst-plugins-ugly), which the pixi CI environment does
+    /// not install; the two tests that call it are `#[ignore]`d with that reason.
     fn write_solid_mp4(
         path: &Path,
         colours: &[(u8, u8, u8)],
-    ) -> Result<Option<()>, Box<dyn std::error::Error>> {
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let mut writer =
-            match VideoWriter::new(path, VideoCodec::H264, ImageFormat::Rgb8, 30, TEST_SIZE) {
-                Ok(writer) => writer,
-                // The only expected skip: the encoder plugin is not installed.
-                Err(e) if e.to_string().contains("x264enc") => {
-                    eprintln!("skipping video round-trip test: {e}");
-                    return Ok(None);
-                }
-                Err(e) => return Err(e.into()),
-            };
+            VideoWriter::new(path, VideoCodec::H264, ImageFormat::Rgb8, 30, TEST_SIZE)?;
         writer.start()?;
         for &(r, g, b) in colours {
             let bytes: Vec<u8> = std::iter::repeat_n([r, g, b], TEST_SIZE.width * TEST_SIZE.height)
@@ -279,7 +269,7 @@ mod tests {
             writer.write(&frame)?;
         }
         writer.close()?;
-        Ok(Some(()))
+        Ok(())
     }
 
     /// A pipeline that cannot decode must surface an error, not spin forever.
@@ -301,6 +291,7 @@ mod tests {
 
     /// End-of-stream must deliver every decoded frame, with no truncation.
     #[test]
+    #[ignore = "needs x264enc (gst-plugins-ugly); the pixi CI env does not install it"]
     fn read_frames_reads_every_frame_and_stops_at_eos() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("frames.mp4");
@@ -309,9 +300,7 @@ mod tests {
         let colours: Vec<(u8, u8, u8)> = (0..7)
             .map(|i| (i * 20 + 10, i * 20 + 26, i * 20 + 42))
             .collect();
-        if write_solid_mp4(&path, &colours).unwrap().is_none() {
-            return;
-        }
+        write_solid_mp4(&path, &colours).expect("x264enc (gst-plugins-ugly) must be installed");
 
         let (rgb, gray) = finishes_within(Duration::from_secs(30), move || {
             read_frames(&path, 1).map_err(|e| e.to_string())
@@ -358,15 +347,14 @@ mod tests {
 
     /// `frame_step` keeps exactly the indexed frames, in order.
     #[test]
+    #[ignore = "needs x264enc (gst-plugins-ugly); the pixi CI env does not install it"]
     fn read_frames_subsamples_with_frame_step() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("subsample.mp4");
         let colours: Vec<(u8, u8, u8)> = (0..6)
             .map(|i| (i * 20 + 10, i * 20 + 26, i * 20 + 42))
             .collect();
-        if write_solid_mp4(&path, &colours).unwrap().is_none() {
-            return;
-        }
+        write_solid_mp4(&path, &colours).expect("x264enc (gst-plugins-ugly) must be installed");
 
         let (rgb, gray) = finishes_within(Duration::from_secs(30), move || {
             read_frames(&path, 3).map_err(|e| e.to_string())
