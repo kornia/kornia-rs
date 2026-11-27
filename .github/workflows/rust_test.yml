@@ -72,8 +72,10 @@ jobs:
 
       - name: Test examples
         # Examples are workspace members but not in `default-members`, so the
-        # workspace test command above does not run their tests.
-        if: matrix.command == 'rust-test'
+        # workspace test command above does not run their tests. x86_64 debug
+        # only: the aarch64 leg would build the example's rerun tree cold
+        # inside the job's 20-minute budget.
+        if: matrix.command == 'rust-test' && matrix.runner == 'ubuntu-24.04'
         run: pixi run cargo test -p sfm --bin sfm
 
       - name: Show sccache stats

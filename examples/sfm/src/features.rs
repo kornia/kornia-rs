@@ -342,13 +342,10 @@ pub(crate) fn max_sift_descriptors(features: &[FrameFeatures]) -> usize {
     features
         .iter()
         .map(|f| {
-            #[cfg(feature = "cuda")]
             let device = f
                 .descriptors_sift_cuda
                 .as_ref()
                 .map_or(0, |d| d.len() / 128);
-            #[cfg(not(feature = "cuda"))]
-            let device = 0;
             device.max(f.descriptors_sift.as_ref().map_or(0, |d| d.len() / 128))
         })
         .max()
