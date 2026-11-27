@@ -50,6 +50,10 @@ fn gb_per_sec(npix_dst: usize, ms_per_iter: f64) -> f64 {
 // Entry point
 // --------------------------------------------------------------------------
 
+/// Benchmark GPU and CPU resize operations.
+///
+/// Runs bilinear, nearest-neighbor, bicubic, lanczos, and fused-normalize
+/// benchmarks on CUDA when available, and CPU bilinear as baseline.
 fn main() {
     #[cfg(feature = "cuda")]
     run_gpu_cuda();
@@ -62,6 +66,9 @@ fn main() {
 
     #[cfg(feature = "cuda")]
     run_gpu_cuda_fused_normalize();
+
+    #[cfg(feature = "cuda")]
+    run_gpu_oxide_sweep();
 
     #[cfg(not(feature = "cuda"))]
     println!("(native CUDA downscale section skipped — build with --features cuda to enable)");
@@ -510,4 +517,151 @@ fn run_gpu_cuda_fused_normalize() {
         "  savings come from eliminating the separate normalise pass (reads+rewrites full dst)."
     );
     println!("  estimated pipeline savings: 1080p ~0.13 ms, 4K ~0.52 ms per call.");
+}
+
+// --------------------------------------------------------------------------
+// cuda-oxide interp sweep (feature cuda)
+// --------------------------------------------------------------------------
+//
+// Arms:
+//   A  — NVRTC bilinear with __ldg  (shipping kernel)
+//   B  — NVRTC bilinear without __ldg (isolates __ldg contribution)
+//   C  — cuda-oxide bilinear, raw pointers  (byte-exact twin of A)
+#[cfg(feature = "cuda")]
+/// Benchmark bilinear, nearest-neighbor, and bicubic resize kernels.
+///
+/// Tests oxide kernels with NVRTC fallback on GPUs supporting sm_75 and above.
+/// Covers downscale, upscale, and non-dyadic cases. Skips arms that fail to load.
+fn run_gpu_oxide_sweep() {
+    use std::sync::Arc;
+
+    use cudarc::driver::{CudaContext, CudaSlice, CudaStream};
+    use kornia_imgproc::cuda::resize::{
+        launch_resize_bicubic_cuda, launch_resize_bilinear_downscale_cuda,
+        launch_resize_nearest_downscale_cuda, CudaResizeError, PixelMapping,
+    };
+
+    type Launcher = fn(
+        &Arc<CudaContext>,
+        &Arc<CudaStream>,
+        &CudaSlice<f32>,
+        &mut CudaSlice<f32>,
+        u32,
+        u32,
+        u32,
+        u32,
+        PixelMapping,
+        Option<(u32, u32)>,
+    ) -> Result<(), CudaResizeError>;
+
+    // With cuda-oxide kernels integrated into the main launchers, the oxide
+    // kernels are automatically selected on compatible GPUs (sm_75+), with
+    // NVRTC fallback for older architectures or stub builds.
+    const SECTIONS: &[(&str, &[(&str, Launcher)])] = &[
+        (
+            "bilinear (oxide + fallback)",
+            &[(
+                "bilinear",
+                launch_resize_bilinear_downscale_cuda as Launcher,
+            )],
+        ),
+        (
+            "nearest-neighbor (oxide + fallback)",
+            &[("nearest", launch_resize_nearest_downscale_cuda as Launcher)],
+        ),
+        (
+            "bicubic (NVRTC only, awaiting cuda-oxide FMA support)",
+            &[("bicubic", launch_resize_bicubic_cuda as Launcher)],
+        ),
+    ];
+
+    // Covers downscale, upscale, HD, 4K and a non-dyadic (odd-size) case; the
+    // last matches `resize_odd_sizes_match_cpu` in `cuda::resize::tests`.
+    const SWEEP_CASES: &[(u32, u32, u32, u32)] = &[
+        (1024, 1024, 512, 512),   // 2× downscale
+        (512, 512, 1024, 1024),   // 2× upscale
+        (1920, 1080, 960, 540),   // HD downscale
+        (960, 540, 1920, 1080),   // HD upscale
+        (3840, 2160, 1920, 1080), // 4K downscale
+        (255, 130, 133, 67),      // non-dyadic
+    ];
+
+    let ctx = std::sync::Arc::new(CudaContext::new(0).expect("CUDA context"));
+    let stream = ctx.default_stream();
+    let (cc_major, cc_minor) = ctx.compute_capability().expect("cc");
+
+    for &(section, arms) in SECTIONS {
+        println!(
+            "\n=== {} (sm_{cc_major}{cc_minor}, {} iters) ===",
+            section, ITERS
+        );
+        println!(
+            "  {:<14}  {:<24}  {:>10}  {:>10}",
+            "arm", "case (src→dst)", "ms/iter", "GB/s"
+        );
+        println!("  {}", "-".repeat(64));
+
+        for &(arm_label, launch) in arms {
+            for &(sw, sh, dw, dh) in SWEEP_CASES {
+                let npix_src = (sw * sh) as usize;
+                let npix_dst = (dw * dh) as usize;
+                let nc = NC as usize;
+                let src_data: Vec<f32> = (0..npix_src * nc)
+                    .map(|i| (i % 256) as f32 / 255.0)
+                    .collect();
+                let src_dev = stream.clone_htod(&src_data).expect("H→D src copy");
+                let mut dst_dev = stream.alloc_zeros::<f32>(npix_dst * nc).expect("alloc dst");
+
+                let run = |src: &CudaSlice<f32>, dst: &mut CudaSlice<f32>| {
+                    launch(
+                        &ctx,
+                        &stream,
+                        src,
+                        dst,
+                        sw,
+                        sh,
+                        dw,
+                        dh,
+                        PixelMapping::HalfPixel,
+                        None,
+                    )
+                    .map_err(|e| e.to_string())
+                };
+
+                // Warmup — catches PTX-stub runtime errors before timing.
+                let warmup_result = (0..WARMUP).try_for_each(|_| run(&src_dev, &mut dst_dev));
+                if let Err(e) = warmup_result {
+                    println!(
+                        "  {:<14}  {:<24}  {:>10}  {:>10}  [skip: {}]",
+                        arm_label,
+                        format!("{sw}×{sh}→{dw}×{dh}"),
+                        "—",
+                        "—",
+                        if e.contains("failed to load") {
+                            "PTX stub — regen on CUDA 13+ host"
+                        } else {
+                            &e
+                        },
+                    );
+                    continue;
+                }
+                stream.synchronize().expect("sync");
+
+                let t = std::time::Instant::now();
+                for _ in 0..ITERS {
+                    run(&src_dev, &mut dst_dev).expect("timed launch");
+                }
+                stream.synchronize().expect("sync");
+                let ms = t.elapsed().as_secs_f64() * 1e3 / ITERS as f64;
+
+                println!(
+                    "  {:<14}  {:<24}  {:>10.3}  {:>10.2}",
+                    arm_label,
+                    format!("{sw}×{sh}→{dw}×{dh}"),
+                    ms,
+                    gb_per_sec(npix_dst, ms),
+                );
+            }
+        }
+    }
 }
