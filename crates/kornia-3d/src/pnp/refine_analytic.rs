@@ -4,13 +4,14 @@
 //! kornia-algebra's LM (Huber or L2 reprojection cost, the same damping,
 //! tolerances and step rejection), but the 2x6 Jacobian of each residual is
 //! closed-form and accumulated straight into a 6x6 normal matrix in `f64`. The
-//! generic solver's numerical `f32` Jacobian costs about a microsecond per
-//! correspondence per iteration and converges slowly; a tracker's per-frame
-//! hot path needs the closed form.
+//! generic solver's numerical `f32` Jacobian projects each correspondence 12
+//! more times and allocates per factor in every iteration; a tracker's
+//! per-frame hot path needs the closed form.
 //!
 //! Departures from [`refine_pose_lm`](crate::pnp::refine_pose_lm): no distortion model (pixels must
 //! be undistorted), no work-frame recentring, only the Identity and Huber
-//! kernels, no allocation, and an optional `monotone` rule for the last step.
+//! kernels, no allocation on a successful solve, and an optional `monotone`
+//! rule for the last step.
 
 // Fixed-size matrix loops read as the math they implement.
 #![allow(clippy::needless_range_loop)]
@@ -19,7 +20,7 @@ use super::refine::{mat_to_f64, to_f64};
 use super::{LMRefineParams, PnPError, PnPResult};
 use crate::ransac::{RobustKernel, RobustKernelKind};
 use kornia_algebra::{
-    Mat3AF32, Mat3F64, Mat6F64, SMatF64, Vec2F32, Vec3AF32, Vec3F64, Vec6F64, SO3F32, SO3F64,
+    Mat3AF32, Mat3F64, Mat6F64, SMatF64, Vec2F32, Vec3AF32, Vec3F64, Vec6F64, SE3F64, SO3F32,
 };
 
 const LAMBDA_FACTOR: f64 = 10.0;
@@ -71,9 +72,12 @@ impl Pose {
     fn right_update(&self, delta: &Vec6F64) -> Self {
         let upsilon = Vec3F64::new(delta[0], delta[1], delta[2]);
         let omega = Vec3F64::new(delta[3], delta[4], delta[5]);
+        // Compose as matrices, not `SE3F64 *`: a quaternion product would move
+        // the pinned output bits.
+        let increment = SE3F64::exp(upsilon, omega);
         Self {
-            r: self.r * SO3F64::exp(omega).matrix(),
-            t: self.t + self.r * (SO3F64::left_jacobian(omega) * upsilon),
+            r: self.r * increment.r.matrix(),
+            t: self.t + self.r * increment.t,
         }
     }
 }
@@ -107,6 +111,29 @@ impl Problem<'_> {
             total += kernel.rho(ru * ru + rv * rv, c_sq);
         }
         Some(total)
+    }
+
+    /// Whether every point is strictly in front of the camera at `pose`
+    /// (`false` for a non-finite depth).
+    fn in_front(&self, pose: &Pose) -> bool {
+        self.points
+            .iter()
+            .all(|p| pose.transform(to_f64(*p)).z > 0.0)
+    }
+
+    /// `pose` rounded to `f32`, checked again for depth: near `|t| = 2^24`
+    /// the rounding can move a point that was in front onto or behind the
+    /// camera.
+    fn export(&self, pose: &Pose) -> Result<(Mat3AF32, Vec3AF32), PnPError> {
+        let (rotation, translation) = (mat_to_f32(pose.r), to_f32(pose.t));
+        let rounded = Pose {
+            r: mat_to_f64(rotation),
+            t: to_f64(translation),
+        };
+        if !self.in_front(&rounded) {
+            return Err(PnPError::CheiralityCheckFailed);
+        }
+        Ok((rotation, translation))
     }
 
     /// Weighted normal equations `(J^T W J, J^T W r)` at `pose`.
@@ -205,8 +232,9 @@ pub fn refine_pose_lm_analytic_supports(params: &LMRefineParams) -> bool {
 /// Minimises the (Huber or L2) pinhole reprojection error over the
 /// world-to-camera pose, like [`super::refine_pose_lm`] with the same damping
 /// schedule and tolerances, but with the closed-form 2x6 Jacobian and normal
-/// equations in `f64`. It does not allocate. The start rotation is projected
-/// onto SO(3) through its unit quaternion first, as the generic solver does.
+/// equations in `f64`. A successful solve does not allocate; an error may
+/// (its message). The start rotation is projected onto SO(3) through its unit
+/// quaternion first, as the generic solver does.
 ///
 /// # Arguments
 ///
@@ -230,11 +258,13 @@ pub fn refine_pose_lm_analytic_supports(params: &LMRefineParams) -> bool {
 ///
 /// Returns [`PnPError::MismatchedArrayLengths`] if the slices differ in length,
 /// [`PnPError::InsufficientCorrespondences`] for fewer than 3 points,
-/// [`PnPError::InvalidInput`] if a world point, an image point or the initial
-/// pose is not finite, [`PnPError::CheiralityCheckFailed`] if a point is not
-/// in front of the initial camera, and [`PnPError::SvdFailed`] if the robust
-/// kernel is not supported or a damped system is not positive definite (the
-/// variant [`super::refine_pose_lm`] reports both with).
+/// [`PnPError::InvalidInput`] if a world point, an image point, the initial
+/// pose or `fx`, `fy`, `cx`, `cy` is not finite,
+/// [`PnPError::CheiralityCheckFailed`] if a point is not in front of the
+/// initial camera or of the refined pose rounded to `f32`, and
+/// [`PnPError::SvdFailed`] if the robust kernel is not supported or a damped
+/// system is not positive definite (the variant [`super::refine_pose_lm`]
+/// reports both with).
 ///
 /// # Example
 ///
@@ -310,16 +340,23 @@ pub fn refine_pose_lm_analytic(
             "the initial pose is not finite".to_string(),
         ));
     }
+    let (fx, fy, cx, cy) = (k.x_axis().x, k.y_axis().y, k.z_axis().x, k.z_axis().y);
+    // Otherwise a NaN cost passes a zero-iteration solve as `Ok`.
+    if !(fx.is_finite() && fy.is_finite() && cx.is_finite() && cy.is_finite()) {
+        return Err(PnPError::InvalidInput(
+            "the intrinsics are not finite".to_string(),
+        ));
+    }
     let kernel = kernel_from_params(params).ok_or_else(|| {
         PnPError::SvdFailed("robust kernel not supported by the analytic refine".to_string())
     })?;
     let problem = Problem {
         points: points_world,
         pixels: points_image,
-        fx: k.x_axis().x as f64,
-        fy: k.y_axis().y as f64,
-        cx: k.z_axis().x as f64,
-        cy: k.z_axis().y as f64,
+        fx: fx as f64,
+        fy: fy as f64,
+        cx: cx as f64,
+        cy: cy as f64,
         kernel,
     };
     // The generic solver starts from the start rotation's unit quaternion,
@@ -377,10 +414,10 @@ pub fn refine_pose_lm_analytic(
             }
         }
     }
-    let rotation = mat_to_f32(pose.r);
+    let (rotation, translation) = problem.export(&pose)?;
     Ok(PnPResult {
         rotation,
-        translation: to_f32(pose.t),
+        translation,
         rvec: SO3F32::from_matrix(&rotation).log(),
         reproj_rmse: None,
         num_iterations: Some(iterations),
@@ -392,6 +429,7 @@ pub fn refine_pose_lm_analytic(
 mod tests {
     use super::*;
     use crate::pnp::refine_pose_lm;
+    use kornia_algebra::SO3F64;
 
     /// Independent reference implementations used as oracles.
     mod oracle {
@@ -877,6 +915,54 @@ mod tests {
     }
 
     #[test]
+    fn non_finite_intrinsics_are_invalid_even_without_iterations() {
+        let (world, image, k, _) = scene(false);
+        let k = Mat3AF32::from_cols(Vec3AF32::new(f32::NAN, 0.0, 0.0), k.y_axis(), k.z_axis());
+        let no_iterations = LMRefineParams {
+            max_iterations: 0,
+            ..params()
+        };
+        let out = refine_pose_lm_analytic(
+            &world,
+            &image,
+            &k,
+            &Mat3AF32::IDENTITY,
+            &Vec3AF32::ZERO,
+            &no_iterations,
+            false,
+        );
+        assert!(
+            matches!(&out, Err(PnPError::InvalidInput(r)) if r == "the intrinsics are not finite"),
+            "{out:?}"
+        );
+    }
+
+    #[test]
+    fn a_pose_that_rounds_onto_the_camera_is_refused() {
+        // 2^24 - 1 is exact in f32; the 0.25 of the f64 depth is not.
+        let points = [Vec3AF32::new(0.0, 0.0, -16_777_215.0); 3];
+        let pixels = [Vec2F32::new(376.0, 240.0); 3];
+        let problem = Problem {
+            points: &points,
+            pixels: &pixels,
+            fx: 450.0,
+            fy: 450.0,
+            cx: 376.0,
+            cy: 240.0,
+            kernel: (RobustKernelKind::Identity, 0.0),
+        };
+        let pose = Pose {
+            r: Mat3F64::IDENTITY,
+            t: Vec3F64::new(0.0, 0.0, 16_777_215.25),
+        };
+        assert!(problem.in_front(&pose));
+        assert!(matches!(
+            problem.export(&pose),
+            Err(PnPError::CheiralityCheckFailed)
+        ));
+    }
+
+    #[test]
     fn the_iteration_cap_ends_the_solve_unconverged() {
         let (world, image, k, _) = scene(false);
         let capped = LMRefineParams {
@@ -965,6 +1051,7 @@ mod tests {
     }
 
     /// The `to_bits` of the refined rotation (column-major) and translation.
+    #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
     fn output_bits(outlier: bool, params: &LMRefineParams) -> ([u32; 9], [u32; 3]) {
         let (world, image, k, _) = scene(outlier);
         let refined = refine_pose_lm_analytic(
@@ -987,8 +1074,9 @@ mod tests {
     /// where the points are converted to `f64`) cannot move it silently.
     /// Captured on x86_64 Linux (glibc libm). The f32 cast absorbs most f64
     /// last-ulp differences in `sin`/`cos`, but another libm (aarch64, a newer
-    /// glibc) can still flip a bit; check a failure there against this before
-    /// suspecting the solver.
+    /// glibc) can still flip a bit, so it runs only on the capture platform;
+    /// the tolerance tests cover the others.
+    #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
     #[test]
     fn output_bits_are_pinned() {
         assert_eq!(
