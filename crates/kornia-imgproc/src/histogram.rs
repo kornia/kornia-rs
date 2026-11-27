@@ -68,16 +68,30 @@ pub fn compute_histogram(
     let width = src.width();
     let src_slice = src.as_slice();
 
+    // Bin of each 8-bit value, from the same f32 expression as per pixel.
+    let bin_of: [usize; 256] = std::array::from_fn(|v| (v as f32 / scale).floor() as usize);
+
     // Coarse chunks so we allocate O(cores) local histograms rather than
-    // O(rows). Each task accumulates its rows into one local histogram before
-    // the reduce step merges them.
+    // O(rows). Each task counts raw values into four interleaved tables (so
+    // runs of equal pixels do not serialize on one counter), then folds them
+    // into bins once.
     const ROWS_PER_TASK: usize = 16;
     let partial_hist = par_row_chunks(src_slice, width, ROWS_PER_TASK)
         .map(|chunk| {
+            let mut counts = [[0usize; 256]; 4];
+            let mut quads = chunk.chunks_exact(4);
+            for q in &mut quads {
+                counts[0][q[0] as usize] += 1;
+                counts[1][q[1] as usize] += 1;
+                counts[2][q[2] as usize] += 1;
+                counts[3][q[3] as usize] += 1;
+            }
+            for &pixel in quads.remainder() {
+                counts[0][pixel as usize] += 1;
+            }
             let mut local_hist = vec![0_usize; num_bins];
-            for &pixel in chunk {
-                let bin = (pixel as f32 / scale).floor() as usize;
-                local_hist[bin] += 1;
+            for (value, &bin) in bin_of.iter().enumerate() {
+                local_hist[bin] += counts.iter().map(|c| c[value]).sum::<usize>();
             }
             local_hist
         })
@@ -117,6 +131,35 @@ mod tests {
         super::compute_histogram(&image, &mut histogram, 3)?;
         assert_eq!(histogram, vec![3, 3, 3]);
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_compute_histogram_matches_per_pixel_binning() -> Result<(), ImageError> {
+        let size = ImageSize {
+            width: 37,
+            height: 41,
+        };
+        let mut state = 0x9E37_79B9u32;
+        let data: Vec<u8> = (0..size.width * size.height)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                (state >> 24) as u8
+            })
+            .collect();
+        let image = Image::new(size, data.clone())?;
+        for num_bins in 1..=256usize {
+            let scale = 256.0 / num_bins as f32;
+            let mut expected = vec![0usize; num_bins];
+            for &p in &data {
+                expected[(p as f32 / scale).floor() as usize] += 1;
+            }
+            let mut histogram = vec![0usize; num_bins];
+            super::compute_histogram(&image, &mut histogram, num_bins)?;
+            assert_eq!(histogram, expected, "num_bins {num_bins}");
+        }
         Ok(())
     }
 
