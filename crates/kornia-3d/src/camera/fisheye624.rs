@@ -5,7 +5,8 @@
 //! projection matches it to 1e-9 px on the LaMAria `R_11_5cp` SLAM cameras.
 //! Unprojection inverts the tangential terms by Newton steps and solves the
 //! radial polynomial on `[0, π/2]` only (Newton with a bisection fallback, as
-//! [`super::FisheyeCamera`] does), so pixels past `θ = 90°` return `None`.
+//! [`super::FisheyeCamera`] does), stopping earlier at the polynomial's first
+//! fold, so pixels past `θ = 90°` or past the fold return `None`.
 
 use super::CameraModel;
 use kornia_algebra::{Vec2F64, Vec3F64};
@@ -57,6 +58,8 @@ const TANGENTIAL_EPS: f64 = 1e-12;
 /// Enough for bisection alone to reach `RADIAL_EPS` on `[0, π/2]`.
 const RADIAL_MAX_ITER: usize = 60;
 const RADIAL_EPS: f64 = 1e-12;
+/// Samples of `dθ_d/dθ` on `[0, π/2]` when looking for the first fold.
+const FOLD_SAMPLES: usize = 64;
 
 impl Fisheye624Camera {
     /// `(θ_d, dθ_d/dθ)`.
@@ -121,14 +124,41 @@ impl Fisheye624Camera {
         None
     }
 
-    /// Solves `θ_d(θ) = rho` on `[0, π/2]` by Newton steps, bisecting whenever a
-    /// step would leave the bracket (as kornia-3d's `FisheyeCamera::unproject`).
-    fn unradial(&self, rho: f64) -> Option<f64> {
-        let (mut lo, mut hi) = (0.0, std::f64::consts::FRAC_PI_2);
-        if self.radial(hi).0 < rho {
-            return None;
+    /// Bracket `[lo, hi]` holding the solution of `θ_d(θ) = rho` on the part of
+    /// `[0, π/2]` before the first fold (`dθ_d/dθ = 0`), or `None` if `θ_d`
+    /// never reaches `rho` there. Samples are walked only up to the solution.
+    fn radial_bracket(&self, rho: f64) -> Option<(f64, f64)> {
+        let step = std::f64::consts::FRAC_PI_2 / FOLD_SAMPLES as f64;
+        for i in 1..=FOLD_SAMPLES {
+            let theta = step * i as f64;
+            let (theta_d, dtheta_d) = self.radial(theta);
+            if dtheta_d <= 0.0 {
+                // Fold in this step: bisect the sign change of dθ_d/dθ.
+                let (mut lo, mut hi) = (theta - step, theta);
+                for _ in 0..RADIAL_MAX_ITER {
+                    let mid = 0.5 * (lo + hi);
+                    if self.radial(mid).1 > 0.0 {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                return (self.radial(lo).0 >= rho).then_some((theta - step, lo));
+            }
+            if theta_d >= rho {
+                return Some((theta - step, theta));
+            }
         }
-        let mut theta = rho.min(hi);
+        None
+    }
+
+    /// Solves `θ_d(θ) = rho` on `[0, min(fold, π/2)]` by Newton steps, bisecting
+    /// whenever a step would leave the bracket (as kornia-3d's
+    /// `FisheyeCamera::unproject`). Past a fold `θ_d` falls again, so a bound at
+    /// `π/2` alone would reject pixels of pre-fold bearings and break bisection.
+    fn unradial(&self, rho: f64) -> Option<f64> {
+        let (mut lo, mut hi) = self.radial_bracket(rho)?;
+        let mut theta = rho.clamp(lo, hi);
         for _ in 0..RADIAL_MAX_ITER {
             let (theta_d, dtheta_d) = self.radial(theta);
             let residual = theta_d - rho;
@@ -192,9 +222,10 @@ impl CameraModel for Fisheye624Camera {
         if z <= 0.0 {
             return None;
         }
-        let r2 = x * x + y * y;
-        let r = r2.sqrt();
-        if r < EPSILON {
+        // hypot and a relative axis test keep the result independent of the
+        // point's scale (x² + y² under- or overflows for tiny or huge points).
+        let r = x.hypot(y);
+        if r <= EPSILON * z {
             return Some((
                 Vec2F64::new(self.cx, self.cy),
                 [
@@ -203,17 +234,19 @@ impl CameraModel for Fisheye624Camera {
                 ],
             ));
         }
-        let norm2 = r2 + z * z;
+        let norm = r.hypot(z);
         let (theta_d, dtheta_d) = self.radial(r.atan2(z));
         // (a, b) = s · (x, y) with s = θ_d / r, as kornia-3d's FisheyeCamera.
+        // ∂(a, b)/∂p is written in the unit ratios (x/r, y/r, r/|p|, z/|p|) over
+        // |p| so no intermediate under- or overflows for tiny or huge points.
         let s = theta_d / r;
-        let ds_dr = (dtheta_d * z / norm2 - s) / r;
-        let ds = [ds_dr * x / r, ds_dr * y / r, -dtheta_d / norm2];
+        let (ex, ey) = (x / r, y / r);
+        let k = (dtheta_d * (z / norm) - theta_d * (norm / r)) / norm;
         let radial_rows = [
-            [s + x * ds[0], x * ds[1], x * ds[2]],
-            [y * ds[0], s + y * ds[1], y * ds[2]],
+            [s + ex * ex * k, ex * ey * k, -dtheta_d * (x / norm) / norm],
+            [ex * ey * k, s + ey * ey * k, -dtheta_d * (y / norm) / norm],
         ];
-        let (g, d) = self.tangential(s * x, s * y);
+        let (g, d) = self.tangential(theta_d * ex, theta_d * ey);
         let row = |i: usize| {
             let c = |j: usize| self.f * (d[i][0] * radial_rows[0][j] + d[i][1] * radial_rows[1][j]);
             Vec3F64::new(c(0), c(1), c(2))
@@ -225,7 +258,7 @@ impl CameraModel for Fisheye624Camera {
     }
 
     /// `None` when the tangential inversion does not converge or the pixel lies
-    /// past the image of `θ = 90°`.
+    /// past the image of `θ = 90°` or of the radial polynomial's first fold.
     fn unproject(&self, pixel: &Vec2F64) -> Option<Vec3F64> {
         let m = [(pixel.x - self.cx) / self.f, (pixel.y - self.cy) / self.f];
         let [a, b] = self.untangential(m)?;
@@ -441,6 +474,54 @@ mod tests {
             let back = (ray.z / ray.length()).acos();
             assert!(back >= 80f64.to_radians(), "θ {theta_deg}°: {back} rad");
             assert!((back - theta).abs() < 1e-6, "θ {theta_deg}°: {back} rad");
+        }
+    }
+
+    /// With `k0 = -0.3` the radial polynomial folds at θ ≈ 1.054 rad, where it
+    /// peaks at θd ≈ 0.703, and falls to 0.408 at 90°; the bearing at θ = 1
+    /// rad (θd = 0.7) still has a unique ray before the fold.
+    #[test]
+    fn unproject_brackets_at_the_first_radial_fold() {
+        let camera = Fisheye624Camera {
+            f: 1.0,
+            cx: 0.0,
+            cy: 0.0,
+            k: [-0.3, 0.0, 0.0, 0.0, 0.0, 0.0],
+            p: [0.0; 2],
+            s: [0.0; 4],
+        };
+        let ray = bearing(1.0, 0.0);
+        let pixel = camera.project(&ray).unwrap();
+        assert!((pixel - Vec2F64::new(0.7, 0.0)).length() < 1e-12);
+        let back = camera.unproject(&pixel).unwrap();
+        assert!((back - ray).length() < 1e-9, "{back:?} vs {ray:?}");
+        // Past the fold's peak there is no ray.
+        assert!(camera.unproject(&Vec2F64::new(0.71, 0.0)).is_none());
+    }
+
+    /// `project` depends on the direction only, not on the point's scale.
+    #[test]
+    fn project_is_invariant_to_point_scale() {
+        let camera = r11_cam0();
+        for direction in [Vec3F64::new(1.0, 0.0, 1.0), Vec3F64::new(-0.3, 0.8, 0.5)] {
+            let (pixel, rows) = camera.project_with_jacobian(&direction).unwrap();
+            for scale in [1e-200, 5e-13, 1e-6, 1e6, 1e200] {
+                let (scaled, scaled_rows) =
+                    camera.project_with_jacobian(&(direction * scale)).unwrap();
+                assert!(
+                    (scaled - pixel).length() < 1e-9,
+                    "scale {scale}: {scaled:?} vs {pixel:?}"
+                );
+                // The Jacobian scales as 1/scale; compare at unit scale, since
+                // squaring entries near 1e±200 in `length` under- or overflows.
+                for (row, scaled_row) in rows.iter().zip(scaled_rows) {
+                    let rescaled = scaled_row * scale;
+                    assert!(
+                        (rescaled - *row).length() < 1e-9 * row.length(),
+                        "scale {scale}: {rescaled:?} vs {row:?}"
+                    );
+                }
+            }
         }
     }
 
