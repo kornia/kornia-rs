@@ -1914,33 +1914,65 @@ impl PyImageApi {
                 match (self.dtype, c) {
                     (backing::Dtype::U8, 3) => {
                         let img = unsafe { self.borrow_self::<u8, 3>().map_err(to_pyerr)? };
-                        kornia_io::png::encode_image_png_rgb8(&img, &mut buffer, compress_level)
-                            .map_err(to_pyerr)?;
+                        py.detach(|| {
+                            kornia_io::png::encode_image_png_rgb8(&img, &mut buffer, compress_level)
+                        })
+                        .map_err(to_pyerr)?;
                     }
                     (backing::Dtype::U8, 4) => {
                         let img = unsafe { self.borrow_self::<u8, 4>().map_err(to_pyerr)? };
-                        kornia_io::png::encode_image_png_rgba8(&img, &mut buffer, compress_level)
-                            .map_err(to_pyerr)?;
+                        py.detach(|| {
+                            kornia_io::png::encode_image_png_rgba8(
+                                &img,
+                                &mut buffer,
+                                compress_level,
+                            )
+                        })
+                        .map_err(to_pyerr)?;
                     }
                     (backing::Dtype::U8, 1) => {
                         let img = unsafe { self.borrow_self::<u8, 1>().map_err(to_pyerr)? };
-                        kornia_io::png::encode_image_png_gray8(&img, &mut buffer, compress_level)
-                            .map_err(to_pyerr)?;
+                        py.detach(|| {
+                            kornia_io::png::encode_image_png_gray8(
+                                &img,
+                                &mut buffer,
+                                compress_level,
+                            )
+                        })
+                        .map_err(to_pyerr)?;
                     }
                     (backing::Dtype::U16, 3) => {
                         let img = unsafe { self.borrow_self::<u16, 3>().map_err(to_pyerr)? };
-                        kornia_io::png::encode_image_png_rgb16(&img, &mut buffer, compress_level)
-                            .map_err(to_pyerr)?;
+                        py.detach(|| {
+                            kornia_io::png::encode_image_png_rgb16(
+                                &img,
+                                &mut buffer,
+                                compress_level,
+                            )
+                        })
+                        .map_err(to_pyerr)?;
                     }
                     (backing::Dtype::U16, 4) => {
                         let img = unsafe { self.borrow_self::<u16, 4>().map_err(to_pyerr)? };
-                        kornia_io::png::encode_image_png_rgba16(&img, &mut buffer, compress_level)
-                            .map_err(to_pyerr)?;
+                        py.detach(|| {
+                            kornia_io::png::encode_image_png_rgba16(
+                                &img,
+                                &mut buffer,
+                                compress_level,
+                            )
+                        })
+                        .map_err(to_pyerr)?;
                     }
                     (backing::Dtype::U16, 1) => {
                         let img = unsafe { self.borrow_self::<u16, 1>().map_err(to_pyerr)? };
-                        kornia_io::png::encode_image_png_gray16(&img, &mut buffer, compress_level)
-                            .map_err(to_pyerr)?;
+                        py.detach(|| {
+                            kornia_io::png::encode_image_png_gray16(
+                                &img,
+                                &mut buffer,
+                                compress_level,
+                            )
+                        })
+                        .map_err(to_pyerr)?;
                     }
                     _ => {
                         return Err(value_err(format!(
@@ -1957,17 +1989,17 @@ impl PyImageApi {
                 match (self.dtype, c) {
                     (backing::Dtype::U8, 3) => {
                         let img = unsafe { self.borrow_self::<u8, 3>().map_err(to_pyerr)? };
-                        kornia_io::webp::encode_image_webp_rgb8(&img, &mut buffer)
+                        py.detach(|| kornia_io::webp::encode_image_webp_rgb8(&img, &mut buffer))
                             .map_err(to_pyerr)?;
                     }
                     (backing::Dtype::U8, 4) => {
                         let img = unsafe { self.borrow_self::<u8, 4>().map_err(to_pyerr)? };
-                        kornia_io::webp::encode_image_webp_rgba8(&img, &mut buffer)
+                        py.detach(|| kornia_io::webp::encode_image_webp_rgba8(&img, &mut buffer))
                             .map_err(to_pyerr)?;
                     }
                     (backing::Dtype::U8, 1) => {
                         let img = unsafe { self.borrow_self::<u8, 1>().map_err(to_pyerr)? };
-                        kornia_io::webp::encode_image_webp_gray8(&img, &mut buffer)
+                        py.detach(|| kornia_io::webp::encode_image_webp_gray8(&img, &mut buffer))
                             .map_err(to_pyerr)?;
                     }
                     (backing::Dtype::U16, _) => {
@@ -1990,32 +2022,32 @@ impl PyImageApi {
                 match (self.dtype, c) {
                     (backing::Dtype::U8, 3) => {
                         let img = unsafe { self.borrow_self::<u8, 3>().map_err(to_pyerr)? };
-                        kornia_io::tiff::encode_image_tiff_rgb8(&img, &mut buffer)
+                        py.detach(|| kornia_io::tiff::encode_image_tiff_rgb8(&img, &mut buffer))
                             .map_err(to_pyerr)?;
                     }
                     (backing::Dtype::U8, 1) => {
                         let img = unsafe { self.borrow_self::<u8, 1>().map_err(to_pyerr)? };
-                        kornia_io::tiff::encode_image_tiff_mono8(&img, &mut buffer)
+                        py.detach(|| kornia_io::tiff::encode_image_tiff_mono8(&img, &mut buffer))
                             .map_err(to_pyerr)?;
                     }
                     (backing::Dtype::U16, 3) => {
                         let img = unsafe { self.borrow_self::<u16, 3>().map_err(to_pyerr)? };
-                        kornia_io::tiff::encode_image_tiff_rgb16(&img, &mut buffer)
+                        py.detach(|| kornia_io::tiff::encode_image_tiff_rgb16(&img, &mut buffer))
                             .map_err(to_pyerr)?;
                     }
                     (backing::Dtype::U16, 1) => {
                         let img = unsafe { self.borrow_self::<u16, 1>().map_err(to_pyerr)? };
-                        kornia_io::tiff::encode_image_tiff_mono16(&img, &mut buffer)
+                        py.detach(|| kornia_io::tiff::encode_image_tiff_mono16(&img, &mut buffer))
                             .map_err(to_pyerr)?;
                     }
                     (backing::Dtype::F32, 3) => {
                         let img = unsafe { self.borrow_self::<f32, 3>().map_err(to_pyerr)? };
-                        kornia_io::tiff::encode_image_tiff_rgb32f(&img, &mut buffer)
+                        py.detach(|| kornia_io::tiff::encode_image_tiff_rgb32f(&img, &mut buffer))
                             .map_err(to_pyerr)?;
                     }
                     (backing::Dtype::F32, 1) => {
                         let img = unsafe { self.borrow_self::<f32, 1>().map_err(to_pyerr)? };
-                        kornia_io::tiff::encode_image_tiff_mono32f(&img, &mut buffer)
+                        py.detach(|| kornia_io::tiff::encode_image_tiff_mono32f(&img, &mut buffer))
                             .map_err(to_pyerr)?;
                     }
                     _ => {
@@ -3009,7 +3041,9 @@ impl PyImageApi {
             offset[ch] = -mean_arr[ch] * inv_std;
         }
         if c == 3 {
-            kornia_imgproc::normalize::normalize_rgb_u8(src, dst, npixels, &scale, &offset);
+            py.detach(|| {
+                kornia_imgproc::normalize::normalize_rgb_u8(src, dst, npixels, &scale, &offset)
+            });
         } else {
             for (idx, (&s, d)) in src.iter().zip(dst.iter_mut()).enumerate() {
                 let ch = idx % c;

@@ -75,8 +75,10 @@ fn read_file_bytes(path: &Path) -> PyResult<Vec<u8>> {
 
 /// Internal dispatcher for decoding PNG images.
 fn read_image_png_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<PyAny>> {
-    let png_data = read_file_bytes(file_path)?;
-    let layout = png_io::decode_image_png_layout(&png_data).map_err(to_pyerr)?;
+    let png_data = py.detach(|| read_file_bytes(file_path))?;
+    let layout = py
+        .detach(|| png_io::decode_image_png_layout(&png_data))
+        .map_err(to_pyerr)?;
 
     match (layout.channels, layout.pixel_format) {
         (1, PixelFormat::U8) => {
@@ -85,7 +87,8 @@ fn read_image_png_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<Py
             let (dst, out) =
                 unsafe { alloc_output_pyarray_t::<u8, 1, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Gray8(dst);
-            png_io::decode_image_png_mono8(&png_data, &mut wrapped).map_err(to_pyerr)?;
+            py.detach(|| png_io::decode_image_png_mono8(&png_data, &mut wrapped))
+                .map_err(to_pyerr)?;
             Ok(out.into())
         }
         (1, PixelFormat::U16) => {
@@ -94,7 +97,8 @@ fn read_image_png_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<Py
             let (dst, out) =
                 unsafe { alloc_output_pyarray_t::<u16, 1, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Gray16(dst);
-            png_io::decode_image_png_mono16(&png_data, &mut wrapped).map_err(to_pyerr)?;
+            py.detach(|| png_io::decode_image_png_mono16(&png_data, &mut wrapped))
+                .map_err(to_pyerr)?;
             Ok(out.into())
         }
         (3, PixelFormat::U8) => {
@@ -103,7 +107,8 @@ fn read_image_png_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<Py
             let (dst, out) =
                 unsafe { alloc_output_pyarray_t::<u8, 3, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Rgb8(dst);
-            png_io::decode_image_png_rgb8(&png_data, &mut wrapped).map_err(to_pyerr)?;
+            py.detach(|| png_io::decode_image_png_rgb8(&png_data, &mut wrapped))
+                .map_err(to_pyerr)?;
             Ok(out.into())
         }
         (3, PixelFormat::U16) => {
@@ -112,7 +117,8 @@ fn read_image_png_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<Py
             let (dst, out) =
                 unsafe { alloc_output_pyarray_t::<u16, 3, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Rgb16(dst);
-            png_io::decode_image_png_rgb16(&png_data, &mut wrapped).map_err(to_pyerr)?;
+            py.detach(|| png_io::decode_image_png_rgb16(&png_data, &mut wrapped))
+                .map_err(to_pyerr)?;
             Ok(out.into())
         }
         (4, PixelFormat::U8) => {
@@ -121,7 +127,8 @@ fn read_image_png_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<Py
             let (dst, out) =
                 unsafe { alloc_output_pyarray_t::<u8, 4, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Rgba8(dst);
-            png_io::decode_image_png_rgba8(&png_data, &mut wrapped).map_err(to_pyerr)?;
+            py.detach(|| png_io::decode_image_png_rgba8(&png_data, &mut wrapped))
+                .map_err(to_pyerr)?;
             Ok(out.into())
         }
         (4, PixelFormat::U16) => {
@@ -130,7 +137,8 @@ fn read_image_png_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<Py
             let (dst, out) =
                 unsafe { alloc_output_pyarray_t::<u16, 4, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Rgba16(dst);
-            png_io::decode_image_png_rgba16(&png_data, &mut wrapped).map_err(to_pyerr)?;
+            py.detach(|| png_io::decode_image_png_rgba16(&png_data, &mut wrapped))
+                .map_err(to_pyerr)?;
             Ok(out.into())
         }
         (channels, pixel_format) => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
@@ -142,8 +150,10 @@ fn read_image_png_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<Py
 
 /// Internal dispatcher for decoding TIFF images.
 fn read_image_tiff_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<PyAny>> {
-    let tiff_data = read_file_bytes(file_path)?;
-    let layout = tiff_io::decode_image_tiff_layout(&tiff_data).map_err(to_pyerr)?;
+    let tiff_data = py.detach(|| read_file_bytes(file_path))?;
+    let layout = py
+        .detach(|| tiff_io::decode_image_tiff_layout(&tiff_data))
+        .map_err(to_pyerr)?;
 
     match (layout.channels, layout.pixel_format) {
         (1, PixelFormat::U8) => {
@@ -152,7 +162,8 @@ fn read_image_tiff_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<P
             let (dst, out) =
                 unsafe { alloc_output_pyarray_t::<u8, 1, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Gray8(dst);
-            tiff_io::decode_image_tiff_mono8(&tiff_data, &mut wrapped).map_err(to_pyerr)?;
+            py.detach(|| tiff_io::decode_image_tiff_mono8(&tiff_data, &mut wrapped))
+                .map_err(to_pyerr)?;
             Ok(out.into())
         }
         (1, PixelFormat::U16) => {
@@ -161,7 +172,8 @@ fn read_image_tiff_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<P
             let (dst, out) =
                 unsafe { alloc_output_pyarray_t::<u16, 1, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Gray16(dst);
-            tiff_io::decode_image_tiff_mono16(&tiff_data, &mut wrapped).map_err(to_pyerr)?;
+            py.detach(|| tiff_io::decode_image_tiff_mono16(&tiff_data, &mut wrapped))
+                .map_err(to_pyerr)?;
             Ok(out.into())
         }
         (3, PixelFormat::U8) => {
@@ -170,7 +182,8 @@ fn read_image_tiff_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<P
             let (dst, out) =
                 unsafe { alloc_output_pyarray_t::<u8, 3, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Rgb8(dst);
-            tiff_io::decode_image_tiff_rgb8(&tiff_data, &mut wrapped).map_err(to_pyerr)?;
+            py.detach(|| tiff_io::decode_image_tiff_rgb8(&tiff_data, &mut wrapped))
+                .map_err(to_pyerr)?;
             Ok(out.into())
         }
         (3, PixelFormat::U16) => {
@@ -179,7 +192,8 @@ fn read_image_tiff_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<P
             let (dst, out) =
                 unsafe { alloc_output_pyarray_t::<u16, 3, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Rgb16(dst);
-            tiff_io::decode_image_tiff_rgb16(&tiff_data, &mut wrapped).map_err(to_pyerr)?;
+            py.detach(|| tiff_io::decode_image_tiff_rgb16(&tiff_data, &mut wrapped))
+                .map_err(to_pyerr)?;
             Ok(out.into())
         }
         (1, PixelFormat::F32) => {
@@ -188,7 +202,8 @@ fn read_image_tiff_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<P
             let (dst, out) =
                 unsafe { alloc_output_pyarray_t::<f32, 1, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Grayf32(dst);
-            tiff_io::decode_image_tiff_mono32f(&tiff_data, &mut wrapped).map_err(to_pyerr)?;
+            py.detach(|| tiff_io::decode_image_tiff_mono32f(&tiff_data, &mut wrapped))
+                .map_err(to_pyerr)?;
             Ok(out.into())
         }
         (3, PixelFormat::F32) => {
@@ -197,7 +212,8 @@ fn read_image_tiff_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<P
             let (dst, out) =
                 unsafe { alloc_output_pyarray_t::<f32, 3, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Rgbf32(dst);
-            tiff_io::decode_image_tiff_rgb32f(&tiff_data, &mut wrapped).map_err(to_pyerr)?;
+            py.detach(|| tiff_io::decode_image_tiff_rgb32f(&tiff_data, &mut wrapped))
+                .map_err(to_pyerr)?;
             Ok(out.into())
         }
         (channels, pixel_format) => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
@@ -209,8 +225,10 @@ fn read_image_tiff_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<P
 
 /// Internal dispatcher for decoding WebP images.
 fn read_image_webp_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<PyAny>> {
-    let data = read_file_bytes(file_path)?;
-    let layout = webp_io::decode_image_webp_layout(&data).map_err(to_pyerr)?;
+    let data = py.detach(|| read_file_bytes(file_path))?;
+    let layout = py
+        .detach(|| webp_io::decode_image_webp_layout(&data))
+        .map_err(to_pyerr)?;
 
     match layout.channels {
         1 => {
@@ -219,7 +237,8 @@ fn read_image_webp_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<P
             let (dst, out) =
                 unsafe { alloc_output_pyarray_t::<u8, 1, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Gray8(dst);
-            webp_io::decode_image_webp_gray8(&data, &mut wrapped).map_err(to_pyerr)?;
+            py.detach(|| webp_io::decode_image_webp_gray8(&data, &mut wrapped))
+                .map_err(to_pyerr)?;
             Ok(out.into())
         }
         3 => {
@@ -228,7 +247,8 @@ fn read_image_webp_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<P
             let (dst, out) =
                 unsafe { alloc_output_pyarray_t::<u8, 3, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Rgb8(dst);
-            webp_io::decode_image_webp_rgb8(&data, &mut wrapped).map_err(to_pyerr)?;
+            py.detach(|| webp_io::decode_image_webp_rgb8(&data, &mut wrapped))
+                .map_err(to_pyerr)?;
             Ok(out.into())
         }
         4 => {
@@ -237,7 +257,8 @@ fn read_image_webp_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<P
             let (dst, out) =
                 unsafe { alloc_output_pyarray_t::<u8, 4, ZEROED>(py, layout.image_size)? };
             let mut wrapped = Rgba8(dst);
-            webp_io::decode_image_webp_rgba8(&data, &mut wrapped).map_err(to_pyerr)?;
+            py.detach(|| webp_io::decode_image_webp_rgba8(&data, &mut wrapped))
+                .map_err(to_pyerr)?;
             Ok(out.into())
         }
         ch => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
@@ -249,8 +270,10 @@ fn read_image_webp_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<P
 
 /// Internal dispatcher for decoding JPEG images.
 fn read_image_jpeg_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<PyAny>> {
-    let jpeg_data = read_file_bytes(file_path)?;
-    let layout = jpeg_io::decode_image_jpeg_layout(&jpeg_data).map_err(to_pyerr)?;
+    let jpeg_data = py.detach(|| read_file_bytes(file_path))?;
+    let layout = py
+        .detach(|| jpeg_io::decode_image_jpeg_layout(&jpeg_data))
+        .map_err(to_pyerr)?;
 
     // libjpeg-turbo first (~30% faster than zune-jpeg on 1080p RGB);
     // zune-jpeg fallback only kicks in if turbojpeg init fails (e.g.
@@ -264,8 +287,7 @@ fn read_image_jpeg_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<P
                 // only handed to Python after the last write through `dst`.
                 let (mut dst, out) =
                     unsafe { alloc_output_pyarray_t::<u8, 1, ZEROED>(py, layout.image_size)? };
-                decoder
-                    .decode_gray8_into(&jpeg_data, &mut dst)
+                py.detach(|| decoder.decode_gray8_into(&jpeg_data, &mut dst))
                     .map_err(to_pyerr)?;
                 Ok(out.into())
             }
@@ -274,8 +296,7 @@ fn read_image_jpeg_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<P
                 // only handed to Python after the last write through `dst`.
                 let (mut dst, out) =
                     unsafe { alloc_output_pyarray_t::<u8, 3, ZEROED>(py, layout.image_size)? };
-                decoder
-                    .decode_rgb8_into(&jpeg_data, &mut dst)
+                py.detach(|| decoder.decode_rgb8_into(&jpeg_data, &mut dst))
                     .map_err(to_pyerr)?;
                 Ok(out.into())
             }
@@ -297,7 +318,8 @@ fn read_image_jpeg_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<P
             // handed to Python after the last write through `dst`.
             let (mut dst, out) =
                 unsafe { alloc_output_pyarray_t::<u8, 1, ZEROED>(py, layout.image_size)? };
-            jpeg_io::decode_image_jpeg_mono8(&jpeg_data, &mut dst).map_err(to_pyerr)?;
+            py.detach(|| jpeg_io::decode_image_jpeg_mono8(&jpeg_data, &mut dst))
+                .map_err(to_pyerr)?;
             Ok(out.into())
         }
         (3, PixelFormat::U8) => {
@@ -305,7 +327,8 @@ fn read_image_jpeg_dispatcher(py: Python<'_>, file_path: &Path) -> PyResult<Py<P
             // handed to Python after the last write through `dst`.
             let (mut dst, out) =
                 unsafe { alloc_output_pyarray_t::<u8, 3, ZEROED>(py, layout.image_size)? };
-            jpeg_io::decode_image_jpeg_rgb8(&jpeg_data, &mut dst).map_err(to_pyerr)?;
+            py.detach(|| jpeg_io::decode_image_jpeg_rgb8(&jpeg_data, &mut dst))
+                .map_err(to_pyerr)?;
             Ok(out.into())
         }
         (channels, pixel_format) => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(

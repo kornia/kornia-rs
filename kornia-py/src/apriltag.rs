@@ -206,9 +206,8 @@ impl PyAprilTagDecoder {
     pub fn decode(&mut self, py: Python<'_>, src: PyImage) -> PyResult<Vec<PyApriltagDetection>> {
         let img = unsafe { numpy_as_image::<1>(py, &src)? };
 
-        let detection = self
-            .0
-            .decode(&img)
+        let detection = py
+            .detach(|| self.0.decode(&img))
             .map_err(|err| PyErr::new::<PyException, _>(err.to_string()))?;
 
         let py_detection = detection.iter().map(|d| d.clone().into()).collect();

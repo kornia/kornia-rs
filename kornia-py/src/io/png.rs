@@ -23,16 +23,20 @@ fn unsupported_mode_err(modes: &str) -> PyErr {
 /// Reads a PNG image from a file path into an 8-bit tensor.
 #[pyfunction]
 pub fn read_image_png_u8(py: Python<'_>, file_path: &str, mode: &str) -> PyResult<PyImage> {
-    let bytes = read_file_bytes(file_path)?;
-    let layout = P::decode_image_png_layout(&bytes).map_err(to_pyerr)?;
+    let bytes = py.detach(|| read_file_bytes(file_path))?;
+    let layout = py
+        .detach(|| P::decode_image_png_layout(&bytes))
+        .map_err(to_pyerr)?;
     decode_image_png_u8_inner(py, &bytes, layout.image_size, mode)
 }
 
 /// Reads a PNG image from a file path into a 16-bit tensor.
 #[pyfunction]
 pub fn read_image_png_u16(py: Python<'_>, file_path: &str, mode: &str) -> PyResult<PyImageU16> {
-    let bytes = read_file_bytes(file_path)?;
-    let layout = P::decode_image_png_layout(&bytes).map_err(to_pyerr)?;
+    let bytes = py.detach(|| read_file_bytes(file_path))?;
+    let layout = py
+        .detach(|| P::decode_image_png_layout(&bytes))
+        .map_err(to_pyerr)?;
     decode_image_png_u16_inner(py, &bytes, layout.image_size, mode)
 }
 
@@ -47,15 +51,18 @@ pub fn write_image_png_u8(
     match mode {
         "rgb" => {
             let image = unsafe { numpy_as_image::<3>(py, &image)? };
-            P::write_image_png_rgb8(file_path, &image).map_err(to_pyerr)?;
+            py.detach(|| P::write_image_png_rgb8(file_path, &image))
+                .map_err(to_pyerr)?;
         }
         "rgba" => {
             let image = unsafe { numpy_as_image::<4>(py, &image)? };
-            P::write_image_png_rgba8(file_path, &image).map_err(to_pyerr)?;
+            py.detach(|| P::write_image_png_rgba8(file_path, &image))
+                .map_err(to_pyerr)?;
         }
         "mono" => {
             let image = unsafe { numpy_as_image::<1>(py, &image)? };
-            P::write_image_png_gray8(file_path, &image).map_err(to_pyerr)?;
+            py.detach(|| P::write_image_png_gray8(file_path, &image))
+                .map_err(to_pyerr)?;
         }
         _ => {
             return Err(unsupported_mode_err(
@@ -79,19 +86,22 @@ pub fn write_image_png_u16(
             // SAFETY: the view borrows the numpy array, which the caller keeps alive and does not
             // mutate for the duration of this call.
             let image = unsafe { numpy_as_image_t::<u16, 3>(py, &image)? };
-            P::write_image_png_rgb16(file_path, &image).map_err(to_pyerr)?;
+            py.detach(|| P::write_image_png_rgb16(file_path, &image))
+                .map_err(to_pyerr)?;
         }
         "rgba" => {
             // SAFETY: the view borrows the numpy array, which the caller keeps alive and does not
             // mutate for the duration of this call.
             let image = unsafe { numpy_as_image_t::<u16, 4>(py, &image)? };
-            P::write_image_png_rgba16(file_path, &image).map_err(to_pyerr)?;
+            py.detach(|| P::write_image_png_rgba16(file_path, &image))
+                .map_err(to_pyerr)?;
         }
         "mono" => {
             // SAFETY: the view borrows the numpy array, which the caller keeps alive and does not
             // mutate for the duration of this call.
             let image = unsafe { numpy_as_image_t::<u16, 1>(py, &image)? };
-            P::write_image_png_gray16(file_path, &image).map_err(to_pyerr)?;
+            py.detach(|| P::write_image_png_gray16(file_path, &image))
+                .map_err(to_pyerr)?;
         }
         _ => {
             return Err(unsupported_mode_err(
@@ -114,7 +124,8 @@ fn decode_image_png_u8_inner(
             // handed to Python after the last write through `dst`.
             let (dst, out) = unsafe { alloc_output_pyarray_t::<u8, 3, ZEROED>(py, size)? };
             let mut wrapped = Rgb8(dst);
-            P::decode_image_png_rgb8(src, &mut wrapped).map_err(to_pyerr)?;
+            py.detach(|| P::decode_image_png_rgb8(src, &mut wrapped))
+                .map_err(to_pyerr)?;
             Ok(out)
         }
         "rgba" => {
@@ -122,7 +133,8 @@ fn decode_image_png_u8_inner(
             // handed to Python after the last write through `dst`.
             let (dst, out) = unsafe { alloc_output_pyarray_t::<u8, 4, ZEROED>(py, size)? };
             let mut wrapped = Rgba8(dst);
-            P::decode_image_png_rgba8(src, &mut wrapped).map_err(to_pyerr)?;
+            py.detach(|| P::decode_image_png_rgba8(src, &mut wrapped))
+                .map_err(to_pyerr)?;
             Ok(out)
         }
         "mono" => {
@@ -130,7 +142,8 @@ fn decode_image_png_u8_inner(
             // handed to Python after the last write through `dst`.
             let (dst, out) = unsafe { alloc_output_pyarray_t::<u8, 1, ZEROED>(py, size)? };
             let mut wrapped = Gray8(dst);
-            P::decode_image_png_mono8(src, &mut wrapped).map_err(to_pyerr)?;
+            py.detach(|| P::decode_image_png_mono8(src, &mut wrapped))
+                .map_err(to_pyerr)?;
             Ok(out)
         }
         _ => Err(unsupported_mode_err(
@@ -151,7 +164,8 @@ fn decode_image_png_u16_inner(
             // handed to Python after the last write through `dst`.
             let (dst, out) = unsafe { alloc_output_pyarray_t::<u16, 3, ZEROED>(py, size)? };
             let mut wrapped = Rgb16(dst);
-            P::decode_image_png_rgb16(src, &mut wrapped).map_err(to_pyerr)?;
+            py.detach(|| P::decode_image_png_rgb16(src, &mut wrapped))
+                .map_err(to_pyerr)?;
             Ok(out)
         }
         "rgba" => {
@@ -159,7 +173,8 @@ fn decode_image_png_u16_inner(
             // handed to Python after the last write through `dst`.
             let (dst, out) = unsafe { alloc_output_pyarray_t::<u16, 4, ZEROED>(py, size)? };
             let mut wrapped = Rgba16(dst);
-            P::decode_image_png_rgba16(src, &mut wrapped).map_err(to_pyerr)?;
+            py.detach(|| P::decode_image_png_rgba16(src, &mut wrapped))
+                .map_err(to_pyerr)?;
             Ok(out)
         }
         "mono" => {
@@ -167,7 +182,8 @@ fn decode_image_png_u16_inner(
             // handed to Python after the last write through `dst`.
             let (dst, out) = unsafe { alloc_output_pyarray_t::<u16, 1, ZEROED>(py, size)? };
             let mut wrapped = Gray16(dst);
-            P::decode_image_png_mono16(src, &mut wrapped).map_err(to_pyerr)?;
+            py.detach(|| P::decode_image_png_mono16(src, &mut wrapped))
+                .map_err(to_pyerr)?;
             Ok(out)
         }
         _ => Err(unsupported_mode_err(

@@ -56,8 +56,7 @@ impl PyImageDecoder {
         // to Python after the last write through `dst`.
         let (dst, out) = unsafe { alloc_output_pyarray_t::<u8, 3, ZEROED>(py, size)? };
         let mut wrapped = Rgb8(dst);
-        self.0
-            .decode_rgb8_into(jpeg_data, &mut wrapped)
+        py.detach(|| self.0.decode_rgb8_into(jpeg_data, &mut wrapped))
             .map_err(to_pyerr)?;
         Ok(out)
     }
@@ -78,8 +77,7 @@ impl PyImageDecoder {
         // to Python after the last write through `dst`.
         let (dst, out) = unsafe { alloc_output_pyarray_t::<u8, 1, ZEROED>(py, size)? };
         let mut wrapped = Gray8(dst);
-        self.0
-            .decode_gray8_into(jpeg_data, &mut wrapped)
+        py.detach(|| self.0.decode_gray8_into(jpeg_data, &mut wrapped))
             .map_err(to_pyerr)?;
         Ok(out)
     }
@@ -114,7 +112,7 @@ impl PyImageEncoder {
     /// * `Exception`: If encoding fails or the image format is incompatible.
     pub fn encode(&self, py: Python<'_>, image: PyImage) -> PyResult<Vec<u8>> {
         let image = unsafe { numpy_as_image::<3>(py, &image)? };
-        let jpeg_data = self.0.encode_rgb8(&image).map_err(to_pyerr)?;
+        let jpeg_data = py.detach(|| self.0.encode_rgb8(&image)).map_err(to_pyerr)?;
         Ok(jpeg_data)
     }
 
@@ -164,7 +162,7 @@ pub fn encode_image_jpegturbo(
         }
     };
     encoder.set_subsamp(sub).map_err(to_pyerr)?;
-    encoder.encode_rgb8(&image).map_err(to_pyerr)
+    py.detach(|| encoder.encode_rgb8(&image)).map_err(to_pyerr)
 }
 
 /// Reads an 8-bit RGB JPEG image from a file path using libjpeg-turbo.
@@ -182,7 +180,8 @@ pub fn encode_image_jpegturbo(
 /// *Python-only helper; not part of kornia-io's Rust API.*
 #[pyfunction]
 pub fn read_image_jpegturbo(py: Python<'_>, file_path: &str) -> PyResult<PyImage> {
-    let bytes = std::fs::read(file_path)
+    let bytes = py
+        .detach(|| std::fs::read(file_path))
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string()))?;
     let decoder = JpegTurboDecoder::new().map_err(to_pyerr)?;
     let size = decoder.read_header(&bytes).map_err(to_pyerr)?;
@@ -190,8 +189,7 @@ pub fn read_image_jpegturbo(py: Python<'_>, file_path: &str) -> PyResult<PyImage
     // Python after the last write through `dst`.
     let (dst, out) = unsafe { alloc_output_pyarray_t::<u8, 3, ZEROED>(py, size)? };
     let mut wrapped = Rgb8(dst);
-    decoder
-        .decode_rgb8_into(&bytes, &mut wrapped)
+    py.detach(|| decoder.decode_rgb8_into(&bytes, &mut wrapped))
         .map_err(to_pyerr)?;
     Ok(out)
 }
@@ -215,7 +213,8 @@ pub fn write_image_jpegturbo(
     quality: u8,
 ) -> PyResult<()> {
     let image = unsafe { numpy_as_image::<3>(py, &image)? };
-    write_image_jpegturbo_rgb8(file_path, &image, quality).map_err(to_pyerr)?;
+    py.detach(|| write_image_jpegturbo_rgb8(file_path, &image, quality))
+        .map_err(to_pyerr)?;
     Ok(())
 }
 
@@ -244,8 +243,7 @@ pub fn decode_image_jpegturbo(py: Python<'_>, jpeg_data: &[u8], mode: &str) -> P
             // handed to Python after the last write through `dst`.
             let (dst, out) = unsafe { alloc_output_pyarray_t::<u8, 3, ZEROED>(py, size)? };
             let mut wrapped = Rgb8(dst);
-            decoder
-                .decode_rgb8_into(jpeg_data, &mut wrapped)
+            py.detach(|| decoder.decode_rgb8_into(jpeg_data, &mut wrapped))
                 .map_err(to_pyerr)?;
             Ok(out)
         }
@@ -254,8 +252,7 @@ pub fn decode_image_jpegturbo(py: Python<'_>, jpeg_data: &[u8], mode: &str) -> P
             // handed to Python after the last write through `dst`.
             let (dst, out) = unsafe { alloc_output_pyarray_t::<u8, 1, ZEROED>(py, size)? };
             let mut wrapped = Gray8(dst);
-            decoder
-                .decode_gray8_into(jpeg_data, &mut wrapped)
+            py.detach(|| decoder.decode_gray8_into(jpeg_data, &mut wrapped))
                 .map_err(to_pyerr)?;
             Ok(out)
         }
