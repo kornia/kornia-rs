@@ -306,8 +306,9 @@ pub fn umeyama_f64(
 }
 
 /// Relative threshold for yaw degeneracy: yaw falls back to `0.0` when the
-/// in-plane source variance is `<= DEGENERATE_YAW_TOL * var_src` (collinear
-/// with gravity or coincident) or when the dimensionless in-plane correlation
+/// in-plane source or destination variance is `<= DEGENERATE_YAW_TOL * var_src`
+/// or `<= DEGENERATE_YAW_TOL * var_dst` (collinear with gravity or coincident),
+/// or when the dimensionless in-plane correlation
 /// `hypot(a, b) / (sqrt(var_src_perp) * sqrt(var_dst_perp))` is `<= DEGENERATE_YAW_TOL`.
 const DEGENERATE_YAW_TOL: f64 = 1e-15;
 
@@ -324,8 +325,8 @@ const DEGENERATE_YAW_TOL: f64 = 1e-15;
 /// the plane orthogonal to `u` (`p_⊥ = p − (p · u) u`, `q_⊥ = q − (q · u) u`),
 /// the optimal yaw angle is `θ = atan2(b, a)` with
 /// `a = Σ wᵢ (p_⊥ · q_⊥) / Σ wᵢ` and `b = Σ wᵢ (u · (p_⊥ × q_⊥)) / Σ wᵢ`.
-/// When `var_src_perp <= 1e-15 * var_src` or
-/// `hypot(a, b) <= 1e-15 * sqrt(var_src_perp) * sqrt(var_dst_perp)` (scale-
+/// When `var_src_perp <= 1e-15 * var_src`, `var_dst_perp <= 1e-15 * var_dst`,
+/// or `hypot(a, b) <= 1e-15 * sqrt(var_src_perp) * sqrt(var_dst_perp)` (scale-
 /// invariant degeneracy checks), yaw is unobservable and `R` falls back to
 /// [`Mat3F64::IDENTITY`]. Point coordinates are assumed finite; a point with
 /// weight `0` is ignored entirely.
@@ -346,7 +347,7 @@ const DEGENERATE_YAW_TOL: f64 = 1e-15;
 ///
 /// Checked in order: [`UmeyamaError::MismatchedInputLengths`] (`src.len() != dst.len()`),
 /// [`UmeyamaError::EmptyInput`] (`src.is_empty()`),
-/// [`UmeyamaError::InvalidGravityAxis`] (zero or non-finite `gravity_axis` or unit normal),
+/// [`UmeyamaError::InvalidGravityAxis`] (zero or non-finite `gravity_axis`),
 /// [`UmeyamaError::InvalidWeights`] (empty, non-finite, negative, or all-zero weights),
 /// and [`UmeyamaError::MismatchedWeightsLength`] (`weights.len() != src.len()`).
 ///
@@ -383,14 +384,19 @@ pub fn umeyama_yaw_f64(
     if src.is_empty() {
         return Err(UmeyamaError::EmptyInput);
     }
-    let g_norm = gravity_axis.length();
-    if !g_norm.is_finite() || g_norm == 0.0 {
+    if !gravity_axis.x.is_finite() || !gravity_axis.y.is_finite() || !gravity_axis.z.is_finite() {
         return Err(UmeyamaError::InvalidGravityAxis { axis: gravity_axis });
     }
-    let u = gravity_axis / g_norm;
-    if !u.x.is_finite() || !u.y.is_finite() || !u.z.is_finite() {
+    let max_abs = gravity_axis
+        .x
+        .abs()
+        .max(gravity_axis.y.abs())
+        .max(gravity_axis.z.abs());
+    if max_abs == 0.0 {
         return Err(UmeyamaError::InvalidGravityAxis { axis: gravity_axis });
     }
+    let scaled = gravity_axis / max_abs;
+    let u = scaled / scaled.length();
 
     let WeightedCentroids {
         mu_s,
@@ -401,6 +407,7 @@ pub fn umeyama_yaw_f64(
     let mut a = 0.0f64;
     let mut b = 0.0f64;
     let mut var_src = 0.0f64;
+    let mut var_dst = 0.0f64;
     let mut var_src_perp = 0.0f64;
     let mut var_dst_perp = 0.0f64;
     let mut first_active: Option<(Vec3F64, Vec3F64)> = None;
@@ -425,16 +432,19 @@ pub fn umeyama_yaw_f64(
         a += sc_perp.dot(dc_perp) * wi;
         b += u.dot(sc_perp.cross(dc_perp)) * wi;
         var_src += sc.dot(sc) * wi;
+        var_dst += dc.dot(dc) * wi;
         var_src_perp += sc_perp.dot(sc_perp) * wi;
         var_dst_perp += dc_perp.dot(dc_perp) * wi;
     }
     a /= sum_w;
     b /= sum_w;
     var_src /= sum_w;
+    var_dst /= sum_w;
     var_src_perp /= sum_w;
     var_dst_perp /= sum_w;
 
-    let has_in_plane_spread = var_src_perp > DEGENERATE_YAW_TOL * var_src;
+    let has_in_plane_spread =
+        var_src_perp > DEGENERATE_YAW_TOL * var_src && var_dst_perp > DEGENERATE_YAW_TOL * var_dst;
     let has_correlation =
         a.hypot(b) > DEGENERATE_YAW_TOL * var_src_perp.sqrt() * var_dst_perp.sqrt();
     let r = if !all_src_coincident && !all_dst_coincident && has_in_plane_spread && has_correlation
@@ -2426,6 +2436,25 @@ mod tests {
         let dst3 = [Vec3F64::new(9.0, 9.0, 9.0), Vec3F64::new(-5.0, 4.0, 1.0), q];
         let out_1 = umeyama_yaw_f64(&src3, &dst3, g, Some(&[0.0, 0.0, 1.0]))?;
         assert_matches_true(&out_1, &Mat3F64::IDENTITY, &(q - p), 1.0, 1e-12);
+
+        // Full-3D src mapped onto a dst collinear with a tilted gravity axis:
+        // 1-ULP projection rounding in `dc_perp` must not trigger an arbitrary yaw.
+        let tilted = Vec3F64::new(1.0, 1.0, 1.0);
+        let u_tilted = tilted.normalize();
+        let src_full = random_points(0x7A06, 4, 2.0);
+        let dst_collinear: Vec<Vec3F64> = [-2.0, -0.5, 1.0, 3.5]
+            .iter()
+            .map(|&k| u_tilted * k + t_true)
+            .collect();
+        let out_dst_col = umeyama_yaw_f64(&src_full, &dst_collinear, tilted, None)?;
+        for (a, b) in out_dst_col
+            .r
+            .to_cols_array()
+            .iter()
+            .zip(Mat3F64::IDENTITY.to_cols_array())
+        {
+            assert!((a - b).abs() < 1e-12, "expected R = I, got {a} vs {b}");
+        }
         Ok(())
     }
 
@@ -2514,8 +2543,7 @@ mod tests {
             Vec3F64::ZERO,
             Vec3F64::new(0.0, f64::NAN, 1.0),
             Vec3F64::new(f64::INFINITY, 0.0, 1.0),
-            Vec3F64::new(1e200, 1e200, 1e200),
-            Vec3F64::new(1e-320, 0.0, 0.0),
+            Vec3F64::new(0.0, f64::NEG_INFINITY, 0.0),
         ] {
             assert!(matches!(
                 umeyama_yaw_f64(&src, &src, bad_g, Some(&[])),
@@ -2553,6 +2581,34 @@ mod tests {
         let out = umeyama_yaw_f64(&src, &dst, gravity, None)?;
         assert_matches_true(&out, &r_true, &t_true, 1.0, 1e-12);
         assert!((out.r * u - u).length() < 1e-14);
+        Ok(())
+    }
+
+    #[test]
+    fn test_umeyama_yaw_f64_extreme_gravity_axis_magnitudes() -> Result<(), UmeyamaError> {
+        let src = random_points(0x7A05, 5, 2.0);
+        let t_true = Vec3F64::new(0.5, -0.3, 2.0);
+
+        for (gravity, u_true) in [
+            (
+                Vec3F64::new(1.5e-161, 0.0, 0.0),
+                Vec3F64::new(1.0, 0.0, 0.0),
+            ),
+            (
+                Vec3F64::new(1e-160, -2e-160, 2e-160),
+                Vec3F64::new(1.0 / 3.0, -2.0 / 3.0, 2.0 / 3.0),
+            ),
+            (
+                Vec3F64::new(1e200, -2e200, 2e200),
+                Vec3F64::new(1.0 / 3.0, -2.0 / 3.0, 2.0 / 3.0),
+            ),
+        ] {
+            let r_true = SO3F64::exp(u_true * 0.85).matrix();
+            let dst: Vec<Vec3F64> = src.iter().map(|p| r_true * *p + t_true).collect();
+            let out = umeyama_yaw_f64(&src, &dst, gravity, None)?;
+            assert_matches_true(&out, &r_true, &t_true, 1.0, 1e-12);
+            assert!((out.r * u_true - u_true).length() < 1e-14);
+        }
         Ok(())
     }
 }
