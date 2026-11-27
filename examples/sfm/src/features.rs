@@ -387,6 +387,14 @@ pub(crate) fn make_extractor(
 /// CPUs). Call before any parallel work; building the global pool more than
 /// once is an error.
 ///
+/// # Arguments
+///
+/// * `threads` - Worker count; `0` keeps rayon's auto-detected size.
+///
+/// # Returns
+///
+/// `Ok(())` once the pool is configured (or left at its default).
+///
 /// # Errors
 ///
 /// Returns an error if the pool is already initialized.

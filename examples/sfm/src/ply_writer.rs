@@ -105,6 +105,10 @@ pub(crate) fn build_vertices(
 /// * `path` - Destination file path.
 /// * `vertices` - Vertices to write.
 ///
+/// # Returns
+///
+/// `Ok(())` once the header and all vertices are written.
+///
 /// # Errors
 ///
 /// Returns an error if the file cannot be created or written.
@@ -157,6 +161,19 @@ fn sample_color(rgb_frames: &[Image<u8, 3>], cam_idx: usize, pixel: Vec2F64) -> 
 /// Sample every raw observation's colour from the source RGB frames, indexed by
 /// track. Computed before reconstruction so the RGB frames can be dropped; a
 /// point then looks up the colour for whichever of its observations survived.
+///
+/// # Arguments
+///
+/// * `tracks` - Feature tracks from `kornia_calib::build_tracks`.
+/// * `rgb_frames` - Decoded RGB frames, indexed by camera.
+///
+/// # Returns
+///
+/// Per track, `(camera, colour)` for each raw observation.
+///
+/// # Errors
+///
+/// Never fails; out-of-bounds samples clamp to the frame edge.
 pub(crate) fn sample_observation_colors(
     tracks: &[FeatureTrack],
     rgb_frames: &[Image<u8, 3>],

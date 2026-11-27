@@ -192,7 +192,8 @@ pub struct ReconstructionConfig {
     /// candidate pose early when the evidence says it cannot be good, saving
     /// per-point work when many candidates fail (e.g. noisy ORB tracks). It
     /// does **not** use [`ReconstructionConfig::min_registration_inliers`]: that
-    /// gate is applied to the registered pose after the solve.
+    /// gate is applied to the registered pose after the solve. A config that
+    /// fails [`SPRTConfig::is_valid`] is ignored (SPRT stays off).
     pub sprt: Option<SPRTConfig>,
 }
 

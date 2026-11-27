@@ -49,6 +49,10 @@ fn rerun_from_pose(pose: &Pose3d) -> ([f32; 3], [f32; 4]) {
 /// * `fx` / `fy` / `cx` / `cy` - Camera intrinsics (pixels).
 /// * `width` / `height` - Frame size in pixels (for the pinhole frustum).
 ///
+/// # Returns
+///
+/// `Ok(())` once the point cloud and cameras are logged; the viewer runs detached.
+///
 /// # Errors
 ///
 /// Returns an error if rerun cannot spawn a viewer.
