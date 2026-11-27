@@ -28,7 +28,8 @@ const MAX_ITERS: usize = 100;
 /// Each corner iterates over a `(2 half_win + 1)²` window for at most
 /// `max_iter` steps or until a step is below `epsilon` pixels. A corner that
 /// moves more than `half_win` in either axis keeps its input value, as
-/// OpenCV's. Nothing moves when `half_win` is 0, the image is smaller than
+/// OpenCV's, and a step that would leave the image ends the iteration at the
+/// previous estimate. Nothing moves when `half_win` is 0, the image is smaller than
 /// `2 half_win + 5` in either axis, or the corner is outside it. No
 /// allocation.
 ///
@@ -155,8 +156,12 @@ fn refine(
         ];
         let (dx, dy) = (next[0] - c[0], next[1] - c[1]);
         let err = f64::from(dx * dx + dy * dy);
+        // An out-of-image step keeps the previous estimate (OpenCV 4.x/5.x).
+        if !inside(next) {
+            break;
+        }
         c = next;
-        if !inside(c) || err <= eps2 {
+        if err <= eps2 {
             break;
         }
     }
@@ -339,6 +344,32 @@ mod tests {
         let mut tiny = [[4.0, 4.0]];
         corner_sub_pix(&corner(8), &mut tiny, 2, 20, 0.01);
         assert_eq!(tiny, [[4.0, 4.0]]);
+    }
+
+    #[test]
+    fn keeps_the_previous_estimate_when_a_step_leaves_the_image() {
+        // A wedge opening right from the left edge: the one step from (0, 16)
+        // lands near x = -1.56, outside the image but within `half_win`.
+        let img = Image::new(
+            ImageSize {
+                width: 32,
+                height: 32,
+            },
+            (0..32 * 32i32)
+                .map(|i| {
+                    let (x, y) = (i % 32, i / 32);
+                    if (y - 16).abs() <= x + 1 {
+                        220
+                    } else {
+                        30
+                    }
+                })
+                .collect(),
+        )
+        .unwrap();
+        let mut corners = [[0.0, 16.0]];
+        corner_sub_pix(&img, &mut corners, 2, 1, 0.01);
+        assert_eq!(corners, [[0.0, 16.0]]);
     }
 
     #[test]

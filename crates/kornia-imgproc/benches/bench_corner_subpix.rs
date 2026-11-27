@@ -108,9 +108,13 @@ mod opencv_arm {
         let cv_img = mat(img).unwrap();
         let term_type = core::TermCriteria_Type::COUNT as i32 + core::TermCriteria_Type::EPS as i32;
         group.bench_function("opencv_refine_48_win11", |b| {
+            // Allocated once, as the Rust arm's buffer is.
+            let mut pts = points(start);
             b.iter(|| {
                 // In/out; refilling the 48 starts is timed too.
-                let mut pts = points(start);
+                for (i, p) in start.iter().enumerate() {
+                    pts.set(i, core::Point2f::new(p[0], p[1])).unwrap();
+                }
                 let term = core::TermCriteria::new(term_type, MAX_ITER as i32, f64::from(EPSILON))
                     .unwrap();
                 imgproc::corner_sub_pix(

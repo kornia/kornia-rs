@@ -457,6 +457,9 @@ fn half_image(src: &[u8], w: usize, source: &Source, half: &mut Vec<u8>) {
 /// Points kept so far, bucketed by `min_spacing_px` cells (OpenCV's grid).
 struct Spacing<'a> {
     spacing: f32,
+    /// Cell side: the spacing, at least 1 px so a tiny spacing cannot ask for
+    /// a grid finer than the pixels.
+    bucket: f32,
     cols: usize,
     rows: usize,
     head: &'a mut Vec<u32>,
@@ -478,10 +481,11 @@ impl<'a> Spacing<'a> {
         } else {
             0.0
         };
+        let bucket = spacing.max(1.0);
         let (cols, rows) = if spacing > 0.0 {
             (
-                ((w as f32 / spacing).ceil() as usize).max(1),
-                ((h as f32 / spacing).ceil() as usize).max(1),
+                ((w as f32 / bucket).ceil() as usize).max(1),
+                ((h as f32 / bucket).ceil() as usize).max(1),
             )
         } else {
             (0, 0)
@@ -492,6 +496,7 @@ impl<'a> Spacing<'a> {
         points.clear();
         Self {
             spacing,
+            bucket,
             cols,
             rows,
             head,
@@ -501,7 +506,7 @@ impl<'a> Spacing<'a> {
     }
 
     fn cell(&self, p: [f32; 2]) -> (usize, usize) {
-        let at = |v: f32, n: usize| ((v / self.spacing).floor().max(0.0) as usize).min(n - 1);
+        let at = |v: f32, n: usize| ((v / self.bucket).floor().max(0.0) as usize).min(n - 1);
         (at(p[0], self.cols), at(p[1], self.rows))
     }
 
@@ -726,6 +731,19 @@ mod tests {
             assert!(detect(&squares(), &[], &p).is_empty(), "{p:?}");
         }
         assert!(!detect(&squares(), &[], &params(false)).is_empty());
+    }
+
+    #[test]
+    fn a_tiny_spacing_keeps_the_grid_bounded() {
+        // `64 / MIN_POSITIVE` cells per axis would overflow `cols * rows`.
+        let img = image(64, 64, |x, y| {
+            ((x * 37 + y * 101 + (x * y) % 23) % 251) as u8
+        });
+        let p = GoodFeaturesParams {
+            min_spacing_px: f32::MIN_POSITIVE,
+            ..params(false)
+        };
+        assert_eq!(detect(&img, &[], &p).len(), p.max_corners);
     }
 
     /// The half-resolution path is the full-resolution detector on the 2×2
