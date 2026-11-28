@@ -296,6 +296,72 @@ mod tests {
         check_round_trip(7, 3, super::luv_from_rgb, super::rgb_from_luv, 1e-3, true)
     }
 
+    /// Neutral colours have zero Luv chroma, and zero chroma maps back to a
+    /// neutral colour. This checks the white point directly: the f64 oracle
+    /// shares `LUV_UN` / `LUV_VN`, so the SIMD-vs-scalar tests cannot see a
+    /// wrong white (it gave u = -0.130, v = +0.041 for white).
+    #[test]
+    fn luv_neutral_has_zero_chroma() -> Result<(), ImageError> {
+        // f32 bound per arch: x86_64 runs the scalar path (measured max 1.5e-4
+        // over 1000 grays); aarch64's NEON path uses a one-step reciprocal
+        // (~1e-4 relative), which allows ~13·L·u′·1e-4 ≈ 0.026 at L = 100.
+        #[cfg(target_arch = "aarch64")]
+        const F32_CHROMA_TOL: f32 = 3e-2;
+        #[cfg(not(target_arch = "aarch64"))]
+        const F32_CHROMA_TOL: f32 = 1e-3;
+        #[cfg(target_arch = "aarch64")]
+        const F32_NEUTRAL_TOL: f32 = 1e-3;
+        #[cfg(not(target_arch = "aarch64"))]
+        const F32_NEUTRAL_TOL: f32 = 1e-5;
+        let grays = [0.02, 0.1, 0.25, 0.5, 0.75, 1.0];
+        // 29 pixels: on aarch64 the NEON driver runs three 8-px blocks, one
+        // 4-px block and a 1-px scalar tail (x86_64 is scalar throughout).
+        let (w, n) = (29usize, grays.len());
+        let size = ImageSize {
+            width: w,
+            height: 1,
+        };
+        let g64: Vec<f64> = (0..w).flat_map(|i| [grays[i % n]; 3]).collect();
+        let g32: Vec<f32> = g64.iter().map(|&v| v as f32).collect();
+
+        let mut out64 = Image::<f64, 3>::from_size_val(size, 0.0)?;
+        super::luv_from_rgb(&Image::<f64, 3>::new(size, g64)?, &mut out64)?;
+        let mut out32 = Image::<f32, 3>::from_size_val(size, 0.0)?;
+        super::luv_from_rgb(&Image::<f32, 3>::new(size, g32)?, &mut out32)?;
+        for (p64, p32) in out64.as_slice().chunks(3).zip(out32.as_slice().chunks(3)) {
+            // f32-stored constants leave a residual that grows with L; measured
+            // at white: u = -2.9e-5, v = -5.9e-5. The wrong white gave 0.13 / 0.04.
+            assert!(p64[1].abs() < 1e-4 && p64[2].abs() < 1e-4, "f64 {p64:?}");
+            assert!(
+                p32[1].abs() < F32_CHROMA_TOL && p32[2].abs() < F32_CHROMA_TOL,
+                "f32 {p32:?}"
+            );
+        }
+
+        // (L, 0, 0) back to RGB is neutral, f64 and f32.
+        let ls: Vec<f64> = (0..w)
+            .flat_map(|i| [100.0 * grays[i % n], 0.0, 0.0])
+            .collect();
+        let ls32: Vec<f32> = ls.iter().map(|&v| v as f32).collect();
+        let mut rgb = Image::<f64, 3>::from_size_val(size, 0.0)?;
+        super::rgb_from_luv(&Image::<f64, 3>::new(size, ls)?, &mut rgb)?;
+        for p in rgb.as_slice().chunks(3) {
+            assert!(
+                (p[0] - p[1]).abs() < 1e-5 && (p[1] - p[2]).abs() < 1e-5,
+                "f64 rgb_from_luv(L, 0, 0) = {p:?}"
+            );
+        }
+        let mut rgb32 = Image::<f32, 3>::from_size_val(size, 0.0)?;
+        super::rgb_from_luv(&Image::<f32, 3>::new(size, ls32)?, &mut rgb32)?;
+        for p in rgb32.as_slice().chunks(3) {
+            assert!(
+                (p[0] - p[1]).abs() < F32_NEUTRAL_TOL && (p[1] - p[2]).abs() < F32_NEUTRAL_TOL,
+                "f32 rgb_from_luv(L, 0, 0) = {p:?}"
+            );
+        }
+        Ok(())
+    }
+
     #[test]
     fn black_white_no_nan() -> Result<(), ImageError> {
         let size = ImageSize {

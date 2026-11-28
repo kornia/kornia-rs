@@ -386,6 +386,8 @@ H∈[0,360], S/V∈[0,1] convention; hue compared circularly):
 | RGB→Lab   | 0.674   | ❌ bounded by cv2's own error | 1.35× |
 | RGB→Luv   | 0.160   | ❌ bounded by cv2's own error | 0.61× |
 
+The Luv row predates the #1442 fix: about 0.13 of that gap (in `u`, 0.04 in `v`) came from kornia-rs's own `u′ₙ, v′ₙ`, which belonged to a different white point than its XYZ conversion, not from cv2.
+
 **The exactly-defined conversions (linear matrix + sextant) are byte-exact to cv2.**
 HSV/HLS differ only by a sub-0.01° hue rounding (our reciprocal vs cv2's).
 

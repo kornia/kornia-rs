@@ -45,9 +45,13 @@ const LAB_F_OFFSET: f32 = 0.137_931_03; // 4/29
 const LAB_FINV_THRESH: f32 = 0.206_896_55; // 6/29
 const LAB_FINV_SLOPE: f32 = 0.128_418_55; // 3*(6/29)^2
 
-// Luv constants.
-const LUV_UN: f32 = 0.197_939_43;
-const LUV_VN: f32 = 0.468_310_96;
+// Luv constants. u'n and v'n are the chromaticity of the D65 white above,
+// `4·Xn / (Xn + 15·Yn + 3·Zn)` and `9·Yn / (Xn + 15·Yn + 3·Zn)`, so neutral
+// colours get u = v = 0. The CUDA source (`cuda/color/cie.rs`) derives them
+// with the same f32 expressions.
+const LUV_WHITE_DENOM: f32 = XN + 15.0 * YN + 3.0 * ZN;
+const LUV_UN: f32 = 4.0 * XN / LUV_WHITE_DENOM;
+const LUV_VN: f32 = 9.0 * YN / LUV_WHITE_DENOM;
 const LUV_KAPPA: f32 = 903.3; // CIE κ
 
 // ===== scalar helpers (oracle building blocks) ======================================
