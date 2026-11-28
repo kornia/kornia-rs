@@ -232,7 +232,7 @@ Err(KorniaError::SizeMismatch {
 
    Agents posting comments or reviews for someone end them with `Posted on behalf of @<handle> by <Agent> (<actual model>).`
 
-   Then self-review in a fresh session or subagent with `kornia-code-review` and paste its output in the PR's Self-review section (required; the PR check fails without it).
+   Then self-review in a fresh session or a subagent with no authoring context (not a fork) with `kornia-code-review` and paste its output in the PR's Self-review section (required; the PR check fails without it).
 
 3. **Update documentation** — any new or changed public API must have updated doc comments. New features need an entry in the relevant crate's `README.md` or module-level doc.
 

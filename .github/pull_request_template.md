@@ -21,7 +21,7 @@ $ pixi run pr-check
 ## Self-review (required)
 
 <!-- Run the kornia-code-review skill from .claude/skills on `git diff main...HEAD`
-in a fresh session or subagent (e.g. tell your agent: "in a fresh session,
+in a fresh session or a subagent with no authoring context, not a fork (e.g. tell your agent: "in a fresh session,
 self-review my diff with .claude/skills/kornia-code-review"),
 fix what it finds, and paste its final output here. The PR check fails while this
 section has no verdict. -->

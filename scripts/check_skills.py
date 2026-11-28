@@ -2,7 +2,7 @@
 """Validate agent skills under .claude/skills (agentskills.io format).
 
 Structure: every skill dir has a SKILL.md whose frontmatter `name` matches the
-directory and whose description starts with "Use "; required skills exist and
+directory and whose description starts with "Use " and holds no unquoted ": "; required skills exist and
 AGENTS.md references them; cited repo paths exist.
 
 Facts (restated facts must match their source of truth, see kornia-curation):
@@ -20,6 +20,8 @@ gets a warning, and a maintainer re-syncs the case. SKILLS_STRICT_EVALS=1
 makes every stale case an error, =0 a warning.
 The publish check first runs on PUBLISH_PROBES; a change that stops it rejecting
 one fails here, not silently.
+
+The listed docs that name the self-review step must require a fresh session.
 
 This cannot check that guidance is complete or that it was applied.
 """
@@ -51,7 +53,7 @@ REQUIRED = [
 ]
 PATH_REF = r"`((?:crates|scripts|kornia-py|kornia-cpp|docs|\.github)/[A-Za-z0-9_./-]+)`"
 
-# Every doc that names the self-review step must say it runs in a fresh session.
+# Hand-maintained list: every doc that names the self-review step must say it runs in a fresh session.
 # The rule lives in kornia-code-review; the others are one-clause summaries that
 # would otherwise drift back to the same-session pattern.
 SELF_REVIEW_SKILL = ".claude/skills/kornia-code-review/SKILL.md"
@@ -74,12 +76,14 @@ def missing_fresh_session(text: str, per_line: bool = False) -> bool:
     """Return True when any one mention of the self-review step lacks a fresh session.
 
     A mention is a paragraph, list item or table row (a line when `per_line`) that
-    names both the self-review and `kornia-code-review`.
+    names `kornia-code-review` together with a self-review, or says to run or
+    paste it.
+    This only checks the phrase is present; it does not read negations.
     """
     split = r"\n" if per_line else r"\n\s*\n|\n(?=\s*(?:[-*|]|\d+\.)\s)"
     for block in re.split(split, text):
         flat = " ".join(block.split())
-        if "kornia-code-review" in flat and "self-review" in flat.lower() and "fresh session" not in flat.lower().replace("fresh-session", "fresh session"):
+        if "kornia-code-review" in flat and re.search(r"self[- ]?review|\b(?:run|paste)\b[^.]{0,40}kornia-code-review", flat, re.I) and not re.search(r"fresh[- ]session", flat, re.I):
             return True
     return False
 
@@ -283,6 +287,9 @@ def main() -> int:
         fm = frontmatter(text)
         if fm.get("name") != skill.name:
             errors.append(f"{skill.name}: frontmatter name {fm.get('name')!r} != directory")
+        raw = fm.get("description", "")
+        if ": " in raw and not raw.startswith(("'", '"')):
+            errors.append(f"{skill.name}: unquoted ': ' in description is invalid YAML")
         if not fm.get("description", "").startswith("Use "):
             errors.append(f"{skill.name}: description should start with 'Use ' (trigger wording)")
         for ref in re.findall(PATH_REF, text):

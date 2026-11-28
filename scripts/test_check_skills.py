@@ -60,6 +60,12 @@ class TestSelfReviewFreshness(unittest.TestCase):
         good = "Self-review with `kornia-code-review` in a fresh session."
         old = "| `kornia-code-review` | mandatory self-review before every PR |"
         self.assertFalse(check_skills.missing_fresh_session(good))
+        for probe in (
+            "Then run the `kornia-code-review` skill on your diff",
+            "Run the `kornia-code-review` skill and paste its output in the PR description.",
+            "Self review your diff with `kornia-code-review`.",
+        ):
+            self.assertTrue(check_skills.missing_fresh_session(probe), probe)
         self.assertTrue(check_skills.missing_fresh_session(old))
         self.assertTrue(check_skills.missing_fresh_session(good + "\n\n" + old))
         self.assertTrue(check_skills.missing_fresh_session(good + "\n" + old, per_line=True))
