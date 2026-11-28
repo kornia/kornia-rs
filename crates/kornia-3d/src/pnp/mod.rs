@@ -9,8 +9,14 @@ pub mod ransac;
 /// LM-based pose refinement.
 pub mod refine;
 
+/// LM pose refinement with an analytic Jacobian.
+pub mod refine_analytic;
+
 /// AP3P solver implementation.
 pub mod ap3p;
+
+/// Multi-camera rig pose from ray matches: AP3P lifted to the rig, with RANSAC.
+pub mod rig;
 
 mod ops;
 
@@ -20,6 +26,7 @@ use kornia_algebra::{Mat3AF32, Vec2F32, Vec3AF32};
 use kornia_imgproc::calibration::distortion::PolynomialDistortion;
 pub use ransac::{solve_pnp_ransac, PnPRansacError, PnPRansacResult, RansacParams};
 pub use refine::{refine_pose_lm, LMRefineParams};
+pub use refine_analytic::{refine_pose_lm_analytic, refine_pose_lm_analytic_supports};
 use thiserror::Error;
 
 /// Error types for PnP solvers.

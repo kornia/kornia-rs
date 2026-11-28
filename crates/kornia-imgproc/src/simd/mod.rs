@@ -6,6 +6,8 @@
 
 use std::sync::OnceLock;
 
+pub(crate) mod lanes;
+
 /// Runtime CPU feature snapshot, probed once per process.
 ///
 /// Cross-arch fields are always `false` on a build that targets a different
