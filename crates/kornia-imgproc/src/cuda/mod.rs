@@ -4,7 +4,7 @@
 //! for device memory and launches. The whole module is gated on the `cuda`
 //! feature at its declaration in `lib.rs`.
 
-/// Fused Harris response without shared memory.
+/// Fused Harris response on shared-memory tiles.
 pub mod harris;
 
 /// Native CUDA downscale kernels using `__ldg` read-only cache.

@@ -1,4 +1,4 @@
-//! Fused f32 Harris response without shared memory, compiled through NVRTC.
+//! Fused f32 Harris response on shared-memory tiles, compiled through NVRTC.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -13,24 +13,28 @@ super::define_cuda_error!(
     "CUDA Harris error: {0}"
 );
 
+// Launch block; also emitted as TILE_W/TILE_H into the kernel source.
+const TILE: (u32, u32) = (32, 8);
+
 static HARRIS_SRC: &str = r#"
 // Reference: features/responses.rs, HarrisResponse::compute (f32).
+// Gradients for the tile plus a 1-pixel halo (window radius 1).
+#define G_W (TILE_W + 2)
+#define G_H (TILE_H + 2)
+
 extern "C" __global__ void harris_fused_f32(
     const float* src, float* dst, int width, int height, float k)
 {
-    const int x = blockIdx.x * blockDim.x + threadIdx.x;
-    const int y = blockIdx.y * blockDim.y + threadIdx.y;
-    if (x < 1 || y < 1 || x >= width - 1 || y >= height - 1)
-        return;
+    __shared__ float s_ix[G_H][G_W];
+    __shared__ float s_iy[G_H][G_W];
 
-    float a = 0.0f, b = 0.0f, c = 0.0f;
-    for (int dy = -1; dy <= 1; ++dy) {
-        for (int dx = -1; dx <= 1; ++dx) {
-            const int nx = x + dx, ny = y + dy;
-            // The CPU leaves gradient products on the image border at zero.
-            if (nx < 1 || ny < 1 || nx >= width - 1 || ny >= height - 1)
-                continue;
-
+    const int tid = threadIdx.y * TILE_W + threadIdx.x;
+    for (int i = tid; i < G_W * G_H; i += TILE_W * TILE_H) {
+        const int r = i / G_W, c = i % G_W;
+        const int nx = (int)(blockIdx.x * TILE_W) - 1 + c, ny = (int)(blockIdx.y * TILE_H) - 1 + r;
+        float ix = 0.0f, iy = 0.0f;
+        // The CPU leaves gradient products on the image border at zero.
+        if (nx >= 1 && ny >= 1 && nx < width - 1 && ny < height - 1) {
             const int p = ny * width + nx;
             const float v11 = src[p - width - 1];
             const float v12 = src[p - width];
@@ -40,10 +44,27 @@ extern "C" __global__ void harris_fused_f32(
             const float v31 = src[p + width - 1];
             const float v32 = src[p + width];
             const float v33 = src[p + width + 1];
-            const float ix =
+            ix =
                 (-v33 + v31 - 2.0f * v23 + 2.0f * v21 - v13 + v11) * 0.125f;
-            const float iy =
+            iy =
                 (-v33 - 2.0f * v32 - v31 + v13 + 2.0f * v12 + v11) * 0.125f;
+        }
+        s_ix[r][c] = ix;
+        s_iy[r][c] = iy;
+    }
+    __syncthreads();
+
+    const int x = blockIdx.x * TILE_W + threadIdx.x;
+    const int y = blockIdx.y * TILE_H + threadIdx.y;
+    if (x < 1 || y < 1 || x >= width - 1 || y >= height - 1)
+        return;
+
+    // Same summation order as the CPU: row by row, left to right.
+    float a = 0.0f, b = 0.0f, c = 0.0f;
+    for (int dy = 0; dy < 3; ++dy) {
+        for (int dx = 0; dx < 3; ++dx) {
+            const float ix = s_ix[threadIdx.y + dy][threadIdx.x + dx];
+            const float iy = s_iy[threadIdx.y + dy][threadIdx.x + dx];
             a += ix * ix;
             b += iy * iy;
             c += ix * iy;
@@ -68,9 +89,14 @@ fn get_kernel(ctx: &Arc<CudaContext>) -> Result<Arc<CudaKernel>, CudaHarrisError
     if let Some(kernel) = cache.lock().map_err(lock_error)?.get(&key).cloned() {
         return Ok(kernel);
     }
+    let src = format!(
+        "#define TILE_W {}\n#define TILE_H {}\n{HARRIS_SRC}",
+        TILE.0, TILE.1
+    );
     let kernel = Arc::new(
-        super::try_compile_with_l1(ctx, HARRIS_SRC, "harris_fused_f32")
-            .map_err(CudaHarrisError::Cuda)?,
+        CudaKernel::compile(ctx, &src, "harris_fused_f32").map_err(|e| {
+            CudaHarrisError::Cuda(format!("failed to compile harris_fused_f32: {e}"))
+        })?,
     );
     let mut map = cache.lock().map_err(lock_error)?;
     if map.len() >= KERNEL_CACHE_CAP && !map.contains_key(&key) {
@@ -139,6 +165,10 @@ pub fn launch_harris_f32(
             "buffers and stream must belong to ctx".into(),
         ));
     }
+    // No interior pixels: the kernel would write nothing.
+    if width == 2 || height == 2 {
+        return Ok(());
+    }
     let w = width as i32;
     let h = height as i32;
     let kernel = get_kernel(ctx)?;
@@ -149,7 +179,7 @@ pub fn launch_harris_f32(
         .arg(&w)
         .arg(&h)
         .arg(&k)
-        .launch_cfg(super::make_config(w as u32, h as u32, None))
+        .launch_cfg(super::make_config(w as u32, h as u32, Some(TILE)))
         .map_err(|e| CudaHarrisError::Cuda(e.to_string()))
 }
 
@@ -200,6 +230,26 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn harris_f32_partial_tiles_bit_exact() {
+        // (45, 19): partial second x tile; (31, 7): one partial tile in x and y.
+        let stream = default_stream();
+        for (width, height) in [(45, 19), (31, 7)] {
+            let size = ImageSize { width, height };
+            let src = Image::<f32, 1>::new(size, pattern_f32(width * height)).unwrap();
+            let mut cpu = Image::<f32, 1>::from_size_val(size, -7.0).unwrap();
+            HarrisResponse::new(size).compute(&src, &mut cpu).unwrap();
+            let d_src = stream.clone_htod(src.as_slice()).unwrap();
+            let mut d_dst = stream.clone_htod(&vec![-7.0f32; width * height]).unwrap();
+            let ctx = stream.context();
+            launch_harris_f32(ctx, &stream, &d_src, &mut d_dst, width, height, 0.04).unwrap();
+            let gpu = stream.clone_dtoh(&d_dst).unwrap();
+            stream.synchronize().unwrap();
+            let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+            assert_eq!(bits(&gpu), bits(cpu.as_slice()), "{width}x{height}");
         }
     }
 
