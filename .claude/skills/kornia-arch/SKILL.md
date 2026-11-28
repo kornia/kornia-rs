@@ -53,5 +53,11 @@ by the lint workflow.
   `kornia-algebra` (glam-backed), decompositions from
   `crates/kornia-algebra/src/linalg/` (SVD, Cholesky, rigid), other solvers
   on nalgebra. No hand-rolled inverses, eigen-solvers or `dot`/`cross` helpers.
+  For a nearest rotation see the next line.
+- Nearest rotation to a 3x3 matrix: `Mat3F64::nearest_rotation` (nalgebra SVD). nalgebra's
+  3x3 SVD works on `MᵀM`, so it loses accuracy on thin input, e.g. the covariance of nearly
+  collinear points (kornia-rs#1262). `svd3_f64` is less accurate on general matrices, wrong on
+  small-scale input (absolute Jacobi tolerance, kornia-rs#1283) and wrong on nearly rank-1
+  input; cost of both in `crates/kornia-algebra/benches/bench_linalg.rs`.
 
 See also: `kornia-workflow`, `kornia-coding-style`, `kornia-api-flavor`.

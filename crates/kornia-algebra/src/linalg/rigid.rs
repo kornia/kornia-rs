@@ -2269,9 +2269,8 @@ mod tests {
                 .map(|(p, d)| (reference.r * *p + reference.t - *d).length().powi(2))
                 .sum();
 
-            let to_f32 = |p: &Vec3F64| Vec3AF32::new(p.x as f32, p.y as f32, p.z as f32);
-            let src32: Vec<Vec3AF32> = src.iter().map(to_f32).collect();
-            let dst32: Vec<Vec3AF32> = dst.iter().map(to_f32).collect();
+            let src32: Vec<Vec3AF32> = src.iter().map(|p| p.as_vec3af32()).collect();
+            let dst32: Vec<Vec3AF32> = dst.iter().map(|p| p.as_vec3af32()).collect();
             let (r, t, _) = umeyama(&src32, &dst32)?;
             let cost_f32: f64 = src32
                 .iter()

@@ -449,20 +449,10 @@ impl WorkFrame {
     /// The translation of a pose in this frame, back in the world frame.
     fn translation_out(&self, rotation: Mat3AF32, translation: Vec3AF32) -> Vec3AF32 {
         // In f64, so the result is rounded to f32 once rather than after each large term.
-        let t = to_f64(translation) / f64::from(self.scale)
-            - mat_to_f64(rotation) * to_f64(self.centre);
-        Vec3AF32::new(t.x as f32, t.y as f32, t.z as f32)
+        let t = Vec3F64::from(translation) / f64::from(self.scale)
+            - Mat3F64::from(rotation) * Vec3F64::from(self.centre);
+        t.as_vec3af32()
     }
-}
-
-/// `v` in `f64` (exact).
-pub(super) fn to_f64(v: Vec3AF32) -> Vec3F64 {
-    Vec3F64::new(v.x.into(), v.y.into(), v.z.into())
-}
-
-/// `m` in `f64` (exact).
-pub(super) fn mat_to_f64(m: Mat3AF32) -> Mat3F64 {
-    Mat3F64::from_cols_array(&m.to_cols_array().map(f64::from))
 }
 
 /// The median of `values` (the upper one for an even count), reordering them. `values` must not
@@ -644,8 +634,8 @@ fn compute_rmse(
     let fy = f64::from(k.y_axis().y);
     let cx = f64::from(k.z_axis().x);
     let cy = f64::from(k.z_axis().y);
-    let rotation = mat_to_f64(*rotation);
-    let translation = to_f64(*translation);
+    let rotation = Mat3F64::from(*rotation);
+    let translation = Vec3F64::from(*translation);
 
     let mut sum_sq = 0.0f64;
     let mut valid_count = 0;
@@ -658,7 +648,7 @@ fn compute_rmse(
     };
 
     for (pw, pi) in points_world.iter().zip(points_image.iter()) {
-        let pc = rotation * to_f64(*pw) + translation;
+        let pc = rotation * Vec3F64::from(*pw) + translation;
 
         if pc.z <= 0.0 {
             continue;
@@ -926,14 +916,6 @@ mod tests {
         ));
     }
 
-    fn f32_vec(v: Vec3F64) -> Vec3AF32 {
-        Vec3AF32::new(v.x as f32, v.y as f32, v.z as f32)
-    }
-
-    fn f32_mat(m: Mat3F64) -> Mat3AF32 {
-        Mat3AF32::from_cols_array(&m.to_cols_array().map(|v| v as f32))
-    }
-
     /// Point `i` (0..27) of the 3×3×3 grid filling [-1, 1]³.
     fn grid_point(i: u8) -> Vec3F64 {
         Vec3F64::new(
@@ -971,9 +953,9 @@ mod tests {
         let translation = Vec3F64::new(0.0, 0.0, depth) - rotation * centre;
         let (mut world, mut image) = (Vec::new(), Vec::new());
         for i in 0..27u8 {
-            let point = f32_vec(centre + grid_point(i) * size);
+            let point = (centre + grid_point(i) * size).as_vec3af32();
             // Project the stored f32 point, so the data is exact for the true pose.
-            let pc = rotation * to_f64(point) + translation;
+            let pc = rotation * Vec3F64::from(point) + translation;
             world.push(point);
             image.push(Vec2F32::new(
                 (800.0 * pc.x / pc.z + 640.0) as f32,
@@ -985,7 +967,7 @@ mod tests {
         let mut params = LMRefineParams::default();
         if let Some(distance) = outlier {
             let view = rotation.transpose() * Vec3F64::new(0.05, 0.02, 1.0).normalize();
-            world.push(f32_vec(camera_centre + view * distance));
+            world.push((camera_centre + view * distance).as_vec3af32());
             image.push(Vec2F32::new(100.0, 100.0));
             params.robust = RobustKernelKind::Cauchy;
             params.robust_scale_sq = 4.0;
@@ -1000,23 +982,23 @@ mod tests {
             &world,
             &image,
             &k_default(),
-            &f32_mat(start_rotation),
-            &f32_vec(start_translation),
+            &start_rotation.as_mat3af32(),
+            &start_translation.as_vec3af32(),
             None,
             &params,
         )?;
 
-        let estimate = mat_to_f64(result.rotation);
+        let estimate = Mat3F64::from(result.rotation);
         let rotation_error_deg = SO3F64::from_matrix(&(estimate.transpose() * rotation))
             .log()
             .length()
             .to_degrees();
-        let estimated_centre = -(estimate.transpose() * to_f64(result.translation));
+        let estimated_centre = -(estimate.transpose() * Vec3F64::from(result.translation));
         let centre_error = (estimated_centre - camera_centre).length() / depth;
         let rmse_of =
             |r: &Mat3AF32, t: &Vec3AF32| compute_rmse(&world, &image, r, t, &k_default(), None);
         let returned_rmse = rmse_of(&result.rotation, &result.translation)?;
-        let floor_rmse = rmse_of(&f32_mat(rotation), &f32_vec(translation))?;
+        let floor_rmse = rmse_of(&rotation.as_mat3af32(), &translation.as_vec3af32())?;
         Ok(MovedSceneResult {
             pose: result,
             rotation_deg: rotation_error_deg,
@@ -1060,8 +1042,8 @@ mod tests {
             // small as an f32 pose allows: within one f32 step of the translation, in pixels.
             assert_eq!(result.reproj_rmse, Some(returned_rmse), "{scene}");
             let f32_step_px =
-                (800.0 * f64::from(f32::EPSILON) * to_f64(result.translation).length() / depth)
-                    as f32;
+                (800.0 * f64::from(f32::EPSILON) * Vec3F64::from(result.translation).length()
+                    / depth) as f32;
             assert!(
                 returned_rmse < floor_rmse + f32_step_px + 1e-2,
                 "{scene}: RMSE {returned_rmse} px, true pose in f32 {floor_rmse} px"
@@ -1102,8 +1084,8 @@ mod tests {
         for (depth, size) in [(1.0, 0.3), (500.0, 100.0)] {
             for i in 0..27u8 {
                 let in_camera = grid_point(i) * size + Vec3F64::new(0.0, 0.0, depth);
-                let point = f32_vec(rotation.transpose() * (in_camera - translation));
-                let pc = rotation * to_f64(point) + translation;
+                let point = (rotation.transpose() * (in_camera - translation)).as_vec3af32();
+                let pc = rotation * Vec3F64::from(point) + translation;
                 world.push(point);
                 image.push(Vec2F32::new(
                     (800.0 * pc.x / pc.z + 640.0) as f32,
@@ -1118,12 +1100,12 @@ mod tests {
             &world,
             &image,
             &k_default(),
-            &f32_mat(start_rotation),
-            &f32_vec(-(start_rotation * start_centre)),
+            &start_rotation.as_mat3af32(),
+            &(-(start_rotation * start_centre)).as_vec3af32(),
             None,
             &LMRefineParams::default(),
         )?;
-        let estimate = mat_to_f64(result.rotation);
+        let estimate = Mat3F64::from(result.rotation);
         let rotation_deg = SO3F64::from_matrix(&(estimate.transpose() * rotation))
             .log()
             .length()
@@ -1208,7 +1190,9 @@ mod tests {
         let rotation = SO3F64::exp(Vec3F64::new(0.2, -0.4, 0.7)).matrix();
         let centre = Vec3F64::new(1.0, 0.5, 0.25).normalize() * 10_000.0;
         let translation = Vec3F64::new(0.0, 0.0, 6.0) - rotation * centre;
-        let world: Vec<Vec3AF32> = (0..27u8).map(|i| f32_vec(centre + grid_point(i))).collect();
+        let world: Vec<Vec3AF32> = (0..27u8)
+            .map(|i| (centre + grid_point(i)).as_vec3af32())
+            .collect();
         // Without iterations only the start pose matters, not the pixels.
         let image = vec![Vec2F32::new(640.0, 480.0); world.len()];
         for stretch in [1.0, 1.01] {
@@ -1217,13 +1201,13 @@ mod tests {
                 &world,
                 &image,
                 &k_default(),
-                &f32_mat(start),
-                &f32_vec(translation),
+                &start.as_mat3af32(),
+                &translation.as_vec3af32(),
                 None,
                 &LMRefineParams::default().with_max_iterations(0),
             )?;
             // |t| is about 10 km, where f32 steps are 1 mm.
-            let moved = (to_f64(result.translation) - translation).length();
+            let moved = (Vec3F64::from(result.translation) - translation).length();
             assert!(
                 moved < 0.05,
                 "stretch {stretch}: the translation moved by {moved} m"

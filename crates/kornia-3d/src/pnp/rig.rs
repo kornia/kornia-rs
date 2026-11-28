@@ -15,7 +15,7 @@ use super::PnPError;
 use crate::camera::Ray;
 use crate::pose::Pose3d;
 use crate::ransac::{run, Estimator, RansacConfig, Sampler, ThresholdConsensus};
-use kornia_algebra::{Mat3AF32, Mat3F64, Vec2F32, Vec3AF32, Vec3F64};
+use kornia_algebra::{Mat3AF32, Mat3F64, Vec2F32, Vec3F64};
 
 /// A 2D-3D match as a ray of a multi-camera rig, everything in the rig frame.
 #[derive(Debug, Clone, Copy)]
@@ -98,10 +98,7 @@ pub fn ap3p_lifted(matches: &[RayMatch; 3]) -> Vec<Pose3d> {
     if !spread_enough(scale) {
         return Vec::new();
     }
-    let world = (*matches).map(|m| {
-        let p = (m.point_world - centre) / scale;
-        Vec3AF32::new(p.x as f32, p.y as f32, p.z as f32)
-    });
+    let world = (*matches).map(|m| ((m.point_world - centre) / scale).as_vec3af32());
     let Ok(solutions) = solve_ap3p_multi(&world, &image, &Mat3AF32::IDENTITY) else {
         return Vec::new();
     };
@@ -110,9 +107,8 @@ pub fn ap3p_lifted(matches: &[RayMatch; 3]) -> Vec<Pose3d> {
     solutions
         .iter()
         .map(|solution| {
-            let r = Mat3F64::from(solution.rotation.as_dmat3());
-            let t = solution.translation;
-            let t = Vec3F64::new(f64::from(t.x), f64::from(t.y), f64::from(t.z));
+            let r = Mat3F64::from(solution.rotation);
+            let t = Vec3F64::from(solution.translation);
             Pose3d::new(
                 from_virtual * r,
                 from_virtual * (t * scale - r * centre) + origin,

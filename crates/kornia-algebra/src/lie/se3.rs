@@ -1774,12 +1774,13 @@ mod tests_f64 {
         for xi in TWISTS {
             let (u, w) = twist(xi);
             let jl64 = SE3F64::left_jacobian(u, w);
-            let to32 = |v: Vec3F64| Vec3AF32::new(v.x as f32, v.y as f32, v.z as f32);
-            let jl32 = SE3F32::left_jacobian(to32(u), to32(w));
+            let jl32 = SE3F32::left_jacobian(u.as_vec3af32(), w.as_vec3af32());
             let jl32 = Mat6F64::from_fn(|r, c| jl32[r][c] as f64);
             assert!((jl64 - jl32).amax() <= 1e-5, "ξ = {xi:?}");
             let t = SE3F64::exp(u, w).matrix().to_cols_array();
-            let t32 = SE3F32::exp(to32(u), to32(w)).matrix().to_cols_array();
+            let t32 = SE3F32::exp(u.as_vec3af32(), w.as_vec3af32())
+                .matrix()
+                .to_cols_array();
             let t32: [f64; 16] = std::array::from_fn(|k| t32[k] as f64);
             assert_close(&t, &t32, 1e-5);
         }
