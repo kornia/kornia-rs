@@ -40,9 +40,10 @@ pub struct LMRefineParams {
     /// Squared scale for `robust`; its square root is the linear delta fed
     /// to `HuberLoss::new`/`CauchyLoss::new`. Any non-finite (e.g., default
     /// `f32::INFINITY`), non-positive (`<= 0.0`), or subnormal (`< f32::MIN_POSITIVE`)
-    /// value silently collapses to plain L2 for supported kernels (matching
-    /// `BaParams::robust_scale_sq`); unsupported kernels (`Tukey`, and `Cauchy`
-    /// in `refine_pose_lm_analytic`) always return an error.
+    /// value silently collapses to plain L2 for supported kernels (`Huber` and
+    /// `Cauchy` in `refine_pose_lm`; `Huber` in `refine_pose_lm_analytic`);
+    /// unsupported kernels (`Tukey`, and `Cauchy` in `refine_pose_lm_analytic`)
+    /// always return an error.
     pub robust_scale_sq: f32,
 }
 
