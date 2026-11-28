@@ -1,8 +1,9 @@
 //! Rigid alignment utilities (Kabsch / Umeyama), with optional per-point
-//! weights and a deterministic outlier-robust fit (Huber IRLS + MAD rejection).
+//! weights, gravity-preserving yaw-only (4-DoF) alignment, and a deterministic
+//! outlier-robust fit (Huber IRLS + MAD rejection).
 
 use crate::linalg::svd::svd3_f64;
-use crate::{Mat3AF32, Mat3F32, Mat3F64, Vec3AF32, Vec3F32, Vec3F64};
+use crate::{Mat3AF32, Mat3F32, Mat3F64, Vec3AF32, Vec3F32, Vec3F64, SO3F64};
 use nalgebra::{Matrix3, SVD};
 use thiserror::Error;
 
@@ -48,6 +49,12 @@ pub enum UmeyamaError {
     InvalidTol {
         /// The invalid convergence tolerance.
         tol: f64,
+    },
+    /// Gravity axis must be finite and have a positive norm.
+    #[error("Gravity axis must be finite and non-zero, got {axis:?}")]
+    InvalidGravityAxis {
+        /// The invalid gravity axis.
+        axis: Vec3F64,
     },
 }
 
@@ -296,6 +303,161 @@ pub fn umeyama_f64(
     let t = mu_d - scale * r * mu_s;
 
     Ok(UmeyamaOutputF64 { r, t, s: scale })
+}
+
+/// Relative threshold for yaw degeneracy: yaw falls back to `0.0` when the
+/// in-plane source or destination variance is `<= DEGENERATE_YAW_TOL * var_src`
+/// or `<= DEGENERATE_YAW_TOL * var_dst` (collinear with gravity or coincident),
+/// or when the dimensionless in-plane correlation
+/// `hypot(a, b) / (sqrt(var_src_perp) * sqrt(var_dst_perp))` is `<= DEGENERATE_YAW_TOL`.
+const DEGENERATE_YAW_TOL: f64 = 1e-15;
+
+/// Gravity-preserving yaw-only (4-DoF) rigid alignment with optional per-point
+/// weights (f64).
+///
+/// Solves for the yaw rotation `R = exp(θ · [u]×)` about the unit gravity axis
+/// `u = gravity_axis / ‖gravity_axis‖` (`R · u = u`) and 3D translation `t`
+/// (with scale fixed to `s = 1.0`) minimizing `Σ wᵢ ‖dstᵢ − (R·srcᵢ + t)‖²`,
+/// following ORB-SLAM3's 4-DoF inertial alignment convention (Campos et al.,
+/// IEEE T-RO 2021) and the 2D in-plane reduction of Umeyama (IEEE TPAMI 1991).
+///
+/// After centering at the weighted centroids `(μ_s, μ_d)` and projecting into
+/// the plane orthogonal to `u` (`p_⊥ = p − (p · u) u`, `q_⊥ = q − (q · u) u`),
+/// the optimal yaw angle is `θ = atan2(b, a)` with
+/// `a = Σ wᵢ (p_⊥ · q_⊥) / Σ wᵢ` and `b = Σ wᵢ (u · (p_⊥ × q_⊥)) / Σ wᵢ`.
+/// When `var_src_perp <= 1e-15 * var_src`, `var_dst_perp <= 1e-15 * var_dst`,
+/// or `hypot(a, b) <= 1e-15 * sqrt(var_src_perp) * sqrt(var_dst_perp)` (scale-
+/// invariant degeneracy checks), yaw is unobservable and `R` falls back to
+/// [`Mat3F64::IDENTITY`]. Point coordinates are assumed finite; a point with
+/// weight `0` is ignored entirely.
+///
+/// # Arguments
+///
+/// * `src` - Source points (same length as `dst` and `weights`).
+/// * `dst` - Destination points (same length as `src`).
+/// * `gravity_axis` - Non-zero finite gravity vector (normalized internally).
+/// * `weights` - Optional finite non-negative per-point weights with positive
+///   sum (`None` for uniform weights; `0` ignores the point).
+///
+/// # Returns
+///
+/// `Ok(UmeyamaOutputF64 { r, t, s: 1.0 })` with `det(r) = 1` and `r * u = u`.
+///
+/// # Errors
+///
+/// Checked in order: [`UmeyamaError::MismatchedInputLengths`] (`src.len() != dst.len()`),
+/// [`UmeyamaError::EmptyInput`] (`src.is_empty()`),
+/// [`UmeyamaError::InvalidGravityAxis`] (zero or non-finite `gravity_axis`),
+/// [`UmeyamaError::InvalidWeights`] (empty, non-finite, negative, or all-zero weights),
+/// and [`UmeyamaError::MismatchedWeightsLength`] (`weights.len() != src.len()`).
+///
+/// # Example
+///
+/// ```rust
+/// use kornia_algebra::linalg::rigid::umeyama_yaw_f64;
+/// use kornia_algebra::{SO3F64, Vec3F64};
+///
+/// let gravity = Vec3F64::new(0.0, 0.0, 1.0);
+/// let r_true = SO3F64::exp(gravity * 0.6).matrix();
+/// let t_true = Vec3F64::new(1.5, -0.5, 2.0);
+/// let src = [
+///     Vec3F64::new(1.0, 0.0, 0.2),
+///     Vec3F64::new(0.0, 2.0, -0.4),
+///     Vec3F64::new(-1.0, -1.0, 0.8),
+/// ];
+/// let dst: Vec<Vec3F64> = src.iter().map(|p| r_true * *p + t_true).collect();
+///
+/// let out = umeyama_yaw_f64(&src, &dst, gravity, None)?;
+/// assert!((out.r * gravity - gravity).length() < 1e-12);
+/// assert!((out.t - t_true).length() < 1e-12 && out.s == 1.0);
+/// # Ok::<(), kornia_algebra::linalg::rigid::UmeyamaError>(())
+/// ```
+pub fn umeyama_yaw_f64(
+    src: &[Vec3F64],
+    dst: &[Vec3F64],
+    gravity_axis: Vec3F64,
+    weights: Option<&[f64]>,
+) -> UmeyamaResultF64 {
+    if src.len() != dst.len() {
+        return Err(UmeyamaError::MismatchedInputLengths);
+    }
+    if src.is_empty() {
+        return Err(UmeyamaError::EmptyInput);
+    }
+    if !gravity_axis.x.is_finite() || !gravity_axis.y.is_finite() || !gravity_axis.z.is_finite() {
+        return Err(UmeyamaError::InvalidGravityAxis { axis: gravity_axis });
+    }
+    let max_abs = gravity_axis
+        .x
+        .abs()
+        .max(gravity_axis.y.abs())
+        .max(gravity_axis.z.abs());
+    if max_abs == 0.0 {
+        return Err(UmeyamaError::InvalidGravityAxis { axis: gravity_axis });
+    }
+    let scaled = gravity_axis / max_abs;
+    let u = scaled / scaled.length();
+
+    let WeightedCentroids {
+        mu_s,
+        mu_d,
+        max_w,
+        sum_w,
+    } = weighted_centroids(src, dst, weights)?;
+    let mut a = 0.0f64;
+    let mut b = 0.0f64;
+    let mut var_src = 0.0f64;
+    let mut var_dst = 0.0f64;
+    let mut var_src_perp = 0.0f64;
+    let mut var_dst_perp = 0.0f64;
+    let mut first_active: Option<(Vec3F64, Vec3F64)> = None;
+    let mut all_src_coincident = true;
+    let mut all_dst_coincident = true;
+    for (i, (s, d)) in src.iter().zip(dst).enumerate() {
+        let wi = weights.map_or(1.0, |w| w[i] / max_w);
+        if wi == 0.0 {
+            continue;
+        }
+        match first_active {
+            None => first_active = Some((*s, *d)),
+            Some((s0, d0)) => {
+                all_src_coincident &= *s == s0;
+                all_dst_coincident &= *d == d0;
+            }
+        }
+        let sc = *s - mu_s;
+        let dc = *d - mu_d;
+        let sc_perp = sc - u * sc.dot(u);
+        let dc_perp = dc - u * dc.dot(u);
+        a += sc_perp.dot(dc_perp) * wi;
+        b += u.dot(sc_perp.cross(dc_perp)) * wi;
+        var_src += sc.dot(sc) * wi;
+        var_dst += dc.dot(dc) * wi;
+        var_src_perp += sc_perp.dot(sc_perp) * wi;
+        var_dst_perp += dc_perp.dot(dc_perp) * wi;
+    }
+    a /= sum_w;
+    b /= sum_w;
+    var_src /= sum_w;
+    var_dst /= sum_w;
+    var_src_perp /= sum_w;
+    var_dst_perp /= sum_w;
+
+    let has_in_plane_spread =
+        var_src_perp > DEGENERATE_YAW_TOL * var_src && var_dst_perp > DEGENERATE_YAW_TOL * var_dst;
+    let has_correlation =
+        a.hypot(b) > DEGENERATE_YAW_TOL * var_src_perp.sqrt() * var_dst_perp.sqrt();
+    let r = if !all_src_coincident && !all_dst_coincident && has_in_plane_spread && has_correlation
+    {
+        SO3F64::exp(u * b.atan2(a)).matrix()
+    } else {
+        Mat3F64::IDENTITY
+    };
+    Ok(UmeyamaOutputF64 {
+        r,
+        t: mu_d - r * mu_s,
+        s: 1.0,
+    })
 }
 
 /// σ̂ = MAD / Φ⁻¹(3/4): the MAD → pseudo-σ consistency factor for Gaussian
@@ -568,26 +730,22 @@ pub fn umeyama_f64_robust(
     Ok(fit)
 }
 
-/// Accumulated first- and second-order statistics of the two point sets.
-#[derive(Debug)]
-struct Moments {
-    /// Source centroid.
+/// Normalized weighted centroids and weight-scaling factors shared by the
+/// 6/7-DoF and 4-DoF alignment solvers.
+struct WeightedCentroids {
     mu_s: Vec3F64,
-    /// Destination centroid.
     mu_d: Vec3F64,
-    /// Cross-covariance columns, normalized by the total weight.
-    h: Mat3F64,
-    /// Source variance `Σ wᵢ·‖src_c‖²`, normalized by the total weight.
-    var_src: f64,
+    max_w: f64,
+    sum_w: f64,
 }
 
-/// Accumulates the centroids, cross-covariance, and source variance, weighted by
-/// `weights` or uniformly when it is `None`.
-fn moments(
+/// Validates `weights` (when present) and computes the normalized weighted
+/// centroids (`mu_s`, `mu_d`) along with weight-scaling factors (`max_w`, `sum_w`).
+fn weighted_centroids(
     src: &[Vec3F64],
     dst: &[Vec3F64],
     weights: Option<&[f64]>,
-) -> Result<Moments, UmeyamaError> {
+) -> Result<WeightedCentroids, UmeyamaError> {
     // Unit weights when unweighted; otherwise validate and normalize by the
     // maximum. Invalid weights take precedence over the length check (see
     // `umeyama_f64`'s `# Errors`).
@@ -634,8 +792,40 @@ fn moments(
         mu_s += *s * wi;
         mu_d += *d * wi;
     }
-    mu_s /= sum_w;
-    mu_d /= sum_w;
+    Ok(WeightedCentroids {
+        mu_s: mu_s / sum_w,
+        mu_d: mu_d / sum_w,
+        max_w,
+        sum_w,
+    })
+}
+
+/// Accumulated first- and second-order statistics of the two point sets.
+#[derive(Debug)]
+struct Moments {
+    /// Source centroid.
+    mu_s: Vec3F64,
+    /// Destination centroid.
+    mu_d: Vec3F64,
+    /// Cross-covariance columns, normalized by the total weight.
+    h: Mat3F64,
+    /// Source variance `Σ wᵢ·‖src_c‖²`, normalized by the total weight.
+    var_src: f64,
+}
+
+/// Accumulates the centroids, cross-covariance, and source variance, weighted by
+/// `weights` or uniformly when it is `None`.
+fn moments(
+    src: &[Vec3F64],
+    dst: &[Vec3F64],
+    weights: Option<&[f64]>,
+) -> Result<Moments, UmeyamaError> {
+    let WeightedCentroids {
+        mu_s,
+        mu_d,
+        max_w,
+        sum_w,
+    } = weighted_centroids(src, dst, weights)?;
 
     // Weighted cross-covariance columns and source variance.
     let mut h_x = Vec3F64::ZERO;
@@ -643,7 +833,7 @@ fn moments(
     let mut h_z = Vec3F64::ZERO;
     let mut var_src = 0.0f64;
     for (i, (s, d)) in src.iter().zip(dst).enumerate() {
-        let wi = weight_at(i);
+        let wi = weights.map_or(1.0, |w| w[i] / max_w);
         // Zero-weight points are ignored; a centered extreme coordinate would
         // otherwise give `0.0 * inf = NaN`.
         if wi == 0.0 {
@@ -2105,5 +2295,320 @@ mod tests {
     fn test_umeyama_empty_input_is_an_error() {
         // n = 0 would divide by zero and hand an all-NaN matrix to the SVD.
         assert!(matches!(umeyama(&[], &[]), Err(UmeyamaError::EmptyInput)));
+    }
+
+    #[test]
+    fn test_umeyama_yaw_f64_reference_pinned() -> Result<(), UmeyamaError> {
+        // Analytical / NumPy reference for u = (1, -2, 2)/3, mu_s = (1, 1, 1), mu_d = (1, 2, 2):
+        //   a = Σ (sc_perp · dc_perp) / 4 = 27/4,  b = Σ (u · (sc × dc)) / 4 = 49/6
+        //   cos(θ) = 81 / √16165,  sin(θ) = 98 / √16165,  R = I + sin(θ)[u]× + (1 - cos(θ))[u]×²
+        let src = [
+            Vec3F64::new(2.0, 1.0, 3.0),
+            Vec3F64::new(-1.0, 4.0, 0.0),
+            Vec3F64::new(0.0, -2.0, -3.0),
+            Vec3F64::new(3.0, 1.0, 4.0),
+        ];
+        let dst = [
+            Vec3F64::new(1.0, 4.0, 2.0),
+            Vec3F64::new(-3.0, 0.0, 1.0),
+            Vec3F64::new(4.0, 1.0, -2.0),
+            Vec3F64::new(2.0, 3.0, 7.0),
+        ];
+        let gravity = Vec3F64::new(1.0, -2.0, 2.0);
+        let out = umeyama_yaw_f64(&src, &dst, gravity, None)?;
+
+        let hyp = (16165.0_f64).sqrt();
+        let (c, s, omc) = (81.0 / hyp, 98.0 / hyp, 1.0 - 81.0 / hyp);
+        let (ux, uy, uz) = (1.0 / 3.0, -2.0 / 3.0, 2.0 / 3.0);
+        let r_ref = Mat3F64::from_cols_array(&[
+            c + ux * ux * omc,
+            uz * s + ux * uy * omc,
+            -uy * s + ux * uz * omc,
+            -uz * s + ux * uy * omc,
+            c + uy * uy * omc,
+            ux * s + uy * uz * omc,
+            uy * s + ux * uz * omc,
+            -ux * s + uy * uz * omc,
+            c + uz * uz * omc,
+        ]);
+        let t_ref = Vec3F64::new(1.0, 2.0, 2.0) - r_ref * Vec3F64::new(1.0, 1.0, 1.0);
+
+        assert_matches_true(&out, &r_ref, &t_ref, 1.0, 1e-13);
+        let u = gravity.normalize();
+        assert!((out.r * u - u).length() < 1e-14 && (out.r.determinant() - 1.0).abs() < 1e-14);
+        Ok(())
+    }
+
+    #[test]
+    fn test_umeyama_yaw_f64_recovers_exact_across_gravity_axes() -> Result<(), UmeyamaError> {
+        let src = [
+            Vec3F64::new(0.2, -0.4, 1.1),
+            Vec3F64::new(1.3, 0.7, -0.5),
+            Vec3F64::new(-0.8, 2.1, 0.3),
+            Vec3F64::new(0.9, -1.2, 2.4),
+            Vec3F64::new(1.7, 1.5, -1.9),
+        ];
+        let weights = [0.5, 3.0, 1.0, 2.0, 4.0];
+        let t_true = Vec3F64::new(0.5, -0.3, 2.0);
+        for (gravity, yaw) in [
+            (Vec3F64::new(0.0, 0.0, 1.0), 0.73),
+            (Vec3F64::new(0.0, -1.0, 0.0), -1.24),
+            (Vec3F64::new(1.2, -3.4, 5.6), 2.15),
+            (Vec3F64::new(0.0, 0.0, -9.80665), std::f64::consts::PI),
+        ] {
+            let u = gravity.normalize();
+            let r_true = SO3F64::exp(u * yaw).matrix();
+            let dst: Vec<Vec3F64> = src.iter().map(|p| r_true * *p + t_true).collect();
+            for w in [None, Some(&weights[..])] {
+                let got = umeyama_yaw_f64(&src, &dst, gravity, w)?;
+                assert_matches_true(&got, &r_true, &t_true, 1.0, 1e-12);
+                assert!((got.r * u - u).length() < 1e-14);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_umeyama_yaw_f64_locks_gravity_under_vertical_noise() -> Result<(), UmeyamaError> {
+        // Coplanar floor points with +2 cm vertical corner noise: 6-DoF tilts gravity, 4-DoF locks it.
+        let gravity = Vec3F64::new(0.0, 0.0, 1.0);
+        let r_true = SO3F64::exp(gravity * 0.45).matrix();
+        let t_true = Vec3F64::new(1.0, -2.0, 0.5);
+        let src = [
+            Vec3F64::new(0.0, 0.0, 0.0),
+            Vec3F64::new(2.0, 0.0, 0.0),
+            Vec3F64::new(2.0, 2.0, 0.0),
+            Vec3F64::new(0.0, 2.0, 0.0),
+        ];
+        let mut dst: Vec<Vec3F64> = src.iter().map(|p| r_true * *p + t_true).collect();
+        dst[2].z += 0.02;
+
+        let full_6dof = umeyama_f64(&src, &dst, None, false)?;
+        let yaw_4dof = umeyama_yaw_f64(&src, &dst, gravity, None)?;
+        assert!((full_6dof.r * gravity - gravity).length() > 1e-3);
+        assert!((yaw_4dof.r * gravity - gravity).length() < 1e-15);
+        let t_exp = t_true + Vec3F64::new(0.0, 0.0, 0.005);
+        assert_matches_true(&yaw_4dof, &r_true, &t_exp, 1.0, 1e-12);
+        Ok(())
+    }
+
+    #[test]
+    fn test_umeyama_yaw_f64_degenerate_flagpole_along_gravity() -> Result<(), UmeyamaError> {
+        // Points collinear with gravity (axis-aligned or tilted), identical points, or a single
+        // non-zero weight have zero in-plane variance and fall back to R = I.
+        let t_true = Vec3F64::new(10.0, -20.0, 30.0);
+        for gravity in [
+            Vec3F64::new(0.0, 0.0, 1.0),
+            Vec3F64::new(1.0, 1.0, 1.0),
+            Vec3F64::new(-2.0, 5.0, -3.0),
+        ] {
+            let u = gravity.normalize();
+            let src: Vec<Vec3F64> = [-2.0, -0.5, 1.0, 3.5].iter().map(|&k| u * k).collect();
+            let dst: Vec<Vec3F64> = src.iter().map(|p| *p + t_true).collect();
+            let out = umeyama_yaw_f64(&src, &dst, gravity, None)?;
+            assert_matches_true(&out, &Mat3F64::IDENTITY, &t_true, 1.0, 1e-12);
+        }
+
+        let (p, q) = (Vec3F64::new(1.0, 2.0, 3.0), Vec3F64::new(4.0, -1.0, 5.0));
+        let g = Vec3F64::new(1.0, 2.0, 3.0);
+        let out_id = umeyama_yaw_f64(&[p, p, p], &[q, q, q], g, None)?;
+        assert_matches_true(&out_id, &Mat3F64::IDENTITY, &(q - p), 1.0, 1e-12);
+
+        // Coincident fractional points: `(0.1 + 0.1 + 0.1) / 3.0 != 0.1` in f64 leaves
+        // 1-ULP centered residuals that would otherwise look like a 90° yaw.
+        let p_frac = Vec3F64::new(0.1, 0.0, 0.0);
+        let q_frac = Vec3F64::new(0.0, 0.1, 0.0);
+        let out_frac = umeyama_yaw_f64(
+            &[p_frac; 3],
+            &[q_frac; 3],
+            Vec3F64::new(0.0, 0.0, 1.0),
+            None,
+        )?;
+        assert_matches_true(
+            &out_frac,
+            &Mat3F64::IDENTITY,
+            &(q_frac - p_frac),
+            1.0,
+            1e-12,
+        );
+
+        let src3 = [Vec3F64::ZERO, Vec3F64::new(1.0, 2.0, 3.0), p];
+        let dst3 = [Vec3F64::new(9.0, 9.0, 9.0), Vec3F64::new(-5.0, 4.0, 1.0), q];
+        let out_1 = umeyama_yaw_f64(&src3, &dst3, g, Some(&[0.0, 0.0, 1.0]))?;
+        assert_matches_true(&out_1, &Mat3F64::IDENTITY, &(q - p), 1.0, 1e-12);
+
+        // Full-3D src mapped onto a dst collinear with a tilted gravity axis:
+        // 1-ULP projection rounding in `dc_perp` must not trigger an arbitrary yaw.
+        let tilted = Vec3F64::new(1.0, 1.0, 1.0);
+        let u_tilted = tilted.normalize();
+        let src_full = random_points(0x7A06, 4, 2.0);
+        let dst_collinear: Vec<Vec3F64> = [-2.0, -0.5, 1.0, 3.5]
+            .iter()
+            .map(|&k| u_tilted * k + t_true)
+            .collect();
+        let out_dst_col = umeyama_yaw_f64(&src_full, &dst_collinear, tilted, None)?;
+        for (a, b) in out_dst_col
+            .r
+            .to_cols_array()
+            .iter()
+            .zip(Mat3F64::IDENTITY.to_cols_array())
+        {
+            assert!((a - b).abs() < 1e-12, "expected R = I, got {a} vs {b}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_umeyama_yaw_f64_weighted_is_stationary() -> Result<(), UmeyamaError> {
+        // First-order stationarity: Σ wᵢ rᵢ = 0 and u · Σ wᵢ ((R·srcᵢ) × rᵢ) = 0.
+        let src = random_points(0x7A01, 6, 2.0);
+        let gravity = Vec3F64::new(0.4, -0.7, 1.2);
+        let u = gravity.normalize();
+        let r_true = SO3F64::exp(u * 1.1).matrix();
+        let t_true = Vec3F64::new(0.5, -0.3, 2.0);
+        let mut dst: Vec<Vec3F64> = src.iter().map(|p| r_true * *p + t_true).collect();
+        add_noise(0x7A02, &mut dst, 0.05);
+        let weights = [0.5, 3.0, 1.0, 2.0, 4.0, 1.5];
+
+        let UmeyamaOutputF64 { r, t, s } = umeyama_yaw_f64(&src, &dst, gravity, Some(&weights))?;
+        assert!(s == 1.0 && (r * u - u).length() < 1e-14);
+
+        let mut mean_res = Vec3F64::ZERO;
+        let mut torque = Vec3F64::ZERO;
+        let mut opt_cost = 0.0f64;
+        for ((p, d), w) in src.iter().zip(&dst).zip(weights) {
+            let rp = r * *p;
+            let res = *d - (rp + t);
+            mean_res += res * w;
+            torque += rp.cross(res) * w;
+            opt_cost += w * res.dot(res);
+        }
+        assert!(mean_res.length() < 1e-11 && u.dot(torque).abs() < 1e-11);
+
+        for delta in [-1e-3, 1e-3, std::f64::consts::PI] {
+            let r_pert = SO3F64::exp(u * delta).matrix() * r;
+            let cost_pert: f64 = src
+                .iter()
+                .zip(&dst)
+                .zip(weights)
+                .map(|((p, d), w)| w * (*d - (r_pert * *p + t)).dot(*d - (r_pert * *p + t)))
+                .sum();
+            assert!(cost_pert > opt_cost);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_umeyama_yaw_f64_weight_invariance_and_zero_weight() -> Result<(), UmeyamaError> {
+        let src = random_points(0x7A03, 4, 2.0);
+        let gravity = Vec3F64::new(0.0, 0.0, 1.0);
+        let r_true = rot_z90();
+        let t_true = Vec3F64::new(0.5, -0.3, 2.0);
+        let mut dst: Vec<Vec3F64> = src.iter().map(|p| r_true * *p + t_true).collect();
+
+        let unweighted = umeyama_yaw_f64(&src, &dst, gravity, None)?;
+        let uniform = umeyama_yaw_f64(&src, &dst, gravity, Some(&[1.0; 4]))?;
+        assert_outputs_close(&unweighted, &uniform, 1e-13);
+
+        let w = [0.5, 3.0, 1.0, 2.0];
+        let w_scaled = [0.5 * 9.5, 3.0 * 9.5, 1.0 * 9.5, 2.0 * 9.5];
+        let fit_w = umeyama_yaw_f64(&src, &dst, gravity, Some(&w))?;
+        let fit_scaled = umeyama_yaw_f64(&src, &dst, gravity, Some(&w_scaled))?;
+        assert_outputs_close(&fit_w, &fit_scaled, 1e-13);
+
+        dst[3] = Vec3F64::new(f64::INFINITY, f64::NAN, f64::NEG_INFINITY);
+        let fit_masked = umeyama_yaw_f64(&src, &dst, gravity, Some(&[1.0, 2.0, 1.5, 0.0]))?;
+        assert_matches_true(&fit_masked, &r_true, &t_true, 1.0, 1e-12);
+        Ok(())
+    }
+
+    #[test]
+    fn test_umeyama_yaw_f64_errors() {
+        let src = [
+            Vec3F64::ZERO,
+            Vec3F64::new(1.0, 0.0, 0.0),
+            Vec3F64::new(0.0, 1.0, 0.0),
+        ];
+        let g = Vec3F64::new(0.0, 0.0, 1.0);
+
+        assert!(matches!(
+            umeyama_yaw_f64(&src, &src[..2], Vec3F64::ZERO, Some(&[])),
+            Err(UmeyamaError::MismatchedInputLengths)
+        ));
+        assert!(matches!(
+            umeyama_yaw_f64(&[], &[], Vec3F64::ZERO, Some(&[])),
+            Err(UmeyamaError::EmptyInput)
+        ));
+        for bad_g in [
+            Vec3F64::ZERO,
+            Vec3F64::new(0.0, f64::NAN, 1.0),
+            Vec3F64::new(f64::INFINITY, 0.0, 1.0),
+            Vec3F64::new(0.0, f64::NEG_INFINITY, 0.0),
+        ] {
+            assert!(matches!(
+                umeyama_yaw_f64(&src, &src, bad_g, Some(&[])),
+                Err(UmeyamaError::InvalidGravityAxis { .. })
+            ));
+        }
+        assert!(matches!(
+            umeyama_yaw_f64(&src, &src, g, Some(&[])),
+            Err(UmeyamaError::InvalidWeights)
+        ));
+        assert!(matches!(
+            umeyama_yaw_f64(&src, &src, g, Some(&[-1.0])),
+            Err(UmeyamaError::InvalidWeights)
+        ));
+        assert!(matches!(
+            umeyama_yaw_f64(&src, &src, g, Some(&[1.0, 2.0])),
+            Err(UmeyamaError::MismatchedWeightsLength)
+        ));
+    }
+
+    #[test]
+    fn test_umeyama_yaw_f64_small_scale_cloud_recovers_yaw() -> Result<(), UmeyamaError> {
+        // Coordinates ~1e-8 give length² variances ~1e-16 (below an absolute 1e-15
+        // threshold), yet yaw is well-defined and must be recovered scale-invariantly.
+        let gravity = Vec3F64::new(1.0, -2.0, 2.0);
+        let u = gravity.normalize();
+        let r_true = SO3F64::exp(u * 0.85).matrix();
+        let t_true = Vec3F64::new(3e-8, -2e-8, 5e-8);
+        let src: Vec<Vec3F64> = random_points(0x7A04, 5, 1.0)
+            .into_iter()
+            .map(|p| p * 1e-8)
+            .collect();
+        let dst: Vec<Vec3F64> = src.iter().map(|p| r_true * *p + t_true).collect();
+
+        let out = umeyama_yaw_f64(&src, &dst, gravity, None)?;
+        assert_matches_true(&out, &r_true, &t_true, 1.0, 1e-12);
+        assert!((out.r * u - u).length() < 1e-14);
+        Ok(())
+    }
+
+    #[test]
+    fn test_umeyama_yaw_f64_extreme_gravity_axis_magnitudes() -> Result<(), UmeyamaError> {
+        let src = random_points(0x7A05, 5, 2.0);
+        let t_true = Vec3F64::new(0.5, -0.3, 2.0);
+
+        for (gravity, u_true) in [
+            (
+                Vec3F64::new(1.5e-161, 0.0, 0.0),
+                Vec3F64::new(1.0, 0.0, 0.0),
+            ),
+            (
+                Vec3F64::new(1e-160, -2e-160, 2e-160),
+                Vec3F64::new(1.0 / 3.0, -2.0 / 3.0, 2.0 / 3.0),
+            ),
+            (
+                Vec3F64::new(1e200, -2e200, 2e200),
+                Vec3F64::new(1.0 / 3.0, -2.0 / 3.0, 2.0 / 3.0),
+            ),
+        ] {
+            let r_true = SO3F64::exp(u_true * 0.85).matrix();
+            let dst: Vec<Vec3F64> = src.iter().map(|p| r_true * *p + t_true).collect();
+            let out = umeyama_yaw_f64(&src, &dst, gravity, None)?;
+            assert_matches_true(&out, &r_true, &t_true, 1.0, 1e-12);
+            assert!((out.r * u_true - u_true).length() < 1e-14);
+        }
+        Ok(())
     }
 }
