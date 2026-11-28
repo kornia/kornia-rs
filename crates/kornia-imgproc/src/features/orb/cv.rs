@@ -206,14 +206,14 @@ impl OrbCvDetector {
         if n_levels == 0 {
             return Ok(());
         }
-        let trace = std::env::var_os("KORNIA_ORB_TRACE").is_some();
-        let t_call = std::time::Instant::now();
+        let trace = *super::TRACE;
+        let t_call = trace.then(std::time::Instant::now);
         self.features_per_level(n_levels, &mut scratch.budgets);
         let base = src.size();
         let mut built = 0;
         for level in 0..n_levels {
             if level > 0 {
-                let t_resize = std::time::Instant::now();
+                let t_resize = trace.then(std::time::Instant::now);
                 let size = self.level_size(base, level);
                 if size.width == 0 || size.height == 0 {
                     break;
@@ -236,7 +236,7 @@ impl OrbCvDetector {
                     &mut scratch.resize,
                 )?;
                 built = level;
-                if trace {
+                if let Some(t_resize) = t_resize {
                     eprintln!(
                         "  resize[{level}]={:.3}",
                         t_resize.elapsed().as_secs_f64() * 1000.0
@@ -252,7 +252,7 @@ impl OrbCvDetector {
             if scratch.level.keypoints.is_empty() {
                 continue;
             }
-            let t_blur = std::time::Instant::now();
+            let t_blur = trace.then(std::time::Instant::now);
 
             let (w, h) = (image.width(), image.height());
             if scratch.blurred.len() < w * h {
@@ -267,7 +267,7 @@ impl OrbCvDetector {
                 blurred,
                 &mut scratch.blur_rows,
             );
-            let t_brief = std::time::Instant::now();
+            let t_brief = trace.then(std::time::Instant::now);
             let layer_scale = self.layer_scale(level);
             let deg_to_rad = (std::f64::consts::PI / 180.0f32 as f64) as f32;
             for kp in scratch.level.keypoints.iter() {
@@ -284,7 +284,7 @@ impl OrbCvDetector {
                 out.orientations.push(angle);
                 out.octaves.push(level as u8);
             }
-            if trace {
+            if let (Some(t_brief), Some(t_blur)) = (t_brief, t_blur) {
                 eprintln!(
                     "  extract[{w}x{h}] blur={:.3} brief={:.3}",
                     (t_brief - t_blur).as_secs_f64() * 1000.0,
@@ -293,7 +293,7 @@ impl OrbCvDetector {
             }
         }
         scratch.levels.truncate(built);
-        if trace {
+        if let Some(t_call) = t_call {
             eprintln!(
                 "orb_trace: build_detect_extract={:.3}ms kps={}",
                 t_call.elapsed().as_secs_f64() * 1000.0,
@@ -354,9 +354,9 @@ impl OrbCvDetector {
         if w <= 2 * EDGE_THRESHOLD || h <= 2 * EDGE_THRESHOLD {
             return;
         }
-        let t0 = std::time::Instant::now();
+        let t0 = trace.then(std::time::Instant::now);
         fast_corners(image, self.fast_threshold, fast);
-        let t1 = std::time::Instant::now();
+        let t1 = trace.then(std::time::Instant::now);
         nms_3x3(w, fast, scores, out);
         out.retain(|kp| {
             let (x, y) = (kp.x as usize, kp.y as usize);
@@ -364,19 +364,19 @@ impl OrbCvDetector {
                 && (EDGE_THRESHOLD..h - EDGE_THRESHOLD).contains(&y)
         });
         retain_best(out, 2 * budget, selection, |kp| kp.score as f32);
-        let t2 = std::time::Instant::now();
+        let t2 = trace.then(std::time::Instant::now);
         let data = image.as_slice();
         for kp in out.iter_mut() {
             kp.response = harris_response_cv(data, w, kp.x as usize, kp.y as usize);
         }
         retain_best(out, budget, selection, |kp| kp.response);
-        let t3 = std::time::Instant::now();
+        let t3 = trace.then(std::time::Instant::now);
         let simd = orientation_simd_enabled();
         for kp in out.iter_mut() {
             let (m01, m10) = ic_moments_u8_at(data, w, kp.y as usize, kp.x as usize, simd);
             kp.angle = fast_atan2(m01 as f32, m10 as f32);
         }
-        if trace {
+        if let (Some(t0), Some(t1), Some(t2), Some(t3)) = (t0, t1, t2, t3) {
             let ms = |a: std::time::Instant, b: std::time::Instant| (b - a).as_secs_f64() * 1000.0;
             // `nms` is the 3x3 suppression, the border filter and retainBest
             // on the FAST score.
