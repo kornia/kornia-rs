@@ -4,7 +4,7 @@ This file provides instructions for GitHub Copilot when working with code in thi
 
 ## Skills
 
-Before any task, read the relevant skill in [`.claude/skills/`](../.claude/skills) (see the table in [AGENTS.md](../AGENTS.md#required-skills)). Before opening a PR, self-review with `kornia-code-review` and paste its output in the Self-review section of `.github/pull_request_template.md`, which the PR body must follow. When reviewing, follow `kornia-code-review` (out-of-scope changes and missing benchmarks are blocking). When a change touches a fact the skills describe, follow `kornia-curation`. `pixi run pr-check` is the pre-PR gate.
+Before any task, read the relevant skill in [`.claude/skills/`](../.claude/skills) (see the table in [AGENTS.md](../AGENTS.md#required-skills)). Before opening a PR, self-review in a fresh session or a subagent with no authoring context (not a fork) with `kornia-code-review` and paste its output in the Self-review section of `.github/pull_request_template.md`, which the PR body must follow. When reviewing, follow `kornia-code-review` (out-of-scope changes and missing benchmarks are blocking). When a change touches a fact the skills describe, follow `kornia-curation`. `pixi run pr-check` is the pre-PR gate.
 
 ## Coding Standards
 
@@ -74,7 +74,7 @@ When reviewing pull requests, ensure strict alignment with the linked issue:
    - Verify the PR description contains a valid issue reference (e.g., "Fixes #123" or "Closes #123")
    - Confirm the linked issue exists and is open (or was open when the PR was created)
 
-2. **Self-review**: Start from the author's pasted `kornia-code-review` output; check its findings against the diff rather than repeating the review.
+2. **Self-review**: Start from the author's pasted fresh-session `kornia-code-review` output; check its findings against the diff rather than repeating the review.
 
 3. **Scope Matching**:
    - **Critical**: Verify that the PR implementation strictly matches what the issue describes

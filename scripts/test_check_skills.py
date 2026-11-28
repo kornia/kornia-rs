@@ -3,6 +3,7 @@
 import os
 import subprocess
 import sys
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -45,6 +46,90 @@ class TestEvalSelfReview(unittest.TestCase):
     def test_tag_after_self_review_does_not_count(self):
         body = self.review.replace("[inferred]", "") + "\n## Tests\n[measured]"
         self.assertEqual(check_skills.self_review_error(body, library=True), "missing [measured] or [inferred] line")
+
+
+class TestSelfReviewFreshness(unittest.TestCase):
+    RULE = (
+        "---\ndescription: Use for a self-review in a fresh session\n---\n\n"
+        "- **Self-review (mandatory before opening a PR).** Run in a fresh session"
+    )
+
+    def test_repository_docs_pass(self):
+        self.assertEqual(check_skills.self_review_doc_errors(), [])
+
+    def test_each_mention_needs_a_fresh_session(self):
+        good = "Self-review with `kornia-code-review` in a fresh session."
+        old = "| `kornia-code-review` | mandatory self-review before every PR |"
+        self.assertFalse(check_skills.missing_fresh_session(good))
+        for probe in (
+            "Then run the `kornia-code-review` skill on your diff",
+            "Run the `kornia-code-review` skill and paste its output in the PR description.",
+            "Self review your diff with `kornia-code-review`.",
+            "The author's agent runs `kornia-code-review` on the diff.",
+            "Run the skill in `.claude/skills/kornia-code-review` and paste its output.",
+            "Before opening a PR, run `.claude/skills/kornia-code-review` on your diff.",
+            "Use `kornia-code-review` on your diff before opening a PR.",
+        ):
+            self.assertTrue(check_skills.missing_fresh_session(probe), probe)
+        self.assertTrue(check_skills.missing_fresh_session(old))
+        self.assertTrue(check_skills.missing_fresh_session(good + "\n\n" + old))
+        self.assertTrue(check_skills.missing_fresh_session(good + "\n" + old, per_line=True))
+
+    def test_each_instruction_needs_it_not_just_each_paragraph(self):
+        probe = (
+            "Self-review with `kornia-code-review` in a fresh session. "
+            "Before opening the next PR, run `kornia-code-review` on your diff."
+        )
+        self.assertTrue(check_skills.missing_fresh_session(probe))
+
+    def test_the_mention_may_span_sentences_only_with_the_phrase(self):
+        spans = (
+            "Read `.claude/skills/kornia-code-review/SKILL.md`. "
+            "Do a self-review before every PR."
+        )
+        self.assertTrue(check_skills.missing_fresh_session(spans))
+
+    def test_a_qualifier_in_the_next_sentence_counts(self):
+        for good in (
+            "Self-review with `kornia-code-review`. Do it in a fresh session.",
+            "Self-review with `kornia-code-review`, e.g. in a fresh session.",
+        ):
+            self.assertFalse(check_skills.missing_fresh_session(good), good)
+
+    def test_a_qualifier_in_the_previous_sentence_does_not_count(self):
+        # The CodeRabbit case: a compliant first instruction must not excuse a
+        # stale second one that follows it.
+        probe = "Run the skill in a fresh session. Self-review with `kornia-code-review`."
+        self.assertTrue(check_skills.missing_fresh_session(probe))
+
+    def test_rule_needs_it_in_the_description_and_the_bullet(self):
+        self.assertFalse(check_skills.self_review_rule_stale(self.RULE))
+        no_description = self.RULE.replace("a self-review in a fresh session", "a self-review")
+        no_bullet = self.RULE.replace("Run in a fresh session", "The author runs this")
+        self.assertTrue(check_skills.self_review_rule_stale(no_description))
+        self.assertTrue(check_skills.self_review_rule_stale(no_bullet))
+
+    def test_the_real_rule_without_the_phrase_is_stale(self):
+        rule = (check_skills.ROOT / check_skills.SELF_REVIEW_SKILL).read_text(encoding="utf-8")
+        reverted = re.sub(r"fresh\s+session", "session", rule)
+        self.assertNotEqual(reverted, rule)
+        self.assertTrue(check_skills.self_review_rule_stale(reverted))
+
+    def test_errors_are_wired_to_the_docs_and_the_rule(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for rel in check_skills.SELF_REVIEW_DOCS:
+                (root / rel).parent.mkdir(parents=True, exist_ok=True)
+                (root / rel).write_text("`kornia-code-review` self-review in a fresh session", encoding="utf-8")
+            rule = root / check_skills.SELF_REVIEW_SKILL
+            rule.parent.mkdir(parents=True, exist_ok=True)
+            rule.write_text(self.RULE, encoding="utf-8")
+            with mock.patch.object(check_skills, "ROOT", root):
+                self.assertEqual(check_skills.self_review_doc_errors(), [])
+                (root / "AGENTS.md").write_text("`kornia-code-review` self-review", encoding="utf-8")
+                self.assertTrue(any("AGENTS.md" in e for e in check_skills.self_review_doc_errors()))
+                rule.write_text("- **Self-review (mandatory before opening a PR).** The author runs this", encoding="utf-8")
+                self.assertTrue(any("rule does not require" in e for e in check_skills.self_review_doc_errors()))
 
 
 class TestLibraryDiff(unittest.TestCase):
