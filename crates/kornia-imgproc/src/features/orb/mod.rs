@@ -3,6 +3,10 @@ mod extractor;
 mod matcher;
 mod pattern;
 
+// Set KORNIA_ORB_TRACE before the first extraction; both detectors share the flag.
+static TRACE: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var_os("KORNIA_ORB_TRACE").is_some());
+
 pub use cv::{OrbCvDetector, OrbCvScratch};
 pub use extractor::{OrbDetector, OrbFeatures, OrbScratch};
 pub use matcher::{match_orb_descriptors, OrbMatchConfig};

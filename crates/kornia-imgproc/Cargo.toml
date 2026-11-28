@@ -155,6 +155,22 @@ required-features = ["opencv_bench"]
 
 [[bench]]
 harness = false
+name = "bench_remap_table"
+
+[[bench]]
+harness = false
+name = "bench_good_features"
+
+[[bench]]
+harness = false
+name = "bench_corner_subpix"
+
+[[bench]]
+harness = false
+name = "bench_lk_window"
+
+[[bench]]
+harness = false
 name = "bench_threshold"
 
 [dependencies]

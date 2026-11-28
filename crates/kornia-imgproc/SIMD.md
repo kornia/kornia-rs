@@ -218,18 +218,19 @@ sudo docker run --privileged --network=none --rm \
 ```toml
 [target.x86_64-unknown-linux-gnu]
 runner = ["env", "QEMU_LD_PREFIX=/usr/x86_64-linux-gnu"]
-linker = "x86_64-linux-gnu-gcc"
 rustflags = ["-Ctarget-cpu=x86-64"]
 ```
 
 - `runner = ["env", "QEMU_LD_PREFIX=…"]`: binfmt_misc picks up the binary transparently; `QEMU_LD_PREFIX` tells qemu where the amd64 dynamic loader + libc live (the `gcc-x86-64-linux-gnu` package ships the sysroot there).
-- `linker = "x86_64-linux-gnu-gcc"`: needed because `rust-lld` doesn't know where the amd64 sysroot is.
+- The linker is not set here, as it would also apply to native builds. On aarch64 hosts, `export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc`.
 
 - `rustflags = ["-Ctarget-cpu=x86-64"]`: keeps the x86_64 build portable for older CPUs. AVX2/FMA kernels are still compiled with `#[target_feature]` and selected through runtime dispatch when available.
 
 #### Running x86 examples under qemu
 
 ```bash
+export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc
+
 # Verify an AVX2 kernel (correctness + dispatch confirmation only)
 cargo run --release -p kornia-imgproc --example verify_normalize_avx2 \
     --target x86_64-unknown-linux-gnu
@@ -345,7 +346,7 @@ LLVM already hoists the query loads of fixed-width float kernels, so interleavin
 
 ### Criterion under qemu
 
-`criterion` pulls in `alloca` which invokes `cc-rs` which wants `x86_64-linux-gnu-gcc` at build time. That's installed on the Jetson, but if tests start failing at link time with `-m64` errors, the aarch64 gcc got picked as the linker — check `.cargo/config.toml`'s `linker = "x86_64-linux-gnu-gcc"`.
+`criterion` pulls in `alloca` which invokes `cc-rs` which wants `x86_64-linux-gnu-gcc` at build time. That's installed on the Jetson, but if tests start failing at link time with `-m64` errors, the aarch64 gcc got picked as the linker — set `CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc`.
 
 ### Why the 4-chain rolling accumulator pattern
 

@@ -219,3 +219,32 @@ where
         self.0.as_cudaslice_mut()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cudarc::driver::CudaContext;
+
+    /// A zero width or height gives a zero-element device tensor. Its storage
+    /// pointer must still be non-null, as `NonNull` requires (#1390).
+    #[test]
+    fn zeros_cuda_with_zero_width_or_height() -> Result<(), Box<dyn std::error::Error>> {
+        let stream = CudaContext::new(0)?.default_stream();
+        for size in [
+            ImageSize {
+                width: 0,
+                height: 4,
+            },
+            ImageSize {
+                width: 4,
+                height: 0,
+            },
+        ] {
+            let image = Image::<f32, 3>::zeros_cuda(size, &stream)?;
+            assert!(!image.0.as_ptr().is_null());
+            assert_eq!(image.size(), size);
+            assert_eq!(image.to_host_owned()?.size(), size);
+        }
+        Ok(())
+    }
+}

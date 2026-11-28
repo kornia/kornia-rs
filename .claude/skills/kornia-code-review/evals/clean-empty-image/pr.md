@@ -1,12 +1,14 @@
 Title: fix(imgproc): no panic on zero-size images in distance_transform and compute_histogram
 
-**Fixes/Relates to:** #1163
+Fixes #1163
 
 User-visible fix: `changelog.d/1166.fixed.md`.
 
 ## Changes Made
-- `distance_transform.rs`: the four rayon splits (`grid` and `src` rows, `scratch` columns, the `transpose_map` destination) go through the crate's `parallel::par_rows_exact_mut` / `par_row_chunks` helpers, which yield no rows for a zero-size image instead of panicking on a zero chunk size. Added the missing Arguments/Returns/Errors rustdoc.
+- `distance_transform.rs`: the four rayon splits (`grid` and `src` rows, `scratch` columns, the `transpose_map` destination) go through the crate's `parallel::par_rows_exact_mut` / `par_row_chunks` helpers, which yield no rows for a zero-size image instead of panicking on a zero chunk size. The Returns section now specifies the output shape for empty input.
 - `histogram.rs`: `par_chunks(ROWS_PER_TASK * width)` becomes `par_row_chunks(src_slice, width, ROWS_PER_TASK)`, the same split for non-empty input.
+
+#1163 reproduces the panic in these two functions. It lists the other row-splitting sites as possibilities the reporter had not checked.
 
 ## How Was This Tested?
 - Unit tests `distance_transform_empty_image` and `test_compute_histogram_empty_image` cover 0x5, 5x0 and 0x0. They fail on main (tests applied to main's code, source hunks left out) and pass here:
@@ -25,16 +27,17 @@ test histogram::tests::test_compute_histogram_empty_image ... ok
 test distance_transform::tests::distance_transform_empty_image ... ok
 test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 395 filtered out; finished in 0.00s
 ```
-- Non-empty images: `par_row_chunks(d, w, n)` is `d.par_chunks(w * n)` and `par_rows_exact_mut(d, w)` is `d.par_chunks_exact_mut(w)` once `w > 0` (`parallel.rs:26,36,46`), and the buffers are exactly `width * height` long, so the split is unchanged. No perf change is claimed and no bench was run.
+- Non-empty images: `par_row_chunks(d, w, n)` is `d.par_chunks(w * n)` and `par_rows_exact_mut(d, w)` is `d.par_chunks_exact_mut(w)` once `w > 0` (`parallel.rs:26,36,46`). The immutable source uses `par_row_chunks(src_slice, width, 1)` because the exact-row helper takes a mutable slice. The source and grid both contain exactly `width * height` elements, so the two iterators yield the same rows. No perf change is claimed and no bench was run.
 
 ## Self-review
 ```text
 Verdict: approve
-- §0 scope: the two functions #1163 names. The rustdoc paragraph on the no-foreground value (1e10) and f32 precision documents existing behaviour of the function being changed; it is not the fix.
-- §1-3: no new allocation or copy; same rayon split for non-empty input (parallel.rs:26,36,46); no perf claim, so no bench.
-- §4: the new tests fail on main with the #1163 panic and pass here (output above).
-- §5: no unwrap in library code; rustdoc has Arguments/Returns/Errors.
-- §6: changelog fragment added; outputs pasted from this tree.
+§0 — no finding — #1163 names both panic sites. The zero-size tests and the empty-output rustdoc cover those sites. — [inferred]
+§0b — no finding — the row helpers in the search below handle zero-length buffers. — [measured]
+§1–3 — no finding — for non-empty buffers the helpers use the same chunk sizes and borrow the same slices. No speedup claimed. — [inferred]
+§4 — no finding — the empty_image test output above goes from two chunk-size panics to “8 passed; 0 failed”. — [measured]
+§5 — no finding — the fix uses safe slice helpers and documents the empty output. — [inferred]
+§6 — no finding — the changelog fragment describes the zero-size panic. — [inferred]
 Reuse searches:
 - zero-size-safe row split (split a buffer into rows without panicking on empty images)
   $ rg -n "fn par_row|fn par_rows" crates/

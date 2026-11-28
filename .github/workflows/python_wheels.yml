@@ -50,16 +50,12 @@ jobs:
         python-version: ${{ fromJSON(inputs.subset == 'minimal' && '["3.12"]' || '["3.9", "3.10", "3.11", "3.12", "3.13", "3.14", "3.14t", "3.15", "3.15t"]') }}
         target: [x86_64, aarch64]
     # Neutralize the in-repo `.cargo/config.toml` (which targets the local
-    # Jetson cross-test setup: `x86_64-linux-gnu-gcc` cross-linker plus
-    # `x86-64-v3` / `aarch64+fp16+fhm` baselines). Released wheels need
-    # broad CPU compat: the binary boots on stock baselines and
-    # `cpu_features()` selects NEON / AVX2 paths at runtime via per-fn
-    # `#[target_feature]` annotations.
+    # Jetson cross-test setup: `x86-64` / `aarch64+fp16+fhm` baselines).
+    # Released wheels need broad CPU compat: the binary boots on stock
+    # baselines and `cpu_features()` selects NEON / AVX2 paths at runtime via
+    # per-fn `#[target_feature]` annotations.
     env:
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: ""
-      # Manylinux containers ship `cc` / `gcc` but not the `x86_64-linux-gnu-gcc`
-      # cross wrapper our config.toml uses for cross-builds from aarch64.
-      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: cc
       # Keep `opt-level=2` for aarch64: works around an LLVM crash compiling
       # `faer` at opt-level=3 (BranchProbabilityInfo SIGSEGV). Drop the
       # `+fp16,+fhm` baseline so the wheel runs on pre-ARMv8.2 chips.
