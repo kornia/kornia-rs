@@ -1,4 +1,9 @@
 ---
 type: llm
 ---
-Negative control: a merged PR with no real blocking or major defect beyond those listed. PASS if the review has no finding rated blocking and no finding rated major, except optionally these true findings on the merged PR: a scope finding (blocking is fine) on the rustdoc paragraph about the no-foreground `1e10` value and f32 precision, which #1163 calls separate; a finding that the paragraph's "inexact above 4096 px" claim is wrong (squared distances lose integer exactness in f32 once width² + height² passes 2^24, e.g. 3000x3000); and a request for bench numbers on the changed rayon splits (section 3 is arguable: the PR shows the split is unchanged for non-empty input). Every model flagged the scope finding on 2026-10-24 and Opus found the 4096 error, so #1166 is a control with two known, listed defects. Minor findings and nits are fine. FAIL if any other blocking or major finding is present, quoting it. A finding with no severity word (blocking/major/minor/nit), or another word such as "must fix", counts as unrated and does not meet a severity requirement.
+PASS if every finding has a recognized severity and the only blocking or major findings, if any, are:
+
+- A request for before/after bench numbers on the changed rayon splits.
+- A correction to the baseline rustdoc's 4096-pixel precision threshold. Squared distances can exceed the exact integer range of `f32` even when both dimensions are below 4096.
+
+Minor findings and nits are fine. FAIL if any other blocking or major finding is present, quoting it. FAIL if any finding has no severity or uses an unrecognized severity such as "critical" or "must fix". A checked section reported as "no finding" is not a finding.
