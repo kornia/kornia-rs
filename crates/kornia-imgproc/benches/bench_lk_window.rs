@@ -201,9 +201,13 @@ mod opencv_arm {
         let term_type = core::TermCriteria_Type::COUNT as i32 + core::TermCriteria_Type::EPS as i32;
         let (mut status, mut err) = (core::Vector::<u8>::new(), core::Vector::<f32>::new());
         group.bench_function("opencv_prebuilt_48", |b| {
+            // Allocated once, as the Rust arm's buffer is.
+            let mut next_pts = points(starts);
             b.iter(|| {
                 // In/out with OPTFLOW_USE_INITIAL_FLOW; refilling the 48 starts is timed too.
-                let mut next_pts = points(starts);
+                for (i, p) in starts.iter().enumerate() {
+                    next_pts.set(i, core::Point2f::new(p[0], p[1])).unwrap();
+                }
                 let term = core::TermCriteria::new(term_type, MAX_ITER as i32, f64::from(EPSILON))
                     .unwrap();
                 video::calc_optical_flow_pyr_lk(

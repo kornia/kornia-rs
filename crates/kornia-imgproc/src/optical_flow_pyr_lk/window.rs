@@ -290,7 +290,7 @@ pub struct LkTrack {
 ///
 /// `false` when `pixel` is not finite, the window leaves the image by more
 /// than its size (OpenCV's rule), the frame lacks `level`, or `win` is not
-/// odd and at least 3.
+/// odd, at least 3 and at most the level-0 size.
 ///
 /// # Errors
 ///
@@ -310,7 +310,9 @@ pub fn extract_template(
     let Some(plane) = frame.level(level) else {
         return false;
     };
-    if check_window(win).is_err() {
+    // The level-0 bound is `LkFrame::new`'s; it keeps the template layout
+    // from overflowing for a huge `win`.
+    if check_window(win).is_err() || check_size(frame.levels[0].size(), win).is_err() {
         return false;
     }
     let scale = 1.0 / (1u32 << level) as f32;
@@ -989,6 +991,20 @@ mod tests {
         let frame = LkFrame::new(&img, 11, 0).unwrap();
         let mut template = LkTemplate::default();
         assert!(!extract_template(&frame, [10.0, 10.0], 0, 4, &mut template));
+        assert!(!extract_template(
+            &frame,
+            [10.0, 10.0],
+            0,
+            21,
+            &mut template
+        ));
+        assert!(!extract_template(
+            &frame,
+            [10.0, 10.0],
+            0,
+            usize::MAX,
+            &mut template
+        ));
         assert!(!extract_template(
             &frame,
             [f32::NAN, 10.0],
