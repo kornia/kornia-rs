@@ -2,7 +2,7 @@
 //! device-resident [`CudaStereoMatches`] out, no host sync per frame.
 //!
 //! Output is IDENTICAL to the CPU reference (asserted by test): the integer stages (row
-//! band, Hamming, centred SAD, histogram median) are exact, and every float expression is
+//! band, Hamming, SAD, histogram median) are exact, and every float expression is
 //! a textual mirror of its `matcher.rs` helper compiled with `fmad=false`, so the dot
 //! product, parabola and depth round the same way. Ties resolve to the lowest right index
 //! and the lowest SAD offset on both sides.
@@ -164,6 +164,7 @@ struct Params {
     sad_on: i32,
     sad_w: i32,
     sad_l: i32,
+    sad_centred: i32,
     desc_width: i32,
     median_on: i32,
     fit_parabola: i32,
@@ -187,7 +188,7 @@ struct Params {
     float inv_scale[MAX_LEVELS];
     float row_band, min_d, max_d, bf, min_sim;
     unsigned int max_hamming;
-    int n_levels, rows, gate_oct, sad_on, sad_w, sad_l, desc_width, median_on,
+    int n_levels, rows, gate_oct, sad_on, sad_w, sad_l, sad_centred, desc_width, median_on,
         fit_parabola, bucketed, hist_bins, hist_shift;
 };
 
@@ -213,19 +214,21 @@ __device__ __forceinline__ bool sad_fits(long long su_l, long long sv, long long
     return su_l - w >= 0 && su_l + w < iw && sv - w >= 0 && sv + w < ih
         && su_r0 - l - w >= 0 && su_r0 + l + w < iw;
 }
-/* Centred SAD of every search offset at once (matcher.rs::centred_sad, summed in a
-   different but integer-exact order). The right window [su_r0-l-w, su_r0+l+w] has
-   2(l+w)+1 <= 32 columns: lane c holds column c of the current patch row, lanes
-   0..2w hold the left patch row, and lane t (offset t-l) gathers its 2w+1 terms by
-   shuffle. Lanes past 2l return garbage the caller masks. All lanes must call. */
-__device__ int warp_centred_sad(const unsigned char* L, const unsigned char* R, int stride,
-                                int su_l, int su_r0, int sv, int w, int l, int lane) {
+/* SAD of every search offset at once (matcher.rs::patch_sad, summed in a different but
+   integer-exact order), centred or plain per `centred`. The right window
+   [su_r0-l-w, su_r0+l+w] has 2(l+w)+1 <= 32 columns: lane c holds column c of the
+   current patch row, lanes 0..2w hold the left patch row, and lane t (offset t-l)
+   gathers its 2w+1 terms by shuffle. Lanes past 2l return garbage the caller masks.
+   All lanes must call. */
+__device__ int warp_patch_sad(const unsigned char* L, const unsigned char* R, int stride,
+                              int su_l, int su_r0, int sv, int w, int l, int centred, int lane) {
     const unsigned FULL = 0xffffffffu;
     int ncol = 2 * (l + w) + 1;
     int x0 = su_r0 - l - w;
     int lc = L[sv * stride + su_l];
     int r0 = lane < ncol ? (int)R[sv * stride + x0 + lane] : 0;
     int rc = __shfl_sync(FULL, r0, min(lane + w, 31));   /* R(su_r0 + offset, sv) */
+    if (!centred) { lc = 0; rc = 0; }
     int sad = 0;
     for (int dy = -w; dy <= w; ++dy) {
         int row = (sv + dy) * stride;
@@ -379,7 +382,7 @@ __device__ void stereo_match(
         const unsigned char* L = (const unsigned char*)pyr.left[o_l];
         const unsigned char* R = (const unsigned char*)pyr.right[o_l];
         int inc = lane - l;
-        int sad = warp_centred_sad(L, R, iw, su_l, su_r0, sv, w, l, lane);
+        int sad = warp_patch_sad(L, R, iw, su_l, su_r0, sv, w, l, p.sad_centred, lane);
         if (lane > 2 * l) sad = 0x7fffffff;
         /* argmin, ties to the smallest offset (= lowest lane) */
         int bsad = sad, binc = lane <= 2 * l ? inc : 0x7fffffff;
@@ -660,7 +663,7 @@ impl StereoMatcher {
                 .map_err(cuda_err)?
                 .try_into()
                 .unwrap_or_else(|_| unreachable!("compile_many returns one kernel per name"));
-        // Largest centred SAD: every term |a - b| <= 510.
+        // Largest SAD: every centred term |a - b| is <= 510, every plain one <= 255.
         let bins = self
             .cfg
             .sad
@@ -820,6 +823,7 @@ impl CudaStereoMatcher {
             sad_on: cfg.sad.is_some() as i32,
             sad_w: cfg.sad.map_or(0, |s| s.half_window as i32),
             sad_l: cfg.sad.map_or(0, |s| s.search_range as i32),
+            sad_centred: cfg.sad.is_some_and(|s| s.centred) as i32,
             desc_width: desc_width as i32,
             median_on,
             fit_parabola: cfg.sad.is_some_and(|s| s.fit == SubPixelFit::Parabola) as i32,
@@ -1309,30 +1313,36 @@ mod tests {
     }
 
     /// The CUDA matcher must return bit-identical results to the CPU reference, for both
-    /// descriptor kinds, with and without SAD, and with a device-side count.
+    /// descriptor kinds, with and without SAD (centred and plain), and with a device-side
+    /// count.
     #[test]
     fn cuda_matches_cpu_bit_exact() -> Result<(), Box<dyn std::error::Error>> {
         let d = 7.3;
         let (li, ri) = pair_noisy(d);
         let s = scene(d, 11);
+        let sads = [
+            SadRefine::default(),
+            // Widest window the warp holds: 2 * (7 + 8) + 1 = 31 columns.
+            SadRefine {
+                half_window: 7,
+                search_range: 8,
+                fit: SubPixelFit::Parabola,
+                ..SadRefine::default()
+            },
+            // Widest patch: 29x29 → 428 911 SAD bins, coarse buckets of 2^11.
+            SadRefine {
+                half_window: 14,
+                search_range: 1,
+                ..SadRefine::default()
+            },
+        ];
+        let sad_settings: Vec<Option<SadRefine>> = [true, false]
+            .into_iter()
+            .flat_map(|centred| sads.map(|sr| Some(SadRefine { centred, ..sr })))
+            .chain([None])
+            .collect();
         for binary in [true, false] {
-            for sad in [
-                Some(SadRefine::default()),
-                // Widest window the warp holds: 2 * (7 + 8) + 1 = 31 columns.
-                Some(SadRefine {
-                    half_window: 7,
-                    search_range: 8,
-                    fit: SubPixelFit::Parabola,
-                    ..SadRefine::default()
-                }),
-                // Widest patch: 29x29 → 428 911 SAD bins, coarse buckets of 2^11.
-                Some(SadRefine {
-                    half_window: 14,
-                    search_range: 1,
-                    ..SadRefine::default()
-                }),
-                None,
-            ] {
+            for &sad in &sad_settings {
                 for device_count in [false, true] {
                     let mut c = StereoMatchConfig::new(300.0, 0.1);
                     c.sad = sad;
@@ -1362,8 +1372,7 @@ mod tests {
                     assert_eq!(
                         bits(&cpu),
                         bits(&gpu),
-                        "binary={binary} sad={} dev={device_count}",
-                        sad.is_some()
+                        "binary={binary} sad={sad:?} dev={device_count}"
                     );
                 }
             }
