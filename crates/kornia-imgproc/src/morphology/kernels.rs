@@ -161,8 +161,8 @@ pub fn cross_kernel(size: usize) -> Kernel {
 /// A [`Kernel`] with 1s inside the ellipse boundary.
 pub fn ellipse_kernel(width: usize, height: usize) -> Kernel {
     let mut data = vec![0u8; width * height];
-    let cx = width as f32 / 2.0;
-    let cy = height as f32 / 2.0;
+    let cx = (width - 1) as f32 / 2.0;
+    let cy = (height - 1) as f32 / 2.0;
     let rx = width as f32 / 2.0;
     let ry = height as f32 / 2.0;
 

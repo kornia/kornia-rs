@@ -306,6 +306,27 @@ mod tests {
     }
 
     #[test]
+    fn test_ellipse_kernel_is_centered() {
+        // A 3x3 ellipse must be symmetric: the four corners should match,
+        // since the ellipse is centered in the kernel.
+        let kernel = Kernel::new(KernelShape::Ellipse {
+            width: 3,
+            height: 3,
+        });
+        let data = kernel.data();
+        assert_eq!(
+            data[0], data[8],
+            "ellipse kernel is not centered: top-left corner ({}) != bottom-right corner ({}): {data:?}",
+            data[0], data[8]
+        );
+        assert_eq!(
+            data[2], data[6],
+            "ellipse kernel is not centered: top-right corner ({}) != bottom-left corner ({}): {data:?}",
+            data[2], data[6]
+        );
+    }
+
+    #[test]
     fn test_kernel_padding() {
         let kernel = Kernel::new(KernelShape::Box { size: 5 });
         let (pad_h, pad_w) = kernel.pad();

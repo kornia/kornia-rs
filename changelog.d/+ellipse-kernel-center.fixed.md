@@ -1,0 +1,1 @@
+Centre the ellipse structuring element (`KernelShape::Ellipse`) on the kernel grid instead of shifting it half a cell toward the bottom-right, which previously turned e.g. a 3x3 ellipse into a 2x2 block in the corner.
