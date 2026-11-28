@@ -9,6 +9,7 @@ mod ba;
 mod ba_affine;
 mod blur;
 mod brightness;
+mod camera;
 mod canny;
 mod ccl;
 mod color;
@@ -575,6 +576,9 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let k3d_mod = PyModule::new(py, "k3d")?;
     k3d_mod.add_function(wrap_pyfunction!(icp::icp_vanilla, &k3d_mod)?)?;
     k3d_mod.add_class::<pnp::PnPSolverMethod>()?;
+    k3d_mod.add_class::<camera::PyPinholeCamera>()?;
+    k3d_mod.add_class::<camera::PyFisheyeCamera>()?;
+    k3d_mod.add_class::<camera::PyCamera>()?;
     k3d_mod.add_class::<PyICPConvergenceCriteria>()?;
     k3d_mod.add_class::<PyICPResult>()?;
     k3d_mod.add_class::<twoview::PyTwoViewPose>()?;
