@@ -524,7 +524,7 @@ mod tests {
         let start = std::time::Instant::now();
         while start.elapsed() < std::time::Duration::from_secs(10) {
             match capture.try_grab_rgb8()? {
-                Grab::Frame(image) => {
+                Grab::Frame { image, .. } => {
                     // 1. Verify dimensions.
                     assert_eq!(image.width(), WIDTH, "frame width mismatch");
                     assert_eq!(image.height(), HEIGHT, "frame height mismatch");
@@ -585,7 +585,7 @@ mod tests {
         while start.elapsed() < std::time::Duration::from_secs(10) {
             match capture.try_grab_rgb8()? {
                 Grab::Eos => break,
-                Grab::Frame(_) | Grab::Pending => {
+                Grab::Frame { .. } | Grab::Pending => {
                     std::thread::sleep(std::time::Duration::from_millis(1));
                 }
             }
@@ -633,7 +633,7 @@ mod tests {
         let mut values = Vec::new();
         loop {
             match capture.try_grab_rgb8()? {
-                Grab::Frame(image) => values.push(image.as_slice()[0]),
+                Grab::Frame { image, .. } => values.push(image.as_slice()[0]),
                 Grab::Eos => break,
                 Grab::Pending => panic!("every frame must be buffered once EOS is posted"),
             }
@@ -643,11 +643,10 @@ mod tests {
         Ok(())
     }
 
-    /// An extraction failure inside the appsink callback must surface as a stream error, not as
-    /// a normal end-of-stream. A buffer-list sample has no single buffer, so `extract_frame_buffer`
-    /// fails with `GetBufferError` — reachable through the public pipeline API.
+    /// A buffer-list sample has no single buffer; pulling it must report GetBufferError
+    /// rather than treating malformed input as normal end-of-stream.
     #[test]
-    fn extraction_failure_reports_a_stream_error() -> Result<(), Box<dyn std::error::Error>> {
+    fn extraction_failure_reports_a_buffer_error() -> Result<(), Box<dyn std::error::Error>> {
         use gstreamer::prelude::*;
         use std::time::Duration;
 
@@ -685,11 +684,7 @@ mod tests {
         let start = std::time::Instant::now();
         while start.elapsed() < Duration::from_secs(10) {
             match capture.try_grab_rgb8() {
-                Err(StreamCaptureError::StreamError(err)) => {
-                    assert!(
-                        !err.to_string().is_empty(),
-                        "the stream error has no message"
-                    );
+                Err(StreamCaptureError::GetBufferError) => {
                     capture.close()?;
                     return Ok(());
                 }
@@ -698,7 +693,7 @@ mod tests {
                 Ok(_) => panic!("an extraction failure must not deliver frames or end-of-stream"),
             }
         }
-        panic!("no stream error within 10 s");
+        panic!("no buffer error within 10 s");
     }
 
     /// `pack_rows` must drop the padding after every row and keep the pixel bytes in order.

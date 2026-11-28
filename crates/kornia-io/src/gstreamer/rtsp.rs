@@ -111,7 +111,7 @@ pub fn rtsp_camera_pipeline_description(
 ) -> Result<String, StreamCaptureError> {
     let url = quote_pipeline_value(url)?;
     Ok(format!(
-        "rtspsrc location={url} latency={latency} ! rtph264depay ! avdec_h264 ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink"
+        "rtspsrc location={url} latency={latency} ! rtph264depay ! avdec_h264 ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink max-buffers=1 drop=true"
     ))
 }
 
