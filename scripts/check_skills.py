@@ -21,8 +21,12 @@ makes every stale case an error, =0 a warning.
 The publish check first runs on PUBLISH_PROBES; a change that stops it rejecting
 one fails here, not silently.
 
+The listed docs that name the self-review step must require a fresh session.
+
 This cannot check that guidance is complete or that it was applied.
 """
+from __future__ import annotations
+
 import argparse
 import os
 import re
@@ -48,6 +52,83 @@ REQUIRED = [
     "release",
 ]
 PATH_REF = r"`((?:crates|scripts|kornia-py|kornia-cpp|docs|\.github)/[A-Za-z0-9_./-]+)`"
+
+# Hand-maintained list: every listed doc that names the self-review step must say
+# it runs in a fresh session. The rule lives in kornia-code-review; the others are
+# one-clause summaries that would otherwise drift back to the same-session pattern.
+SELF_REVIEW_SKILL = ".claude/skills/kornia-code-review/SKILL.md"
+SELF_REVIEW_DOCS = (
+    "AGENTS.md",
+    "CLAUDE.md",
+    "CONTRIBUTING.md",
+    "README.md",
+    ".github/copilot-instructions.md",
+    ".github/pull_request_template.md",
+    ".github/workflows/pr-validation.yml",
+    ".github/workflows/issue-triage.yml",
+    ".github/ISSUE_TEMPLATE/bug-report.yml",
+    ".github/ISSUE_TEMPLATE/feature-request.yml",
+    ".claude/skills/kornia-workflow/SKILL.md",
+)
+
+
+def missing_fresh_session(text: str, per_line: bool = False) -> bool:
+    """Return True when any one mention of the self-review step lacks a fresh session.
+
+    A mention is a paragraph, list item, table row or sentence (a line when
+    `per_line`) that names `kornia-code-review` together with a self-review, or
+    says to run or paste it.
+    An instruction may put the qualifier in the sentence that follows it; a
+    qualifier in the *previous* sentence does not count, so a stale second
+    instruction is caught even when the first names the phrase.
+    This only checks the phrase is present; it does not read negations.
+    """
+    split = r"\n" if per_line else r"\n\s*\n|\n(?=\s*(?:[-*|]|\d+\.)\s)"
+    verdict = re.compile(r"self[- ]?review|\b(?:runs?|pastes?|uses?)(?: the)?(?: skill)?(?: in)? `?(?:\.claude/skills/)?kornia-code-review", re.I)
+    fresh = re.compile(r"fresh[- ]session", re.I)
+    for block in re.split(split, text):
+        flat = " ".join(block.split())
+        if "kornia-code-review" in flat and verdict.search(flat) and not fresh.search(flat):
+            return True  # the mention spans sentences and the block never says it
+        units = re.split(r"(?<=[.!?])\s+", block)
+        for i, unit in enumerate(units):
+            flat = " ".join(unit.split())
+            if not ("kornia-code-review" in flat and verdict.search(flat) and not fresh.search(flat)):
+                continue
+            # An instruction may put the qualifier in the sentence that follows it.
+            following = " ".join(units[i + 1].split()) if i + 1 < len(units) else ""
+            if not fresh.search(following):
+                return True
+    return False
+
+
+def self_review_rule_stale(text: str) -> bool:
+    """Return True when the owning skill's description or self-review bullet lacks a fresh session."""
+    description = re.search(r"^description:.*$", text, re.M)
+    if not description or "fresh session" not in description.group(0):
+        return True
+    for block in re.split(r"\n(?=[-*] )|\n\s*\n", text):
+        flat = " ".join(block.split())
+        if "Self-review (mandatory before opening a PR)" in flat:
+            return "fresh session" not in flat
+    return True  # the rule bullet is gone: the check must not pass silently
+
+
+def self_review_doc_errors() -> list[str]:
+    """Check that the owning rule and every doc that copies it require a fresh session."""
+    errors = []
+    for rel in SELF_REVIEW_DOCS:
+        doc = ROOT / rel
+        if not doc.is_file():
+            errors.append(f"{rel}: missing doc that names the self-review step")
+        elif missing_fresh_session(doc.read_text(encoding="utf-8"), per_line=doc.suffix == ".yml"):
+            errors.append(f"{rel}: names the kornia-code-review self-review without 'fresh session'")
+    rule = ROOT / SELF_REVIEW_SKILL
+    if not rule.is_file():
+        errors.append(f"{SELF_REVIEW_SKILL}: missing self-review skill")
+    elif self_review_rule_stale(rule.read_text(encoding="utf-8")):
+        errors.append(f"{SELF_REVIEW_SKILL}: the self-review rule does not require a fresh session")
+    return errors
 
 
 # A change under these paths keeps the review eval cases in sync, so a stale case
@@ -152,7 +233,41 @@ PUBLISH_PROBES = [
 ]
 
 
+def diff_touches_library(diff: Path) -> bool:
+    """Check both paths of a rename or copy using Git's path filtering."""
+    includes = ["--include=crates/*", "--include=kornia-py/src/*", "--include=kornia-cpp/src/*"]
+    # git apply filters on the destination. Reversing the patch checks its source.
+    for direction in ([], ["--reverse"]):
+        stat = subprocess.run(["git", "apply", "--numstat", *direction, *includes, str(diff)],
+                              cwd=ROOT, capture_output=True, check=True)
+        if stat.stdout:
+            return True
+    return False
+
+
+def self_review_error(body: str, library: bool) -> str | None:
+    """Mirror the Self-review failures in .github/workflows/pr-validation.yml."""
+    body = re.sub(r"<!--.*?-->", "", body, flags=re.S)
+    section = re.search(r"##[^\n]*Self-review[^\n]*\n(.*?)(?=\n## |\Z)", body, re.I | re.S)
+    review = section[1] if section else ""
+    verdict = re.search(r"Verdict:[ \t]*(approve|request changes|comment)\b", review, re.I)
+    if not verdict or not re.search(r"Skill gaps:", review, re.I):
+        return "missing verdict or skill gaps"
+    tagged = [line for line in review.split("\n") if re.search(r"\[(measured|inferred)\]", line, re.I)]
+    if not tagged:
+        return "missing [measured] or [inferred] line"
+    if any(re.search(r"(^|\s)[—–-]+\s*blocking\s*[—–-]", line, re.I) for line in tagged):
+        return "unresolved blocking finding"
+    if verdict[1].lower() == "request changes":
+        return "verdict requests changes"
+    reuse = re.search(r"Reuse searches:(.*?)(?=\n\s*Skill gaps:|\Z)", review, re.I | re.S)
+    if library and not (reuse and re.search(r"^\s*\$ ", reuse[1], re.M)):
+        return "missing command in Reuse searches"
+    return None
+
+
 def main() -> int:
+    """Validate skill documentation and eval fixtures against the repository."""
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--base-ref", default="origin/main",
                     help="what the change is compared with, to decide whether a stale eval case fails (default: origin/main)")
@@ -236,6 +351,19 @@ def main() -> int:
             r = subprocess.run(["git", "apply", "-R", "--check", str(merged)], cwd=ROOT, capture_output=True, text=True)
             if r.returncode != 0:
                 stale.append(f"eval {case.name}: merged.diff is no longer in the tree: {r.stderr.strip()}")
+        # Controls put their library changes in merged.diff and only a changelog in patch.diff.
+        library = False
+        for diff in (merged, patch):
+            if not diff.is_file():
+                continue
+            try:
+                library |= diff_touches_library(diff)
+            except subprocess.CalledProcessError as e:
+                errors.append(f"eval {case.name}: cannot read {diff.name}: {e.stderr.decode(errors='replace').strip()}")
+        pr = case / "pr.md"
+        if pr.is_file():
+            if problem := self_review_error(pr.read_text(encoding="utf-8"), library):
+                errors.append(f"eval {case.name}: pr.md Self-review: {problem}")
     if strict:
         errors += [f"{s} ({why}; re-sync the case, see kornia-code-review/evals/README.md)" for s in stale]
     # precision.md is generated from the case files alone, never from the tree, so
@@ -243,6 +371,8 @@ def main() -> int:
     from skill_evals import stale_precision
     for name in stale_precision():
         errors.append(f"eval {name}: graders/precision.md is stale; run `python3 scripts/skill_evals.py sync`")
+
+    errors += self_review_doc_errors()
 
     # An eval key must not leak into the skill it grades: a name backticked in an
     # expected.md that the skill also uses (backticked, or bare for identifiers

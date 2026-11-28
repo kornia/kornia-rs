@@ -1059,7 +1059,16 @@ where
     R: 'static,
 {
     let owner: Box<dyn MemoryResource> = Box::new(resource);
-    let nn_ptr = NonNull::new_unchecked(ptr);
+    // cudarc gives a zero-element slice a null device pointer. A zero-length
+    // storage is never dereferenced, so give it a dangling pointer instead, as
+    // `HostResource::from_layout` does.
+    let nn_ptr = if len_bytes == 0 {
+        NonNull::dangling()
+    } else {
+        // SAFETY: a non-empty allocation has a non-null device pointer, and the
+        // caller guarantees `ptr` is that pointer.
+        NonNull::new_unchecked(ptr)
+    };
     TensorStorage {
         ptr: nn_ptr,
         len: len_bytes,
@@ -1082,7 +1091,10 @@ where
     /// moved (unchanged) into a [`CudaResource<T>`]; its own `Drop` remains the sole
     /// owner of the device memory and frees it exactly once when the tensor drops.
     ///
-    /// The tensor's cached device pointer equals the input slice's device pointer.
+    /// For a non-empty `slice`, the tensor's cached device pointer equals the
+    /// input slice's device pointer. An empty `slice` has a null device pointer,
+    /// so its tensor caches a dangling one instead; [`as_cudaslice`](Self::as_cudaslice)
+    /// still returns the original slice.
     ///
     /// # Arguments
     ///
@@ -2159,5 +2171,28 @@ mod tests {
             wrapped_ptr, orig_ptr,
             "as_cudaslice must report the aliased pointer"
         );
+    }
+
+    /// Zero-element device tensors are documented as allowed (`zeros_cuda`),
+    /// but cudarc hands out a null device pointer for them. The storage pointer
+    /// must still be non-null, as `NonNull` requires.
+    #[test]
+    fn empty_device_tensors_have_non_null_ptr() -> Result<(), Box<dyn std::error::Error>> {
+        let stream = CudaContext::new(0)?.default_stream();
+
+        let zeroed = zeros_cuda::<f32, 2>([0, 5], &stream)?;
+        // SAFETY: the tensor has no elements, so there is nothing to initialize.
+        let uninit = unsafe { uninit_cuda::<f32, 2>([5, 0], &stream)? };
+        let wrapped =
+            Tensor::<f32, 1>::from_cudaslice(stream.alloc_zeros::<f32>(0)?, [0], stream.clone());
+
+        for (t, shape) in [(&zeroed, [0, 5]), (&uninit, [5, 0])] {
+            assert!(!t.as_ptr().is_null());
+            assert_eq!(t.storage.owner.len_bytes(), 0);
+            assert_eq!(t.to_host(&stream)?.shape, shape);
+        }
+        assert!(!wrapped.as_ptr().is_null());
+        assert_eq!(wrapped.as_cudaslice().map(|s| s.len()), Some(0));
+        Ok(())
     }
 }
