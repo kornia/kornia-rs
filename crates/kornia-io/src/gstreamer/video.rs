@@ -1,5 +1,5 @@
 use super::{
-    capture::{Grab, StreamerState},
+    capture::{Grab, StreamerState, DEFAULT_MAX_BUFFERS},
     error::VideoReaderError,
     set_location_property, StreamCapture, StreamCaptureError,
 };
@@ -424,9 +424,6 @@ impl Drop for VideoWriter {
     }
 }
 
-/// Decoded samples retained before file decoding applies backpressure.
-const FILE_QUEUE_BUFFERS: u32 = 5;
-
 /// A struct for reading video files
 pub struct VideoReader(StreamCapture);
 
@@ -451,7 +448,7 @@ impl VideoReader {
             decodebin ! \
             videoconvert ! \
             video/x-raw,format={video_format} ! \
-            appsink name=sink sync=false max-buffers={FILE_QUEUE_BUFFERS} drop=false"
+            appsink name=sink sync=false max-buffers={DEFAULT_MAX_BUFFERS} drop=false"
         );
 
         let capture = StreamCapture::new(&pipeline)?;
@@ -1987,7 +1984,7 @@ mod tests {
             .ok_or("missing sink")?
             .downcast::<gstreamer_app::AppSink>()
             .map_err(|_| "sink is not an appsink")?;
-        assert_eq!(sink.max_buffers(), super::FILE_QUEUE_BUFFERS);
+        assert_eq!(sink.max_buffers(), super::DEFAULT_MAX_BUFFERS);
         assert!(matches!(
             reader.set_max_buffers(0),
             Err(VideoReaderError::StreamCaptureError(

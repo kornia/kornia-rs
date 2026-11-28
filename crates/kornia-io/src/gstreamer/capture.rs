@@ -3,7 +3,10 @@ use crate::stream::error::StreamCaptureError;
 use gstreamer::prelude::*;
 use kornia_image::Image;
 use std::{
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     time::{Duration, Instant},
 };
 
@@ -107,8 +110,9 @@ impl From<gstreamer::State> for StreamerState {
 }
 
 /// Frames retained when a custom pipeline leaves max-buffers unbounded.
-const DEFAULT_MAX_BUFFERS: u32 = 5;
+pub(super) const DEFAULT_MAX_BUFFERS: u32 = 5;
 const CLOSE_EOS_TIMEOUT: Duration = Duration::from_secs(3);
+const CLOSE_FLUSH_GRACE: Duration = Duration::from_millis(250);
 
 /// Represents a stream capture pipeline using GStreamer.
 pub struct StreamCapture {
@@ -121,6 +125,8 @@ pub struct StreamCapture {
     status: Arc<Mutex<StreamStatus>>,
     /// Serialize start, close and seeks without blocking the bus handler on the status lock.
     lifecycle_lock: Mutex<()>,
+    /// An EOS worker owns the transition to NULL after close gives up waiting.
+    shutdown_pending: Arc<AtomicBool>,
 }
 
 impl StreamCapture {
@@ -201,6 +207,7 @@ impl StreamCapture {
             appsink,
             status,
             lifecycle_lock: Mutex::new(()),
+            shutdown_pending: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -319,12 +326,13 @@ impl StreamCapture {
     ///
     /// # Errors
     ///
-    /// Returns an error if a capture lock is poisoned or the state change fails.
+    /// Returns an error if shutdown is pending, a lock is poisoned, or the state change fails.
     pub fn start(&self) -> Result<(), StreamCaptureError> {
         let _lifecycle = self
             .lifecycle_lock
             .lock()
             .map_err(|_| StreamCaptureError::MutexPoisonError)?;
+        self.ensure_shutdown_complete()?;
         self.drain_bus();
         // Starting a stopped pipeline begins a fresh run, so its previous terminal state is
         // discarded. Resuming a PLAYING/PAUSED one keeps it: a pipeline that already reached
@@ -558,7 +566,9 @@ impl StreamCapture {
     /// Closes capture and lets any recording branches finish writing.
     ///
     /// An active stream is sent EOS with appsink backpressure and clock pacing disabled.
-    /// The pipeline is stopped even if it rejects EOS or does not finish within three seconds.
+    /// If EOS stalls past the deadline and flush grace period, close returns an error
+    /// and the EOS worker stops the pipeline when dispatch returns. Start and seek
+    /// return an error while that shutdown is pending.
     ///
     /// # Arguments
     ///
@@ -571,7 +581,8 @@ impl StreamCapture {
     /// # Errors
     ///
     /// Returns an error if EOS is rejected, finalization times out, a state change fails,
-    /// a sink reports an error while stopping, or the lifecycle lock is poisoned.
+    /// a sink reports an error while stopping, shutdown is already pending, or the
+    /// lifecycle lock is poisoned.
     ///
     /// # Example
     ///
@@ -585,10 +596,18 @@ impl StreamCapture {
     /// # }
     /// ```
     pub fn close(&self) -> Result<(), StreamCaptureError> {
+        self.close_with_eos(|pipeline| pipeline.send_event(gstreamer::event::Eos::new()))
+    }
+
+    fn close_with_eos(
+        &self,
+        send_eos: impl FnOnce(&gstreamer::Pipeline) -> bool + Send + 'static,
+    ) -> Result<(), StreamCaptureError> {
         let _lifecycle = self
             .lifecycle_lock
             .lock()
             .map_err(|_| StreamCaptureError::MutexPoisonError)?;
+        self.ensure_shutdown_complete()?;
         let (_, current, pending) = self.pipeline.state(gstreamer::ClockTime::ZERO);
         if current == gstreamer::State::Null && pending == gstreamer::State::VoidPending {
             return Ok(());
@@ -602,16 +621,20 @@ impl StreamCapture {
             self.appsink.set_sync(false);
             // Wake any producer already waiting for room in the queue.
             let _ = self.appsink.try_pull_sample(gstreamer::ClockTime::ZERO);
-            self.finish_stream(current, pending)
+            self.finish_stream(current, pending, send_eos)
         } else {
             Ok(())
         };
 
-        let stopped = self.pipeline.set_state(gstreamer::State::Null);
-        if stopped.is_ok() {
+        if self.shutdown_pending.load(Ordering::Acquire) {
             self.appsink.set_drop(drop);
             self.appsink.set_sync(sync);
+            return finished;
         }
+
+        let stopped = self.pipeline.set_state(gstreamer::State::Null);
+        self.appsink.set_drop(drop);
+        self.appsink.set_sync(sync);
         let stop_error = self.stream_error();
         finished?;
         if let Some(error) = stop_error.filter(|_| !had_error) {
@@ -625,6 +648,7 @@ impl StreamCapture {
         &self,
         current: gstreamer::State,
         pending: gstreamer::State,
+        send_eos: impl FnOnce(&gstreamer::Pipeline) -> bool + Send + 'static,
     ) -> Result<(), StreamCaptureError> {
         // Pipeline EOS is only posted in Playing, including if close follows pause.
         if pending != gstreamer::State::Playing
@@ -653,11 +677,17 @@ impl StreamCapture {
                 let _ = pad.send_event(gstreamer::event::FlushStart::new());
             }
         };
-        let (sent, result) = std::sync::mpsc::sync_channel(1);
-        // A custom branch can still delay a serialized event. Send it off-thread so
-        // close can transition to NULL and release the branch if it does not finish.
+        let (sent, result) = std::sync::mpsc::sync_channel(0);
+        let shutdown_pending = Arc::clone(&self.shutdown_pending);
+        // A dropped rendezvous receiver hands the final NULL transition to this worker.
+        // It must finish sending EOS before that transition or a new run could inherit EOS.
         self.pipeline.call_async(move |pipeline| {
-            let _ = sent.send(pipeline.send_event(gstreamer::event::Eos::new()));
+            if sent.send(send_eos(pipeline)).is_err() {
+                if let Err(error) = pipeline.set_state(gstreamer::State::Null) {
+                    log::warn!("Failed to stop capture after EOS timeout: {error}");
+                }
+                shutdown_pending.store(false, Ordering::Release);
+            }
         });
         match result.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
             Ok(true) => {}
@@ -667,9 +697,13 @@ impl StreamCapture {
                 // Flush downstream directly. Dispatch may hold the pipeline state lock while
                 // a sink waits on its clock, so changing state first can deadlock.
                 flush_sinks();
-                // Keep the lifecycle lock until dispatch returns. A subsequent start cannot
-                // inherit EOS from the previous run, even if the job was slow to start.
-                let _ = result.recv();
+                if matches!(
+                    result.recv_timeout(CLOSE_FLUSH_GRACE),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                ) {
+                    self.shutdown_pending.store(true, Ordering::Release);
+                    drop(result);
+                }
                 return Err(Self::eos_timeout());
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
@@ -685,7 +719,7 @@ impl StreamCapture {
             Some(msg) => match msg.view() {
                 gstreamer::MessageView::Eos(_) => Ok(()),
                 gstreamer::MessageView::Error(err) => Err(detailed_error(&msg, err).into()),
-                _ => unreachable!("only EOS and errors were requested"),
+                _ => Err(Self::eos_timeout()),
             },
             None if self.is_eos() => Ok(()),
             None => {
@@ -695,6 +729,17 @@ impl StreamCapture {
                     .map_or_else(Self::eos_timeout, Into::into))
             }
         }
+    }
+
+    fn ensure_shutdown_complete(&self) -> Result<(), StreamCaptureError> {
+        if self.shutdown_pending.load(Ordering::Acquire) {
+            return Err(gstreamer::glib::Error::new(
+                gstreamer::CoreError::StateChange,
+                "capture shutdown is still in progress",
+            )
+            .into());
+        }
+        Ok(())
     }
 
     fn eos_timeout() -> StreamCaptureError {
@@ -724,7 +769,7 @@ impl StreamCapture {
     /// # Errors
     ///
     /// Returns a seek error if rejected, an invalid-configuration error for a non-flushing
-    /// seek on a non-dropping queue, or a capture error if a lock is poisoned.
+    /// seek on a non-dropping queue, or a capture error if shutdown is pending or a lock is poisoned.
     pub(crate) fn seek(
         &self,
         rate: f64,
@@ -735,6 +780,7 @@ impl StreamCapture {
             .lifecycle_lock
             .lock()
             .map_err(|_| StreamCaptureError::MutexPoisonError)?;
+        self.ensure_shutdown_complete()?;
         // Occupancy can change before send_event; reject without inspecting or draining the queue.
         if !flags.contains(gstreamer::SeekFlags::FLUSH) && !self.appsink.is_drop() {
             return Err(StreamCaptureError::InvalidConfig(
@@ -1163,6 +1209,65 @@ mod tests {
                     "restarted capture produced no frames"
                 );
             }
+        }
+        capture.close()?;
+        Ok(())
+    }
+
+    #[test]
+    fn close_returns_while_eos_dispatch_is_stalled() -> Result<(), Box<dyn std::error::Error>> {
+        let capture = StreamCapture::new(
+            "videotestsrc is-live=true ! video/x-raw,format=RGB,width=4,height=4 ! \
+             appsink name=sink sync=true async=false max-buffers=1 drop=false",
+        )?;
+        capture.start()?;
+        let (release, stalled) = mpsc::channel();
+        let (closed, outcome) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = capture.close_with_eos(move |pipeline| {
+                // Hold the dispatch past FlushStart, then let it finish on the old run.
+                stalled.recv_timeout(DEADLINE + CLOSE_EOS_TIMEOUT).is_ok()
+                    && pipeline.send_event(gstreamer::event::Eos::new())
+            });
+            let _ = closed.send((capture, result));
+        });
+        let (mut capture, result) = outcome.recv_timeout(DEADLINE)?;
+        worker.join().map_err(|_| "close worker panicked")?;
+
+        assert!(result.is_err());
+        assert!(!capture.appsink.is_drop());
+        assert!(capture.appsink.property::<bool>("sync"));
+        for result in [capture.start(), capture.close()] {
+            let error = result.expect_err("lifecycle call accepted during pending shutdown");
+            assert!(error.to_string().contains("shutdown is still in progress"));
+        }
+        let error = capture
+            .seek(1.0, gstreamer::SeekFlags::FLUSH, gstreamer::ClockTime::ZERO)
+            .expect_err("seek accepted during pending shutdown");
+        assert!(error.to_string().contains("shutdown is still in progress"));
+
+        release.send(())?;
+        let deadline = Instant::now() + DEADLINE;
+        while capture.shutdown_pending.load(Ordering::Acquire) {
+            assert!(
+                Instant::now() < deadline,
+                "deferred shutdown did not finish"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(capture.pipeline.current_state(), gstreamer::State::Null);
+        capture.start()?;
+        let deadline = Instant::now() + DEADLINE;
+        loop {
+            match capture.try_grab_rgb8()? {
+                Grab::Frame { .. } => break,
+                Grab::Eos => return Err("restarted capture inherited EOS".into()),
+                Grab::Pending => std::thread::sleep(Duration::from_millis(1)),
+            }
+            assert!(
+                Instant::now() < deadline,
+                "restarted capture produced no frames"
+            );
         }
         capture.close()?;
         Ok(())
