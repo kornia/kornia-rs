@@ -425,6 +425,10 @@ impl SO3F64 {
     ///
     /// The rotation, or `None` if `mat` is not finite or its SVD does not converge.
     ///
+    /// # Errors
+    ///
+    /// This function is infallible; the cases without a result return `None` (see `# Returns`).
+    ///
     /// # Example
     ///
     /// ```rust
@@ -1221,7 +1225,10 @@ mod tests_f64 {
         assert_mat_eq(&nearest.matrix(), &(a * b), 1e-9);
         let mut not_finite = Mat3F64::IDENTITY;
         not_finite.x_axis.y = f64::NAN;
-        assert!(SO3F64::from_matrix_nearest(&not_finite).is_none());
+        assert!(
+            SO3F64::from_matrix_nearest(&not_finite).is_none(),
+            "a NaN matrix has no nearest rotation"
+        );
         Ok(())
     }
 

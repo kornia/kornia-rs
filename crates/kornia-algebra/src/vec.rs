@@ -286,9 +286,17 @@ impl Vec3F64 {
     /// Not a `From` impl on purpose: it rounds like `as f32`, so it keeps glam's `as_*` name;
     /// `From` is kept for lossless conversions such as `f32` to `f64`.
     ///
+    /// # Arguments
+    ///
+    /// * `self` - The `f64` vector.
+    ///
     /// # Returns
     ///
     /// The `f32` vector; values outside the `f32` range become `±inf`.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible.
     #[inline]
     pub fn as_vec3af32(self) -> Vec3AF32 {
         glam::DVec3::from(self).as_vec3a().into()

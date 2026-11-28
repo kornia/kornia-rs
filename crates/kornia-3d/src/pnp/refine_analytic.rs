@@ -16,7 +16,6 @@
 // Fixed-size matrix loops read as the math they implement.
 #![allow(clippy::needless_range_loop)]
 
-use super::refine::{mat_to_f64, to_f64};
 use super::{LMRefineParams, PnPError, PnPResult};
 use crate::ransac::{RobustKernel, RobustKernelKind};
 use kornia_algebra::{
@@ -40,20 +39,6 @@ fn kernel_from_params(params: &LMRefineParams) -> Option<(RobustKernelKind, f64)
         }
         _ => None,
     }
-}
-
-/// `m` in `f32`, each entry rounded once.
-fn mat_to_f32(m: Mat3F64) -> Mat3AF32 {
-    Mat3AF32::from_cols(
-        m.x_axis.as_vec3a().into(),
-        m.y_axis.as_vec3a().into(),
-        m.z_axis.as_vec3a().into(),
-    )
-}
-
-/// `v` in `f32`, each entry rounded once.
-fn to_f32(v: Vec3F64) -> Vec3AF32 {
-    Vec3AF32::new(v.x as f32, v.y as f32, v.z as f32)
 }
 
 #[derive(Clone, Copy)]
@@ -101,7 +86,7 @@ impl Problem<'_> {
         let (kernel, c_sq) = self.kernel;
         let mut total = 0.0;
         for (p, uv) in self.points.iter().zip(self.pixels) {
-            let pc = pose.transform(to_f64(*p));
+            let pc = pose.transform(Vec3F64::from(*p));
             let uv = [f64::from(uv.x), f64::from(uv.y)];
             if pc.z <= 0.0 {
                 return None;
@@ -118,17 +103,17 @@ impl Problem<'_> {
     fn in_front(&self, pose: &Pose) -> bool {
         self.points
             .iter()
-            .all(|p| pose.transform(to_f64(*p)).z > 0.0)
+            .all(|p| pose.transform(Vec3F64::from(*p)).z > 0.0)
     }
 
     /// `pose` rounded to `f32`, checked again for depth: near `|t| = 2^24`
     /// the rounding can move a point that was in front onto or behind the
     /// camera.
     fn export(&self, pose: &Pose) -> Result<(Mat3AF32, Vec3AF32), PnPError> {
-        let (rotation, translation) = (mat_to_f32(pose.r), to_f32(pose.t));
+        let (rotation, translation) = (pose.r.as_mat3af32(), pose.t.as_vec3af32());
         let rounded = Pose {
-            r: mat_to_f64(rotation),
-            t: to_f64(translation),
+            r: Mat3F64::from(rotation),
+            t: Vec3F64::from(translation),
         };
         if !self.in_front(&rounded) {
             return Err(PnPError::CheiralityCheckFailed);
@@ -142,7 +127,7 @@ impl Problem<'_> {
         let mut h = Mat6F64::zeros();
         let mut g = Vec6F64::zeros();
         for (p, uv) in self.points.iter().zip(self.pixels) {
-            let p = to_f64(*p);
+            let p = Vec3F64::from(*p);
             let pc = pose.transform(p);
             let uv = [f64::from(uv.x), f64::from(uv.y)];
             let iz = 1.0 / pc.z;
@@ -365,8 +350,8 @@ pub fn refine_pose_lm_analytic(
     // scale survives into the result and compounds through the motion model.
     let rotation = SO3F32::from_quaternion(SO3F32::from_matrix(rotation).q.normalize()).matrix();
     let mut pose = Pose {
-        r: mat_to_f64(rotation),
-        t: to_f64(*translation),
+        r: Mat3F64::from(rotation),
+        t: Vec3F64::from(*translation),
     };
     let mut cost = problem.cost(&pose).ok_or(PnPError::CheiralityCheckFailed)?;
     let mut lambda = params.initial_lambda as f64;
@@ -544,7 +529,7 @@ mod tests {
             } else {
                 (0.0, 0.0)
             };
-            world.push(Vec3AF32::new(p.x as f32, p.y as f32, p.z as f32));
+            world.push(p.as_vec3af32());
             image.push(Vec2F32::new((u + du) as f32, (v + dv) as f32));
         }
         (world, image, k, truth)
@@ -576,7 +561,7 @@ mod tests {
             kernel: (RobustKernelKind::Identity, 0.0),
         };
         let residual = |pose: &Pose| {
-            let pc = pose.transform(to_f64(point[0]));
+            let pc = pose.transform(Vec3F64::from(point[0]));
             [
                 450.0 * pc.x / pc.z + 376.0 - f64::from(pixel[0].x),
                 440.0 * pc.y / pc.z + 240.0 - f64::from(pixel[0].y),
@@ -1020,16 +1005,16 @@ mod tests {
             &world,
             &image,
             &k,
-            &mat_to_f32(start.r),
-            &to_f32(start.t),
+            &start.r.as_mat3af32(),
+            &start.t.as_vec3af32(),
             &params,
             monotone,
         )
         .unwrap();
         assert_eq!(refined.converged, Some(true));
         let pose = Pose {
-            r: mat_to_f64(refined.rotation),
-            t: to_f64(refined.translation),
+            r: Mat3F64::from(refined.rotation),
+            t: Vec3F64::from(refined.translation),
         };
         (
             cost_at(&world, &image, &k, &start),

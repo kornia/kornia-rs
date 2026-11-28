@@ -52,7 +52,7 @@ fn bench_svd3_f64(c: &mut Criterion) {
 
 fn bench_nearest_rotation(c: &mut Criterion) {
     let mut group = c.benchmark_group("nearest_rotation");
-    // A rotation with a little noise, as SQPnP and `Pose3d::orthonormalized` pass in.
+    // A rotation with a little noise, as `Pose3d::orthonormalized` gets.
     let m = Mat3F64::from_cols(
         Vec3F64::new(0.36, 0.48, -0.8),
         Vec3F64::new(-0.8, 0.61, 0.0),

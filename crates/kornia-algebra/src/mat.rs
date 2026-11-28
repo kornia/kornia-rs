@@ -333,9 +333,17 @@ impl Mat3F64 {
     /// Not a `From` impl on purpose: it rounds like `as f32`, so it keeps glam's `as_*` name;
     /// `From` is kept for lossless conversions such as `f32` to `f64`.
     ///
+    /// # Arguments
+    ///
+    /// * `self` - The `f64` matrix.
+    ///
     /// # Returns
     ///
     /// The `f32` matrix; values outside the `f32` range become `±inf`.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible.
     #[inline]
     pub fn as_mat3af32(self) -> Mat3AF32 {
         Mat3AF32(glam::Mat3A::from(self.0.as_mat3()))
@@ -345,18 +353,27 @@ impl Mat3F64 {
     ///
     /// For the SVD `M = U·Σ·Vᵀ` this is `U·diag(1, 1, det(U·Vᵀ))·Vᵀ`. When `U·Vᵀ` is a
     /// reflection, negating a column of `U·Vᵀ` instead gives a rotation that is in general not the
-    /// nearest.
+    /// nearest. This is the polar decomposition (Kabsch) step, as in Eigen's `umeyama`.
     ///
     /// nalgebra's 3x3 SVD works on `MᵀM`, so accuracy drops as the second singular value shrinks
     /// next to the largest, e.g. for the covariance of nearly collinear points. On
-    /// `A·diag(1, s, 0)·B` the rotation is off by about `2e-8` at `s = 1e-4`, `2e-4` at
-    /// `s = 1e-6` and `2e-2` at `s = 1e-7`.
+    /// `A·diag(1, s, 0)·B` with random rotations `A`, `B`, the largest entry error was up to about
+    /// `2e-8` at `s = 1e-4`, `2e-4` at `s = 1e-6` and `2e-2` at `s = 1e-7`.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - Any 3x3 matrix, e.g. a noisy rotation.
     ///
     /// # Returns
     ///
     /// The nearest rotation, or `None` if the matrix has a non-finite entry or its SVD does not
-    /// converge. The zero matrix, to which every rotation is equally near, gives the identity;
-    /// below rank 2 the answer is not unique either.
+    /// converge. The zero matrix, to which every rotation is equally near, gives the identity.
+    /// The answer is not unique either below rank 2, or when `det(M) < 0` and the two smallest
+    /// singular values are equal.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible; the cases without a result return `None` (see `# Returns`).
     ///
     /// # Example
     ///
@@ -927,10 +944,16 @@ mod tests {
     fn test_mat3f64_nearest_rotation_keeps_a_rotation() -> Result<(), &'static str> {
         let rotation = SO3F64::exp(Vec3F64::new(0.3, -0.5, 0.8)).matrix();
         let nearest = rotation.nearest_rotation().ok_or("no rotation")?;
-        assert!(nearest.abs_diff_eq(rotation.0, 1e-12));
-        assert!(Mat3F64::from_cols_array(&[f64::NAN; 9])
-            .nearest_rotation()
-            .is_none());
+        assert!(
+            nearest.abs_diff_eq(rotation.0, 1e-12),
+            "{nearest:?} != {rotation:?}"
+        );
+        assert!(
+            Mat3F64::from_cols_array(&[f64::NAN; 9])
+                .nearest_rotation()
+                .is_none(),
+            "a NaN matrix has no nearest rotation"
+        );
         Ok(())
     }
 
@@ -944,13 +967,21 @@ mod tests {
         let diag = |x, y, z| Mat3F64::from_diagonal(Vec3F64::new(x, y, z));
         let m = a * diag(3.0, 2.0, -1.0) * b;
         let nearest = m.nearest_rotation().ok_or("no rotation")?;
-        assert!(nearest.abs_diff_eq((a * b).0, 1e-9));
+        assert!(nearest.abs_diff_eq((a * b).0, 1e-9), "{nearest:?}");
 
         let mut negated = a * diag(1.0, 1.0, -1.0) * b;
         negated.z_axis = -negated.z_axis;
-        assert!((negated.determinant() - 1.0).abs() < 1e-9);
+        assert!(
+            (negated.determinant() - 1.0).abs() < 1e-9,
+            "det {}",
+            negated.determinant()
+        );
         let distance_to_m = |x: Mat3F64| (x - m).to_cols_array().map(|v| v * v).iter().sum::<f64>();
-        assert!(distance_to_m(a * b) < distance_to_m(negated) - 0.1);
+        let (nearest_sq, negated_sq) = (distance_to_m(a * b), distance_to_m(negated));
+        assert!(
+            nearest_sq < negated_sq - 0.1,
+            "{nearest_sq} vs {negated_sq}"
+        );
         Ok(())
     }
 
@@ -976,7 +1007,10 @@ mod tests {
         let m = Mat3F64::from_cols_array(&[-0.2, 0.6, -0.6, -0.3, 0.6, -0.3, 0.0, 0.9, -0.8]);
         let r = m.nearest_rotation().ok_or("no rotation")?;
         let p = r.transpose() * m;
-        assert!(p.abs_diff_eq(p.transpose().0, 1e-12));
+        assert!(
+            p.abs_diff_eq(p.transpose().0, 1e-12),
+            "Rᵀ·M not symmetric: {p:?}"
+        );
         let trace = |q: Mat3F64| {
             let a = q.transpose() * m;
             a.x_axis.x + a.y_axis.y + a.z_axis.z

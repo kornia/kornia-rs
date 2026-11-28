@@ -137,15 +137,24 @@ impl Pose3d {
     ///
     /// The rotation is replaced by the nearest proper rotation in the
     /// Frobenius norm, `U·diag(1, 1, det(U·Vᵀ))·Vᵀ` from the SVD `R = U·Σ·Vᵀ`
-    /// (polar projection, [`Mat3F64::nearest_rotation`]). A rigid pose comes back unchanged up to rounding,
-    /// `s·R` comes back as `R` for any `s > 0`, and a reflection comes back as
-    /// the nearest rotation.
+    /// (polar projection, [`Mat3F64::nearest_rotation`]). A rigid pose comes
+    /// back unchanged up to rounding, `s·R` comes back as `R` for any `s > 0`
+    /// that keeps its entries normal (not subnormal), and a reflection comes
+    /// back as the nearest rotation.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - The pose to project.
     ///
     /// # Returns
     ///
-    /// A pose whose [`Pose3d::rotation_defect`] is at rounding level.
-    /// A non-finite rotation, or one whose SVD does not converge, is returned
-    /// unchanged.
+    /// For a finite rotation, a pose whose [`Pose3d::rotation_defect`] is at
+    /// rounding level. A non-finite rotation, or one whose SVD does not
+    /// converge, is returned unchanged.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible.
     ///
     /// # Example
     ///
@@ -277,7 +286,10 @@ mod tests {
         let m = Mat3F64::from_cols_array(&[-0.2, 0.6, -0.6, -0.3, 0.6, -0.3, 0.0, 0.9, -0.8]);
         let rotation = Pose3d::new(m, Vec3F64::ZERO).orthonormalized().rotation;
         let p = rotation.transpose() * m;
-        assert!(p.abs_diff_eq(p.transpose().0, 1e-12));
+        assert!(
+            p.abs_diff_eq(p.transpose().0, 1e-12),
+            "Rᵀ·M not symmetric: {p:?}"
+        );
     }
 
     #[test]
