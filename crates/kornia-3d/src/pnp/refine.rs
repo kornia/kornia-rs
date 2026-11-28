@@ -41,8 +41,8 @@ pub struct LMRefineParams {
     /// to `HuberLoss::new`/`CauchyLoss::new`. Any non-finite (e.g., default
     /// `f32::INFINITY`), non-positive (`<= 0.0`), or subnormal (`< f32::MIN_POSITIVE`)
     /// value silently collapses to plain L2 for supported kernels (matching
-    /// `BaParams::robust_scale_sq`); unsupported kernels (`Tukey`) always return
-    /// an error.
+    /// `BaParams::robust_scale_sq`); unsupported kernels (`Tukey`, and `Cauchy`
+    /// in `refine_pose_lm_analytic`) always return an error.
     pub robust_scale_sq: f32,
 }
 
@@ -1305,7 +1305,7 @@ mod tests {
         ];
         let k = Mat3AF32::from_diagonal(Vec3AF32::new(1.0, 1.0, 1.0));
         let initial_rotation = Mat3AF32::from_diagonal(Vec3AF32::new(1.0, 1.0, 1.0));
-        let initial_translation = Vec3AF32::new(0.0, 0.0, 0.0);
+        let initial_translation = Vec3AF32::new(0.05, -0.05, 0.1);
 
         let tol = 1e-4;
         let identity_cols = initial_rotation.to_cols_array();
