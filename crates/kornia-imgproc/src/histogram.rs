@@ -68,19 +68,67 @@ pub fn compute_histogram(
     let width = src.width();
     let src_slice = src.as_slice();
 
+    // Fast path: for 256 bins on 8-bit images, `pixel as usize` is an exact direct index.
+    // Use stack-allocated [usize; 256] accumulators per Rayon thread to eliminate all heap
+    // allocations and float division.
+    if num_bins == 256 {
+        // Minimum pixel count required to amortize Rayon task dispatch overhead (32 KB).
+        // Below this threshold, single-core accumulation runs in < 8 µs.
+        const PARALLEL_HIST_THRESHOLD_BYTES: usize = 32 * 1024;
+
+        let partial_hist = if rayon::current_num_threads() == 1
+            || src_slice.len() < PARALLEL_HIST_THRESHOLD_BYTES
+        {
+            let mut local_hist = [0_usize; 256];
+            for &pixel in src_slice {
+                local_hist[pixel as usize] += 1;
+            }
+            local_hist
+        } else {
+            const ROWS_PER_TASK: usize = 32;
+            par_row_chunks(src_slice, width, ROWS_PER_TASK)
+                .fold(
+                    || [0_usize; 256],
+                    |mut local_hist, chunk| {
+                        for &pixel in chunk {
+                            local_hist[pixel as usize] += 1;
+                        }
+                        local_hist
+                    },
+                )
+                .reduce(
+                    || [0_usize; 256],
+                    |mut a, b| {
+                        for i in 0..256 {
+                            a[i] += b[i];
+                        }
+                        a
+                    },
+                )
+        };
+
+        for (i, val) in partial_hist.into_iter().enumerate() {
+            hist[i] += val;
+        }
+
+        return Ok(());
+    }
+
     // Coarse chunks so we allocate O(cores) local histograms rather than
     // O(rows). Each task accumulates its rows into one local histogram before
     // the reduce step merges them.
     const ROWS_PER_TASK: usize = 16;
     let partial_hist = par_row_chunks(src_slice, width, ROWS_PER_TASK)
-        .map(|chunk| {
-            let mut local_hist = vec![0_usize; num_bins];
-            for &pixel in chunk {
-                let bin = (pixel as f32 / scale).floor() as usize;
-                local_hist[bin] += 1;
-            }
-            local_hist
-        })
+        .fold(
+            || vec![0_usize; num_bins],
+            |mut local_hist, chunk| {
+                for &pixel in chunk {
+                    let bin = (pixel as f32 / scale).floor() as usize;
+                    local_hist[bin] += 1;
+                }
+                local_hist
+            },
+        )
         .reduce(
             || vec![0; num_bins],
             |mut a, b| {
@@ -129,7 +177,55 @@ mod tests {
             let result = super::compute_histogram(&image, &mut histogram, 4);
             assert!(result.is_ok(), "case {width}x{height}: got {result:?}");
             assert_eq!(histogram, vec![7; 4], "case {width}x{height}");
+
+            let mut hist_256 = vec![9; 256];
+            let result_256 = super::compute_histogram(&image, &mut hist_256, 256);
+            assert!(
+                result_256.is_ok(),
+                "case {width}x{height} (256): got {result_256:?}"
+            );
+            assert_eq!(hist_256, vec![9; 256], "case {width}x{height} (256)");
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_compute_histogram_256_bins_large_image() -> Result<(), ImageError> {
+        let (w, h) = (640, 480);
+        let num_pixels = w * h;
+        // Exactly 307,200 pixels, which is 1200 cycles of 0..=255
+        let data: Vec<u8> = (0..num_pixels).map(|i| (i % 256) as u8).collect();
+        let image = Image::<u8, 1>::new(
+            ImageSize {
+                width: w,
+                height: h,
+            },
+            data,
+        )?;
+
+        // Multi-threaded execution
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap();
+        let mut hist_multi = vec![0; 256];
+        pool.install(|| super::compute_histogram(&image, &mut hist_multi, 256))?;
+        for (bin, &count) in hist_multi.iter().enumerate() {
+            assert_eq!(
+                count, 1200,
+                "multi-thread bin {bin} expected 1200, got {count}"
+            );
+        }
+
+        // Single-threaded execution
+        let pool_single = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap();
+        let mut hist_single = vec![0; 256];
+        pool_single.install(|| super::compute_histogram(&image, &mut hist_single, 256))?;
+        assert_eq!(hist_single, hist_multi);
 
         Ok(())
     }

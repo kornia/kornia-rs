@@ -169,6 +169,10 @@ name = "bench_corner_subpix"
 harness = false
 name = "bench_lk_window"
 
+[[bench]]
+harness = false
+name = "bench_threshold"
+
 [dependencies]
 cudarc = { workspace = true, features = ["f16"], optional = true }
 half = { workspace = true, optional = true }
