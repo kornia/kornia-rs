@@ -3,4 +3,4 @@ new file mode 100644
 --- /dev/null
 +++ b/changelog.d/1166.fixed.md
 @@ -0,0 +1 @@
-+`DistanceTransformExecutor::execute` and `compute_histogram` return an empty result for zero-width or zero-height images instead of panicking.
++For images with zero width or height, `DistanceTransformExecutor::execute` returns an empty image of the same size and `compute_histogram` leaves the histogram unchanged.

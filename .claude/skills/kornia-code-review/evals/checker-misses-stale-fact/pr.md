@@ -12,3 +12,10 @@ AI disclosure:
 - Effort level: medium
 - Skills applied: kornia-curation
 - Human vs AI part: human asked for the simplification and reviewed the diff
+
+## Self-review
+```text
+Verdict: approve
+§4b — no finding — the checker printed “skills OK” with the retained probes. — [measured]
+Skill gaps: none
+```

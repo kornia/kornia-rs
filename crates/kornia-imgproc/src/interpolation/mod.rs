@@ -8,10 +8,12 @@ pub mod grid;
 pub(crate) mod interpolate;
 mod nearest;
 mod remap;
+mod remap_table;
 
 pub use interpolate::validate_interpolation;
 pub use interpolate::InterpolationMode;
 pub use remap::{remap, remap_u8};
+pub use remap_table::{remap_u8_table, RemapQuantisation, RemapTable};
 
 pub(crate) use bicubic::bicubic_sample;
 pub(crate) use bilinear::bilinear_interpolation;

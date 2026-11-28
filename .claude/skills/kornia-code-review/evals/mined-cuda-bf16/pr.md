@@ -17,6 +17,11 @@ test result: ok.
 ## Self-review
 ```text
 Verdict: approve
+§4 — no finding — the default-feature test output above reports “test result: ok.” — [measured]
+Reuse searches:
+  $ rg -l 'fn get_device_and_dtype\(' crates/kornia-vlm/src
+  crates/kornia-vlm/src/device.rs
+  The fallback uses the existing device selection function.
 Skill gaps: none
 ```
 

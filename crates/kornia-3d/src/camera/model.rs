@@ -1,6 +1,6 @@
 //! The interface shared by all camera models.
 
-use super::{FisheyeCamera, PinholeCamera};
+use super::{Fisheye624Camera, FisheyeCamera, PinholeCamera};
 use kornia_algebra::{Vec2F64, Vec3F64};
 
 /// Maps between camera-frame points and pixels of the raw, distorted image.
@@ -58,6 +58,18 @@ pub trait CameraModel {
     fn unproject(&self, pixel: &Vec2F64) -> Option<Vec3F64>;
 }
 
+/// A ray in 3D: an origin and a unit direction, in one frame.
+///
+/// A camera ray in a multi-camera rig is the camera centre and the bearing
+/// [`CameraModel::unproject`] returns, both expressed in the rig frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Ray {
+    /// Origin of the ray.
+    pub origin: Vec3F64,
+    /// Unit direction of the ray.
+    pub direction: Vec3F64,
+}
+
 /// A camera whose model is chosen at runtime.
 #[derive(Debug, Clone)]
 pub enum Camera {
@@ -65,6 +77,8 @@ pub enum Camera {
     Pinhole(PinholeCamera),
     /// Kannala-Brandt fisheye.
     Fisheye(FisheyeCamera),
+    /// Aria radial-tangential thin-prism fisheye.
+    Fisheye624(Fisheye624Camera),
 }
 
 impl From<PinholeCamera> for Camera {
@@ -79,11 +93,18 @@ impl From<FisheyeCamera> for Camera {
     }
 }
 
+impl From<Fisheye624Camera> for Camera {
+    fn from(camera: Fisheye624Camera) -> Self {
+        Self::Fisheye624(camera)
+    }
+}
+
 impl CameraModel for Camera {
     fn project(&self, p_cam: &Vec3F64) -> Option<Vec2F64> {
         match self {
             Self::Pinhole(camera) => camera.project(p_cam),
             Self::Fisheye(camera) => camera.project(p_cam),
+            Self::Fisheye624(camera) => camera.project(p_cam),
         }
     }
 
@@ -91,6 +112,7 @@ impl CameraModel for Camera {
         match self {
             Self::Pinhole(camera) => camera.project_with_jacobian(p_cam),
             Self::Fisheye(camera) => camera.project_with_jacobian(p_cam),
+            Self::Fisheye624(camera) => camera.project_with_jacobian(p_cam),
         }
     }
 
@@ -98,6 +120,7 @@ impl CameraModel for Camera {
         match self {
             Self::Pinhole(camera) => camera.unproject(pixel),
             Self::Fisheye(camera) => camera.unproject(pixel),
+            Self::Fisheye624(camera) => camera.unproject(pixel),
         }
     }
 }
@@ -245,6 +268,43 @@ mod tests {
         assert!(radtan()
             .project_with_jacobian(&Vec3F64::new(0.1, 0.0, 0.0))
             .is_none());
+    }
+
+    /// LaMAria `R_11_5cp` `camera-slam-left`.
+    fn fisheye624() -> Fisheye624Camera {
+        Fisheye624Camera {
+            f: 241.6048925567284,
+            cx: 322.895555771704,
+            cy: 240.4445599560633,
+            k: [
+                -0.02484243376501498,
+                0.09628938752134535,
+                -0.063325466945624,
+                0.006200726341569274,
+                0.003488761399963396,
+                -0.0007297520056856479,
+            ],
+            p: [0.00089532032215904, 0.000361066580790014],
+            s: [
+                -0.00136879244387001,
+                -0.0001054083415853531,
+                -0.0004635611298488213,
+                -0.0001049856461262643,
+            ],
+        }
+    }
+
+    #[test]
+    fn camera_dispatches_to_fisheye624() {
+        let p = Vec3F64::new(0.4, -0.3, 1.5);
+        let pixel = Vec2F64::new(400.0, 200.0);
+        let camera = Camera::from(fisheye624());
+        assert_eq!(camera.project(&p), fisheye624().project(&p));
+        assert_eq!(camera.unproject(&pixel), fisheye624().unproject(&pixel));
+        assert_eq!(
+            camera.project_with_jacobian(&p),
+            fisheye624().project_with_jacobian(&p)
+        );
     }
 
     #[test]

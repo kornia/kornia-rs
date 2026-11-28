@@ -43,6 +43,13 @@ AI disclosure:
 - Skills applied: kornia-curation
 - Human vs AI part: human asked for the simplification and reviewed the diff
 
+## Self-review
+```text
+Verdict: approve
+§4b — no finding — the checker printed “skills OK” with the retained probes. — [measured]
+Skill gaps: none
+```
+
 ## Linked issue
 
 (none: not readable in this review)
@@ -119,4 +126,4 @@ index faccc99..8a1646a 100644
      ("The publish set is `PUBLISH_ORDER` in `scripts/release_rust.sh`. Read it there.", False),
 ```
 
-<!-- skill_evals.py sync: 99ffbb9f8f3c872b -->
+<!-- skill_evals.py sync: de4400893821f187 -->
