@@ -141,3 +141,77 @@ def test_from_numpy_strided_misaligned_borrow():
     assert out.dtype == np.float32
     rec["val"][0, 0, 0] = -1.0
     assert out[0, 0, 0] == 0.0
+
+
+@pytest.mark.parametrize("dtype", [np.uint8, np.uint16, np.float32, np.int32])
+@pytest.mark.parametrize(
+    "branch_case",
+    [
+        "c1_row_slice",
+        "c1_row_flip",
+        "c1_row_broadcast",
+        "c1_col_slice",
+        "c1_col_flip",
+        "c1_transpose",
+        "c1_rgb_ch0",
+        "c1_col_broadcast",
+        "c3_col_slice",
+        "c3_transpose",
+        "c3_bgr_rev",
+        "c3_chw",
+        "c4_col_slice",
+        "c4_rev",
+        "c4_chw",
+        "c2_col_slice",
+        "c2_rev",
+    ],
+)
+def test_from_numpy_gather_branches_wider_dtypes(dtype, branch_case):
+    """Exercise every strided gather branch across 1ch/2ch/3ch/4ch and wider dtypes."""
+    def make_arr(shape):
+        n = int(np.prod(shape))
+        if np.issubdtype(dtype, np.floating):
+            return (np.arange(n, dtype=dtype) * 0.25 + 1.5).reshape(shape)
+        mod = 251 if dtype == np.uint8 else 65000
+        return (np.arange(n, dtype=np.int64) % mod).astype(dtype).reshape(shape)
+
+    gray = make_arr((8, 12))
+    c2 = make_arr((8, 12, 2))
+    rgb = make_arr((8, 12, 3))
+    rgba = make_arr((8, 12, 4))
+    chw2 = make_arr((2, 8, 12))
+    chw3 = make_arr((3, 8, 12))
+    chw4 = make_arr((4, 8, 12))
+
+    cases = {
+        "c1_row_slice": (gray[::2, :], (4, 12, 1)),
+        "c1_row_flip": (gray[::-1, :], (8, 12, 1)),
+        "c1_row_broadcast": (np.broadcast_to(gray[:1, :], (8, 12)), (8, 12, 1)),
+        "c1_col_slice": (gray[:, ::2], (8, 6, 1)),
+        "c1_col_flip": (gray[:, ::-1], (8, 12, 1)),
+        "c1_transpose": (gray.T, (12, 8, 1)),
+        "c1_rgb_ch0": (rgb[:, :, :1], (8, 12, 1)),
+        "c1_col_broadcast": (np.broadcast_to(gray[:, :1], (8, 12)), (8, 12, 1)),
+        "c3_col_slice": (rgb[:, ::2, :], (8, 6, 3)),
+        "c3_transpose": (rgb.transpose(1, 0, 2), (12, 8, 3)),
+        "c3_bgr_rev": (rgb[:, :, ::-1], (8, 12, 3)),
+        "c3_chw": (chw3.transpose(1, 2, 0), (8, 12, 3)),
+        "c4_col_slice": (rgba[:, ::2, :], (8, 6, 4)),
+        "c4_rev": (rgba[:, :, ::-1], (8, 12, 4)),
+        "c4_chw": (chw4.transpose(1, 2, 0), (8, 12, 4)),
+        "c2_col_slice": (c2[:, ::2, :], (8, 6, 2)),
+        "c2_rev": (chw2.transpose(1, 2, 0)[:, :, ::-1], (8, 12, 2)),
+    }
+    view, expected_shape = cases[branch_case]
+    expected = np.ascontiguousarray(view).reshape(expected_shape)
+
+    img = Image.from_numpy(view, copy=False)
+    out = img.numpy()
+    assert out.shape == expected_shape
+    assert out.dtype == np.dtype(dtype)
+    np.testing.assert_array_equal(out, expected)
+
+    if view.flags.writeable:
+        orig_val = view.flat[0]
+        view.flat[0] = dtype(99 if not np.issubdtype(dtype, np.floating) else 99.5)
+        assert out.flat[0] == orig_val
