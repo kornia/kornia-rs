@@ -1311,7 +1311,7 @@ mod tests {
         let identity_cols = initial_rotation.to_cols_array();
 
         for kernel in [RobustKernelKind::Huber, RobustKernelKind::Cauchy] {
-            for scale in [-25.0, 0.0, f32::from_bits(1)] {
+            for scale in [-25.0, 0.0, f32::from_bits(1), f32::INFINITY, f32::NAN] {
                 let params = LMRefineParams {
                     robust: kernel,
                     robust_scale_sq: scale,
@@ -1364,7 +1364,7 @@ mod tests {
             }
         }
 
-        for scale in [-25.0, 0.0, f32::from_bits(1)] {
+        for scale in [25.0, -25.0, 0.0, f32::from_bits(1), f32::INFINITY, f32::NAN] {
             let params = LMRefineParams {
                 robust: RobustKernelKind::Tukey,
                 robust_scale_sq: scale,

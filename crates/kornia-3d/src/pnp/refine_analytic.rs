@@ -31,17 +31,18 @@ const STEP_TOLERANCE: f64 = 1e-6;
 /// The robust kernel and squared scale `params` select, or `None` for a kernel
 /// this solver does not implement.
 fn kernel_from_params(params: &LMRefineParams) -> Option<(RobustKernelKind, f64)> {
-    if params.robust == RobustKernelKind::Identity || !params.robust_scale_sq.is_finite() {
-        return Some((RobustKernelKind::Identity, 0.0));
-    }
     match params.robust {
-        RobustKernelKind::Huber if params.robust_scale_sq > 0.0 => {
-            Some((RobustKernelKind::Huber, f64::from(params.robust_scale_sq)))
+        RobustKernelKind::Identity => Some((RobustKernelKind::Identity, 0.0)),
+        RobustKernelKind::Huber => {
+            if !params.robust_scale_sq.is_finite() || params.robust_scale_sq < f32::MIN_POSITIVE {
+                Some((RobustKernelKind::Identity, 0.0))
+            } else {
+                Some((RobustKernelKind::Huber, f64::from(params.robust_scale_sq)))
+            }
         }
-        _ => None,
+        RobustKernelKind::Cauchy | RobustKernelKind::Tukey => None,
     }
 }
-
 /// `m` in `f32`, each entry rounded once.
 fn mat_to_f32(m: Mat3F64) -> Mat3AF32 {
     Mat3AF32::from_cols(
@@ -216,9 +217,10 @@ fn damped_step(h: &Mat6F64, g: &Vec6F64, lambda: f64) -> Option<Vec6F64> {
 ///
 /// # Returns
 ///
-/// `true` for the Identity kernel, for any kernel with a non-finite
-/// `robust_scale_sq` (plain L2, as in [`super::refine_pose_lm`]), and for Huber
-/// with a finite positive scale; `false` otherwise.
+/// `true` for `Identity` and `Huber` (for `Huber`, non-finite, non-positive,
+/// or subnormal `< f32::MIN_POSITIVE` values of `robust_scale_sq` silently
+/// fall back to plain L2, matching [`super::refine_pose_lm`]); `false` for
+/// unsupported kernels (`Cauchy`, `Tukey`) regardless of `robust_scale_sq`.
 ///
 /// # Errors
 ///
@@ -822,22 +824,32 @@ mod tests {
     #[test]
     fn unsupported_kernels_are_declined() {
         let (world, image, k, _) = scene(true);
-        let cauchy = LMRefineParams {
-            robust: RobustKernelKind::Cauchy,
-            robust_scale_sq: 25.0,
-            ..LMRefineParams::default()
-        };
-        let out = refine_pose_lm_analytic(
-            &world,
-            &image,
-            &k,
-            &Mat3AF32::IDENTITY,
-            &Vec3AF32::ZERO,
-            &cauchy,
-            false,
-        );
-        assert!(!refine_pose_lm_analytic_supports(&cauchy));
-        assert!(matches!(out, Err(PnPError::SvdFailed(_))));
+        for kernel in [RobustKernelKind::Cauchy, RobustKernelKind::Tukey] {
+            for scale in [25.0, -25.0, 0.0, f32::from_bits(1), f32::INFINITY, f32::NAN] {
+                let params = LMRefineParams {
+                    robust: kernel,
+                    robust_scale_sq: scale,
+                    ..LMRefineParams::default()
+                };
+                assert!(
+                    !refine_pose_lm_analytic_supports(&params),
+                    "expected {kernel:?} with scale {scale} to be unsupported"
+                );
+                let out = refine_pose_lm_analytic(
+                    &world,
+                    &image,
+                    &k,
+                    &Mat3AF32::IDENTITY,
+                    &Vec3AF32::ZERO,
+                    &params,
+                    false,
+                );
+                assert!(
+                    matches!(out, Err(PnPError::SvdFailed(_))),
+                    "expected SvdFailed for {kernel:?} with scale {scale}, got {out:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1099,5 +1111,53 @@ mod tests {
                 [0x3d4cf2f1, 0xbca9563d, 0x3dc9cda7],
             )
         );
+    }
+
+    #[test]
+    fn non_finite_non_positive_and_subnormal_huber_scales_fall_back_to_l2() {
+        let (world, image, k, truth) = scene(false);
+        let l2 = refine_pose_lm_analytic(
+            &world,
+            &image,
+            &k,
+            &Mat3AF32::IDENTITY,
+            &Vec3AF32::ZERO,
+            &LMRefineParams::default(),
+            false,
+        )
+        .unwrap();
+
+        for scale in [-25.0, 0.0, f32::from_bits(1), f32::INFINITY, f32::NAN] {
+            let params = LMRefineParams {
+                robust: RobustKernelKind::Huber,
+                robust_scale_sq: scale,
+                ..LMRefineParams::default()
+            };
+            assert!(refine_pose_lm_analytic_supports(&params));
+            assert_eq!(
+                kernel_from_params(&params),
+                Some((RobustKernelKind::Identity, 0.0)),
+                "expected L2 fallback for Huber with scale {scale}"
+            );
+
+            let refined = refine_pose_lm_analytic(
+                &world,
+                &image,
+                &k,
+                &Mat3AF32::IDENTITY,
+                &Vec3AF32::ZERO,
+                &params,
+                false,
+            )
+            .unwrap();
+            assert_eq!(
+                refined.rotation.to_cols_array(),
+                l2.rotation.to_cols_array()
+            );
+            assert_eq!(refined.translation.to_array(), l2.translation.to_array());
+            assert!((refined.translation.x as f64 - truth.t.x).abs() < 1e-4);
+            assert!((refined.translation.y as f64 - truth.t.y).abs() < 1e-4);
+            assert!((refined.translation.z as f64 - truth.t.z).abs() < 1e-4);
+        }
     }
 }
