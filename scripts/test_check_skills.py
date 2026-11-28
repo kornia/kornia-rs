@@ -82,6 +82,20 @@ class TestSelfReviewFreshness(unittest.TestCase):
         )
         self.assertTrue(check_skills.missing_fresh_session(probe))
 
+    def test_the_mention_may_span_sentences_only_with_the_phrase(self):
+        spans = (
+            "Read `.claude/skills/kornia-code-review/SKILL.md`. "
+            "Do a self-review before every PR."
+        )
+        self.assertTrue(check_skills.missing_fresh_session(spans))
+
+    def test_a_qualifier_in_the_next_sentence_counts(self):
+        for good in (
+            "Self-review with `kornia-code-review`. Do it in a fresh session.",
+            "Self-review with `kornia-code-review`, e.g. in a fresh session.",
+        ):
+            self.assertFalse(check_skills.missing_fresh_session(good), good)
+
     def test_rule_needs_it_in_the_description_and_the_bullet(self):
         self.assertFalse(check_skills.self_review_rule_stale(self.RULE))
         no_description = self.RULE.replace("a self-review in a fresh session", "a self-review")

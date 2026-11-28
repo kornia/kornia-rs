@@ -53,9 +53,9 @@ REQUIRED = [
 ]
 PATH_REF = r"`((?:crates|scripts|kornia-py|kornia-cpp|docs|\.github)/[A-Za-z0-9_./-]+)`"
 
-# Hand-maintained list: every doc that names the self-review step must say it runs in a fresh session.
-# The rule lives in kornia-code-review; the others are one-clause summaries that
-# would otherwise drift back to the same-session pattern.
+# Hand-maintained list: every listed doc that names the self-review step must say
+# it runs in a fresh session. The rule lives in kornia-code-review; the others are
+# one-clause summaries that would otherwise drift back to the same-session pattern.
 SELF_REVIEW_SKILL = ".claude/skills/kornia-code-review/SKILL.md"
 SELF_REVIEW_DOCS = (
     "AGENTS.md",
@@ -84,9 +84,17 @@ def missing_fresh_session(text: str, per_line: bool = False) -> bool:
     verdict = re.compile(r"self[- ]?review|\b(?:runs?|pastes?|uses?)(?: the)?(?: skill)?(?: in)? `?(?:\.claude/skills/)?kornia-code-review", re.I)
     fresh = re.compile(r"fresh[- ]session", re.I)
     for block in re.split(split, text):
-        for sentence in re.split(r"(?<=[.!?])\s+", block):
-            flat = " ".join(sentence.split())
-            if "kornia-code-review" in flat and verdict.search(flat) and not fresh.search(flat):
+        flat = " ".join(block.split())
+        if "kornia-code-review" in flat and verdict.search(flat) and not fresh.search(flat):
+            return True  # the mention spans sentences and the block never says it
+        units = re.split(r"(?<=[.!?])\s+", block)
+        for i, unit in enumerate(units):
+            flat = " ".join(unit.split())
+            if not ("kornia-code-review" in flat and verdict.search(flat) and not fresh.search(flat)):
+                continue
+            # An instruction may put the qualifier in the sentence that follows it.
+            following = " ".join(units[i + 1].split()) if i + 1 < len(units) else ""
+            if not fresh.search(following):
                 return True
     return False
 
