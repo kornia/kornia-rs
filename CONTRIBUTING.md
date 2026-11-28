@@ -227,7 +227,7 @@ This section provides comprehensive guidance for contributing to kornia-rs, with
    ```bash
    pixi run pr-check     # Gate: skills + fmt-check + clippy + check + tests
    ```
-   Then run the `kornia-code-review` skill on your diff (`git diff main...HEAD`) and paste its output in the PR's **Self-review** section (required: the PR check fails without it). Reviewers may ask you about specific lines.
+   Then run the `kornia-code-review` skill on your diff (`git diff main...HEAD`) in a fresh session or a subagent with no authoring context (not a fork) and paste its output in the PR's **Self-review** section (required: the PR check fails without it). Reviewers may ask you about specific lines.
 
 3. **Add a Changelog Fragment**: For a user-visible change, add `changelog.d/<PR>.<type>.md` (`breaking`, `added`, `perf`, `fixed`) as described in [`changelog.d/README.md`](changelog.d/README.md). Do not edit `CHANGELOG.md`; releases assemble it. Internal-only PRs say so and get the `no-changelog` label.
 
@@ -323,7 +323,7 @@ This section provides comprehensive guidance for contributing to kornia-rs, with
 1. **Open or find an issue**: Every PR links an issue. If none exists, open one with the bug report or feature request template.
 2. **Say you are working on it**: Comment on the issue so others do not duplicate the work. You do not need to wait for approval or assignment; maintainers may still close a PR that does not fit the project's direction.
 
-The automated PR validation checks that an issue is linked and that the Self-review is a real `kornia-code-review` run.
+The automated PR validation checks that an issue is linked and that the Self-review is a real `kornia-code-review` run, but it cannot check that the run was in a fresh session; reviewers do.
 
 **Requirements:**
 - Link PR to an issue (use "Closes #123" or "Fixes #123")
