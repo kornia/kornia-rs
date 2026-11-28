@@ -858,7 +858,11 @@ fn pyrdown_vertical_pass_u8<const C: usize>(
         });
 }
 
-fn pyrup_horizontal_pass_u8<const C: usize>(src: &Image<u8, C>, dst: &mut [u8], dst_width: usize) {
+// The u8 pyrup keeps the horizontal sums (weights 1-6-1 and 4-4, so at most
+// 8 * 255) in a u16 intermediate and rounds once after the vertical pass. The
+// two passes together weigh 64, so one `(sum + 32) >> 6` is the f32 result
+// rounded half up; rounding after each pass leaves outputs a unit off.
+fn pyrup_horizontal_pass_u8<const C: usize>(src: &Image<u8, C>, dst: &mut [u16], dst_width: usize) {
     let src_width = src.width();
     let src_data = src.as_slice();
     let dst_stride = dst_width * C;
@@ -891,14 +895,9 @@ fn pyrup_horizontal_pass_u8<const C: usize>(src: &Image<u8, C>, dst: &mut [u8], 
                         let p_curr = src_data[idx_base + k] as u16;
                         let p_next = src_data[idx_base + C + k] as u16;
 
-                        // Even pixel: (p_prev + 6*p_curr + p_next + 4) / 8
-                        let val_even = (p_prev + 6 * p_curr + p_next + 4) >> 3;
-                        dst_row[2 * x * C + k] = val_even as u8;
-
-                        // Odd pixel: (p_curr + p_next + 1) / 2
+                        dst_row[2 * x * C + k] = p_prev + 6 * p_curr + p_next;
                         if (2 * x + 1) * C < dst_stride {
-                            let val_odd = (p_curr + p_next + 1) >> 1;
-                            dst_row[(2 * x + 1) * C + k] = val_odd as u8;
+                            dst_row[(2 * x + 1) * C + k] = 4 * (p_curr + p_next);
                         }
                     }
                 }
@@ -921,7 +920,7 @@ fn pyrup_horizontal_pass_u8<const C: usize>(src: &Image<u8, C>, dst: &mut [u8], 
 #[inline(always)]
 fn process_pixel_pyrup_checked<const C: usize>(
     src_data: &[u8],
-    dst_row: &mut [u8],
+    dst_row: &mut [u16],
     src_row_offset: usize,
     x: usize,
     src_width: usize,
@@ -932,24 +931,28 @@ fn process_pixel_pyrup_checked<const C: usize>(
 
     let idx_prev = src_row_offset + (reflect_101(src_x - 1, src_width as i32) as usize) * C;
     let idx_next = src_row_offset + (reflect_101(src_x + 1, src_width as i32) as usize) * C;
+    // Last column, as in pyrup_horizontal_pass_f32: 1-7 even, the pixel itself odd.
+    let last = src_width > 1 && x == src_width - 1;
 
     for k in 0..C {
         let p_curr = src_data[idx_base + k] as u16;
         let p_prev = src_data[idx_prev + k] as u16;
         let p_next = src_data[idx_next + k] as u16;
 
-        let val_even = (p_prev + 6 * p_curr + p_next + 4) >> 3;
-        dst_row[2 * x * C + k] = val_even as u8;
-
+        let (even, odd) = if last {
+            (p_prev + 7 * p_curr, 8 * p_curr)
+        } else {
+            (p_prev + 6 * p_curr + p_next, 4 * (p_curr + p_next))
+        };
+        dst_row[2 * x * C + k] = even;
         if (2 * x + 1) * C < dst_stride {
-            let val_odd = (p_curr + p_next + 1) >> 1;
-            dst_row[(2 * x + 1) * C + k] = val_odd as u8;
+            dst_row[(2 * x + 1) * C + k] = odd;
         }
     }
 }
 
 fn pyrup_vertical_pass_u8<const C: usize>(
-    src_buffer: &[u8],
+    src_buffer: &[u16],
     src_buffer_width: usize,
     src_height: usize,
     dst_data: &mut [u8],
@@ -973,21 +976,26 @@ fn pyrup_vertical_pass_u8<const C: usize>(
             let y_prev = reflect_101(src_y - 1, src_height as i32) as usize;
             let y_curr = y;
             let y_next = reflect_101(src_y + 1, src_height as i32) as usize;
+            // Last row, as in pyrup_vertical_pass_f32: 1-7 even, the pixel itself odd.
+            let last = src_height > 1 && y == src_height - 1;
 
             let off_prev = y_prev * stride;
             let off_curr = y_curr * stride;
             let off_next = y_next * stride;
 
             for i in 0..stride {
-                let p_curr = src_buffer[off_curr + i] as u16;
-                let p_prev = src_buffer[off_prev + i] as u16;
-                let p_next = src_buffer[off_next + i] as u16;
+                let p_curr = src_buffer[off_curr + i] as u32;
+                let p_prev = src_buffer[off_prev + i] as u32;
+                let p_next = src_buffer[off_next + i] as u32;
 
-                // Even row
-                row_even[i] = ((p_prev + 6 * p_curr + p_next + 4) >> 3) as u8;
-
-                // Odd row
-                row_odd[i] = ((p_curr + p_next + 1) >> 1) as u8;
+                // Both passes together weigh 64: round once.
+                let (even, odd) = if last {
+                    (p_prev + 7 * p_curr, 8 * p_curr)
+                } else {
+                    (p_prev + 6 * p_curr + p_next, 4 * (p_curr + p_next))
+                };
+                row_even[i] = ((even + 32) >> 6) as u8;
+                row_odd[i] = ((odd + 32) >> 6) as u8;
             }
         });
 }
@@ -997,6 +1005,11 @@ fn pyrup_vertical_pass_u8<const C: usize>(
 /// This function doubles the size of the input image by injecting zero rows
 /// and columns and then convolving with a 5x5 Gaussian kernel.
 ///
+/// The result is [`pyrup_f32`] on the same pixels rounded half up, including
+/// its border rule: at the last row and column the edge pixel is weighted 1-7
+/// for the even output and repeated for the odd one. This is also OpenCV's
+/// `cv::pyrUp` output, byte for byte.
+///
 /// # Arguments
 ///
 /// * `src` - The source image to be upsampled.
@@ -1005,7 +1018,19 @@ fn pyrup_vertical_pass_u8<const C: usize>(
 ///
 /// # Returns
 ///
-/// * `Result<(), ImageError>` - Ok if successful, Err otherwise.
+/// `Ok(())` once `dst` holds the upsampled image.
+///
+/// # Errors
+///
+/// * [`ImageError::InvalidImageSize`] if `dst` is not exactly
+///   `(2 * width, 2 * height)` of `src`.
+/// * [`ImageError::MixedResidency`] if one image is on the host and the other
+///   on the device (feature `cuda`).
+/// * [`ImageError::DeviceMismatch`] if the two device images are on different
+///   CUDA devices (feature `cuda`).
+/// * [`ImageError::Cuda`] for a device image that is not backed by a typed
+///   `CudaResource`, a dimension that does not fit in `u32`, or a CUDA
+///   allocation or launch failure (feature `cuda`).
 pub fn pyrup_u8<const C: usize>(
     src: &Image<u8, C>,
     dst: &mut Image<u8, C>,
@@ -1031,7 +1056,7 @@ pub fn pyrup_u8<const C: usize>(
         ));
     }
 
-    let mut buffer = vec![0u8; dst.width() * src.height() * C];
+    let mut buffer = vec![0u16; dst.width() * src.height() * C];
     pyrup_horizontal_pass_u8::<C>(src, &mut buffer, dst.width());
 
     // Vertical pass
@@ -1707,6 +1732,75 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_pyrup_u8_matches_opencv() -> Result<(), ImageError> {
+        // Expected values from cv2.pyrUp(src) (OpenCV 5.1.0).
+        #[rustfmt::skip]
+        let src = Image::<u8, 1>::new(
+            ImageSize { width: 5, height: 4 },
+            vec![
+                12, 200, 37, 255, 90,
+                64, 0, 180, 25, 140,
+                255, 128, 10, 230, 60,
+                5, 99, 250, 70, 175,
+            ],
+        )?;
+        #[rustfmt::skip]
+        let expected: [u8; 80] = [
+            56, 88, 125, 111, 98, 135, 170, 150, 114, 103,
+            54, 69, 93, 104, 111, 124, 133, 128, 118, 115,
+            71, 61, 59, 91, 121, 110, 93, 102, 118, 124,
+            136, 112, 80, 80, 95, 111, 120, 114, 103, 100,
+            177, 154, 114, 85, 83, 123, 156, 134, 97, 84,
+            126, 122, 118, 122, 130, 140, 143, 134, 122, 118,
+            53, 69, 109, 161, 189, 155, 115, 125, 152, 161,
+            29, 52, 106, 175, 209, 160, 106, 123, 162, 175,
+        ];
+
+        let mut dst = Image::<u8, 1>::from_size_val(
+            ImageSize {
+                width: 10,
+                height: 8,
+            },
+            0,
+        )?;
+        pyrup_u8(&src, &mut dst)?;
+
+        assert_eq!(dst.as_slice(), &expected[..]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_pyrup_u8_matches_rounded_f32() -> Result<(), ImageError> {
+        // On integer pixels every f32 partial sum is exact, so the u8 path must
+        // equal the f32 path rounded half up, at the borders too.
+        for &(width, height) in &[(1, 1), (1, 6), (6, 1), (2, 2), (3, 5), (7, 9), (16, 15)] {
+            let size = ImageSize { width, height };
+            let data: Vec<u8> = (0..width * height * 3)
+                .map(|i| ((i * 97 + 31) % 256) as u8)
+                .collect();
+            let src_u8 = Image::<u8, 3>::new(size, data.clone())?;
+            let src_f32 = Image::<f32, 3>::new(size, data.iter().map(|&v| v as f32).collect())?;
+
+            let dst_size = ImageSize {
+                width: 2 * width,
+                height: 2 * height,
+            };
+            let mut dst_u8 = Image::<u8, 3>::from_size_val(dst_size, 0)?;
+            let mut dst_f32 = Image::<f32, 3>::from_size_val(dst_size, 0.0)?;
+            pyrup_u8(&src_u8, &mut dst_u8)?;
+            pyrup_f32(&src_f32, &mut dst_f32)?;
+
+            let expected: Vec<u8> = dst_f32
+                .as_slice()
+                .iter()
+                .map(|&v| (v + 0.5).floor() as u8)
+                .collect();
+            assert_eq!(dst_u8.as_slice(), &expected[..], "{width}x{height}");
+        }
+        Ok(())
+    }
 }
 
 // ── CUDA adapters + PyramidPlan ──────────────────────────────────────────────
@@ -1900,9 +1994,7 @@ mod cuda_adapters {
         let (sw, sh) = dims_u32(src)?;
         let ctx = stream.context();
         let (s, d) = device_slices!(src, dst);
-        let n = (sw as usize * 2) * sh as usize * C;
-        let mut scratch = unsafe { stream.alloc::<u8>(n) }.map_err(err)?;
-        launch_pyrup_u8(ctx, stream, s, d, &mut scratch, sw, sh, C as u32).map_err(err)
+        launch_pyrup_u8(ctx, stream, s, d, sw, sh, C as u32).map_err(err)
     }
 }
 
@@ -2040,7 +2132,18 @@ mod cuda_tests {
     #[test]
     fn u8_pyramid_device_equals_host_byte_exact() {
         let stream = default_stream();
-        for (w, h) in [(64usize, 48usize), (67, 43), (5, 4), (1, 7), (8, 1)] {
+        // (2, 2), (2, 5) and (5, 2): a 2-wide or 2-tall source, where pyrup's
+        // reflect_101_near falls back to reflect_101 on its `last` row/column.
+        for (w, h) in [
+            (64usize, 48usize),
+            (67, 43),
+            (5, 4),
+            (1, 7),
+            (8, 1),
+            (2, 2),
+            (2, 5),
+            (5, 2),
+        ] {
             let src = Image::<u8, 3>::new(sz(w, h), pattern_u8(w * h * 3)).unwrap();
             let d_src = src.to_cuda(&stream).unwrap();
 
