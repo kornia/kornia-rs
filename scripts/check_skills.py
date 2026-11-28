@@ -78,6 +78,9 @@ def missing_fresh_session(text: str, per_line: bool = False) -> bool:
     A mention is a paragraph, list item, table row or sentence (a line when
     `per_line`) that names `kornia-code-review` together with a self-review, or
     says to run or paste it.
+    An instruction may put the qualifier in the sentence that follows it; a
+    qualifier in the *previous* sentence does not count, so a stale second
+    instruction is caught even when the first names the phrase.
     This only checks the phrase is present; it does not read negations.
     """
     split = r"\n" if per_line else r"\n\s*\n|\n(?=\s*(?:[-*|]|\d+\.)\s)"

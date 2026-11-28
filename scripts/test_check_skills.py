@@ -96,6 +96,12 @@ class TestSelfReviewFreshness(unittest.TestCase):
         ):
             self.assertFalse(check_skills.missing_fresh_session(good), good)
 
+    def test_a_qualifier_in_the_previous_sentence_does_not_count(self):
+        # The CodeRabbit case: a compliant first instruction must not excuse a
+        # stale second one that follows it.
+        probe = "Run the skill in a fresh session. Self-review with `kornia-code-review`."
+        self.assertTrue(check_skills.missing_fresh_session(probe))
+
     def test_rule_needs_it_in_the_description_and_the_bullet(self):
         self.assertFalse(check_skills.self_review_rule_stale(self.RULE))
         no_description = self.RULE.replace("a self-review in a fresh session", "a self-review")
