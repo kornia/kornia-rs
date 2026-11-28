@@ -63,6 +63,38 @@ impl Pose3d {
         }
     }
 
+    /// Camera centre in the world frame, `C = -Rᵀ t`.
+    ///
+    /// Equals `self.inverse().translation` bit for bit, so it carries the same
+    /// rigid-pose assumption as [`Pose3d::inverse`].
+    ///
+    /// # Arguments
+    ///
+    /// None; reads `self`, a world-to-camera pose.
+    ///
+    /// # Returns
+    ///
+    /// The position of the camera origin in world coordinates, in the same
+    /// units as the pose translation.
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use kornia_3d::pose::Pose3d;
+    /// use kornia_algebra::{Mat3F64, Vec3F64};
+    ///
+    /// // A camera at world (1, 2, 3) looking along +z.
+    /// let pose = Pose3d::new(Mat3F64::IDENTITY, Vec3F64::new(-1.0, -2.0, -3.0));
+    /// assert_eq!(pose.camera_centre(), Vec3F64::new(1.0, 2.0, 3.0));
+    /// ```
+    pub fn camera_centre(&self) -> Vec3F64 {
+        self.inverse().translation
+    }
+
     /// Compose two world-to-camera transforms.
     ///
     /// Returns `self ∘ rhs`:
@@ -161,6 +193,11 @@ impl Pose3d {
     /// Extracts the 3x3 linear rotation block and 3x1 translation vector,
     /// ignoring the homogeneous bottom row `[0.0, 0.0, 0.0, 1.0]`.
     ///
+    /// This sits alongside [`kornia_algebra::SE3F64::from_matrix`]: whereas
+    /// [`kornia_algebra::SE3F64`] stores a unit quaternion rotation and converts the
+    /// upper-left 3x3 through `SO3F64`, [`Pose3d`] stores `(rotation, translation)`
+    /// directly in matrix form without quaternion conversion or orthonormalization.
+    ///
     /// # Arguments
     ///
     /// * `m` - Homogeneous 4x4 transformation matrix mapping points from world frame to camera frame.
@@ -197,6 +234,10 @@ impl Pose3d {
     /// Convert to a homogeneous 4x4 transformation matrix.
     ///
     /// Top-left 3x3 is rotation, top-right 3x1 is translation, and bottom row is `[0.0, 0.0, 0.0, 1.0]`.
+    ///
+    /// This sits alongside [`kornia_algebra::SE3F64::matrix`]: [`Pose3d`] stores its
+    /// rotation directly as `Mat3F64`, so `to_matrix` assembles the 4x4 matrix
+    /// verbatim without going through a quaternion intermediate.
     ///
     /// # Returns
     ///
@@ -439,6 +480,14 @@ impl Pose3d {
     /// This preserves the horizontal camera center `(c.x, c.y)` even when the input pose
     /// has non-zero roll or pitch. This operation is idempotent up to floating-point rounding.
     ///
+    /// # Frame Convention
+    ///
+    /// Like [`Pose3d::yaw`], this treats the local `+X` axis mapped into the world X-Y
+    /// plane (with world `+Z` up) as forward heading, matching a REP 103 / ISO 8855
+    /// body frame (`+X` forward, `+Z` up). When using a camera optical frame (`+Z`
+    /// forward, `+Y` down), convert to a body frame first if keeping the horizontal
+    /// camera pointing direction is intended.
+    ///
     /// # Preconditions
     ///
     /// Assumes `self` is a rigid pose (`RᵀR = I`, `det R = 1`) so that `c = -Rᵀt` holds;
@@ -538,6 +587,9 @@ impl std::ops::Mul<Vec3F64> for Pose3d {
 
 impl From<glam::DAffine3> for Pose3d {
     /// Convert from `glam::DAffine3` to `Pose3d`.
+    ///
+    /// Copies `affine.matrix3` verbatim into `rotation` without orthonormalization or
+    /// scale stripping, so any scale or shear present in the affine transform is kept.
     #[inline]
     fn from(affine: glam::DAffine3) -> Self {
         Self {
@@ -582,6 +634,14 @@ mod tests {
         let pose = Pose3d::IDENTITY;
         let point = Vec3F64::new(1.0, 2.0, 3.0);
         assert_eq!(pose.transform_point(&point), point);
+    }
+
+    #[test]
+    fn camera_centre_inverts_the_world_to_camera_translation() {
+        let rotation = SO3F64::exp(Vec3F64::new(0.3, -0.2, 0.9)).matrix();
+        let centre = Vec3F64::new(4.0, -1.5, 12.0);
+        let pose = Pose3d::new(rotation, -(rotation * centre));
+        assert!((pose.camera_centre() - centre).length() < 1e-12);
     }
 
     #[test]

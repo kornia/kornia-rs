@@ -1,5 +1,5 @@
 diff --git a/crates/kornia-imgproc/src/distance_transform.rs b/crates/kornia-imgproc/src/distance_transform.rs
-index 66c2e6cf..2a7101d5 100644
+index b80dc2bb..2a7101d5 100644
 --- a/crates/kornia-imgproc/src/distance_transform.rs
 +++ b/crates/kornia-imgproc/src/distance_transform.rs
 @@ -1,3 +1,4 @@
@@ -7,33 +7,17 @@ index 66c2e6cf..2a7101d5 100644
  use kornia_image::{Image, ImageError, ImageSize};
  use rayon::prelude::*;
  
-@@ -57,6 +58,25 @@ impl DistanceTransformExecutor {
-     }
- 
-     /// Computes the Euclidean Distance Transform of a binary image.
-+    ///
-+    /// # Arguments
-+    ///
-+    /// * `image` - Input image. Pixels with a value greater than zero are foreground.
-+    ///
-+    /// # Returns
-+    ///
-+    /// An image of the same size holding the distance from each pixel to the
+@@ -65,7 +66,8 @@ impl DistanceTransformExecutor {
+     /// # Returns
+     ///
+     /// An image of the same size holding the distance from each pixel to the
+-    /// nearest foreground pixel.
 +    /// nearest foreground pixel. An image with zero width or height returns an
 +    /// empty image of the same size.
-+    ///
-+    /// If the image has no foreground pixels, every output value is `1e10`
-+    /// (not `f32::MAX` as in [`distance_transform_vanilla`]). Distances are
-+    /// computed in `f32`, so they are inexact when the width or height exceeds
-+    /// 4096 pixels.
-+    ///
-+    /// # Errors
-+    ///
-+    /// Returns an error if the output image cannot be created.
-     pub fn execute(&mut self, image: &Image<f32, 1>) -> Result<Image<f32, 1>, ImageError> {
-         let width = image.width();
-         let height = image.height();
-@@ -71,9 +91,8 @@ impl DistanceTransformExecutor {
+     ///
+     /// If the image has no foreground pixels, every output value is `1e10`
+     /// (not `f32::MAX` as in [`distance_transform_vanilla`]). Distances are
+@@ -89,9 +91,8 @@ impl DistanceTransformExecutor {
          let src_slice = image.as_slice();
  
          // Parallelize over rows and fuse binary-to-INF conversion with the transform.
@@ -45,7 +29,7 @@ index 66c2e6cf..2a7101d5 100644
              .for_each_init(
                  || (vec![0.0; width], vec![0usize; width], vec![0.0; width + 1]),
                  |(f, v, z), (grid_row, src_row)| {
-@@ -86,7 +105,7 @@ impl DistanceTransformExecutor {
+@@ -104,7 +105,7 @@ impl DistanceTransformExecutor {
  
          transpose_map(&self.grid, &mut self.scratch, width, height, |x| x);
  
@@ -54,7 +38,7 @@ index 66c2e6cf..2a7101d5 100644
              || {
                  (
                      vec![0.0; height],
-@@ -158,7 +177,7 @@ fn transpose_map<F>(src: &[f32], dst: &mut [f32], width: usize, height: usize, o
+@@ -176,7 +177,7 @@ fn transpose_map<F>(src: &[f32], dst: &mut [f32], width: usize, height: usize, o
  where
      F: Fn(f32) -> f32 + Sync + Send,
  {
@@ -63,7 +47,7 @@ index 66c2e6cf..2a7101d5 100644
          .enumerate()
          .for_each(|(x, dst_row)| {
              for y in 0..height {
-@@ -215,4 +234,25 @@ mod tests {
+@@ -233,4 +234,25 @@ mod tests {
  
          Ok(())
      }

@@ -342,6 +342,14 @@ impl<T, const N: usize> Tensor<T, N> {
 
     /// Get the data of the tensor as a pointer.
     ///
+    /// For a device tensor this is the device address, not a host pointer.
+    ///
+    /// A tensor with no elements, host or device, has a dangling pointer: non-null
+    /// and aligned for `T` (for example `0x4` for `f32`), owned by no allocation.
+    /// It must not be dereferenced or handed to the CUDA driver as an address.
+    /// Interfaces that expect a null pointer for an empty buffer (the CUDA Array
+    /// Interface and DLPack both do) must check for zero elements themselves.
+    ///
     /// # Returns
     ///
     /// A pointer to the data of the tensor.
@@ -351,6 +359,8 @@ impl<T, const N: usize> Tensor<T, N> {
     }
 
     /// Get the data of the tensor as a mutable pointer.
+    ///
+    /// Dangling for a tensor with no elements; see [`as_ptr`](Self::as_ptr).
     ///
     /// # Returns
     ///
