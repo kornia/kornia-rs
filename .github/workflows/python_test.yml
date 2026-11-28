@@ -98,14 +98,9 @@ jobs:
         target: [x86_64, aarch64]
     # Drop the local `.cargo/config.toml` baselines so wheels target stock
     # CPUs and SIMD paths are gated only by per-fn `#[target_feature]` +
-    # runtime `cpu_features()` selection. Override the x86_64 linker too:
-    # `.cargo/config.toml` pins it to `x86_64-linux-gnu-gcc` (the
-    # Debian-named cross compiler used for Jetson-hosted x86_64
-    # cross-test) but the manylinux2014 container is CentOS 7 and only
-    # ships plain `cc`/`gcc`.
+    # runtime `cpu_features()` selection.
     env:
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: ""
-      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: "cc"
       CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-Copt-level=2"
     steps:
       - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2

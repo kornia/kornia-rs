@@ -48,7 +48,7 @@ const SMALL_ANGLE_EPSILON_F64: f64 = 1.0e-10;
 /// Threshold on θ² below which Taylor expansion is used for f32 Jacobians.
 /// In f32, `1.0 - cos(θ)` cancels to 0.0 for θ < 1e-4. Below θ² = 1e-2 (θ < 0.1 rad),
 /// 4th-order Taylor series avoids cancellation with truncation error (< 1e-9) well below f32::EPSILON.
-const JACOBIAN_TAYLOR_THRESHOLD_F32: f32 = 1.0e-2;
+pub(crate) const JACOBIAN_TAYLOR_THRESHOLD_F32: f32 = 1.0e-2;
 
 /// A 3D rotation, stored as a unit quaternion.
 ///
