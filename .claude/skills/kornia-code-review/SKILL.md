@@ -270,7 +270,8 @@ were already policy.
   search, probe or command of its own is a placeholder: treat it as not run
   fresh (§0b searches for library code, §4b probes for tooling; a diff with
   nothing to probe quotes the commands it did run). Ask for it to be re-run
-  in a fresh session before reviewing the code.
+  in a fresh session before reviewing the code; CI cannot see the session,
+  so the reviewer enforces this by hand.
 - Reviewers ask the author at least one concrete question about a non-obvious hunk
   (why this bound, what happens on empty input, why this copy). No answer,
   or an answer that contradicts the code ⇒ blocking until resolved or the

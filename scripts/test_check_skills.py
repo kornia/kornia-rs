@@ -75,6 +75,13 @@ class TestSelfReviewFreshness(unittest.TestCase):
         self.assertTrue(check_skills.missing_fresh_session(good + "\n\n" + old))
         self.assertTrue(check_skills.missing_fresh_session(good + "\n" + old, per_line=True))
 
+    def test_each_instruction_needs_it_not_just_each_paragraph(self):
+        probe = (
+            "Self-review with `kornia-code-review` in a fresh session. "
+            "Before opening the next PR, run `kornia-code-review` on your diff."
+        )
+        self.assertTrue(check_skills.missing_fresh_session(probe))
+
     def test_rule_needs_it_in_the_description_and_the_bullet(self):
         self.assertFalse(check_skills.self_review_rule_stale(self.RULE))
         no_description = self.RULE.replace("a self-review in a fresh session", "a self-review")

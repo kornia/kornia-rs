@@ -75,16 +75,19 @@ SELF_REVIEW_DOCS = (
 def missing_fresh_session(text: str, per_line: bool = False) -> bool:
     """Return True when any one mention of the self-review step lacks a fresh session.
 
-    A mention is a paragraph, list item or table row (a line when `per_line`) that
-    names `kornia-code-review` together with a self-review, or says to run or
-    paste it.
+    A mention is a paragraph, list item, table row or sentence (a line when
+    `per_line`) that names `kornia-code-review` together with a self-review, or
+    says to run or paste it.
     This only checks the phrase is present; it does not read negations.
     """
     split = r"\n" if per_line else r"\n\s*\n|\n(?=\s*(?:[-*|]|\d+\.)\s)"
+    verdict = re.compile(r"self[- ]?review|\b(?:runs?|pastes?|uses?)(?: the)?(?: skill)?(?: in)? `?(?:\.claude/skills/)?kornia-code-review", re.I)
+    fresh = re.compile(r"fresh[- ]session", re.I)
     for block in re.split(split, text):
-        flat = " ".join(block.split())
-        if "kornia-code-review" in flat and re.search(r"self[- ]?review|\b(?:runs?|pastes?|uses?)(?: the)?(?: skill)?(?: in)? `?(?:\.claude/skills/)?kornia-code-review", flat, re.I) and not re.search(r"fresh[- ]session", flat, re.I):
-            return True
+        for sentence in re.split(r"(?<=[.!?])\s+", block):
+            flat = " ".join(sentence.split())
+            if "kornia-code-review" in flat and verdict.search(flat) and not fresh.search(flat):
+                return True
     return False
 
 

@@ -80,10 +80,10 @@ jobs:
               warnings.push(`⚠️ **AI disclosure incomplete**: fill in ${missing.map(f => `**${f}**`).join(', ')} (write \`none\` as the agent if no AI was used; see the PR template).`);
             }
 
-            // Self-review is required and must be a real fresh-session kornia-code-review run, so
-            // maintainers can rely on it before reviewing by hand. These checks catch
-            // placeholders and unaddressed findings, not a poor review; reviewers
-            // judge that (kornia-code-review sections 6 and 7).
+            // Self-review: a real kornia-code-review run in a fresh session, so
+            // maintainers can rely on it before reviewing by hand; CI cannot verify
+            // the session. These checks catch placeholders and unaddressed findings,
+            // not a poor review; reviewers judge that (kornia-code-review sections 6 and 7).
             const failures = [];
             const sr = body.match(/##[^\n]*Self-review[^\n]*\n([\s\S]*?)(?=\n## |$)/i);
             const srText = sr ? sr[1] : '';
