@@ -12,3 +12,14 @@ AI disclosure:
 - Effort level: medium
 - Skills applied: kornia-coding-style
 - Human vs AI part: human reviewed
+
+## Self-review
+```text
+Verdict: approve
+§4 — no finding — the u8 implementation compares the source and destination pixel counts. — [inferred]
+Reuse searches:
+  $ rg -l 'pub fn gray_from_rgb_u8\(' crates/kornia-imgproc/src/color/gray/kernels.rs
+  crates/kornia-imgproc/src/color/gray/kernels.rs
+  The u8 conversion calls the existing slice kernel.
+Skill gaps: none
+```

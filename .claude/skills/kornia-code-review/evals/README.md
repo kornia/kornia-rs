@@ -27,7 +27,9 @@ Three kinds:
 - `merged.diff` (controls only): the PR's change, already in the tree
   (`check_skills.py` checks it still reverse-applies, with the same rule). The reviewer gets it and
   `patch.diff` as one `pr.diff`.
-- `pr.md`: the PR title and body the reviewer sees, as `PR.md`.
+- `pr.md`: the PR title and body the reviewer sees, as `PR.md`. Its Self-review must
+  pass the same format checks as a real PR, including a reuse search for
+  library changes in either diff. Keep planted defects in the case.
 - `issue.md` (optional): what `gh issue view` prints for the linked issue,
   given to the reviewer as `ISSUE.md`. `checker-misses-stale-fact` has none on
   purpose, to keep the unreadable-issue rule tested.
