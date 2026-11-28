@@ -967,9 +967,10 @@ impl PyImageApi {
         arr: Py<PyArray3<u8>>,
         mode: Option<String>,
     ) -> PyResult<Self> {
-        let c = arr.bind(py).shape()[2];
+        let b = arr.bind(py);
+        let c = b.shape()[2];
         let mode = mode.unwrap_or_else(|| mode_from_channels(c, false));
-        Self::copy_numpy_into_owned::<u8>(py, &arr, backing::Dtype::U8, self.color_space, mode)
+        Self::copy_numpy_into_owned::<u8>(py, b, backing::Dtype::U8, self.color_space, mode)
     }
 
     /// Allocate a numpy view (zero-copy) over this image's backing, tied to a
@@ -1257,15 +1258,17 @@ impl PyImageApi {
 
     /// Generic helper: copy a typed 3-D numpy array into a fresh owned aligned buffer.
     /// This is the single implementation body shared by `wrap`, `wrap_u16`, `wrap_f32`,
-    /// and `owned_from_numpy_u8`.
+    /// `owned_from_numpy_u8`, and the owned-copy branch of `from_numpy_borrow`.
+    ///
+    /// Callers must guarantee no concurrent writes to `b` occur during ingest
+    /// (the extension module sets `#[pymodule(gil_used = false)]`).
     fn copy_numpy_into_owned<T: numpy::Element + Copy>(
         py: Python<'_>,
-        arr: &Py<PyArray3<T>>,
+        b: &Bound<'_, PyArray3<T>>,
         dtype: backing::Dtype,
         cs: ColorSpace,
         mode: String,
     ) -> PyResult<Self> {
-        let b = arr.bind(py);
         let s = b.shape();
         let (h, w, c) = (s[0], s[1], s[2]);
         let n_bytes = backing::byte_len(h, w, c, dtype)?;
@@ -1273,10 +1276,10 @@ impl PyImageApi {
             return Err(value_err("array dtype does not match the image dtype"));
         }
         if b.is_c_contiguous() {
-            // SAFETY: `b` is C-contiguous with exactly `n_bytes` bytes of element
-            // data starting at `data()` (checked above; a byte view needs no
-            // alignment). It is kept alive by the `Bound` for the duration of
-            // the copy below.
+            // SAFETY: `b` is C-contiguous with exactly `n_bytes` bytes of element data starting
+            // at `data()` (checked above; a byte slice requires alignment 1), kept alive by
+            // `Bound`, and the caller guarantees no concurrent writes to `b` during ingest
+            // (`gil_used = false`).
             let src = unsafe { std::slice::from_raw_parts(b.data() as *const u8, n_bytes) };
             let bytes = backing::AlignedBytes::from_slice(src)?;
             return Ok(Self::from_owned_bytes(bytes, dtype, [h, w, c], cs, mode));
@@ -1294,16 +1297,18 @@ impl PyImageApi {
             let contig = py
                 .import("numpy")?
                 .call_method1("ascontiguousarray", (b,))?
-                .cast_into::<PyArray3<T>>()?
-                .unbind();
+                .cast_into::<PyArray3<T>>()?;
             return Self::copy_numpy_into_owned(py, &contig, dtype, cs, mode);
         }
         // Strided / broadcast / reversed but aligned view: gather it straight
         // into the owned buffer in logical (row-major) order — one copy, no
         // intermediate contiguous numpy array.
         let mut bytes = backing::AlignedBytes::uninit(n_bytes)?;
-        // SAFETY: `bytes` uniquely owns `n_bytes = b.len() * size_of::<T>()`
-        // bytes at a 64-byte (hence `T`-) aligned address; viewing them as
+        if b.is_empty() {
+            return Ok(Self::from_owned_bytes(bytes, dtype, [h, w, c], cs, mode));
+        }
+        // SAFETY: `bytes` uniquely owns `n_bytes = b.len() * size_of::<T>()` bytes at a 64-byte
+        // (hence `T`-) aligned address and has exclusive mutable access; viewing as
         // `MaybeUninit<T>` makes no initialisation claim.
         let dst = unsafe {
             std::slice::from_raw_parts_mut(
@@ -1311,25 +1316,196 @@ impl PyImageApi {
                 b.len(),
             )
         };
-        // SAFETY: the data pointer and every stride are aligned for `T` (checked
-        // above), so every element is aligned; numpy
-        // guarantees every in-shape strided index is in bounds; the GIL is held
-        // and nothing mutates the array while the read-only view is alive.
-        let view = unsafe { b.as_array() };
-        for (d, &v) in dst.iter_mut().zip(view.iter()) {
-            d.write(v);
+
+        let strides = b.strides();
+        let item_size = std::mem::size_of::<T>() as isize;
+        // Every supported dtype (`u8`, `u16`, `f32`, `i32`) has `align_of::<T>() == size_of::<T>()`,
+        // so `elems_aligned` above guarantees every stride is a multiple of `item_size`.
+        debug_assert!(strides.iter().all(|&st| st % item_size == 0));
+        let elem_stride_0 = strides[0] / item_size;
+        let elem_stride_1 = strides[1] / item_size;
+        let elem_stride_2 = strides[2] / item_size;
+        let src_base = b.data() as *const T;
+
+        // Specialized raw-source gather into safe `dst.chunks_exact_mut` / `as_chunks_mut`
+        // slices avoids multi-dim ndarray stepper overhead and per-pixel runtime-length
+        // `copy_from_slice` calls while keeping destination writes bounds-safe.
+        /// Gather `C`-channel pixels from strided numpy memory into `dst`.
+        ///
+        /// # Safety
+        ///
+        /// `dst.len()` must equal `h * w * C` (`h > 0, w > 0`), `[elem_stride_0, elem_stride_1,
+        /// elem_stride_2]` must keep every `(y * elem_stride_0 + x * elem_stride_1 + ch *
+        /// elem_stride_2)` offset for `y < h, x < w, ch < C` in-bounds and `T`-aligned inside
+        /// `src_base`'s live numpy buffer, and no concurrent writes may occur during ingest.
+        #[inline(always)]
+        unsafe fn gather_fixed_channels<T: Copy, const C: usize>(
+            dst: &mut [std::mem::MaybeUninit<T>],
+            src_base: *const T,
+            w: usize,
+            elem_stride_0: isize,
+            elem_stride_1: isize,
+            elem_stride_2: isize,
+        ) {
+            for (y, dst_row) in dst.chunks_exact_mut(w * C).enumerate() {
+                let row_src_offset = y as isize * elem_stride_0;
+                for (x, dst_pix) in dst_row.as_chunks_mut::<C>().0.iter_mut().enumerate() {
+                    let pix_src_offset = row_src_offset + x as isize * elem_stride_1;
+                    for (ch, dst_elem) in dst_pix.iter_mut().enumerate() {
+                        // SAFETY: Caller guarantees `(y < h, x < w, ch < C)` stays in-bounds and
+                        // `T`-aligned inside numpy's live buffer with no concurrent writes.
+                        let v = unsafe {
+                            *src_base.offset(pix_src_offset + ch as isize * elem_stride_2)
+                        };
+                        dst_elem.write(v);
+                    }
+                }
+            }
         }
-        // Every element was written: `view` yields exactly `b.len()` items.
+
+        if elem_stride_1 == c as isize && (c == 1 || elem_stride_2 == 1) {
+            // Entire rows are contiguous (e.g. `arr[::2, :, :]`, `arr[::-1, :, :]`, `gray[::2, :]`).
+            let row_len = w * c;
+            for (y, dst_row) in dst.chunks_exact_mut(row_len).enumerate() {
+                // SAFETY: `b` is non-empty (`y < h`), `elem_stride_1 == c`, and either `c == 1`
+                // (`ch == 0`, so `elem_stride_2` is unused) or `elem_stride_2 == 1`, keeping
+                // `[row_src .. row_src + row_len)` in-bounds inside numpy's live, `T`-aligned
+                // buffer while the caller guarantees no concurrent writes during ingest
+                // (`gil_used = false`), and `[MaybeUninit<T>]` matches `[T]` layout (`T: Copy`).
+                let src_row = unsafe {
+                    let row_src = src_base.offset(y as isize * elem_stride_0);
+                    std::slice::from_raw_parts(row_src as *const std::mem::MaybeUninit<T>, row_len)
+                };
+                dst_row.copy_from_slice(src_row);
+            }
+        } else if c == 1 {
+            // Dedicated 1-channel element loop avoids per-pixel runtime-length `copy_from_slice`
+            // calls on strided 2D arrays and `[:, :, :1]` views.
+            for (y, dst_row) in dst.chunks_exact_mut(w).enumerate() {
+                let row_src_offset = y as isize * elem_stride_0;
+                for (x, dst_elem) in dst_row.iter_mut().enumerate() {
+                    // SAFETY: `b` is non-empty (`y < h`, `x < w`, `c == 1`) and `elems_aligned`
+                    // ensures `row_src_offset + x * elem_stride_1` stays in-bounds and
+                    // `T`-aligned inside numpy's live buffer while the caller guarantees no
+                    // concurrent writes during ingest (`gil_used = false`).
+                    let v =
+                        unsafe { *src_base.offset(row_src_offset + x as isize * elem_stride_1) };
+                    dst_elem.write(v);
+                }
+            }
+        } else if c == 3 {
+            // Compile-time 3-channel gather (RGB/BGR transpose, subsampling, flip, CHW -> HWC).
+            // SAFETY: `dst.len() == h * w * 3` (`!b.is_empty()`) and `elems_aligned` keep all
+            // `(y < h, x < w, ch < 3)` reads in-bounds and `T`-aligned inside numpy's live
+            // buffer; caller guarantees no concurrent writes during ingest (`gil_used = false`).
+            unsafe {
+                match elem_stride_2 {
+                    1 => gather_fixed_channels::<T, 3>(
+                        dst,
+                        src_base,
+                        w,
+                        elem_stride_0,
+                        elem_stride_1,
+                        1,
+                    ),
+                    -1 => gather_fixed_channels::<T, 3>(
+                        dst,
+                        src_base,
+                        w,
+                        elem_stride_0,
+                        elem_stride_1,
+                        -1,
+                    ),
+                    step2 => gather_fixed_channels::<T, 3>(
+                        dst,
+                        src_base,
+                        w,
+                        elem_stride_0,
+                        elem_stride_1,
+                        step2,
+                    ),
+                }
+            }
+        } else if c == 4 {
+            // Compile-time 4-channel gather (RGBA/BGRA transpose, subsampling, flip, channel swap).
+            // SAFETY: `dst.len() == h * w * 4` (`!b.is_empty()`) and `elems_aligned` keep all
+            // `(y < h, x < w, ch < 4)` reads in-bounds and `T`-aligned inside numpy's live
+            // buffer; caller guarantees no concurrent writes during ingest (`gil_used = false`).
+            unsafe {
+                match elem_stride_2 {
+                    1 => gather_fixed_channels::<T, 4>(
+                        dst,
+                        src_base,
+                        w,
+                        elem_stride_0,
+                        elem_stride_1,
+                        1,
+                    ),
+                    -1 => gather_fixed_channels::<T, 4>(
+                        dst,
+                        src_base,
+                        w,
+                        elem_stride_0,
+                        elem_stride_1,
+                        -1,
+                    ),
+                    step2 => gather_fixed_channels::<T, 4>(
+                        dst,
+                        src_base,
+                        w,
+                        elem_stride_0,
+                        elem_stride_1,
+                        step2,
+                    ),
+                }
+            }
+        } else if elem_stride_2 == 1 {
+            // Other channel counts with contiguous channels per pixel (e.g. c == 2).
+            for (y, dst_row) in dst.chunks_exact_mut(w * c).enumerate() {
+                let row_src_offset = y as isize * elem_stride_0;
+                for (x, dst_pix) in dst_row.chunks_exact_mut(c).enumerate() {
+                    // SAFETY: `b` is non-empty (`y < h`, `x < w`) and `elem_stride_2 == 1` keep
+                    // `[pix_src .. pix_src + c)` in-bounds inside numpy's live, `T`-aligned
+                    // buffer, the caller guarantees no concurrent writes during ingest
+                    // (`gil_used = false`), and `[MaybeUninit<T>]` matches `[T]` layout (`T: Copy`).
+                    let src_pix = unsafe {
+                        let pix_src = src_base.offset(row_src_offset + x as isize * elem_stride_1);
+                        std::slice::from_raw_parts(pix_src as *const std::mem::MaybeUninit<T>, c)
+                    };
+                    dst_pix.copy_from_slice(src_pix);
+                }
+            }
+        } else {
+            // General element-aligned arbitrary striding (e.g. c != 1,3,4 planar / broadcasts).
+            for (y, dst_row) in dst.chunks_exact_mut(w * c).enumerate() {
+                let row_src_offset = y as isize * elem_stride_0;
+                for (x, dst_pix) in dst_row.chunks_exact_mut(c).enumerate() {
+                    let pix_src_offset = row_src_offset + x as isize * elem_stride_1;
+                    for (ch, dst_elem) in dst_pix.iter_mut().enumerate() {
+                        // SAFETY: `b` is non-empty (`y < h`, `x < w`, `ch < c`) and element-aligned
+                        // strides keep every indexed offset in-bounds and `T`-aligned inside
+                        // numpy's live buffer while the caller guarantees no concurrent writes
+                        // during ingest (`gil_used = false`).
+                        let v = unsafe {
+                            *src_base.offset(pix_src_offset + ch as isize * elem_stride_2)
+                        };
+                        dst_elem.write(v);
+                    }
+                }
+            }
+        }
+        // Every element was written: exactly `b.len()` items.
         Ok(Self::from_owned_bytes(bytes, dtype, [h, w, c], cs, mode))
     }
 
     /// Wrap a freshly-allocated 8-bit numpy array by copying it into an owned
     /// aligned buffer. Mode defaults to `"L"`/`"RGB"`/`"RGBA"` by channel count.
     pub fn wrap(py: Python<'_>, data: Py<PyArray3<u8>>, mode: Option<String>) -> PyResult<Self> {
-        let c = data.bind(py).shape()[2];
+        let b = data.bind(py);
+        let c = b.shape()[2];
         let mode = mode.unwrap_or_else(|| mode_from_channels(c, false));
         let cs = default_color_space(c);
-        Self::copy_numpy_into_owned::<u8>(py, &data, backing::Dtype::U8, cs, mode)
+        Self::copy_numpy_into_owned::<u8>(py, b, backing::Dtype::U8, cs, mode)
     }
 
     /// Wrap a freshly-allocated 16-bit numpy array into an owned buffer.
@@ -1338,10 +1514,11 @@ impl PyImageApi {
         data: Py<PyArray3<u16>>,
         mode: Option<String>,
     ) -> PyResult<Self> {
-        let c = data.bind(py).shape()[2];
+        let b = data.bind(py);
+        let c = b.shape()[2];
         let mode = mode.unwrap_or_else(|| mode_from_channels(c, true));
         let cs = default_color_space(c);
-        Self::copy_numpy_into_owned::<u16>(py, &data, backing::Dtype::U16, cs, mode)
+        Self::copy_numpy_into_owned::<u16>(py, b, backing::Dtype::U16, cs, mode)
     }
 
     /// Wrap a freshly-allocated 32-bit float numpy array into an owned buffer.
@@ -1350,10 +1527,11 @@ impl PyImageApi {
         data: Py<PyArray3<f32>>,
         mode: Option<String>,
     ) -> PyResult<Self> {
-        let c = data.bind(py).shape()[2];
+        let b = data.bind(py);
+        let c = b.shape()[2];
         let mode = mode.unwrap_or_else(|| mode_from_channels_f32(c));
         let cs = default_color_space(c);
-        Self::copy_numpy_into_owned::<f32>(py, &data, backing::Dtype::F32, cs, mode)
+        Self::copy_numpy_into_owned::<f32>(py, b, backing::Dtype::F32, cs, mode)
     }
 
     fn with_format(mut self, format: &'static str) -> Self {
@@ -1364,6 +1542,9 @@ impl PyImageApi {
     /// Borrow a numpy ndarray zero-copy as the default ingest path. Keeps the
     /// original ndarray alive (memory identity preserved). Optionally forces a
     /// deep copy into an owned aligned buffer.
+    ///
+    /// Callers must ensure no concurrent writes to `arr` occur during ingest
+    /// (this extension module runs with `#[pymodule(gil_used = false)]`).
     pub(crate) fn from_numpy_borrow(
         py: Python<'_>,
         arr: &Bound<'_, PyAny>,
@@ -1438,37 +1619,30 @@ impl PyImageApi {
 
         // A misaligned u16/f32/i32 view (e.g. `np.frombuffer(buf, offset=1,
         // dtype=np.float32)`) must not be borrowed zero-copy: every typed access
-        // to it would be undefined behaviour. Copy it into an aligned buffer.
+        // to it would be undefined behaviour. Non-contiguous or explicitly copied
+        // arrays also require an owned contiguous buffer.
+        // We gather directly into an aligned owned buffer in a single pass via
+        // `copy_numpy_into_owned` without an intermediate numpy array.
         let aligned = crate::pyutils::is_ptr_aligned(ptr, dtype.itemsize());
         if copy || !c_contig || !aligned {
-            // Force an owned, contiguous buffer (ascontiguousarray semantics).
-            let n = backing::byte_len(h, w, c, dtype)?;
-            let contig = if c_contig {
-                obj
-            } else {
-                let np = py.import("numpy")?;
-                np.call_method1("ascontiguousarray", (&obj,))?
-            };
-            let bptr = match dtype {
+            return match dtype {
                 backing::Dtype::U8 => {
-                    contig.extract::<Py<PyArray3<u8>>>()?.bind(py).data() as *const u8
+                    let a = obj.extract::<Py<PyArray3<u8>>>()?;
+                    Self::copy_numpy_into_owned(py, a.bind(py), dtype, cs, mode)
                 }
                 backing::Dtype::U16 => {
-                    contig.extract::<Py<PyArray3<u16>>>()?.bind(py).data() as *const u8
+                    let a = obj.extract::<Py<PyArray3<u16>>>()?;
+                    Self::copy_numpy_into_owned(py, a.bind(py), dtype, cs, mode)
                 }
                 backing::Dtype::F32 => {
-                    contig.extract::<Py<PyArray3<f32>>>()?.bind(py).data() as *const u8
+                    let a = obj.extract::<Py<PyArray3<f32>>>()?;
+                    Self::copy_numpy_into_owned(py, a.bind(py), dtype, cs, mode)
                 }
                 backing::Dtype::I32 => {
-                    contig.extract::<Py<PyArray3<i32>>>()?.bind(py).data() as *const u8
+                    let a = obj.extract::<Py<PyArray3<i32>>>()?;
+                    Self::copy_numpy_into_owned(py, a.bind(py), dtype, cs, mode)
                 }
             };
-            // SAFETY: `contig` is a live C-contiguous (h, w, c) array of `dtype`
-            // (either `obj` itself or numpy's contiguous copy of it), so `bptr`
-            // is valid for its `n` bytes; a byte view needs no alignment.
-            let src = unsafe { std::slice::from_raw_parts(bptr, n) };
-            let bytes = backing::AlignedBytes::from_slice(src)?;
-            return Ok(Self::from_owned_bytes(bytes, dtype, [h, w, c], cs, mode));
         }
 
         // Zero-copy borrow: keep the original ndarray alive.
@@ -2043,6 +2217,8 @@ impl PyImageApi {
     /// Auto-detects the bit depth: ``uint8`` arrays produce an 8-bit Image,
     /// ``uint16`` arrays produce a 16-bit Image (depth maps, scientific data).
     /// 2D shapes are treated as single-channel and reshaped to ``(H, W, 1)``.
+    /// No concurrent writes to ``data`` may occur during ingest (the module
+    /// runs with ``gil_used = false``).
     #[new]
     #[pyo3(signature = (data, mode=None, color_space=None))]
     fn new(
@@ -2058,6 +2234,9 @@ impl PyImageApi {
     /// Create an Image from a numpy array. Zero-copy by default (``copy=False``):
     /// the Image borrows the array's memory and keeps it alive. Pass
     /// ``copy=True`` to own an independent aligned copy.
+    ///
+    /// The caller must ensure no concurrent writes to ``data`` occur during
+    /// ingest (this module runs with ``gil_used = false``).
     #[staticmethod]
     #[pyo3(signature = (data, mode=None, color_space=None, copy=false))]
     fn from_numpy(
@@ -2078,7 +2257,9 @@ impl PyImageApi {
     /// The Image shares memory with the input array — mutations to either
     /// are visible in both. Accepts 2D (H, W) or 3D (H, W, C) arrays. Bit
     /// depth is inferred from the array's dtype: ``uint8`` is the default
-    /// path, ``uint16`` is the depth-map path.
+    /// path, ``uint16`` is the depth-map path. The caller must ensure no
+    /// concurrent writes to ``data`` occur during ingest (this module runs
+    /// with ``gil_used = false``).
     ///
     /// Args:
     ///     data: numpy array (``uint8`` or ``uint16``), 2D or 3D in HWC layout.
@@ -2097,7 +2278,9 @@ impl PyImageApi {
     ///
     /// PIL's :func:`Image.fromarray` is the standard way to wrap a numpy
     /// array — exposing the same name here means existing PIL-style code
-    /// works against ``kornia_rs.image.Image`` without renames.
+    /// works against ``kornia_rs.image.Image`` without renames. The caller
+    /// must ensure no concurrent writes to ``data`` occur during ingest (this
+    /// module runs with ``gil_used = false``).
     #[staticmethod]
     #[pyo3(signature = (data, mode=None))]
     fn fromarray(py: Python<'_>, data: &Bound<'_, PyAny>, mode: Option<String>) -> PyResult<Self> {

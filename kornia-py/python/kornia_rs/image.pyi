@@ -54,6 +54,10 @@ class Image:
     Images constructed from read-only sources (e.g. ``bytes``) expose
     ``memoryview(img).readonly == True``; the ``data`` property honours
     the same read-only flag.
+
+    Callers constructing an ``Image`` from a NumPy array must ensure no
+    concurrent writes to the source array occur during ingest (this module
+    runs with ``gil_used = false``).
     """
 
     def __init__(self, data: np.ndarray, mode: Optional[str] = ..., color_space: Optional[ColorSpace] = ...) -> None: ...
@@ -80,7 +84,10 @@ class Image:
         copy: bool = ...,
     ) -> Image:
         """Create an Image from a numpy array. Zero-copy by default (``copy=False``);
-        pass ``copy=True`` to own an independent aligned copy."""
+        pass ``copy=True`` to own an independent aligned copy.
+
+        The caller must ensure no concurrent writes to ``data`` occur during ingest
+        (this module runs with ``gil_used = false``)."""
         ...
     @staticmethod
     def from_buffer(
