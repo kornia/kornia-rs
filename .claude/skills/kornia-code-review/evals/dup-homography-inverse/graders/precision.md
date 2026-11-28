@@ -43,9 +43,14 @@ AI disclosure:
 - Skills applied: kornia-coding-style, kornia-api-flavor
 - Human vs AI part: human wrote the issue and reviewed the diff; agent wrote the code and tests
 
-Self-review:
+## Self-review
 ```text
 Verdict: approve
+§1 — no finding — the function writes into the supplied point buffer. — [inferred]
+Reuse searches:
+  $ rg -l 'pub fn warp_perspective<' crates/kornia-imgproc/src
+  crates/kornia-imgproc/src/warp/perspective.rs
+  The public warp takes images as input and output.
 Skill gaps: none
 ```
 
@@ -182,4 +187,4 @@ index 0000000..8903700
 +}
 ```
 
-<!-- skill_evals.py sync: fe2dfbea53ac3cd0 -->
+<!-- skill_evals.py sync: b6acf48ca0fb7cda -->
