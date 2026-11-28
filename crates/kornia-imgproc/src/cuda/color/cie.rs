@@ -35,8 +35,9 @@ static CIE_F32_SRC: &str = r#"
 #define LAB_F_OFFSET    0.13793103f
 #define LAB_FINV_THRESH 0.20689655f
 #define LAB_FINV_SLOPE  0.12841855f
-#define LUV_UN    0.19793943f
-#define LUV_VN    0.46831096f
+// u'n, v'n of the XN/YN/ZN white, derived as in kernels.rs (LUV_UN, LUV_VN).
+#define LUV_UN    (4.0f * XN / (XN + 15.0f * YN + 3.0f * ZN))
+#define LUV_VN    (9.0f * YN / (XN + 15.0f * YN + 3.0f * ZN))
 #define LUV_KAPPA 903.3f
 
 // __powf (hardware exp2/log2) instead of powf: ~4x cheaper, and its relative
@@ -222,8 +223,10 @@ static CIE_F64_SRC: &str = r#"
 #define LAB_F_OFFSET_D    D(0.13793103f)
 #define LAB_FINV_THRESH_D D(0.20689655f)
 #define LAB_FINV_SLOPE_D  D(0.12841855f)
-#define LUV_UN_D    D(0.19793943f)
-#define LUV_VN_D    D(0.46831096f)
+// XN_D/ZN_D are already widened, so repeat the f32 literals: the expression
+// rounds in f32 as on the CPU (`LUV_UN as f64`), then widens.
+#define LUV_UN_D    D(4.0f * 0.950456f / (0.950456f + 15.0f * 1.0f + 3.0f * 1.088754f))
+#define LUV_VN_D    D(9.0f * 1.0f / (0.950456f + 15.0f * 1.0f + 3.0f * 1.088754f))
 #define LUV_KAPPA_D D(903.3f)
 
 // Transfer uses EXACT double literals — the CPU f64 oracle

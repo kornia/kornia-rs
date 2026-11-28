@@ -340,7 +340,7 @@ mod tests {
 
     #[test]
     fn f64_device_conversions_match_cpu_oracle() {
-        use kornia_image::color_spaces::{Hsvf64, Labf64, YCbCrf64};
+        use kornia_image::color_spaces::{Hsvf64, Labf64, Luvf64, YCbCrf64};
 
         let stream = default_stream();
         let n = SIZE.width * SIZE.height;
@@ -366,7 +366,7 @@ mod tests {
             .fold(0f64, f64::max);
         assert!(diff <= 1e-12, "f64 gray max diff {diff}");
 
-        // ycbcr / hsv / lab within 1e-6 (constant-representation and libm
+        // ycbcr / hsv / lab / luv within 1e-6 (constant-representation and libm
         // differences dominate; still far tighter than the f32 paths).
         macro_rules! check {
             ($dst_ty:ty, $tol:expr, $label:literal) => {{
@@ -387,5 +387,6 @@ mod tests {
         check!(YCbCrf64, 1e-12, "ycbcr");
         check!(Hsvf64, 1e-6, "hsv");
         check!(Labf64, 1e-6, "lab");
+        check!(Luvf64, 1e-6, "luv");
     }
 }
