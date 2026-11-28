@@ -251,6 +251,8 @@ impl<const B: usize, M: DistanceMetric> Vocabulary<B, M> {
             compacted_bow.push((current_id, current_val));
         }
 
+        compacted_bow.retain(|&(_, v)| v != 0.0);
+
         let sum: f32 = compacted_bow.iter().map(|&(_, v)| v).sum();
         if sum > 0.0 {
             for (_, v) in compacted_bow.iter_mut() {
@@ -310,6 +312,8 @@ impl<const B: usize, M: DistanceMetric> Vocabulary<B, M> {
             }
             compacted_bow.push((current_id, current_val));
         }
+
+        compacted_bow.retain(|&(_, v)| v != 0.0);
 
         let sum: f32 = compacted_bow.iter().map(|&(_, v)| v).sum();
         if sum > 0.0 {
@@ -414,5 +418,54 @@ mod tests {
 
         let total_features: usize = di.0.iter().map(|(_, f)| f.len()).sum();
         assert_eq!(total_features, 10);
+    }
+
+    #[test]
+    fn test_zero_weight_transform_regression() {
+        // Construct a single-leaf vocabulary where centroid 0 has weight 0.0 and centroid 1 has weight 2.0
+        let mut descriptors = [Feature([0u64; D]); B];
+        // Distinguish descriptor 1 so feature 1 matches it
+        descriptors[1] = Feature([u64::MAX; D]);
+
+        let mut weights = [0.0f32; B];
+        weights[1] = 2.0; // only word 1 has non-zero weight
+
+        let vocab = Vocabulary::<B, Hamming<D>> {
+            blocks: vec![BlockCluster {
+                descriptors,
+                content: BlockContent::Leaf(LeafData { weights }),
+            }],
+            root_idx: 0,
+        };
+
+        // Feature 0 matches descriptor 0 (weight 0.0), feature 1 matches descriptor 1 (weight 2.0)
+        let features = vec![Feature([0u64; D]), Feature([u64::MAX; D])];
+
+        // 1. transform
+        let bow = vocab.transform(&features).unwrap();
+        // Word 0 (weight 0.0) must be omitted; only word 1 must be present
+        assert_eq!(bow.0.len(), 1);
+        assert_eq!(bow.0[0].0, 1);
+        assert!((bow.0[0].1 - 1.0).abs() < 1e-6);
+
+        // 2. transform_with_direct_index
+        let (bow_di, di) = vocab.transform_with_direct_index(&features, 0).unwrap();
+        assert_eq!(bow_di.0.len(), 1);
+        assert_eq!(bow_di.0[0].0, 1);
+        assert!((bow_di.0[0].1 - 1.0).abs() < 1e-6);
+        // DirectIndex retains features mapped to root node (0)
+        assert_eq!(di.0.len(), 1);
+        assert_eq!(di.0[0].0, 0);
+        assert_eq!(di.0[0].1, vec![0, 1]);
+
+        // 3. KL divergence must be finite (not NaN)
+        let kl = bow.kl_divergence(&bow);
+        assert!(kl.is_finite());
+        assert!(!kl.is_nan());
+
+        // 4. All-zero query (all features match word 0 with 0.0 weight)
+        let zero_features = vec![Feature([0u64; D])];
+        let bow_zero = vocab.transform(&zero_features).unwrap();
+        assert!(bow_zero.0.is_empty());
     }
 }
