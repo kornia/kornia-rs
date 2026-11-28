@@ -839,8 +839,14 @@ mod impl_f64 {
     ///
     /// An [`SVD3Set`] with orthonormal `U`, a rotation `V` (determinant +1) and
     /// `S` holding the singular values on its diagonal, non-negative and in
-    /// descending order. `S` is the R factor of a QR step, so its off-diagonal
-    /// entries are rounding-level rather than exactly zero.
+    /// descending order. `S` is the transpose of the R factor of a QR step, so
+    /// its off-diagonal entries are not exactly zero: they are ~1e-14 of the
+    /// largest singular value for well-conditioned input and grow as σ2/σ1
+    /// shrinks (~1e-12 at σ2/σ1 = 1e-3, ~1e-8 at 1e-7).
+    ///
+    /// Valid for entries between about 1e-162 and 1e154 in magnitude. Above
+    /// that, AᵀA overflows and the result is NaN; below it, AᵀA underflows, so
+    /// `V` stays the identity and `S` is neither diagonal nor sorted.
     pub fn svd3(mat: &Mat3F64) -> SVD3Set {
         // `from_mat3x3` already forms the Gram matrix AᵀA from the columns of A.
         let mut s_mat = Symmetric3x3::from_mat3x3(mat);
