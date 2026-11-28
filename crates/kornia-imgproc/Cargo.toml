@@ -165,6 +165,10 @@ name = "bench_good_features"
 harness = false
 name = "bench_corner_subpix"
 
+[[bench]]
+harness = false
+name = "bench_lk_window"
+
 [dependencies]
 cudarc = { workspace = true, features = ["f16"], optional = true }
 half = { workspace = true, optional = true }
