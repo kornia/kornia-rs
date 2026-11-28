@@ -111,6 +111,9 @@ pub mod distance_transform;
 /// optical flow module
 pub mod optical_flow_pyr_lk;
 
+#[cfg(test)]
+pub(crate) mod test_fixtures;
+
 /// contours
 pub mod contours;
 

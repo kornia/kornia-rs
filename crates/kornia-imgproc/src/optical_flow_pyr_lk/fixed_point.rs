@@ -14,27 +14,25 @@ use rayon::prelude::*;
 use thiserror::Error;
 
 /// Fractional bits of the bilinear weights.
-const W_BITS: i32 = 14;
+pub(super) const W_BITS: i32 = 14;
 const W_ONE: i32 = 1 << W_BITS;
 /// Window samples keep 5 fractional bits (`value * 32`).
-const SAMPLE_SHIFT: i32 = W_BITS - 5;
+pub(super) const SAMPLE_SHIFT: i32 = W_BITS - 5;
 /// Scale from the integer tensor and mismatch sums to OpenCV's float ones.
-const FLT_SCALE: f32 = 1.0 / (1u32 << 20) as f32;
+pub(super) const FLT_SCALE: f32 = 1.0 / (1u32 << 20) as f32;
 /// Sum of `|J - I|` is in units of 1/32 pixel value.
-const SAMPLE_UNIT: f32 = 32.0;
+pub(super) const SAMPLE_UNIT: f32 = 32.0;
 /// i16 lanes per 128-bit vector; window rows are padded to a multiple.
 const LANES: usize = 8;
 /// Window rows are processed in pairs (one per 128-bit half on AVX2).
 const ROW_PAIR: usize = 2;
 /// Two consecutive updates that cancel to within this (pixels) mean the
 /// iteration oscillates; OpenCV then takes the half step and stops.
-const OSCILLATION_TOL: f32 = 0.01;
+pub(super) const OSCILLATION_TOL: f32 = 0.01;
 /// Bound of `|J - I|` in window units: 255 * 32.
-#[cfg(target_arch = "x86_64")]
-const MAX_DIFF: i64 = 255 * 32;
+pub(super) const MAX_DIFF: i64 = 255 * 32;
 /// Bound of an unscaled Scharr derivative: 16 * 255.
-#[cfg(target_arch = "x86_64")]
-const MAX_DERIV: i64 = 16 * 255;
+pub(super) const MAX_DERIV: i64 = 16 * 255;
 /// Points per rayon task.
 const POINTS_PER_TASK: usize = 16;
 /// Border tables up to this many entries (`2 * pad`) stay on the stack.
@@ -480,7 +478,7 @@ fn scharr_deriv_i16_rows(
 
 /// Q14 bilinear weights `[w00, w01, w10, w11]` for fractions `(a, b)`, rounded as OpenCV does.
 #[inline]
-fn q14_weights(a: f32, b: f32) -> [i32; 4] {
+pub(super) fn q14_weights(a: f32, b: f32) -> [i32; 4] {
     let one = W_ONE as f32;
     let w00 = ((1.0 - a) * (1.0 - b) * one).round_ties_even() as i32;
     let w01 = (a * (1.0 - b) * one).round_ties_even() as i32;
@@ -489,7 +487,7 @@ fn q14_weights(a: f32, b: f32) -> [i32; 4] {
 }
 
 #[inline]
-fn descale(v: i32, n: i32) -> i32 {
+pub(super) fn descale(v: i32, n: i32) -> i32 {
     (v + (1 << (n - 1))) >> n
 }
 
@@ -880,7 +878,7 @@ fn abs_error(next: &Plane<u8>, j0: usize, w: [i32; 4], win: &Window) -> i64 {
 /// Integer corner of a window whose top-left is at `p`, if the window still
 /// overlaps the level as OpenCV requires (`-win <= floor(p) < size`).
 #[inline]
-fn corner(p: [f32; 2], win: usize, width: usize, height: usize) -> Option<[isize; 2]> {
+pub(super) fn corner(p: [f32; 2], win: usize, width: usize, height: usize) -> Option<[isize; 2]> {
     let (x, y) = (p[0].floor(), p[1].floor());
     let w = win as f32;
     if x < -w || x >= width as f32 || y < -w || y >= height as f32 {
