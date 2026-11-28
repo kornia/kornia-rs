@@ -10,10 +10,11 @@
 //!   of `dst_w × src_h` — bit-exact.
 //! * `pyrdown_u8`: separable `[1,4,6,4,1]` with a u16 H-intermediate and the
 //!   V-pass `(sum + 128) >> 8` (clamped) — byte-exact.
-//! * `pyrup_u8`: integer polyphase pair keeping the unrounded horizontal
-//!   sums (`p + 6c + n`, `4(c + n)`; `p + 7c`, `8c` at the last column) in a
-//!   u16 intermediate and rounding once in the V-pass with `(sum + 32) >> 6`,
-//!   last row as the last column — byte-exact.
+//! * `pyrup_u8`: ONE fused integer polyphase kernel. Each thread forms the
+//!   horizontal sums (`p + 6c + n`, `4(c + n)`; `p + 7c`, `8c` at the last
+//!   column) of three source rows, combines them vertically with the same
+//!   weights (last row as the last column) and rounds once with
+//!   `(sum + 32) >> 6` — byte-exact, no intermediate buffer.
 //!
 //! Launchers take caller-provided scratch so `PyramidPlan` can own every
 //! buffer (zero-alloc steady state, graph-capturable); they validate all
@@ -316,73 +317,70 @@ extern "C" __global__ void pyrdown_v_u8_c{channels}(
     )
 }
 
-// ── u8 pyrup (integer polyphase pair) ────────────────────────────────────────
+// ── u8 pyrup (fused integer polyphase) ───────────────────────────────────────
 
-fn pyrup_h_u8_src(channels: usize) -> String {
+fn pyrup_u8_src(channels: usize) -> String {
     format!(
         r#"
 #define C {channels}
 {REFLECT_101}{REFLECT_101_NEAR}
-extern "C" __global__ void pyrup_h_u8_c{channels}(
+// Horizontal polyphase sums of source row `row` around column x: even
+// `p + 6c + n` and odd `4(c + n)`, or `p + 7c` and `8c` at the last column.
+__device__ __forceinline__ void pyrup_h_sums(
+    const unsigned char* __restrict__ row, int xp, unsigned int x, int xn,
+    bool last_col, unsigned int ch, unsigned int* even, unsigned int* odd
+) {{
+    unsigned int c = __ldg(&row[(size_t)x * C + ch]);
+    unsigned int p = __ldg(&row[(size_t)xp * C + ch]);
+    unsigned int n = __ldg(&row[(size_t)xn * C + ch]);
+    *even = last_col ? p + 7u * c : p + 6u * c + n;
+    *odd = last_col ? 8u * c : 4u * (c + n);
+}}
+
+// One thread per source pixel: writes the 2x2 output block it owns. The
+// horizontal sums of rows y-1, y, y+1 are combined vertically with the same
+// weights (last-row rule as the last-column rule) and rounded once, so the
+// result is the rounded f32 pyrup without a u16 intermediate in memory.
+extern "C" __global__ void pyrup_u8_c{channels}(
     const unsigned char* __restrict__ src,
-    unsigned short* __restrict__      buf,
+    unsigned char* __restrict__       dst,
     unsigned int src_w,
-    unsigned int src_h,
-    unsigned int dst_w
+    unsigned int src_h
 ) {{
     unsigned int x = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int y = blockIdx.y * blockDim.y + threadIdx.y;
     if (x >= src_w || y >= src_h) return;
-    size_t row = (size_t)y * src_w * C;
-    size_t drow = (size_t)y * dst_w * C;
-    size_t dst_stride = (size_t)dst_w * C;
+    size_t src_stride = (size_t)src_w * C;
+    size_t dst_stride = 2u * src_stride;
 
-    int prev_i = reflect_101_near((int)x - 1, (int)src_w);
-    int next_i = reflect_101_near((int)x + 1, (int)src_w);
-    bool last = src_w > 1u && x == src_w - 1u;
-    #pragma unroll
-    for (unsigned int ch = 0; ch < C; ++ch) {{
-        unsigned int curr = __ldg(&src[row + (size_t)x * C + ch]);
-        unsigned int prev = __ldg(&src[row + (size_t)prev_i * C + ch]);
-        unsigned int next = __ldg(&src[row + (size_t)next_i * C + ch]);
-        unsigned int even = last ? prev + 7u * curr : prev + 6u * curr + next;
-        unsigned int odd = last ? 8u * curr : 4u * (curr + next);
-        buf[drow + (size_t)(2u * x) * C + ch] = (unsigned short)even;
-        if ((size_t)(2u * x + 1u) * C + ch < dst_stride) {{
-            buf[drow + (size_t)(2u * x + 1u) * C + ch] = (unsigned short)odd;
-        }}
-    }}
-}}
-"#
-    )
-}
-
-fn pyrup_v_u8_src(channels: usize) -> String {
-    format!(
-        r#"
-#define C {channels}
-{REFLECT_101}{REFLECT_101_NEAR}
-extern "C" __global__ void pyrup_v_u8_c{channels}(
-    const unsigned short* __restrict__ buf,
-    unsigned char* __restrict__        dst,
-    unsigned int stride_elems,
-    unsigned int src_h
-) {{
-    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
-    unsigned int y = blockIdx.y * blockDim.y + threadIdx.y;
-    if (i >= stride_elems || y >= src_h) return;
+    int xp = reflect_101_near((int)x - 1, (int)src_w);
+    int xn = reflect_101_near((int)x + 1, (int)src_w);
     int yp = reflect_101_near((int)y - 1, (int)src_h);
     int yn = reflect_101_near((int)y + 1, (int)src_h);
-    bool last = src_h > 1u && y == src_h - 1u;
+    bool last_col = src_w > 1u && x == src_w - 1u;
+    bool last_row = src_h > 1u && y == src_h - 1u;
 
-    unsigned int c = __ldg(&buf[(size_t)y  * stride_elems + i]);
-    unsigned int p = __ldg(&buf[(size_t)yp * stride_elems + i]);
-    unsigned int n = __ldg(&buf[(size_t)yn * stride_elems + i]);
-    unsigned int even = last ? p + 7u * c : p + 6u * c + n;
-    unsigned int odd = last ? 8u * c : 4u * (c + n);
+    const unsigned char* rp = src + (size_t)yp * src_stride;
+    const unsigned char* rc = src + (size_t)y * src_stride;
+    const unsigned char* rn = src + (size_t)yn * src_stride;
+    unsigned char* d0 = dst + (size_t)(2u * y) * dst_stride + (size_t)(2u * x) * C;
+    unsigned char* d1 = d0 + dst_stride;
 
-    dst[(size_t)(2u * y) * stride_elems + i] = (unsigned char)((even + 32u) >> 6);
-    dst[(size_t)(2u * y + 1u) * stride_elems + i] = (unsigned char)((odd + 32u) >> 6);
+    #pragma unroll
+    for (unsigned int ch = 0; ch < C; ++ch) {{
+        unsigned int pe, po, ce, co, ne, no;
+        pyrup_h_sums(rp, xp, x, xn, last_col, ch, &pe, &po);
+        pyrup_h_sums(rc, xp, x, xn, last_col, ch, &ce, &co);
+        pyrup_h_sums(rn, xp, x, xn, last_col, ch, &ne, &no);
+        unsigned int ee = last_row ? pe + 7u * ce : pe + 6u * ce + ne;
+        unsigned int eo = last_row ? po + 7u * co : po + 6u * co + no;
+        unsigned int oe = last_row ? 8u * ce : 4u * (ce + ne);
+        unsigned int oo = last_row ? 8u * co : 4u * (co + no);
+        d0[ch] = (unsigned char)((ee + 32u) >> 6);
+        d0[C + ch] = (unsigned char)((eo + 32u) >> 6);
+        d1[ch] = (unsigned char)((oe + 32u) >> 6);
+        d1[C + ch] = (unsigned char)((oo + 32u) >> 6);
+    }}
 }}
 "#
     )
@@ -397,8 +395,7 @@ enum PyrKernelKey {
     UpVF32 { channels: u32 },
     DownHU8 { channels: u32 },
     DownVU8 { channels: u32 },
-    UpHU8 { channels: u32 },
-    UpVU8 { channels: u32 },
+    UpU8 { channels: u32 },
 }
 
 type PyrKernelCache = Mutex<HashMap<PyrKernelKey, Arc<CudaKernel>>>;
@@ -599,35 +596,31 @@ pub fn launch_pyrdown_u8(
         .map_err(|e| CudaPyramidError::Cuda(e.to_string()))
 }
 
-/// Integer polyphase u8 pyrup: H pass into a u16 `scratch` (`2*src_w ×
-/// src_h`) of unrounded sums, V pass into `dst` (`2*src_w × 2*src_h`).
+/// Integer polyphase u8 pyrup in one fused kernel: each thread writes the
+/// 2x2 block of `dst` (`2*src_w × 2*src_h`) for one source pixel, rounding
+/// the 64-weight integer sum once. No scratch buffer is needed.
 ///
 /// # Arguments
 ///
 /// * `src` - `src_w × src_h` interleaved u8 image with `channels` channels.
 /// * `dst` - `2*src_w × 2*src_h` output with the same channel count.
-/// * `scratch` - at least `2 * src_w * src_h * channels` u16 elements. Its
-///   contents on entry are ignored: the H pass writes every element before
-///   the V pass reads it.
 ///
 /// # Returns
 ///
-/// `Ok(())` once both kernels are enqueued on `stream`. The launch is
+/// `Ok(())` once the kernel is enqueued on `stream`. The launch is
 /// asynchronous: synchronize `stream` before reading `dst` on the host.
 ///
 /// # Errors
 ///
 /// Returns [`CudaPyramidError::Cuda`] if `src_w` or `src_h` is 0, if
-/// `channels` is 0, or if a kernel fails to compile or launch, and
-/// [`CudaPyramidError::SliceTooSmall`] if `src`, `scratch` or `dst` is shorter
-/// than the sizes above.
-#[allow(clippy::too_many_arguments)] // mirrors the kernel's parameter surface
+/// `channels` is 0, or if the kernel fails to compile or launch, and
+/// [`CudaPyramidError::SliceTooSmall`] if `src` or `dst` is shorter than the
+/// sizes above.
 pub fn launch_pyrup_u8(
     ctx: &Arc<CudaContext>,
     stream: &Arc<CudaStream>,
     src: &CudaSlice<u8>,
     dst: &mut CudaSlice<u8>,
-    scratch: &mut CudaSlice<u16>,
     src_w: u32,
     src_h: u32,
     channels: u32,
@@ -636,43 +629,21 @@ pub fn launch_pyrup_u8(
     if channels == 0 {
         return Err(CudaPyramidError::Cuda("channels must be at least 1".into()));
     }
-    let dst_w = src_w * 2;
-    let stride = dst_w as usize * channels as usize;
-    CudaPyramidError::check_slice(
-        "src",
-        src.len(),
-        src_w as usize * src_h as usize * channels as usize,
-    )?;
-    CudaPyramidError::check_slice("scratch", scratch.len(), stride * src_h as usize)?;
-    CudaPyramidError::check_slice("dst", dst.len(), stride * 2 * src_h as usize)?;
+    let src_len = src_w as usize * src_h as usize * channels as usize;
+    CudaPyramidError::check_slice("src", src.len(), src_len)?;
+    CudaPyramidError::check_slice("dst", dst.len(), 4 * src_len)?;
 
-    let h = get_or_compile(ctx, PyrKernelKey::UpHU8 { channels }, || {
+    let k = get_or_compile(ctx, PyrKernelKey::UpU8 { channels }, || {
         (
-            format!("pyrup_h_u8_c{channels}"),
-            pyrup_h_u8_src(channels as usize),
+            format!("pyrup_u8_c{channels}"),
+            pyrup_u8_src(channels as usize),
         )
     })?;
-    h.launch_builder(stream)
+    k.launch_builder(stream)
         .arg(src)
-        .arg(&mut *scratch)
+        .arg(dst)
         .arg(&src_w)
         .arg(&src_h)
-        .arg(&dst_w)
         .launch_2d(src_w, src_h, make_config(src_w, src_h, None))
-        .map_err(|e| CudaPyramidError::Cuda(e.to_string()))?;
-
-    let stride_elems = stride as u32;
-    let v = get_or_compile(ctx, PyrKernelKey::UpVU8 { channels }, || {
-        (
-            format!("pyrup_v_u8_c{channels}"),
-            pyrup_v_u8_src(channels as usize),
-        )
-    })?;
-    v.launch_builder(stream)
-        .arg(&*scratch)
-        .arg(dst)
-        .arg(&stride_elems)
-        .arg(&src_h)
-        .launch_2d(stride_elems, src_h, make_config(stride_elems, src_h, None))
         .map_err(|e| CudaPyramidError::Cuda(e.to_string()))
 }

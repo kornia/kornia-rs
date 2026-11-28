@@ -859,8 +859,9 @@ fn pyrdown_vertical_pass_u8<const C: usize>(
 }
 
 // The u8 pyrup keeps the horizontal sums (weights 1-6-1 and 4-4, so at most
-// 8 * 255) in a u16 intermediate and rounds once after the vertical pass, as
-// OpenCV's `pyrUp` does; rounding after each pass leaves outputs a unit off.
+// 8 * 255) in a u16 intermediate and rounds once after the vertical pass. The
+// two passes together weigh 64, so one `(sum + 32) >> 6` is the f32 result
+// rounded half up; rounding after each pass leaves outputs a unit off.
 fn pyrup_horizontal_pass_u8<const C: usize>(src: &Image<u8, C>, dst: &mut [u16], dst_width: usize) {
     let src_width = src.width();
     let src_data = src.as_slice();
@@ -930,7 +931,7 @@ fn process_pixel_pyrup_checked<const C: usize>(
 
     let idx_prev = src_row_offset + (reflect_101(src_x - 1, src_width as i32) as usize) * C;
     let idx_next = src_row_offset + (reflect_101(src_x + 1, src_width as i32) as usize) * C;
-    // OpenCV's last column, as in pyrup_horizontal_pass_f32: 1-7 even, the pixel itself odd.
+    // Last column, as in pyrup_horizontal_pass_f32: 1-7 even, the pixel itself odd.
     let last = src_width > 1 && x == src_width - 1;
 
     for k in 0..C {
@@ -975,7 +976,7 @@ fn pyrup_vertical_pass_u8<const C: usize>(
             let y_prev = reflect_101(src_y - 1, src_height as i32) as usize;
             let y_curr = y;
             let y_next = reflect_101(src_y + 1, src_height as i32) as usize;
-            // OpenCV's last row, as in pyrup_vertical_pass_f32.
+            // Last row, as in pyrup_vertical_pass_f32: 1-7 even, the pixel itself odd.
             let last = src_height > 1 && y == src_height - 1;
 
             let off_prev = y_prev * stride;
@@ -1004,9 +1005,10 @@ fn pyrup_vertical_pass_u8<const C: usize>(
 /// This function doubles the size of the input image by injecting zero rows
 /// and columns and then convolving with a 5x5 Gaussian kernel.
 ///
-/// The result equals OpenCV's `cv::pyrUp` byte for byte, including its border
-/// rule at the last row and column (the one [`pyrup_f32`] uses), and equals
-/// [`pyrup_f32`] on the same pixels rounded half up.
+/// The result is [`pyrup_f32`] on the same pixels rounded half up, including
+/// its border rule: at the last row and column the edge pixel is weighted 1-7
+/// for the even output and repeated for the odd one. This is also OpenCV's
+/// `cv::pyrUp` output, byte for byte.
 ///
 /// # Arguments
 ///
@@ -1992,13 +1994,7 @@ mod cuda_adapters {
         let (sw, sh) = dims_u32(src)?;
         let ctx = stream.context();
         let (s, d) = device_slices!(src, dst);
-        let n = (sw as usize * 2) * sh as usize * C;
-        // SAFETY: the scratch is never read uninitialized. launch_pyrup_u8's H
-        // kernel writes all `2 * sw * C` elements of each of the `sh` rows, i.e.
-        // all `n`, and the V kernel that reads them is launched after it on the
-        // same stream.
-        let mut scratch = unsafe { stream.alloc::<u16>(n) }.map_err(err)?;
-        launch_pyrup_u8(ctx, stream, s, d, &mut scratch, sw, sh, C as u32).map_err(err)
+        launch_pyrup_u8(ctx, stream, s, d, sw, sh, C as u32).map_err(err)
     }
 }
 
