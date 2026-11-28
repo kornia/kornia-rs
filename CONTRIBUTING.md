@@ -323,7 +323,7 @@ This section provides comprehensive guidance for contributing to kornia-rs, with
 1. **Open or find an issue**: Every PR links an issue. If none exists, open one with the bug report or feature request template.
 2. **Say you are working on it**: Comment on the issue so others do not duplicate the work. You do not need to wait for approval or assignment; maintainers may still close a PR that does not fit the project's direction.
 
-The automated PR validation checks that an issue is linked and that the Self-review is a real `kornia-code-review` run.
+The automated PR validation checks that an issue is linked and that the Self-review is a real `kornia-code-review` run. It cannot check that the run was in a fresh session; reviewers do.
 
 **Requirements:**
 - Link PR to an issue (use "Closes #123" or "Fixes #123")

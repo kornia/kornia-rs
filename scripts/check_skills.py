@@ -70,16 +70,25 @@ SELF_REVIEW_DOCS = (
 )
 
 
-# shortcut: file-scoped — one "fresh session" satisfies a copy; upgrade to
-# per-mention if a doc ever carries a second copy of the step.
-def missing_fresh_session(text: str) -> bool:
-    """Return True when `text` names the self-review step without a fresh session."""
-    flat = " ".join(text.split())
-    return "kornia-code-review" in flat and "fresh session" not in flat
+def missing_fresh_session(text: str, per_line: bool = False) -> bool:
+    """Return True when any one mention of the self-review step lacks a fresh session.
+
+    A mention is a paragraph, list item or table row (a line when `per_line`) that
+    names both the self-review and `kornia-code-review`.
+    """
+    split = r"\n" if per_line else r"\n\s*\n|\n(?=\s*(?:[-*|]|\d+\.)\s)"
+    for block in re.split(split, text):
+        flat = " ".join(block.split())
+        if "kornia-code-review" in flat and "self-review" in flat.lower() and "fresh session" not in flat.lower().replace("fresh-session", "fresh session"):
+            return True
+    return False
 
 
 def self_review_rule_stale(text: str) -> bool:
-    """Return True when the owning skill's self-review bullet lacks a fresh session."""
+    """Return True when the owning skill's description or self-review bullet lacks a fresh session."""
+    description = re.search(r"^description:.*$", text, re.M)
+    if not description or "fresh session" not in description.group(0):
+        return True
     for block in re.split(r"\n(?=[-*] )|\n\s*\n", text):
         flat = " ".join(block.split())
         if "Self-review (mandatory before opening a PR)" in flat:
@@ -94,7 +103,7 @@ def self_review_doc_errors() -> list[str]:
         doc = ROOT / rel
         if not doc.is_file():
             errors.append(f"{rel}: missing doc that names the self-review step")
-        elif missing_fresh_session(doc.read_text(encoding="utf-8")):
+        elif missing_fresh_session(doc.read_text(encoding="utf-8"), per_line=doc.suffix == ".yml"):
             errors.append(f"{rel}: names the kornia-code-review self-review without 'fresh session'")
     rule = ROOT / SELF_REVIEW_SKILL
     if not rule.is_file():

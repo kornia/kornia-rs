@@ -74,7 +74,7 @@ When reviewing pull requests, ensure strict alignment with the linked issue:
    - Verify the PR description contains a valid issue reference (e.g., "Fixes #123" or "Closes #123")
    - Confirm the linked issue exists and is open (or was open when the PR was created)
 
-2. **Self-review**: Start from the author's pasted `kornia-code-review` output; check its findings against the diff rather than repeating the review.
+2. **Self-review**: Start from the author's pasted fresh-session `kornia-code-review` output; check its findings against the diff rather than repeating the review.
 
 3. **Scope Matching**:
    - **Critical**: Verify that the PR implementation strictly matches what the issue describes

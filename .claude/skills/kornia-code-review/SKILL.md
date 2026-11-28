@@ -1,6 +1,6 @@
 ---
 name: kornia-code-review
-description: Use when reviewing a kornia-rs PR or diff, and as the mandatory self-review before opening one — scope and size against the linked issue (blocking), performance (copies, allocations, latency, system load), benchmark obligations, correctness traps, probing claimed checks, skill compliance, and reporting findings as measured vs inferred. Trigger on "review this PR", "review my diff", "is this ready", "self-review", "open a PR".
+description: Use when reviewing a kornia-rs PR or diff, and as the mandatory self-review before opening one. If you wrote the diff, do not run it in your own context: start a fresh session or a subagent with no authoring context (not a fork) and have it run this skill. Covers scope and size against the linked issue (blocking), performance (copies, allocations, latency, system load), benchmark obligations, correctness traps, probing claimed checks, skill compliance, and reporting findings as measured vs inferred. Trigger on "review this PR", "review my diff", "is this ready", "self-review", "open a PR".
 ---
 
 # Reviewing kornia-rs changes
@@ -8,7 +8,7 @@ description: Use when reviewing a kornia-rs PR or diff, and as the mandatory sel
 Two uses, same procedure:
 
 - **Self-review (mandatory before opening a PR).** Run this skill in a fresh
-  session or subagent that works from `git diff main...HEAD`, the linked issue
+  session, or in a subagent with no authoring context (not a fork), that works from `git diff main...HEAD`, the linked issue
   (its text may be pasted, but §0.1 still blocks an issue the reviewer cannot
   read itself) and this skill — never in the authoring session, which grades
   reasoning it has already committed to (the eval harness runs reviewers fresh

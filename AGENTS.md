@@ -23,7 +23,7 @@ cited paths); it cannot check that a skill was applied — review does that.
 | `kornia-workflow` | before committing/PR; build, lint, test, PR rules |
 | `kornia-coding-style` | any Rust edit |
 | `kornia-api-flavor` | designing new public API |
-| `kornia-code-review` | mandatory self-review before every PR; reviewing a PR: scope, copies, latency, benchmarks |
+| `kornia-code-review` | mandatory self-review before every PR, in a fresh session; reviewing a PR: scope, copies, latency, benchmarks |
 | `kornia-curation` | changing a fact the guidance describes; editing skills |
 | `kornia-simd` | SIMD / performance work in `kornia-imgproc` |
 | `kornia-bindings` | Python / C++ binding changes |
