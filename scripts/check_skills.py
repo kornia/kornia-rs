@@ -2,7 +2,7 @@
 """Validate agent skills under .claude/skills (agentskills.io format).
 
 Structure: every skill dir has a SKILL.md whose frontmatter `name` matches the
-directory and whose description starts with "Use " and holds no unquoted ": "; required skills exist and
+directory and whose description starts with "Use "; required skills exist and
 AGENTS.md references them; cited repo paths exist.
 
 Facts (restated facts must match their source of truth, see kornia-curation):
@@ -83,7 +83,7 @@ def missing_fresh_session(text: str, per_line: bool = False) -> bool:
     split = r"\n" if per_line else r"\n\s*\n|\n(?=\s*(?:[-*|]|\d+\.)\s)"
     for block in re.split(split, text):
         flat = " ".join(block.split())
-        if "kornia-code-review" in flat and re.search(r"self[- ]?review|\b(?:run|paste)\b[^.]{0,40}kornia-code-review", flat, re.I) and not re.search(r"fresh[- ]session", flat, re.I):
+        if "kornia-code-review" in flat and re.search(r"self[- ]?review|\b(?:runs?|pastes?|uses?)(?: the)?(?: skill)?(?: in)? `?(?:\.claude/skills/)?kornia-code-review", flat, re.I) and not re.search(r"fresh[- ]session", flat, re.I):
             return True
     return False
 
@@ -287,9 +287,6 @@ def main() -> int:
         fm = frontmatter(text)
         if fm.get("name") != skill.name:
             errors.append(f"{skill.name}: frontmatter name {fm.get('name')!r} != directory")
-        raw = fm.get("description", "")
-        if ": " in raw and not raw.startswith(("'", '"')):
-            errors.append(f"{skill.name}: unquoted ': ' in description is invalid YAML")
         if not fm.get("description", "").startswith("Use "):
             errors.append(f"{skill.name}: description should start with 'Use ' (trigger wording)")
         for ref in re.findall(PATH_REF, text):

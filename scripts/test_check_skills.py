@@ -3,6 +3,7 @@
 import os
 import subprocess
 import sys
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -64,6 +65,10 @@ class TestSelfReviewFreshness(unittest.TestCase):
             "Then run the `kornia-code-review` skill on your diff",
             "Run the `kornia-code-review` skill and paste its output in the PR description.",
             "Self review your diff with `kornia-code-review`.",
+            "The author's agent runs `kornia-code-review` on the diff.",
+            "Run the skill in `.claude/skills/kornia-code-review` and paste its output.",
+            "Before opening a PR, run `.claude/skills/kornia-code-review` on your diff.",
+            "Use `kornia-code-review` on your diff before opening a PR.",
         ):
             self.assertTrue(check_skills.missing_fresh_session(probe), probe)
         self.assertTrue(check_skills.missing_fresh_session(old))
@@ -76,6 +81,12 @@ class TestSelfReviewFreshness(unittest.TestCase):
         no_bullet = self.RULE.replace("Run in a fresh session", "The author runs this")
         self.assertTrue(check_skills.self_review_rule_stale(no_description))
         self.assertTrue(check_skills.self_review_rule_stale(no_bullet))
+
+    def test_the_real_rule_without_the_phrase_is_stale(self):
+        rule = (check_skills.ROOT / check_skills.SELF_REVIEW_SKILL).read_text(encoding="utf-8")
+        reverted = re.sub(r"fresh\s+session", "session", rule)
+        self.assertNotEqual(reverted, rule)
+        self.assertTrue(check_skills.self_review_rule_stale(reverted))
 
     def test_errors_are_wired_to_the_docs_and_the_rule(self):
         with tempfile.TemporaryDirectory() as tmp:
