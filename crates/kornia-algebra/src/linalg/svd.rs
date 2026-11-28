@@ -844,9 +844,11 @@ mod impl_f64 {
     /// largest singular value for well-conditioned input and grow as σ2/σ1
     /// shrinks (~1e-12 at σ2/σ1 = 1e-3, ~1e-8 at 1e-7).
     ///
-    /// Valid for entries between about 1e-162 and 1e154 in magnitude. Above
-    /// that, AᵀA overflows and the result is NaN; below it, AᵀA underflows, so
-    /// `V` stays the identity and `S` is neither diagonal nor sorted.
+    /// Accurate for entries between about 1e-154 and 1e154 in magnitude. Above
+    /// that, AᵀA overflows: the result is NaN in release builds, and debug
+    /// builds hit the quaternion-drift `debug_assert`. Below 1e-154 AᵀA is
+    /// subnormal and accuracy degrades; below about 1e-162 it underflows to
+    /// zero, so `V` stays the identity and `S` is neither diagonal nor sorted.
     pub fn svd3(mat: &Mat3F64) -> SVD3Set {
         // `from_mat3x3` already forms the Gram matrix AᵀA from the columns of A.
         let mut s_mat = Symmetric3x3::from_mat3x3(mat);
