@@ -1,0 +1,1 @@
+`kornia_3d::pose::triangulate_matched_points_two_cameras`: one camera model per view and optional per-pair reprojection thresholds; `triangulate_matched_points` delegates to it with identical results.

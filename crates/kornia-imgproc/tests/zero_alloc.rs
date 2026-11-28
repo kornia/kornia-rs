@@ -4,9 +4,15 @@
 //! one `#[test]` so no other test allocates concurrently.
 
 use kornia_image::{Image, ImageSize};
-use kornia_imgproc::features::{OrbCvDetector, OrbCvScratch, OrbDetector, OrbFeatures, OrbScratch};
+use kornia_imgproc::features::{
+    corner_sub_pix, good_features_to_track, GoodFeaturesParams, GoodFeaturesScratch, OrbCvDetector,
+    OrbCvScratch, OrbDetector, OrbFeatures, OrbScratch,
+};
 use kornia_imgproc::filter::scharr_spatial_gradient_separable_f32;
-use kornia_imgproc::optical_flow_pyr_lk::LkPyramidU8;
+use kornia_imgproc::interpolation::{remap_u8_table, RemapQuantisation, RemapTable};
+use kornia_imgproc::optical_flow_pyr_lk::{
+    extract_template, track_template, LkFrame, LkPyramidU8, LkTemplate,
+};
 use kornia_imgproc::pyramid::{pyrdown_separable_f32, pyrdown_u8};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -137,5 +143,83 @@ fn frontend_kernels_do_not_allocate_in_steady_state() -> Result<(), Box<dyn std:
     });
     assert_eq!(feats.len(), 1000);
     assert_eq!(n, 0, "OrbCvDetector::detect_and_extract_u8_into");
+
+    // The SLAM frontend kernels: table remap, corners, window LK.
+    let n_px = size.width * size.height;
+    let map_x = Image::<f32, 1>::new(
+        size,
+        (0..n_px)
+            .map(|i| (i % size.width) as f32 * 0.98 + 3.3)
+            .collect(),
+    )?;
+    let map_y = Image::<f32, 1>::new(
+        size,
+        (0..n_px)
+            .map(|i| (i / size.width) as f32 * 0.97 + 5.7)
+            .collect(),
+    )?;
+    for quant in [RemapQuantisation::Q10Trunc, RemapQuantisation::OpenCvQ5] {
+        let table = RemapTable::from_maps(&map_x, &map_y, size, quant)?;
+        let mut rectified = Image::<u8, 1>::from_size_val(size, 0)?;
+        let n = steady_allocs(|| remap_u8_table(&frame, &mut rectified, &table).unwrap());
+        assert_eq!(n, 0, "remap_u8_table {quant:?}");
+    }
+
+    let params = GoodFeaturesParams {
+        max_corners: 200,
+        quality: 0.01,
+        min_spacing_px: 23.0,
+        border_px: 9,
+        half_resolution: false,
+    };
+    let occupied = [[100.0, 100.0], [400.0, 300.0]];
+    let (mut gf_scratch, mut corners) = (GoodFeaturesScratch::default(), Vec::new());
+    for half_resolution in [false, true] {
+        let params = GoodFeaturesParams {
+            half_resolution,
+            ..params
+        };
+        let n = steady_allocs(|| {
+            corners.clear();
+            good_features_to_track(&frame, &occupied, &params, &mut gf_scratch, &mut corners);
+        });
+        assert!(corners.len() > 50, "{} corners", corners.len());
+        assert_eq!(n, 0, "good_features_to_track (half {half_resolution})");
+    }
+    let mut refined = corners.clone();
+    let n = steady_allocs(|| {
+        refined.copy_from_slice(&corners);
+        corner_sub_pix(&frame, &mut refined, 5, 30, 0.01);
+    });
+    assert_eq!(n, 0, "corner_sub_pix");
+
+    let png2 = kornia_io::png::read_image_png_mono8(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/data/mh01_frame2.png"),
+    )?;
+    let frame2 = Image::<u8, 1>::new(png2.size(), png2.as_slice().to_vec())?;
+    let mut prev = LkFrame::new(&frame, 11, 0)?;
+    let mut next = LkFrame::new(&frame2, 11, 1)?;
+    let n = steady_allocs(|| {
+        prev.rebuild(&frame, 0).unwrap();
+        next.rebuild(&frame2, 1).unwrap();
+        prev.build_coarse(2).unwrap();
+        next.build_coarse(2).unwrap();
+    });
+    assert_eq!(n, 0, "LkFrame::rebuild + build_coarse");
+    let mut template = LkTemplate::default();
+    let mut tracked = 0;
+    let n = steady_allocs(|| {
+        tracked = 0;
+        for &p in &refined {
+            for level in [0, 1] {
+                if extract_template(&prev, p, level, 11, &mut template) {
+                    let track = track_template(&template, &next, p, 8, 0.01);
+                    tracked += usize::from(track.status);
+                }
+            }
+        }
+    });
+    assert!(tracked > refined.len(), "{tracked} tracks");
+    assert_eq!(n, 0, "extract_template + track_template");
     Ok(())
 }

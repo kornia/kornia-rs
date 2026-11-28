@@ -20,20 +20,22 @@ When failing, quote the false finding.
 ## Key (expected.md)
 
 A passing review approves (negative control: measures false positives):
-1. No blocking or major finding, except optionally these true findings on the merged PR: a scope finding (blocking is fine) on the rustdoc paragraph about the no-foreground `1e10` value and f32 precision, which #1163 calls separate; a finding that the paragraph's "inexact above 4096 px" claim is wrong (squared distances lose integer exactness in f32 once width² + height² passes 2^24, e.g. 3000x3000); and a request for bench numbers on the changed rayon splits (section 3 is arguable: the PR shows the split is unchanged for non-empty input). Every model flagged the scope finding on 2026-10-24 and Opus found the 4096 error, so #1166 is a control with two known, listed defects.
+1. No blocking or major finding except for either or both of these optional findings: a request for before/after bench numbers on the changed rayon splits, or a correction to the baseline rustdoc's 4096-pixel precision threshold. Even in a 3000×3000 image, the squared distance 2999² + 2998² = 17,982,005 rounds to 17,982,004 in `f32`.
 2. No blocking or major finding is false (`graders/precision.md`, reported, not scored).
 
 ## PR description
 
 Title: fix(imgproc): no panic on zero-size images in distance_transform and compute_histogram
 
-**Fixes/Relates to:** #1163
+Fixes #1163
 
 User-visible fix: `changelog.d/1166.fixed.md`.
 
 ## Changes Made
-- `distance_transform.rs`: the four rayon splits (`grid` and `src` rows, `scratch` columns, the `transpose_map` destination) go through the crate's `parallel::par_rows_exact_mut` / `par_row_chunks` helpers, which yield no rows for a zero-size image instead of panicking on a zero chunk size. Added the missing Arguments/Returns/Errors rustdoc.
+- `distance_transform.rs`: the four rayon splits (`grid` and `src` rows, `scratch` columns, the `transpose_map` destination) go through the crate's `parallel::par_rows_exact_mut` / `par_row_chunks` helpers, which yield no rows for a zero-size image instead of panicking on a zero chunk size. The Returns section now specifies the output shape for empty input.
 - `histogram.rs`: `par_chunks(ROWS_PER_TASK * width)` becomes `par_row_chunks(src_slice, width, ROWS_PER_TASK)`, the same split for non-empty input.
+
+#1163 reproduces the panic in these two functions. It lists the other row-splitting sites as possibilities the reporter had not checked.
 
 ## How Was This Tested?
 - Unit tests `distance_transform_empty_image` and `test_compute_histogram_empty_image` cover 0x5, 5x0 and 0x0. They fail on main (tests applied to main's code, source hunks left out) and pass here:
@@ -52,16 +54,17 @@ test histogram::tests::test_compute_histogram_empty_image ... ok
 test distance_transform::tests::distance_transform_empty_image ... ok
 test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 395 filtered out; finished in 0.00s
 ```
-- Non-empty images: `par_row_chunks(d, w, n)` is `d.par_chunks(w * n)` and `par_rows_exact_mut(d, w)` is `d.par_chunks_exact_mut(w)` once `w > 0` (`parallel.rs:26,36,46`), and the buffers are exactly `width * height` long, so the split is unchanged. No perf change is claimed and no bench was run.
+- Non-empty images: `par_row_chunks(d, w, n)` is `d.par_chunks(w * n)` and `par_rows_exact_mut(d, w)` is `d.par_chunks_exact_mut(w)` once `w > 0` (`parallel.rs:26,36,46`). The immutable source uses `par_row_chunks(src_slice, width, 1)` because the exact-row helper takes a mutable slice. The source and grid both contain exactly `width * height` elements, so the two iterators yield the same rows. No perf change is claimed and no bench was run.
 
 ## Self-review
 ```text
 Verdict: approve
-- §0 scope: the two functions #1163 names. The rustdoc paragraph on the no-foreground value (1e10) and f32 precision documents existing behaviour of the function being changed; it is not the fix.
-- §1-3: no new allocation or copy; same rayon split for non-empty input (parallel.rs:26,36,46); no perf claim, so no bench.
-- §4: the new tests fail on main with the #1163 panic and pass here (output above).
-- §5: no unwrap in library code; rustdoc has Arguments/Returns/Errors.
-- §6: changelog fragment added; outputs pasted from this tree.
+§0 — no finding — #1163 names both panic sites. The zero-size tests and the empty-output rustdoc cover those sites. — [inferred]
+§0b — no finding — the row helpers in the search below handle zero-length buffers. — [measured]
+§1–3 — no finding — for non-empty buffers the helpers use the same chunk sizes and borrow the same slices. No speedup claimed. — [inferred]
+§4 — no finding — the empty_image test output above goes from two chunk-size panics to “8 passed; 0 failed”. — [measured]
+§5 — no finding — the fix uses safe slice helpers and documents the empty output. — [inferred]
+§6 — no finding — the changelog fragment describes the zero-size panic. — [inferred]
 Reuse searches:
 - zero-size-safe row split (split a buffer into rows without panicking on empty images)
   $ rg -n "fn par_row|fn par_rows" crates/
@@ -176,7 +179,7 @@ chunk_size must not be zero
 
 ```diff
 diff --git a/crates/kornia-imgproc/src/distance_transform.rs b/crates/kornia-imgproc/src/distance_transform.rs
-index 66c2e6cf..2a7101d5 100644
+index b80dc2bb..2a7101d5 100644
 --- a/crates/kornia-imgproc/src/distance_transform.rs
 +++ b/crates/kornia-imgproc/src/distance_transform.rs
 @@ -1,3 +1,4 @@
@@ -184,33 +187,17 @@ index 66c2e6cf..2a7101d5 100644
  use kornia_image::{Image, ImageError, ImageSize};
  use rayon::prelude::*;
  
-@@ -57,6 +58,25 @@ impl DistanceTransformExecutor {
-     }
- 
-     /// Computes the Euclidean Distance Transform of a binary image.
-+    ///
-+    /// # Arguments
-+    ///
-+    /// * `image` - Input image. Pixels with a value greater than zero are foreground.
-+    ///
-+    /// # Returns
-+    ///
-+    /// An image of the same size holding the distance from each pixel to the
+@@ -65,7 +66,8 @@ impl DistanceTransformExecutor {
+     /// # Returns
+     ///
+     /// An image of the same size holding the distance from each pixel to the
+-    /// nearest foreground pixel.
 +    /// nearest foreground pixel. An image with zero width or height returns an
 +    /// empty image of the same size.
-+    ///
-+    /// If the image has no foreground pixels, every output value is `1e10`
-+    /// (not `f32::MAX` as in [`distance_transform_vanilla`]). Distances are
-+    /// computed in `f32`, so they are inexact when the width or height exceeds
-+    /// 4096 pixels.
-+    ///
-+    /// # Errors
-+    ///
-+    /// Returns an error if the output image cannot be created.
-     pub fn execute(&mut self, image: &Image<f32, 1>) -> Result<Image<f32, 1>, ImageError> {
-         let width = image.width();
-         let height = image.height();
-@@ -71,9 +91,8 @@ impl DistanceTransformExecutor {
+     ///
+     /// If the image has no foreground pixels, every output value is `1e10`
+     /// (not `f32::MAX` as in [`distance_transform_vanilla`]). Distances are
+@@ -89,9 +91,8 @@ impl DistanceTransformExecutor {
          let src_slice = image.as_slice();
  
          // Parallelize over rows and fuse binary-to-INF conversion with the transform.
@@ -222,7 +209,7 @@ index 66c2e6cf..2a7101d5 100644
              .for_each_init(
                  || (vec![0.0; width], vec![0usize; width], vec![0.0; width + 1]),
                  |(f, v, z), (grid_row, src_row)| {
-@@ -86,7 +105,7 @@ impl DistanceTransformExecutor {
+@@ -104,7 +105,7 @@ impl DistanceTransformExecutor {
  
          transpose_map(&self.grid, &mut self.scratch, width, height, |x| x);
  
@@ -231,7 +218,7 @@ index 66c2e6cf..2a7101d5 100644
              || {
                  (
                      vec![0.0; height],
-@@ -158,7 +177,7 @@ fn transpose_map<F>(src: &[f32], dst: &mut [f32], width: usize, height: usize, o
+@@ -176,7 +177,7 @@ fn transpose_map<F>(src: &[f32], dst: &mut [f32], width: usize, height: usize, o
  where
      F: Fn(f32) -> f32 + Sync + Send,
  {
@@ -240,7 +227,7 @@ index 66c2e6cf..2a7101d5 100644
          .enumerate()
          .for_each(|(x, dst_row)| {
              for y in 0..height {
-@@ -215,4 +234,25 @@ mod tests {
+@@ -233,4 +234,25 @@ mod tests {
  
          Ok(())
      }
@@ -315,7 +302,7 @@ new file mode 100644
 --- /dev/null
 +++ b/changelog.d/1166.fixed.md
 @@ -0,0 +1 @@
-+`DistanceTransformExecutor::execute` and `compute_histogram` return an empty result for zero-width or zero-height images instead of panicking.
++For images with zero width or height, `DistanceTransformExecutor::execute` returns an empty image of the same size and `compute_histogram` leaves the histogram unchanged.
 ```
 
-<!-- skill_evals.py sync: 623ba32e7c4be090 -->
+<!-- skill_evals.py sync: 5131df640ae1bf7d -->

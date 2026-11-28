@@ -42,9 +42,14 @@ AI disclosure:
 - Skills applied: kornia-coding-style, kornia-api-flavor
 - Human vs AI part: human wrote the issue and reviewed the diff; agent wrote the code and tests
 
-Self-review:
+## Self-review
 ```text
 Verdict: approve
+§4 — no finding — the tests cover a plane at z=0 and too few points. — [inferred]
+Reuse searches:
+  $ rg -l 'pub fn icp_projective_plane\(' crates/kornia-3d/src
+  crates/kornia-3d/src/registration/icp.rs
+  The registration routine takes point clouds and estimates a transform.
 Skill gaps: none
 ```
 
@@ -220,4 +225,4 @@ index 0000000..093042b
 +}
 ```
 
-<!-- skill_evals.py sync: 584376f14df03421 -->
+<!-- skill_evals.py sync: 6c2cf5438269dcae -->
