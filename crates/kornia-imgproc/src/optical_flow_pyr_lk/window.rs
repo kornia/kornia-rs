@@ -303,7 +303,8 @@ pub fn extract_template(
     out: &mut LkTemplate,
 ) -> bool {
     out.trackable = false;
-    // `corner` reads a NaN as 0; OpenCV's `cvFloor` comparison rejects it.
+    // A non-finite point is not on any level, as OpenCV's `cvFloor`
+    // comparison rejects it; `corner` would too, this just exits early.
     if !pixel.iter().all(|v| v.is_finite()) {
         return false;
     }
