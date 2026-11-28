@@ -3,6 +3,7 @@ use std::cmp::PartialOrd;
 
 use kornia_image::{Image, ImageError};
 
+use crate::color::kernel_common::check_size;
 use crate::parallel;
 
 /// Apply a binary threshold to an image.
@@ -378,6 +379,14 @@ where
 ///
 /// * `hist` - The 256-bin histogram of pixel intensity counts.
 ///
+/// # Note on Exact Ties
+///
+/// When multiple threshold candidates yield the exact same maximal between-class variance
+/// (for example on a minimal synthetic input `[0, 100, 200]` where thresholds 0 and 100 produce
+/// equal variance), this implementation selects the first maximal threshold (`0`), whereas
+/// OpenCV (`cv2.threshold` with `THRESH_OTSU`) selects `100`. In real-world natural images,
+/// exact floating-point ties between distinct histogram splits do not occur.
+///
 /// # Returns
 ///
 /// The optimal threshold value in the range `[0, 255]`.
@@ -475,6 +484,14 @@ pub fn otsu_threshold_from_histogram(hist: &[usize; 256]) -> Result<u8, ImageErr
 /// When `feature = "cuda"` is enabled, this function accepts both host-resident and
 /// CUDA device-resident images (the histogram is computed on the GPU and transferred back).
 ///
+/// # Note on Exact Ties
+///
+/// When multiple threshold candidates yield the exact same maximal between-class variance
+/// (for example on a minimal synthetic input `[0, 100, 200]` where thresholds 0 and 100 produce
+/// equal variance), this implementation selects the first maximal threshold (`0`), whereas
+/// OpenCV (`cv2.threshold` with `THRESH_OTSU`) selects `100`. In real-world natural images,
+/// exact floating-point ties between distinct histogram splits do not occur.
+///
 /// # Arguments
 ///
 /// * `src` - The input 8-bit, 1-channel grayscale image.
@@ -535,6 +552,14 @@ pub fn compute_otsu_threshold(src: &Image<u8, 1>) -> Result<u8, ImageError> {
 /// Note: Unlike [`compute_otsu_threshold`], `threshold_otsu` requires host-resident images because the
 /// subsequent binary thresholding step operates on CPU memory.
 ///
+/// # Note on Exact Ties
+///
+/// When multiple threshold candidates yield the exact same maximal between-class variance
+/// (for example on a minimal synthetic input `[0, 100, 200]` where thresholds 0 and 100 produce
+/// equal variance), this implementation selects the first maximal threshold (`0`), whereas
+/// OpenCV (`cv2.threshold` with `THRESH_OTSU`) selects `100`. In real-world natural images,
+/// exact floating-point ties between distinct histogram splits do not occur.
+///
 /// # Arguments
 ///
 /// * `src` - The input 8-bit, 1-channel grayscale image.
@@ -584,14 +609,7 @@ pub fn threshold_otsu(
         return Err(ImageError::UnsupportedDevice);
     }
 
-    if src.size() != dst.size() {
-        return Err(ImageError::InvalidImageSize(
-            src.cols(),
-            src.rows(),
-            dst.cols(),
-            dst.rows(),
-        ));
-    }
+    check_size(src, dst)?;
 
     let threshold = compute_otsu_threshold(src)?;
     threshold_binary(src, dst, threshold, max_value)?;
@@ -1066,6 +1084,29 @@ mod tests {
                 assert_eq!(pixel, 255);
             }
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_otsu_exact_tie_breaks_first() -> Result<(), ImageError> {
+        // Minimal synthetic input [0, 100, 200] with exact variance ties across splits.
+        // kornia selects the first maximal threshold (0), whereas OpenCV selects 100.
+        let image = Image::<u8, 1>::new(
+            ImageSize {
+                width: 3,
+                height: 1,
+            },
+            vec![0, 100, 200],
+        )?;
+        let thresh = super::compute_otsu_threshold(&image)?;
+        assert_eq!(thresh, 0);
+
+        let mut dst = Image::<u8, 1>::from_size_val(image.size(), 0)?;
+        let thresh_otsu = super::threshold_otsu(&image, &mut dst, 255)?;
+        assert_eq!(thresh_otsu, 0);
+        // Pixels <= 0 are 0; pixels > 0 are 255
+        assert_eq!(dst.as_slice(), &[0, 255, 255]);
 
         Ok(())
     }
