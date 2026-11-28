@@ -18,5 +18,5 @@ Output:
 
 ```bash
 MSE error: 0.020697484
-PSNR error: -23.751804
+PSNR error: 16.840824
 ```

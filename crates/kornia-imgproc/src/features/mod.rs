@@ -11,10 +11,14 @@ mod r#match;
 pub use r#match::*;
 
 mod cells;
+mod corner_subpix;
+mod good_features;
 pub use cells::{
     fast_detect_cells_u8, fast_detect_pyramid_u8, fast_detect_rect_u8, CellDetectConfig,
     CellKeypoint, FastCorner, PyramidKeypoint, Rect,
 };
+pub use corner_subpix::{corner_sub_pix, CORNER_SUB_PIX_MAX_HALF_WIN};
+pub use good_features::{good_features_to_track, GoodFeaturesParams, GoodFeaturesScratch};
 
 pub(crate) mod sift;
 /// The SIFT API: the two entry points, the matcher, and the types they exchange.

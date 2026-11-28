@@ -45,6 +45,11 @@ test result: ok.
 ## Self-review
 ```text
 Verdict: approve
+§4 — no finding — the default-feature test output above reports “test result: ok.” — [measured]
+Reuse searches:
+  $ rg -l 'fn get_device_and_dtype\(' crates/kornia-vlm/src
+  crates/kornia-vlm/src/device.rs
+  The fallback uses the existing device selection function.
 Skill gaps: none
 ```
 
@@ -113,4 +118,4 @@ index b6d3dc25..13566273 100644
                  };
 ```
 
-<!-- skill_evals.py sync: 624caa96f39a2d0e -->
+<!-- skill_evals.py sync: d693fc8969136bcf -->

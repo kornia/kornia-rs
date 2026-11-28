@@ -43,9 +43,14 @@ AI disclosure:
 - Skills applied: kornia-coding-style, kornia-api-flavor
 - Human vs AI part: human wrote the issue and reviewed the diff; agent wrote the code and tests
 
-Self-review:
+## Self-review
 ```text
 Verdict: approve
+§4 — no finding — the bimodal test checks that the selected threshold separates the intensity groups. — [inferred]
+Reuse searches:
+  $ rg -l 'pub fn threshold_binary<' crates/kornia-imgproc/src
+  crates/kornia-imgproc/src/threshold.rs
+  The final pass uses threshold_binary.
 Skill gaps: none
 ```
 
@@ -156,4 +161,4 @@ index be81b91..f189833 100644
  }
 ```
 
-<!-- skill_evals.py sync: c926efd48f7ef4d9 -->
+<!-- skill_evals.py sync: 1560b1cbbfbb90da -->
