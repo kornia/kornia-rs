@@ -612,9 +612,51 @@ pub fn threshold_otsu(
     check_size(src, dst)?;
 
     let threshold = compute_otsu_threshold(src)?;
-    threshold_binary(src, dst, threshold, max_value)?;
+    binarize_u8_contiguous(src, dst, threshold, max_value);
 
     Ok(threshold)
+}
+
+/// Minimum byte count required to amortize Rayon parallel scheduling overhead (64 KB).
+/// Below this threshold, single-core vectorized execution completes in ~1-2 µs,
+/// making multi-threaded work distribution counterproductive.
+const PARALLEL_THRESHOLD_BYTES: usize = 64 * 1024;
+
+/// Chunk size for parallel binarization (32 KB).
+/// Chosen to fit comfortably within typical modern CPU L1 data cache (32-48 KB per core),
+/// maximizing memory throughput and auto-vectorized SIMD execution across worker threads.
+const CHUNK_SIZE_BYTES: usize = 32 * 1024;
+
+/// Contiguous parallel binarization for 8-bit, 1-channel images.
+///
+/// For single-threaded execution or smaller buffers, uses a direct vectorized loop;
+/// for larger images on multi-threaded thread pools, chunks the slice into cache-friendly
+/// blocks across Rayon workers.
+#[inline]
+fn binarize_u8_contiguous(
+    src: &Image<u8, 1>,
+    dst: &mut Image<u8, 1>,
+    threshold: u8,
+    max_value: u8,
+) {
+    let s_slice = src.as_slice();
+    let d_slice = dst.as_slice_mut();
+
+    if rayon::current_num_threads() == 1 || s_slice.len() < PARALLEL_THRESHOLD_BYTES {
+        for (s, d) in s_slice.iter().zip(d_slice.iter_mut()) {
+            *d = if *s > threshold { max_value } else { 0 };
+        }
+    } else {
+        use rayon::prelude::*;
+        s_slice
+            .par_chunks(CHUNK_SIZE_BYTES)
+            .zip(d_slice.par_chunks_mut(CHUNK_SIZE_BYTES))
+            .for_each(|(s_chunk, d_chunk)| {
+                for (s, d) in s_chunk.iter().zip(d_chunk.iter_mut()) {
+                    *d = if *s > threshold { max_value } else { 0 };
+                }
+            });
+    }
 }
 
 // TODO: triangle
@@ -1107,6 +1149,56 @@ mod tests {
         assert_eq!(thresh_otsu, 0);
         // Pixels <= 0 are 0; pixels > 0 are 255
         assert_eq!(dst.as_slice(), &[0, 255, 255]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_threshold_otsu_large_parallel_parity() -> Result<(), ImageError> {
+        let (w, h) = (640, 480);
+        let num_pixels = w * h;
+        // 307,200 pixels (> 65536 contiguous binarization chunking threshold)
+        // Alternating halves: top half = 50, bottom half = 200
+        let mut data = vec![50u8; num_pixels];
+        for val in &mut data[(num_pixels / 2)..] {
+            *val = 200;
+        }
+
+        let image = Image::<u8, 1>::new(
+            ImageSize {
+                width: w,
+                height: h,
+            },
+            data,
+        )?;
+
+        let pool_multi = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap();
+        let mut dst_multi = Image::<u8, 1>::from_size_val(image.size(), 0)?;
+        let thresh_multi =
+            pool_multi.install(|| super::threshold_otsu(&image, &mut dst_multi, 255))?;
+
+        let pool_single = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap();
+        let mut dst_single = Image::<u8, 1>::from_size_val(image.size(), 0)?;
+        let thresh_single =
+            pool_single.install(|| super::threshold_otsu(&image, &mut dst_single, 255))?;
+
+        // 1. Both thread modes must compute the exact same optimal threshold
+        assert_eq!(thresh_multi, thresh_single);
+        assert_eq!(thresh_multi, 50);
+
+        // 2. Both thread modes must produce bit-exact identical binarized output
+        assert_eq!(dst_multi.as_slice(), dst_single.as_slice());
+
+        // 3. Verify correctness: top half (<= threshold 50) is 0, bottom half (> 50) is 255
+        let half = num_pixels / 2;
+        assert!(dst_multi.as_slice()[..half].iter().all(|&p| p == 0));
+        assert!(dst_multi.as_slice()[half..].iter().all(|&p| p == 255));
 
         Ok(())
     }
