@@ -360,7 +360,7 @@ impl LkPyramidU8 {
 
 /// Level sizes as `cv::buildOpticalFlowPyramid` makes them, on the stack:
 /// `(sizes, count)`, `count <= max_level + 1`.
-fn level_sizes(
+pub(super) fn level_sizes(
     size: ImageSize,
     win: usize,
     max_level: usize,
@@ -876,12 +876,13 @@ fn abs_error(next: &Plane<u8>, j0: usize, w: [i32; 4], win: &Window) -> i64 {
 }
 
 /// Integer corner of a window whose top-left is at `p`, if the window still
-/// overlaps the level as OpenCV requires (`-win <= floor(p) < size`).
+/// overlaps the level as OpenCV requires (`-win <= floor(p) < size`). A NaN
+/// coordinate fails every comparison, so it is rejected explicitly.
 #[inline]
 pub(super) fn corner(p: [f32; 2], win: usize, width: usize, height: usize) -> Option<[isize; 2]> {
     let (x, y) = (p[0].floor(), p[1].floor());
     let w = win as f32;
-    if x < -w || x >= width as f32 || y < -w || y >= height as f32 {
+    if x.is_nan() || y.is_nan() || x < -w || x >= width as f32 || y < -w || y >= height as f32 {
         return None;
     }
     Some([x as isize, y as isize])
@@ -1184,6 +1185,18 @@ mod tests {
         let p = LkPyramidU8::new(prev, params.win_size, params.max_level, true).unwrap();
         let q = LkPyramidU8::new(next, params.win_size, params.max_level, false).unwrap();
         calc_optical_flow_pyr_lk_u8(&p, &q, pts, None, &params).unwrap()
+    }
+
+    /// A window corner with a NaN coordinate is not on the level, so a NaN
+    /// point is lost instead of being tracked from corner (0, 0).
+    #[test]
+    fn nan_point_is_lost() {
+        assert_eq!(corner([f32::NAN, 5.0], 21, 64, 64), None);
+        assert_eq!(corner([5.0, f32::NAN], 21, 64, 64), None);
+        let f1 = frame("mh01_frame1.png");
+        let f2 = frame("mh01_frame2.png");
+        let res = track(&f1, &f2, &[[f32::NAN, 100.0], [100.0, f32::NAN]]);
+        assert_eq!(res.status, vec![0, 0], "tracked to {:?}", res.next_pts);
     }
 
     #[test]
